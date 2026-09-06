@@ -8,6 +8,7 @@ from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 from mmw.core.publisher import (
     MirrorPublishResult,
     NetworkPublishResult,
+    TreeSink,
     parse_meta_release_lts,
     publish_base,
     publish_group,
@@ -99,7 +100,7 @@ def test_publish_group_links_and_skips(tmp_path, pool):
     m = _seed_rpm_mirror(pool)
     net = _network(tmp_path / "pub")
 
-    result = publish_group([m], net, pool)
+    result = publish_group([m], TreeSink(net.root), pool)
     assert result.errors == []
     assert result.linked == 3
     dst = publish_base(net, m)
@@ -107,7 +108,7 @@ def test_publish_group_links_and_skips(tmp_path, pool):
     assert (dst / "repodata" / "repomd.xml").exists()
 
     # second run: everything already current
-    result2 = publish_group([m], net, pool)
+    result2 = publish_group([m], TreeSink(net.root), pool)
     assert result2.linked == 0
     assert result2.skipped == 3
 
@@ -121,25 +122,25 @@ def test_publish_group_release_files_land_last(tmp_path, pool):
         if status.startswith("linked"):
             order.append(Path(dst).name)
 
-    publish_group([m], net, pool, progress=progress)
+    publish_group([m], TreeSink(net.root), pool, progress=progress)
     assert order[-1] == "repomd.xml"  # trust root placed after everything else
 
 
 def test_publish_group_prunes_stale(tmp_path, pool):
     m = _seed_rpm_mirror(pool)
     net = _network(tmp_path / "pub")
-    publish_group([m], net, pool)
+    publish_group([m], TreeSink(net.root), pool)
 
     stale = publish_base(net, m) / "Packages" / "old.rpm"
     stale.write_bytes(b"stale")
 
-    result = publish_group([m], net, pool, prune=True)
+    result = publish_group([m], TreeSink(net.root), pool, prune=True)
     assert result.pruned == 1
     assert not stale.exists()
 
     # prune=False leaves stale files alone
     stale.write_bytes(b"stale")
-    result = publish_group([m], net, pool, prune=False)
+    result = publish_group([m], TreeSink(net.root), pool, prune=False)
     assert result.pruned == 0
     assert stale.exists()
 
@@ -147,26 +148,28 @@ def test_publish_group_prunes_stale(tmp_path, pool):
 def test_publish_group_unsynced_mirror(tmp_path, pool):
     m = _mirror("https://example.com/repo/")
     net = _network(tmp_path / "pub")
-    result = publish_group([m], net, pool)
+    result = publish_group([m], TreeSink(net.root), pool)
     assert result.errors
     assert result.linked == 0
 
 
 def test_prune_scan_reports_progress_and_prunes_root_level(tmp_path, pool, monkeypatch):
     """The destination walk must report, or a multi-minute scan reads as a hang."""
-    from mmw.core.publisher import links as links_mod
-    monkeypatch.setattr(links_mod, "_SCAN_REPORT_EVERY", 1)
+    from mmw.core.publisher import sinks as sinks_mod
+    monkeypatch.setattr(sinks_mod, "_SCAN_REPORT_EVERY", 1)
 
     m = _seed_rpm_mirror(pool)
     net = _network(tmp_path / "pub")
-    publish_group([m], net, pool)
+    publish_group([m], TreeSink(net.root), pool)
 
     dst = publish_base(net, m)
     (dst / "stale-at-root").write_bytes(b"x")        # depth 0 — path built from "."
     (dst / "Packages" / "old.rpm").write_bytes(b"x")  # nested
 
     statuses = []
-    result = publish_group([m], net, pool, progress=lambda d, s: statuses.append(s), prune=True)
+    result = publish_group(
+        [m], TreeSink(net.root, progress=lambda d, s: statuses.append(s)), pool,
+        progress=lambda d, s: statuses.append(s), prune=True)
 
     assert result.pruned == 2
     assert not (dst / "stale-at-root").exists()
@@ -194,9 +197,9 @@ def test_prune_scan_keeps_by_hash_entries(tmp_path, pool):
         (rel, "dists/bookworm/InRelease", KIND_RELEASE),
     ])
     net = _network(tmp_path / "pub")
-    publish_group([m], net, pool)
+    publish_group([m], TreeSink(net.root), pool)
 
     bh = publish_base(net, m) / "dists/bookworm/main/binary-amd64/by-hash/SHA256" / cs
     assert bh.exists()
-    publish_group([m], net, pool, prune=True)
+    publish_group([m], TreeSink(net.root), pool, prune=True)
     assert bh.exists()  # current generation survives the prune walk

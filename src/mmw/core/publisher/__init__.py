@@ -26,6 +26,7 @@ from mmw.core.publisher.links import (
 )
 from mmw.core.resolve import network_mirrors
 from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
+from mmw.core.publisher.sinks import TreeSink
 from mmw.core.publisher.stats import (
     dry_run_mirror,
     dry_run_network,
@@ -38,6 +39,7 @@ __all__ = [
     "MirrorPublishResult",
     "NetworkPublishResult",
     "ROOT_RELATIVE_PREFIX",
+    "TreeSink",
     "dist_upgrade_info",
     "dry_run_mirror",
     "dry_run_network",
@@ -67,9 +69,19 @@ def publish_network(
 
     Mirrors are processed in groups sharing a mirror_base (apt component
     mirrors of one source URL publish as a unit); each group's destination is
-    built packages-first, release-files-last, then pruned against the refs set.
+    built packages-first, release-files-last, then finalized against the refs
+    set through one `TreeSink` shared across every group.
     """
     result = NetworkPublishResult(network_name=network.name, dry_run=False)
+
+    if network.root is None:
+        r = MirrorPublishResult(mirror_name=network.name)
+        r.errors.append(
+            f"network '{network.name}' has no publish root — use `mmw bundle` instead"
+        )
+        result.mirrors.append(r)
+        return result
+
     mirror_map = {m.name: m for m in network_mirrors(network, cfg, mirror_dir)}
     selected_names = list(mirror_map)
 
@@ -86,33 +98,34 @@ def publish_network(
 
     # A mirror whose publish base nests inside another's (custom repos at
     # host/repo and host/repo/sub) must never be pruned by the outer group.
-    all_bases = {
-        publish_base(network, mirrors[0]) for mirrors in groups.values()
-    }
+    all_bases = set(groups)
 
-    with Pool(mirror_dir, read_only=True) as pool:
-        total_groups = len(groups)
-        for idx, (base, mirrors) in enumerate(groups.items()):
-            if stop_event and stop_event.is_set():
-                break
-            if mirror_start_callback:
-                mirror_start_callback(mirrors[0].name, idx + 1, total_groups)
-            own_base = publish_base(network, mirrors[0])
-            nested = {b for b in all_bases if b != own_base and b.is_relative_to(own_base)}
-            result.mirrors.append(publish_group(
-                mirrors, network, pool,
-                progress=progress, stop_event=stop_event,
-                prune=network.prune, prune_exclude=nested,
-            ))
+    sink = TreeSink(network.root, progress=progress, stop_event=stop_event)
+    try:
+        with Pool(mirror_dir, read_only=True) as pool:
+            total_groups = len(groups)
+            for idx, (base, mirrors) in enumerate(groups.items()):
+                if stop_event and stop_event.is_set():
+                    break
+                if mirror_start_callback:
+                    mirror_start_callback(mirrors[0].name, idx + 1, total_groups)
+                nested = {b for b in all_bases if b != base and b.startswith(base + "/")}
+                result.mirrors.append(publish_group(
+                    mirrors, sink, pool,
+                    progress=progress, stop_event=stop_event,
+                    prune=network.prune, prune_exclude=nested,
+                ))
 
-        if network.dist_upgrade and not (stop_event and stop_event.is_set()):
-            paths, warnings = dist_upgrade_info(network, cfg, pool)
-            result.dist_upgrade_paths = paths
-            result.dist_upgrade_warnings = warnings
-            publish_changelogs(network, pool, result)
-            write_upgrade_md(network, pool, paths, result.dist_upgrade_warnings,
-                             mirrors=[mirror_map[n] for n in selected_names
-                                      if n in mirror_map])
+            if network.dist_upgrade and not (stop_event and stop_event.is_set()):
+                paths, warnings = dist_upgrade_info(network, cfg, pool)
+                result.dist_upgrade_paths = paths
+                result.dist_upgrade_warnings = warnings
+                publish_changelogs(network, pool, result)
+                write_upgrade_md(network, pool, paths, result.dist_upgrade_warnings,
+                                 mirrors=[mirror_map[n] for n in selected_names
+                                          if n in mirror_map])
+    finally:
+        sink.close()
 
     if not (stop_event and stop_event.is_set()):
         published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]

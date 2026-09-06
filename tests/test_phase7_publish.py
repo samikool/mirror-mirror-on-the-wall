@@ -8,7 +8,7 @@ import pytest
 
 from mmw.core import config
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
-from mmw.core.publisher import publish_base, publish_group, publish_network
+from mmw.core.publisher import TreeSink, publish_base, publish_group, publish_network
 
 
 @pytest.fixture
@@ -50,14 +50,14 @@ def test_by_hash_created_from_pool_key(tmp_path, pool):
     cs = _seed_flat_index(pool, "m", 1)
     net = config.NetworkConfig(name="n", root=tmp_path / "pub")
 
-    publish_group([m], net, pool)
+    publish_group([m], TreeSink(net.root), pool)
     dst = publish_base(net, m)
     link = dst / "by-hash" / "SHA256" / cs
     assert link.exists()
     assert link.stat().st_ino == (dst / "Packages").stat().st_ino
 
     # idempotent
-    result2 = publish_group([m], net, pool)
+    result2 = publish_group([m], TreeSink(net.root), pool)
     assert link.exists()
     assert result2.errors == []
 
@@ -68,7 +68,7 @@ def test_by_hash_prunes_old_generations(tmp_path, pool):
     hashes = []
     for gen in range(6):
         hashes.append(_seed_flat_index(pool, "m", gen))
-        publish_group([m], net, pool)
+        publish_group([m], TreeSink(net.root), pool)
         # stagger mtimes so retention ordering is deterministic
         bh = publish_base(net, m) / "by-hash" / "SHA256"
         t = time.time() - (6 - gen) * 10
@@ -157,7 +157,8 @@ def test_publish_group_prune_exclude_direct(tmp_path, pool):
     protected.mkdir(parents=True)
     (protected / "keep.deb").write_bytes(b"keep")
 
-    result = publish_group([m], net, pool, prune=True, prune_exclude={protected})
+    result = publish_group([m], TreeSink(net.root), pool, prune=True,
+                           prune_exclude={f"{m.mirror_base}/sub"})
     assert (protected / "keep.deb").exists()
     assert result.pruned == 0
 
@@ -188,7 +189,8 @@ def test_publish_group_stop_between_chunks(tmp_path, pool, monkeypatch):
         if len(seen) == 2:
             stop.set()
 
-    result = publish_group([m], net, pool, progress=progress, stop_event=stop)
+    result = publish_group([m], TreeSink(net.root, stop_event=stop), pool,
+                           progress=progress, stop_event=stop)
     assert result.linked < 10  # interrupted between chunks
     assert result.linked >= 2
 

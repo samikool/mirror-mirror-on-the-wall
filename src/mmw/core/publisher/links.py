@@ -4,8 +4,10 @@ The destination is built in trust order — packages, then index files (with
 their by-hash links), then release files LAST, then stale-file pruning — so a
 client hitting a live-served mirror mid-publish always sees a release file
 whose referenced files exist.
+
+Writing itself goes through a `Sink` (`sinks.py`): this module owns
+enumeration, ordering and accounting, not filesystem writes.
 """
-import os
 import shutil
 from pathlib import Path
 
@@ -13,21 +15,13 @@ from mmw.core.config import MirrorConfig, NetworkConfig, derive_name
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 
 from mmw.core.publisher.results import MirrorPublishResult
-from mmw.core.publisher.stats import publish_base
+from mmw.core.publisher.sinks import _prune_by_hash_dir  # noqa: F401 (re-export)
 
 # Hardlinks are created in chunks so progress flows and stop is honored even
 # when the phase is seek-bound on a cold inode cache.
 _LINK_CHUNK = 2000
 
 _APT_INDEX_PREFIXES = ("Packages", "Sources", "Release", "InRelease", "Translation-")
-
-# The destination scan reports progress every this many files, so a long walk
-# over a live tree can never look like a hang.
-_SCAN_REPORT_EVERY = 5000
-
-# Stale by-hash generations to retain beyond the current one — apt clients mid
-# `apt update` may still request hashes from the previous Release.
-_BY_HASH_KEEP_STALE = 2
 
 # refs whose repo_path starts with this are network-root-relative
 # (changelogs.ubuntu.com meta-release files), not part of the mirror_base tree.
@@ -66,13 +60,14 @@ def _wants_by_hash(repo_path: str) -> bool:
 
 def _link_rows(
     rows: list[tuple[str, str, int, str, str]],
-    dst_root: Path,
+    base: str,
+    sink,
     result: MirrorPublishResult,
     progress,
     stop_event,
     by_hash: bool,
 ) -> bool:
-    """Hardlink (repo_path, pool_path, …) rows under dst_root, chunked.
+    """Push (repo_path, pool_path, …) rows through `sink`, chunked.
 
     Returns False if interrupted by the stop event.
     """
@@ -80,92 +75,64 @@ def _link_rows(
         if stop_event and stop_event.is_set():
             return False
         for repo_path, pool_path, size, kind, checksum in rows[i:i + _LINK_CHUNK]:
-            src = Path(pool_path)
-            dst = dst_root / repo_path
+            rel = f"{base}/{repo_path}"
             is_pkg = kind == KIND_PKG
 
-            try:
-                if dst.exists() and dst.stat().st_ino == src.stat().st_ino:
-                    result.skipped += 1
-                    result.skipped_bytes += size
-                    if progress:
-                        progress(dst, "skipped" if is_pkg else "skipped-meta")
-                else:
-                    try:
-                        hardlink_or_copy(src, dst)
-                        result.linked += 1
-                        result.linked_bytes += size
-                        if progress:
-                            progress(dst, "linked" if is_pkg else "linked-meta")
-                    except OSError as e:
-                        result.errors.append(f"{repo_path}: {e}")
-                        continue
-            except OSError as e:
-                result.errors.append(f"{repo_path}: {e}")
+            status = sink.link(Path(pool_path), rel, size, checksum, kind)
+            if status == "linked":
+                result.linked += 1
+                result.linked_bytes += size
+                if progress:
+                    progress(rel, "linked" if is_pkg else "linked-meta")
+            elif status == "skipped":
+                result.skipped += 1
+                result.skipped_bytes += size
+                if progress:
+                    progress(rel, "skipped" if is_pkg else "skipped-meta")
+            else:  # "error"
+                # A concrete Sink records the OSError text on itself (there's
+                # no protocol-level channel for it); recover it when present
+                # rather than reporting a bare "something failed".
+                detail = sink.errors[-1] if getattr(sink, "errors", None) else f"{repo_path}: link error"
+                result.errors.append(detail)
                 continue
 
             # by-hash link for apt index files — the pool key IS the sha256,
-            # so this costs one hardlink, no hashing.
+            # so this costs one hardlink, no hashing. Status is ignored: a
+            # failed by-hash link is not fatal to the file it mirrors.
             if by_hash and _wants_by_hash(repo_path):
-                bh_link = dst.parent / "by-hash" / "SHA256" / checksum
-                try:
-                    hardlink_or_copy(src, bh_link)
-                except OSError:
-                    pass
+                parent = str(Path(repo_path).parent)
+                bh_base = f"{base}/{parent}" if parent != "." else base
+                sink.link(Path(pool_path), f"{bh_base}/by-hash/SHA256/{checksum}",
+                         size, checksum, kind)
     return True
-
-
-def _prune_by_hash_dir(bh_dir: Path, live_checksums: set[str]) -> int:
-    """Retire stale by-hash generations, keeping the newest few for in-flight
-    clients. An entry's name IS its checksum, so staleness is exact: not in
-    the current refs set. (nlink can't be used here — the pool keeps old
-    blobs' link counts above 1.)"""
-    stale = []
-    try:
-        for e in bh_dir.iterdir():
-            try:
-                if e.is_file() and e.name not in live_checksums:
-                    stale.append((e.stat().st_mtime, e))
-            except OSError:
-                pass
-    except OSError:
-        return 0
-    stale.sort(reverse=True)
-    pruned = 0
-    for _, e in stale[_BY_HASH_KEEP_STALE:]:
-        try:
-            e.unlink()
-            pruned += 1
-        except OSError:
-            pass
-    return pruned
 
 
 def publish_group(
     mirrors: list[MirrorConfig],
-    network: NetworkConfig,
+    sink,
     pool: Pool,
     progress=None,
     stop_event=None,
     prune: bool = True,
-    prune_exclude: set[Path] | None = None,
+    prune_exclude: set[str] | None = None,
 ) -> MirrorPublishResult:
-    """Publish all mirrors sharing one mirror_base from the pool DB.
+    """Publish all mirrors sharing one mirror_base through a Sink.
 
-    Order: packages → index files (+by-hash) → release files → prune. A
+    Order: packages → index files (+by-hash) → release files → finalize. A
     live-served destination is never left with a release file whose referenced
-    files are missing.
+    files are missing, and a tar stream extracts in the same order.
     """
     lead = mirrors[0]
+    base = lead.mirror_base
     names = [m.name for m in mirrors]
     result = MirrorPublishResult(mirror_name=lead.name)
-    dst_root = publish_base(network, lead)
 
     # One refs⋈packages query for all three kinds — on a large mirror set the
     # sort dominates, and running it once instead of per-kind keeps the silent
     # pre-link gap short. Rows stay repo_path-ordered within each bucket.
     if progress:
-        progress(dst_root, "enumerate-start")
+        progress(base, "enumerate-start")
     buckets: dict[str, list] = {KIND_PKG: [], KIND_META: [], KIND_RELEASE: []}
     for row in pool.mirror_files(names):
         if row[0].startswith(ROOT_RELATIVE_PREFIX):
@@ -175,69 +142,26 @@ def publish_group(
             bucket.append(row)
     pkg_rows, meta_rows, rel_rows = buckets[KIND_PKG], buckets[KIND_META], buckets[KIND_RELEASE]
     if progress:
-        progress(dst_root, f"enumerate-done:{len(pkg_rows) + len(meta_rows) + len(rel_rows)}")
+        progress(base, f"enumerate-done:{len(pkg_rows) + len(meta_rows) + len(rel_rows)}")
 
     if not (pkg_rows or meta_rows or rel_rows):
         result.errors.append("not synced yet — no pool refs for this mirror")
         return result
 
     apt_like = any(m.provider in ("apt", "apt-flat") for m in mirrors)
+    for rows, by_hash in ((pkg_rows, False), (meta_rows, apt_like), (rel_rows, apt_like)):
+        if not _link_rows(rows, base, sink, result, progress, stop_event, by_hash):
+            return result
 
-    if not _link_rows(pkg_rows, dst_root, result, progress, stop_event, by_hash=False):
-        return result
-    if not _link_rows(meta_rows, dst_root, result, progress, stop_event, by_hash=apt_like):
-        return result
-    # Trust roots last: only after everything they reference exists.
-    if not _link_rows(rel_rows, dst_root, result, progress, stop_event, by_hash=apt_like):
-        return result
-
-    # ── Prune: anything at the destination the refs don't want ────────────────
-    if prune and dst_root.exists() and not (stop_event and stop_event.is_set()):
-        keep = {r[0] for r in (pkg_rows + meta_rows + rel_rows)}
-        live_checksums = {r[4] for r in (meta_rows + rel_rows)}
-        bh_pruned = 0
-        bh_dirs: set[Path] = set()
-        checked = 0
-        if progress:
-            progress(dst_root, "prune-scan-start")
-        # os.walk (scandir) rather than rglob: kept files — the overwhelming
-        # majority — cost no stat at all, and whole subtrees are skipped by
-        # pruning dirnames instead of testing every file under them.
-        for dirpath, dirnames, filenames in os.walk(dst_root):
-            if stop_event and stop_event.is_set():
-                break
-            here = Path(dirpath)
-            if "by-hash" in here.parts:
-                # by-hash entries are retired by generation, not against keep.
-                if filenames:
-                    bh_dirs.add(here)
-                continue
-            if prune_exclude and any(here.is_relative_to(x) for x in prune_exclude):
-                dirnames[:] = []
-                continue
-            rel_dir = here.relative_to(dst_root)
-            for fname in filenames:
-                checked += 1
-                if progress and checked % _SCAN_REPORT_EVERY == 0:
-                    progress(here, f"prune-scan-progress:{checked}")
-                if str(rel_dir / fname) in keep:
-                    continue
-                dst = here / fname
-                try:
-                    size = dst.stat().st_size
-                    dst.unlink()
-                    result.pruned += 1
-                    result.pruned_bytes += size
-                    if progress:
-                        progress(dst, "pruned")
-                except OSError:
-                    pass
-        for bh_dir in bh_dirs:
-            bh_pruned += _prune_by_hash_dir(bh_dir, live_checksums)
-        if progress:
-            if bh_pruned:
-                progress(dst_root, f"by-hash:{bh_pruned}")
-            progress(dst_root, f"prune-scan-done:{checked}:{result.pruned}")
+    # ── Finalize: reconcile the destination to exactly what refs want ──────
+    if prune and not (stop_event and stop_event.is_set()):
+        keep = {f"{base}/{r[0]}" for r in (pkg_rows + meta_rows + rel_rows)}
+        live = {r[4] for r in (meta_rows + rel_rows)}
+        # `finalize_group` returns this group's own (files, bytes) pruned —
+        # `sink` may be shared across every group in a network publish, so its
+        # own running totals are not this group's answer.
+        result.pruned, result.pruned_bytes = sink.finalize_group(
+            base, keep, live, prune_exclude or set())
 
     return result
 

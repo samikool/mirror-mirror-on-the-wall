@@ -1,0 +1,58 @@
+[project]
+name = "mirror-mirror-on-the-wall"
+version = "0.1.0"
+description = "Universal package repository mirror — apt, rpm, and beyond"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Sam Morgan", email = "sam.morgan44@gmail.com" }
+]
+keywords = ["mirror", "apt", "rpm", "debian", "centos", "ubuntu", "repository"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Systems Administration",
+]
+requires-python = ">=3.13"
+dependencies = [
+    "h2>=4.3.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.13.4",
+    "textual>=8.2.7",
+    "tomli-w>=1.2.0",
+    "typer>=0.25.1",
+    "cryptography>=44.0.0",
+    "zstandard>=0.25.0",
+]
+
+[project.urls]
+Repository = "https://github.com/sam-morgan/mirror-mirror-on-the-wall"
+
+[project.scripts]
+mmw = "mmw.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "mmw"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15.14",
+]
+
+[tool.pytest.ini_options]
+# The project dir contains a multi-TB live mirror tree (mirror/) — never let
+# pytest collection walk it.
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+extend-exclude = ["mirror"]

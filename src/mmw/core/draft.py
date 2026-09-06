@@ -1,0 +1,251 @@
+"""One repository being authored — the shared model behind every add flow.
+
+`RepositoryDraft` is deliberately not a widget. The single-repository step edits
+one of these; a pasted bundle naming eight repositories holds eight. Probing,
+the "empty means all" rule, and the conversion to `SourceConfig` therefore have
+exactly one implementation regardless of how the repository arrived.
+"""
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+
+from mmw.core import discover
+from mmw.core.apt_sources import AptEntry
+from mmw.core.config import SourceConfig, derive_name, normalize_url
+
+# The three axes of an apt repository.
+DIMENSIONS = ("suites", "components", "arches")
+
+
+@dataclass
+class RepositoryDraft:
+    """A repository plus what the user has chosen to mirror from it."""
+
+    url: str
+    provider: str = "apt"
+    name: str = ""
+    gpg_key: str | None = None        # armoured key material
+    gpg_key_name: str | None = None   # stem for the key files, from `Signed-By:`
+    include_sources: bool = False
+
+    # Per dimension: what the repository offers, what is ticked, and whether the
+    # offer came from the repository itself.
+    available: dict[str, list[str]] = field(default_factory=lambda: {d: [] for d in DIMENSIONS})
+    chosen: dict[str, list[str]] = field(default_factory=lambda: {d: [] for d in DIMENSIONS})
+    enumerated: dict[str, bool] = field(default_factory=lambda: {d: False for d in DIMENSIONS})
+
+    probed: bool = False
+    error: str = ""
+    # Where `gpg_key` came from, for the review pane: "inline" (the pasted
+    # config carried it), "pasted", or "dir" (matched in a scanned directory).
+    key_source: str = ""
+
+    def __post_init__(self) -> None:
+        self.url = self.url.rstrip("/")
+        if not self.name:
+            self.name = derive_name(self.url, suites=self.chosen.get("suites") or None)
+
+    # ── identity ─────────────────────────────────────────────────────────────
+
+    @property
+    def identity(self) -> str:
+        return normalize_url(self.url)
+
+    # ── dimensions ───────────────────────────────────────────────────────────
+
+    def set_dimension(self, dim: str, available: list[str],
+                      chosen: "list[str] | None" = None, *, enumerated: bool = False) -> None:
+        """Offer a dimension. `chosen=None` ticks everything.
+
+        A config that already filtered (arm64 only, say) passes `chosen`, so the
+        rest stay visible while only its own are ticked. `enumerated` records
+        that the offer came from the repository — see `stored()`.
+        """
+        self.available[dim] = list(available)
+        self.chosen[dim] = list(available if chosen is None else chosen)
+        self.enumerated[dim] = enumerated
+
+    def stored(self, dim: str) -> list[str]:
+        """What goes in the config.
+
+        Everything ticked is stored as *empty* — "all" — so the repository keeps
+        following upstream as new suites or architectures appear; a frozen full
+        list would silently stop picking them up.
+
+        **Only a probed list may collapse.** When the repository could not be
+        enumerated, `available` is merely what a pasted config named, and
+        collapsing it would turn an explicit `Suites: noble` into every suite.
+        """
+        chosen, available = self.chosen[dim], self.available[dim]
+        if self.enumerated[dim] and available and len(chosen) == len(available):
+            return []
+        return list(chosen)
+
+    def summary(self, dim: str) -> str:
+        """One-line description of a dimension's selection, for a summary row."""
+        chosen, available = self.chosen[dim], self.available[dim]
+        if not chosen:
+            return "none selected"
+        if available and len(chosen) == len(available):
+            return f"all ({len(available)})"
+        if len(chosen) <= 4:
+            return f"{', '.join(chosen)}  of {len(available)}"
+        return f"{', '.join(chosen[:4])}  +{len(chosen) - 4} of {len(available)}"
+
+    # ── probing ──────────────────────────────────────────────────────────────
+
+    def probe(self) -> None:
+        """Fill in what the repository publishes. Blocking — run off the UI thread.
+
+        Anything the draft already carries stays selected; probing only widens
+        what is *offered*. A flat repository has no dists/ tree to enumerate.
+        """
+        self.probed = True
+        self.error = ""
+        if self.provider == "apt-flat":
+            return
+
+        stated = list(self.chosen["suites"])
+        suites = discover.list_suites(self.url)
+        if suites:
+            self.set_dimension("suites", _merge(suites, stated),
+                               chosen=stated or suites, enumerated=True)
+        elif not stated:
+            self.error = "no suites found"
+            return
+
+        suite = (self.chosen["suites"] or [None])[0]
+        if suite is not None:
+            self.probe_suite(suite)
+
+    def probe_suite(self, suite: str) -> None:
+        """Components and architectures follow from a chosen suite. Blocking.
+
+        Called on its own when the user picks a different suite, so the two
+        entry points cannot drift apart.
+        """
+        stated_c = list(self.chosen["components"])
+        stated_a = list(self.chosen["arches"])
+
+        comps = discover.list_components(self.url, suite)
+        arches: list[str] = []
+        for comp in comps or stated_c:
+            arches = discover.list_arches(self.url, suite, comp)
+            if arches:
+                break
+        if not comps or not arches:
+            # No directory listing at all (S3/CDN-backed vendor repositories
+            # answer every dists/ request with 404) — the Release file is then
+            # the only evidence, and for those repositories it is accurate.
+            rel_comps, rel_arches = discover.release_dimensions(self.url, suite)
+            comps = comps or rel_comps
+            arches = arches or rel_arches
+
+        if comps:
+            self.set_dimension("components", _merge(comps, stated_c),
+                               chosen=stated_c or comps, enumerated=True)
+        if arches:
+            self.set_dimension("arches", _merge(arches, stated_a),
+                               chosen=stated_a or arches, enumerated=True)
+
+    # ── GPG key ──────────────────────────────────────────────────────────────
+
+    def key_state(self) -> str:
+        """`have` | `needs` | `none` — what the review pane renders.
+
+        `needs` means the config named a keyring (`Signed-By: /usr/share/…`)
+        whose contents live on the source machine, not in the file we were
+        given. That is exactly what the key-directory scan resolves.
+        """
+        if self.gpg_key:
+            return "have"
+        if self.gpg_key_name:
+            return "needs"
+        return "none"
+
+    def set_key(self, armour: str | None, *, name: str | None = None, source: str = "") -> None:
+        self.gpg_key = armour or None
+        self.key_source = source if armour else ""
+        if name:
+            self.gpg_key_name = name
+
+    # ── result ───────────────────────────────────────────────────────────────
+
+    def to_source(self) -> SourceConfig:
+        return SourceConfig(
+            name=self.name or derive_name(self.url, suites=self.stored("suites") or None),
+            provider=self.provider,
+            url=self.url,
+            suites=self.stored("suites"),
+            components=self.stored("components"),
+            arches=self.stored("arches"),
+            include_sources=self.include_sources,
+            gpg_key=self.gpg_key,
+            gpg_key_name=self.gpg_key_name,
+        )
+
+
+def probe_all(drafts: list[RepositoryDraft], max_workers: int = 8) -> None:
+    """Probe a whole bundle at once.
+
+    A cat'd DGX sources tree names a dozen repositories, each costing several
+    HTTP round trips; sequentially that is a visible stall before the review
+    pane can open. Each draft only ever touches its own fields, so there is
+    nothing to lock.
+    """
+    if not drafts:
+        return
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(drafts))) as pool:
+        for _ in pool.map(_probe_one, drafts):
+            pass
+
+
+def _probe_one(draft: RepositoryDraft) -> None:
+    try:
+        draft.probe()
+    except Exception as e:                      # one bad repo must not stop the rest
+        draft.probed = True
+        draft.error = str(e) or type(e).__name__
+
+
+def _merge(found: list[str], stated: list[str]) -> list[str]:
+    """Everything the repository offers, plus anything the config named that the
+    listing missed — a stated value must never vanish from the picker."""
+    return found + [v for v in stated if v not in found]
+
+
+def drafts_from_entries(entries: list[AptEntry]) -> list[RepositoryDraft]:
+    """Group parsed apt entries into one draft per repository.
+
+    A cat'd bundle of `/etc/apt/sources.list.d/*` becomes one draft per distinct
+    URL, carrying whatever that config already stated as the pre-selection.
+    """
+    grouped: dict[str, list[AptEntry]] = {}
+    for e in entries:
+        grouped.setdefault(e.url.rstrip("/"), []).append(e)
+
+    taken: set[str] = set()
+    drafts = []
+    for url, group in grouped.items():
+        flat = group[0].suite is None
+        stated = {
+            "suites": list(dict.fromkeys(e.suite for e in group if e.suite)),
+            "components": list(dict.fromkeys(c for e in group for c in e.components)),
+            "arches": list(dict.fromkeys(a for e in group for a in e.arches)),
+        }
+        name = derive_name(url, taken, suites=stated["suites"] or None)
+        taken.add(name)
+        draft = RepositoryDraft(
+            url=url,
+            provider="apt-flat" if flat else "apt",
+            name=name,
+            gpg_key=next((e.gpg_key for e in group if e.gpg_key), None),
+            gpg_key_name=next((e.gpg_key_name for e in group if e.gpg_key_name), None),
+            include_sources=any(e.include_sources for e in group),
+        )
+        for dim in DIMENSIONS:
+            if stated[dim]:
+                # Not enumerated: this is what the config named, not what the
+                # repository offers. Probing may widen it later.
+                draft.set_dimension(dim, stated[dim], chosen=stated[dim])
+        drafts.append(draft)
+    return drafts

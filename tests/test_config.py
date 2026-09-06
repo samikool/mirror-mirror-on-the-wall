@@ -1,0 +1,98 @@
+from pathlib import Path
+
+from mmw.core import config
+
+
+def _sample_config() -> config.Config:
+    return config.Config(
+        settings=config.Settings(mirror_dir=Path("/data/repos"), max_connections=7),
+        sources=[
+            config.SourceConfig(
+                name="debian",
+                label="debian",
+                provider="apt",
+                url="https://deb.debian.org/debian",
+                arches=["amd64"],
+                suites=["bookworm", "bookworm-updates"],
+                components=["main", "contrib"],
+                suite_overrides=[
+                    config.SuiteOverride(suite="bookworm-updates", components=["main"]),
+                ],
+                include_sources=True,
+            ),
+            config.SourceConfig(
+                name="microsoft-packages",
+                label="microsoft",
+                provider="apt",
+                url="https://packages.microsoft.com/repos/code",
+                arches=["amd64", "arm64"],
+                suites=["stable"],
+                components=["main"],
+                gpg_key_url="https://example.com/key",
+            ),
+        ],
+        networks=[
+            config.NetworkConfig(
+                name="lab", root=Path("/srv/lab"),
+                select=[config.NetworkSelect(
+                    source="https://deb.debian.org/debian",
+                    suites=["bookworm"], arches=["amd64"],
+                )],
+                prune=False,
+                dist_upgrade=True, certs=True,
+            ),
+        ],
+    )
+
+
+def test_save_load_round_trip(tmp_path):
+    cfg = _sample_config()
+    config.save(cfg, tmp_path)
+    loaded = config.load(tmp_path)
+    assert loaded == cfg
+
+
+def test_load_missing_raises(tmp_path):
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        config.load(tmp_path)
+
+
+def test_delete_is_idempotent(tmp_path):
+    config.delete(tmp_path)  # nothing there — must not raise
+    config.save(_sample_config(), tmp_path)
+    config.delete(tmp_path)
+    assert not config.config_path(tmp_path).exists()
+
+
+def test_mirror_base():
+    m = config.MirrorConfig(
+        name="x", provider="apt", label="microsoft",
+        source_url="https://packages.microsoft.com/repos/code/",
+    )
+    assert m.mirror_base == "packages.microsoft.com/repos/code"
+
+
+def test_mirror_base_no_path():
+    m = config.MirrorConfig(name="x", provider="apt", label="custom", source_url="https://host.example/")
+    assert m.mirror_base == "host.example"
+
+
+def test_apt_source_expansion_with_overrides():
+    cfg = _sample_config()
+    apt_mirrors = cfg.sources[0].to_mirrors()
+    names = {m.name for m in apt_mirrors}
+    # bookworm gets both components, bookworm-updates only main (override)
+    # every apt mirror name ends in its arch — two arches of one suite/component
+    # must never share a refs mirror_name
+    assert names == {
+        "debian-bookworm-main-amd64",
+        "debian-bookworm-contrib-amd64",
+        "debian-bookworm-updates-main-amd64",
+    }
+    assert all(m.include_sources for m in apt_mirrors)
+
+
+def test_config_mirrors_property():
+    cfg = _sample_config()
+    assert len(cfg.mirrors) == 5  # 3 debian + 2 microsoft (one per arch)

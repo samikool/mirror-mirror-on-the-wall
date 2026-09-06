@@ -1,0 +1,617 @@
+"""Publish-pipeline modals: dry-run report, live progress, prepare phases, certs."""
+import threading
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from rich.markup import escape as _escape
+from textual import on
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Label, ProgressBar, RichLog, Static
+
+from mmw.core.format import fmt_duration as _fmt_duration, fmt_size as _fmt_bytes
+from mmw.tui.widgets import Button
+
+if TYPE_CHECKING:
+    from mmw.core.publisher import NetworkPublishResult
+
+
+class DryRunResultModal(ModalScreen[bool]):
+    """Read-only publish report — shows sizes and diff, no filesystem writes."""
+
+    DEFAULT_CSS = """
+    DryRunResultModal { align: center middle; }
+    DryRunResultModal > Vertical {
+        width: 90%;
+        max-width: 130;
+        height: auto;
+        max-height: 85%;
+        border: double $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    DryRunResultModal .modal-title { text-style: bold; color: $primary; margin-bottom: 1; }
+    DryRunResultModal .error-row   { color: $error; }
+    DryRunResultModal .totals      { color: $primary; margin-top: 1; text-style: bold; }
+    DryRunResultModal .du-hdr      { color: $accent; text-style: bold; margin-top: 1; }
+    DryRunResultModal .du-path     { color: $text; margin-left: 2; }
+    DryRunResultModal .du-warn     { color: $warning; margin-left: 2; }
+    DryRunResultModal .du-empty    { color: $text-muted; margin-left: 2; }
+    DryRunResultModal DataTable    { height: auto; max-height: 24; margin-bottom: 1; }
+    DryRunResultModal Horizontal   { align: center middle; height: auto; margin-top: 1; }
+    DryRunResultModal Button       { margin: 0 1; }
+    """
+
+    def __init__(self, network_name: str, result):
+        super().__init__()
+        self._network_name = network_name
+        self._result = result
+
+    def compose(self) -> ComposeResult:
+        r = self._result
+        fmt = _fmt_bytes
+        with Vertical():
+            yield Label(f"Publish dry run — {self._network_name}", classes="modal-title")
+            yield DataTable(show_cursor=False, zebra_stripes=True, id="dry-run-table")
+            yield Label(
+                f"  Total  {r.total_files:,} files  ·  {fmt(r.total_bytes)}"
+                f"  →  {fmt(r.skipped_bytes)} already published"
+                f"  ·  ≈{fmt(r.linked_bytes)} to add (estimated from index diff)",
+                classes="totals",
+            )
+            if r.errors:
+                yield Label(f"  {len(r.errors)} error(s) — see rows marked ✗", classes="error-row")
+            if r.dist_upgrade_paths or r.dist_upgrade_warnings:
+                yield Label("  Dist-Upgrade", classes="du-hdr")
+                if r.dist_upgrade_paths:
+                    for from_s, to_s in r.dist_upgrade_paths:
+                        yield Label(f"  ✓  {from_s} → {to_s}", classes="du-path")
+                else:
+                    yield Label("  No consecutive LTS pairs found in this network", classes="du-empty")
+                for w in r.dist_upgrade_warnings:
+                    yield Label(f"  ⚠  {w}", classes="du-warn")
+            with Horizontal():
+                yield Button("Close", variant="default", id="cancel")
+                yield Button("Publish Now", variant="primary", id="proceed")
+
+    def on_mount(self) -> None:
+        r = self._result
+        fmt = _fmt_bytes
+        table = self.query_one("#dry-run-table", DataTable)
+        table.add_columns("Mirror", "Files", "Total", "Published", "To Add (est.)")
+        for mr in r.mirrors:
+            if mr.errors:
+                table.add_row(mr.mirror_name, "—", "—", "—", f"✗ {mr.errors[0]}")
+            else:
+                table.add_row(
+                    mr.mirror_name,
+                    f"{mr.total_files:,}",
+                    fmt(mr.total_bytes),
+                    fmt(mr.skipped_bytes),
+                    fmt(mr.linked_bytes),
+                )
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#proceed")
+    def _proceed(self) -> None:
+        self.dismiss(True)
+
+class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
+    """Full-screen progress view shown while publish_network runs."""
+
+    BINDINGS = [Binding("escape", "action_close_or_stop", "Close/Stop")]
+
+    DEFAULT_CSS = """
+    PublishProgressModal { align: center middle; }
+    PublishProgressModal > Vertical {
+        width: 95%;
+        height: 90%;
+        border: double $primary;
+        background: $surface;
+    }
+    PublishProgressModal #pub-title-bar {
+        background: $primary-darken-3;
+        padding: 0 2;
+        height: 1;
+        color: $text;
+        text-style: bold;
+    }
+    PublishProgressModal #pub-progress-area {
+        height: auto;
+        padding: 1 2 0 2;
+    }
+    PublishProgressModal ProgressBar {
+        margin: 0 0 1 0;
+    }
+    PublishProgressModal .pub-section-label {
+        height: 1;
+        color: $text-muted;
+        text-style: bold;
+    }
+    PublishProgressModal .pub-mirror-label {
+        height: 1;
+        color: $accent;
+        margin-top: 1;
+    }
+    PublishProgressModal .pub-stats {
+        height: 1;
+        color: $text;
+        margin-top: 1;
+    }
+    PublishProgressModal .pub-eta {
+        height: 1;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    PublishProgressModal #pub-log {
+        height: 1fr;
+        border-top: solid $primary-darken-2;
+        background: $background;
+    }
+    PublishProgressModal #pub-controls {
+        height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
+        align: right middle;
+        padding: 0 2;
+        background: $primary-darken-3;
+        border-top: solid $primary-darken-1;
+        dock: bottom;
+    }
+    PublishProgressModal #pub-footer-label {
+        width: 1fr;
+        color: $text-muted;
+        content-align: left middle;
+    }
+    PublishProgressModal #btn-stop {
+        margin-left: 1;
+    }
+    """
+
+    def __init__(self, network_name: str, total: int = 0, per_mirror_counts: dict[str, int] | None = None):
+        super().__init__()
+        self._network_name = network_name
+        self._total = total
+        self._per_mirror_counts = per_mirror_counts or {}
+        self._start = time.monotonic()
+        self._lock = threading.Lock()
+        # Global counters
+        self._linked = 0
+        self._skipped = 0
+        self._pruned = 0
+        self._log_pending: list[str] = []
+        # Per-mirror counters (reset each mirror)
+        self._mirror_linked = 0
+        self._mirror_skipped = 0
+        self._mirror_name = ""
+        self._mirror_index = 0
+        self._mirror_total_count = 0
+        self._mirror_total_mirrors = 0
+        self._phase = ""
+        self._pending_mirror_change: tuple | None = None
+        # Speed
+        self._speed_ema: float = 0.0
+        self._last_speed_time: float = 0.0
+        self._last_speed_linked: int = 0
+        self.stop_event = threading.Event()
+        # Set by mark_done / mark_error from the publish thread
+        self._publish_done: bool = False
+        self._publish_result: "NetworkPublishResult | None" = None
+        self._publish_error: str = ""
+        self._done_displayed: bool = False
+        self._dismissed: bool = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(f"  Publishing  {self._network_name}", id="pub-title-bar")
+            with Vertical(id="pub-progress-area"):
+                yield Label("  Overall", id="pub-overall-label", classes="pub-section-label")
+                yield ProgressBar(
+                    total=self._total if self._total else None,
+                    show_eta=False,
+                    id="pub-pbar",
+                )
+                yield Label("  Waiting for first mirror…", id="pub-mirror-label", classes="pub-mirror-label")
+                yield ProgressBar(total=None, show_eta=False, id="pub-mirror-pbar")
+                yield Label("  Starting…", id="pub-stats", classes="pub-stats")
+                yield Label("", id="pub-eta", classes="pub-eta")
+            log = RichLog(id="pub-log", highlight=False, markup=True, wrap=False, max_lines=2000)
+            log.can_focus = False
+            yield log
+            with Horizontal(id="pub-controls"):
+                yield Static("", id="pub-footer-label")
+                yield Button("Stop", id="btn-stop", variant="error")
+
+    def on_mount(self) -> None:
+        self._last_speed_time = time.monotonic()
+        self.set_interval(1 / 60, self._tick)
+
+    def _safe_dismiss(self, result: "NetworkPublishResult | None") -> None:
+        if not self._dismissed:
+            self._dismissed = True
+            self.dismiss(result)
+
+    def action_close_or_stop(self) -> None:
+        if self._done_displayed:
+            self._safe_dismiss(self._publish_result)
+        elif not self.stop_event.is_set():
+            self.stop_event.set()
+            try:
+                self.query_one("#btn-stop", Button).disabled = True
+                self.query_one("#pub-title-bar", Static).update(
+                    f"  Stopping  {self._network_name}  [dim](finishing current file…)[/]"
+                )
+            except Exception:
+                pass
+
+    @on(Button.Pressed, "#btn-stop")
+    def _btn_stop_pressed(self) -> None:
+        self.action_close_or_stop()
+
+    def mark_done(self, result: "NetworkPublishResult") -> None:
+        """Called from the publish thread (or its await) when publish completes."""
+        with self._lock:
+            self._publish_done = True
+            self._publish_result = result
+
+    def mark_error(self, msg: str) -> None:
+        """Called when the publish thread raises an exception."""
+        with self._lock:
+            self._publish_done = True
+            self._publish_error = msg
+
+    def notify_mirror_start(self, name: str, index: int, total_mirrors: int) -> None:
+        """Called from publish thread when a new mirror begins."""
+        file_count = self._per_mirror_counts.get(name, 0)
+        with self._lock:
+            self._pending_mirror_change = (name, index, total_mirrors, file_count)
+            self._mirror_linked = 0
+            self._mirror_skipped = 0
+
+    def record(self, dst: Path, status: str) -> None:
+        """Called from publish thread — pure counter + buffer update, no DOM work."""
+        parts = dst.parts
+        short = "/".join(parts[-4:]) if len(parts) >= 4 else str(dst)
+        with self._lock:
+            if status == "linked":
+                self._linked += 1
+                self._mirror_linked += 1
+                self._log_pending.append(f"  [green]→[/] {short}")
+            elif status == "skipped":
+                self._skipped += 1
+                self._mirror_skipped += 1
+            elif status in ("linked-meta", "skipped-meta"):
+                pass  # metadata ops don't count toward package totals
+            elif status == "pruned":
+                self._pruned += 1
+                self._log_pending.append(f"  [red]✂[/] {short}  [dim](pruned)[/]")
+            elif status.startswith("by-hash:"):
+                n = status.split(":", 1)[1]
+                self._log_pending.append(f"  [dim]# by-hash links: {n}[/]")
+            # Long silent phases — enumeration and the destination scan — report
+            # here so a multi-minute walk over a big tree never reads as a hang.
+            elif status == "enumerate-start":
+                self._phase = "reading pool index…"
+                self._log_pending.append("  [dim]# reading pool index…[/]")
+            elif status.startswith("enumerate-done:"):
+                n = int(status.split(":", 1)[1])
+                self._phase = ""
+                self._log_pending.append(f"  [dim]# {n:,} files to publish[/]")
+            elif status == "prune-scan-start":
+                self._phase = "scanning destination…"
+                self._log_pending.append("  [dim]# scanning destination for stale files…[/]")
+            elif status.startswith("prune-scan-progress:"):
+                n = int(status.split(":", 1)[1])
+                self._phase = f"scanning destination · {n:,} checked"
+                self._log_pending.append(f"  [dim]# destination scan: {n:,} files checked…[/]")
+            elif status.startswith("prune-scan-done:"):
+                _, checked, removed = status.split(":")
+                self._phase = ""
+                self._log_pending.append(
+                    f"  [dim]# destination scan done: {int(checked):,} checked, "
+                    f"{int(removed):,} removed[/]"
+                )
+
+    def _tick(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            linked = self._linked
+            skipped = self._skipped
+            pruned = self._pruned
+            mirror_linked = self._mirror_linked
+            mirror_skipped = self._mirror_skipped
+            pending = self._log_pending[:]
+            self._log_pending.clear()
+            mirror_change = self._pending_mirror_change
+            self._pending_mirror_change = None
+            phase = self._phase
+
+        total_done = linked + skipped
+
+        # Apply mirror change
+        if mirror_change:
+            name, index, total_mirrors, file_count = mirror_change
+            self._mirror_name = name
+            self._mirror_index = index
+            self._mirror_total_mirrors = total_mirrors
+            self._mirror_total_count = file_count
+            try:
+                pbar = self.query_one("#pub-mirror-pbar", ProgressBar)
+                pbar.total = file_count if file_count else None
+                pbar.progress = 0
+            except Exception:
+                pass
+
+        # Speed EMA — pkg files/s (linked + skipped), sampled every 250 ms
+        dt = now - self._last_speed_time
+        if dt >= 0.25:
+            instant = (total_done - self._last_speed_linked) / dt
+            self._speed_ema = 0.3 * instant + 0.7 * self._speed_ema
+            self._last_speed_linked = total_done
+            self._last_speed_time = now
+
+        speed = self._speed_ema
+        elapsed = now - self._start
+
+        # Overall progress bar
+        try:
+            if self._total:
+                self.query_one("#pub-pbar", ProgressBar).progress = total_done
+        except Exception:
+            pass
+
+        # Per-mirror progress bar + label
+        try:
+            mirror_done = mirror_linked + mirror_skipped
+            pbar = self.query_one("#pub-mirror-pbar", ProgressBar)
+            if self._mirror_total_count:
+                pbar.progress = mirror_done
+            if self._mirror_name:
+                if self._mirror_total_count:
+                    pbar_pct = f"  [dim]{100 * mirror_done / self._mirror_total_count:.0f}%[/]"
+                    count_str = f"  [dim]{mirror_done:,} / {self._mirror_total_count:,}[/]{pbar_pct}"
+                else:
+                    count_str = ""
+                # The counters stall during enumeration and the destination
+                # scan; the phase says which one is running.
+                phase_str = f"  [dim]·[/]  [dim]{phase}[/]" if phase else ""
+                self.query_one("#pub-mirror-label", Label).update(
+                    f"  Mirror {self._mirror_index} / {self._mirror_total_mirrors}"
+                    f"  [dim]·[/]  [bold]{self._mirror_name}[/]"
+                    f"{count_str}{phase_str}"
+                )
+        except Exception:
+            pass
+
+        pct = f"  [dim]{100 * total_done / self._total:.0f}%[/]" if self._total else ""
+        total_str = f"{self._total:,}" if self._total else "?"
+
+        pruned_str = f"  [red]✂ {pruned:,}[/] pruned" if pruned else ""
+        try:
+            self.query_one("#pub-stats", Label).update(
+                f"  [green]↗ {linked:,}[/] linked"
+                f"  [cyan]= {skipped:,}[/] already current"
+                f"{pruned_str}"
+                f"  [dim]·[/]  [bold]{speed:,.0f}[/] files/s"
+                f"{pct}"
+            )
+            self.query_one("#pub-eta", Label).update(
+                f"  [dim]elapsed {_fmt_duration(elapsed)}"
+                f"  ·  {total_done:,} / {total_str} files[/]"
+            )
+        except Exception:
+            pass
+
+        # Flush log entries into RichLog
+        if pending:
+            try:
+                log = self.query_one("#pub-log", RichLog)
+                for entry in pending:
+                    log.write(entry)
+            except Exception:
+                pass
+
+        # Footer label
+        try:
+            stopping = "  [bold red]Stopping…[/]  " if self.stop_event.is_set() else ""
+            self.query_one("#pub-footer-label", Static).update(
+                f"{stopping}[dim]{self._network_name}  ·  {_fmt_duration(elapsed)}[/]"
+            )
+        except Exception:
+            pass
+
+        # Publish completion — runs once when thread signals done
+        if self._publish_done and not self._done_displayed:
+            self._done_displayed = True
+            with self._lock:
+                result = self._publish_result
+                error = self._publish_error
+            try:
+                if error:
+                    self.query_one("#pub-title-bar", Static).update(
+                        f"  [bold red]✗ Error[/]  {self._network_name}"
+                    )
+                    self.query_one("#pub-log", RichLog).write(
+                        f"  [red]✗ {_escape(error)}[/]"
+                    )
+                    btn = self.query_one("#btn-stop", Button)
+                    btn.label = "Close"
+                    btn.variant = "error"
+                    btn.disabled = False
+                elif self.stop_event.is_set():
+                    self.query_one("#pub-title-bar", Static).update(
+                        f"  [bold yellow]⚠ Stopped[/]  {self._network_name}"
+                    )
+                    btn = self.query_one("#btn-stop", Button)
+                    btn.label = "Close"
+                    btn.variant = "warning"
+                    btn.disabled = False
+                else:
+                    self.query_one("#pub-title-bar", Static).update(
+                        f"  [bold green]✓ Published[/]  {self._network_name}"
+                    )
+                    btn = self.query_one("#btn-stop", Button)
+                    btn.label = "Close"
+                    btn.variant = "primary"
+                    btn.disabled = False
+            except Exception:
+                pass
+            # Auto-close after 4 s so user can read the result; they can also
+            # click Close or press Escape to dismiss immediately.
+            self.set_timer(4.0, lambda: self._safe_dismiss(result))
+
+class PreparePublishModal(ModalScreen[None]):
+    """Non-dismissable modal shown during verify and optional dry-run phases."""
+
+    DEFAULT_CSS = """
+    PreparePublishModal { align: center middle; }
+    PreparePublishModal > Vertical {
+        width: 82;
+        max-width: 96%;
+        height: 26;
+        max-height: 90%;
+        border: double $primary;
+        background: $surface;
+    }
+    PreparePublishModal #pp-title {
+        height: 1;
+        background: $primary-darken-3;
+        padding: 0 2;
+        color: $text-muted;
+        text-style: bold;
+    }
+    PreparePublishModal #pp-phase-area {
+        height: auto;
+        padding: 1 2 0 2;
+    }
+    PreparePublishModal #pp-phase { color: $text; text-style: bold; margin-bottom: 1; }
+    PreparePublishModal ProgressBar { margin-bottom: 0; }
+    PreparePublishModal #pp-log {
+        height: 1fr;
+        border-top: solid $primary-darken-2;
+        background: $background;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, network_name: str):
+        super().__init__()
+        self._network_name = network_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(f"  Preparing  {self._network_name}", id="pp-title")
+            with Vertical(id="pp-phase-area"):
+                yield Label("", id="pp-phase")
+                yield ProgressBar(total=1, show_eta=False, id="pp-pbar")
+            log = RichLog(id="pp-log", highlight=False, markup=True, wrap=False, max_lines=1000)
+            log.can_focus = False
+            yield log
+
+    def set_phase(self, label: str, total: int) -> None:
+        try:
+            self.query_one("#pp-phase", Label).update(f"  {label}")
+            pbar = self.query_one("#pp-pbar", ProgressBar)
+            pbar.total = total
+            pbar.progress = 0
+            self.query_one("#pp-log", RichLog).clear()
+        except Exception:
+            pass
+
+    def mirror_done(self, idx: int, name: str, detail: str, ok: bool) -> None:
+        try:
+            self.query_one("#pp-pbar", ProgressBar).progress = idx
+            icon = "[green]✓[/]" if ok else "[red]✗[/]"
+            detail_markup = f"  [dim]{detail}[/]" if detail else ""
+            self.query_one("#pp-log", RichLog).write(f"  {icon}  {name}{detail_markup}")
+        except Exception:
+            pass
+
+    def on_key(self, event) -> None:
+        event.stop()
+
+class CertsModal(ModalScreen[bool]):
+    """Generate a private key + CSR for a network's hostnames."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    DEFAULT_CSS = """
+    CertsModal { align: center middle; }
+    CertsModal > Vertical {
+        width: 90%;
+        max-width: 110;
+        height: auto;
+        max-height: 85%;
+        border: double $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    CertsModal .modal-title  { text-style: bold; color: $primary; margin-bottom: 1; }
+    CertsModal .host-entry   { color: $text; margin-left: 2; }
+    CertsModal .path-line    { color: $text-muted; margin-top: 1; }
+    CertsModal .error-line   { color: $error; margin-top: 1; }
+    CertsModal .success-line { color: $success; margin-top: 1; text-style: bold; }
+    CertsModal Horizontal    { align: center middle; height: auto; margin-top: 1; }
+    CertsModal Button        { margin: 0 1; }
+    CertsModal ScrollableContainer { height: auto; max-height: 30; }
+    """
+
+    def __init__(self, network_name: str, hostnames: list[str],
+                 key_path: "Path | None" = None, cnf_path: "Path | None" = None,
+                 csr_path: "Path | None" = None, md_path: "Path | None" = None,
+                 error: str = ""):
+        super().__init__()
+        self._network_name = network_name
+        self._hostnames = hostnames
+        self._key_path = key_path
+        self._cnf_path = cnf_path
+        self._csr_path = csr_path
+        self._md_path = md_path
+        self._error = error
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"  TLS Certificates — {self._network_name}", classes="modal-title")
+            with ScrollableContainer():
+                if self._error:
+                    yield Label(f"  [red]✗ {_escape(self._error)}[/]", classes="error-line")
+                elif self._key_path:
+                    yield Label("  [green]✓ Files written[/]", classes="success-line")
+                    yield Label(f"  [dim]Key:[/]  {self._key_path}", classes="path-line")
+                    yield Label(f"  [dim]Cfg:[/]  {self._cnf_path}", classes="path-line")
+                    yield Label(f"  [dim]CSR:[/]  {self._csr_path}", classes="path-line")
+                    yield Label(f"  [dim]Docs:[/] {self._md_path}", classes="path-line")
+                    yield Label("")
+                    yield Label(f"  [bold]{len(self._hostnames)} hostnames covered:[/]")
+                    for h in self._hostnames:
+                        yield Label(f"    {h}", classes="host-entry")
+                    yield Label("")
+                    yield Label(
+                        f"  Send [bold]{self._csr_path.name}[/] to your CA machine and follow [bold]CERTS.md[/].",
+                        classes="path-line",
+                    )
+                else:
+                    yield Label(f"  [bold]{len(self._hostnames)} hostnames to include:[/]")
+                    for h in self._hostnames:
+                        yield Label(f"    {h}", classes="host-entry")
+            with Horizontal():
+                if self._key_path or self._error:
+                    yield Button("Close", variant="primary", id="btn-close")
+                else:
+                    yield Button("Cancel", variant="default", id="btn-close")
+                    yield Button("Generate", variant="primary", id="btn-generate")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#btn-close")
+    def _close(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#btn-generate")
+    def _generate(self) -> None:
+        self.dismiss(True)

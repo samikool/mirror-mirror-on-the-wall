@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from mmw.core import config
 
 
@@ -96,3 +98,26 @@ def test_apt_source_expansion_with_overrides():
 def test_config_mirrors_property():
     cfg = _sample_config()
     assert len(cfg.mirrors) == 5  # 3 debian + 2 microsoft (one per arch)
+
+
+def test_network_without_root_is_valid():
+    """A network is a downselect of the mirror; destinations belong to verbs."""
+    net = config.NetworkConfig(name="dgx-site")
+    assert net.root is None
+    assert net.bundle_dir is None
+    assert net.nginx is True
+
+
+def test_network_with_only_bundle_dir(tmp_path):
+    net = config.NetworkConfig(name="dgx-site", bundle_dir=tmp_path / "out")
+    assert net.root is None
+    assert net.bundle_dir == tmp_path / "out"
+
+
+def test_publish_base_rejects_rootless_network():
+    from mmw.core.publisher import publish_base
+    net = config.NetworkConfig(name="dgx-site")
+    m = config.MirrorConfig(source_url="https://archive.ubuntu.com/ubuntu/",
+                            name="m", provider="apt", label="ubuntu")
+    with pytest.raises(ValueError, match="no publish root"):
+        publish_base(net, m)

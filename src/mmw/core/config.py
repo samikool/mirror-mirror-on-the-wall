@@ -338,12 +338,21 @@ class NetworkSelect(_StrictModel):
 
 
 class NetworkConfig(_StrictModel):
+    """A named downselect of the mirror — what one site gets.
+
+    `root` and `bundle_dir` are NOT part of what a network is: they are
+    remembered destinations for the `publish` and `bundle` verbs. A network
+    may have neither, one, or both. A verb whose destination is unset says so
+    rather than inventing one.
+    """
     name: str
-    root: Path
+    root: Path | None = None          # publish's destination
+    bundle_dir: Path | None = None    # bundle's destination
     select: list[NetworkSelect] = []  # empty = every mirrored repository
-    prune: bool = True        # remove destination files no longer in source on publish
+    prune: bool = True        # remove destination files no longer in source
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
     certs: bool = False       # manage TLS key/CSR for this network
+    nginx: bool = True        # generate conf.d-style nginx site files
 
 
 class Config(_StrictModel):

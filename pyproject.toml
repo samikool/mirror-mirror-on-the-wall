@@ -56,3 +56,8 @@ testpaths = ["tests"]
 line-length = 120
 src = ["src", "tests"]
 extend-exclude = ["mirror"]
+
+[tool.ruff.lint.per-file-ignores]
+# Shipped verbatim to machines running Python 3.6 with no pip. Modern syntax,
+# f-strings with %-style alternatives, and pathlib are all deliberate omissions.
+"src/mmw/resources/apply.py" = ["UP", "PTH", "SIM", "C4"]

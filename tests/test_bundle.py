@@ -1,4 +1,6 @@
 import hashlib
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -211,3 +213,44 @@ def test_bundle_without_destination_is_an_error(seeded, tmp_path):
     net = config.NetworkConfig(name="lab")
     with pytest.raises(ValueError, match="no bundle destination"):
         bundle_network(net, cfg, mirror_dir)
+
+
+def test_apply_reproduces_the_published_tree(seeded, tmp_path):
+    mirror_dir, cfg = seeded
+    pub_root = tmp_path / "published"
+    publish_network(config.NetworkConfig(name="lab", root=pub_root), cfg, mirror_dir)
+
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+    result = bundle_network(net, cfg, mirror_dir)
+
+    dest = tmp_path / "far-side"
+    subprocess.run(
+        [sys.executable, str(tmp_path / "out" / "apply.py"),
+         str(result.out_path), "--root", str(dest)],
+        check=True,
+    )
+    assert _tree(dest / "archive.ubuntu.com") == _tree(pub_root / "archive.ubuntu.com")
+    assert (dest / ".mmw-state").read_text().strip() == result.created
+
+    # The nginx root is a placeholder in the tarball and real once applied.
+    conf = (dest / "nginx" / "sites" / "archive.ubuntu.com.conf").read_text()
+    assert "__MMW_ROOT__" not in conf
+    assert f"root {dest}/archive.ubuntu.com;" in conf
+
+
+def test_apply_refuses_out_of_order(seeded, tmp_path):
+    mirror_dir, cfg = seeded
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+    bundle_network(net, cfg, mirror_dir)
+    # Change something so the second bundle is a real delta.
+    (tmp_path / "out" / "sentinel").write_text("x")
+    second = bundle_network(net, cfg, mirror_dir, full=False)
+
+    dest = tmp_path / "far-side"
+    proc = subprocess.run(
+        [sys.executable, str(tmp_path / "out" / "apply.py"),
+         str(second.out_path), "--root", str(dest)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert proc.returncode != 0
+    assert b"expects" in proc.stderr or b"out of order" in proc.stderr

@@ -126,28 +126,52 @@ def bundle_network(
             write_upgrade_md(sink, network, pool, paths, result.dist_upgrade_warnings,
                              mirrors=published_mirrors)
 
-        if network.nginx and not (stop_event and stop_event.is_set()):
-            for rel, data in nginx_files(published_mirrors, ROOT_PLACEHOLDER).items():
-                sink.write(rel, data)
+        # nginx and keys are placed inside this `with Pool(...)` block, at the
+        # same nesting depth as `publish_network`'s own copy of this step
+        # (`publisher/__init__.py`), purely so the two functions stay visibly
+        # parallel — neither step actually touches `pool`. Both must still
+        # run before `sink.close()` below: BundleSink writes the whole
+        # archive there, so anything handed to it after close() is silently
+        # dropped — publish_network had exactly this bug for keys once, see
+        # links.py.
+        if not (stop_event and stop_event.is_set()):
+            if network.nginx:
+                for rel, data in nginx_files(published_mirrors, ROOT_PLACEHOLDER).items():
+                    sink.write(rel, data)
+
+            key_errors = publish_keys(sink, mirror_dir, published_mirrors)
+            result.errors.extend(key_errors)
 
     if stop_event and stop_event.is_set():
         result.errors.append("stopped before the bundle was written")
         return result
 
-    # Must run before sink.close(): BundleSink writes the whole archive
-    # there, so anything handed to it after close() is silently dropped —
-    # publish_network had exactly this bug for keys once, see links.py.
-    key_errors = publish_keys(sink, mirror_dir, published_mirrors)
-    result.errors.extend(key_errors)
-
-    # close() streams the archive from pool blobs and can append its own
-    # errors (a blob resized or vanished under us) that never passed through
-    # link(), so they were never sliced into a MirrorPublishResult or into
-    # key_errors above. Slice from here so those — and only those — land in
-    # result.errors once, instead of either duplicating what a mirror result
-    # already carries or dropping close()-time failures silently.
+    # No try/finally around close(), unlike publish_network's `finally:
+    # sink.close()`. Deliberate, not an oversight — and the two sinks are not
+    # symmetric here. TreeSink writes live as link()/write() are called, so
+    # its close() (a no-op prune-total flush) is harmless to run even after a
+    # mid-loop exception: whatever got linked before the failure is already
+    # on disk either way. BundleSink is the opposite: link()/write() only
+    # append `(rel, checksum)` rows and pool-blob references to in-memory
+    # lists — the tar is not written at all until close() runs. Enumeration
+    # raising partway through a network's groups (a DB error, a stopped
+    # thread) means `sink._send`/`manifest_rows` hold an incomplete state; a
+    # `finally: sink.close()` here would still happily write that partial
+    # state out as a complete tarball plus a manifest ledger entry claiming
+    # to be the network's whole snapshot — exactly the "the far side is
+    # missing files the ledger says it has" failure mode `reconcile_refs`'s
+    # one-transaction design exists to prevent on the sync side. Letting the
+    # exception propagate past this function without calling close() at all
+    # is what keeps a failed bundle from ever landing on disk or in the
+    # ledger.
     before_close = len(sink.errors)
     sink.close()
+    # close() can append its own errors (a blob resized or vanished between
+    # link() and the tar write) that never passed through link(), so they
+    # were never sliced into a MirrorPublishResult or into key_errors above.
+    # Slice from here so those — and only those — land in result.errors
+    # once, instead of either duplicating what a mirror result already
+    # carries or dropping close()-time failures silently.
     result.errors.extend(sink.errors[before_close:])
 
     # The ledger manifest is written only after the tarball lands: a crash

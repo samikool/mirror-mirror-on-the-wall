@@ -9,6 +9,7 @@ from mmw.core import config
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 from mmw.core.publisher import publish_network
 from mmw.core.publisher.bundle import bundle_network
+from mmw.core.publisher.nginx import ROOT_PLACEHOLDER
 
 
 @pytest.fixture
@@ -47,7 +48,14 @@ def _extract(bundle: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     with open(bundle, "rb") as raw, dctx.stream_reader(raw) as zr:
         with tarfile.open(fileobj=zr, mode="r|") as tar:
-            tar.extractall(dest)
+            # filter="data" is the modern (3.12+) extraction filter: it
+            # rejects absolute paths, `..` traversal, device files, and
+            # strips owner/permission bits that could affect files outside
+            # the archive. Test-only convenience — apply.py (Task 8) ships to
+            # far sides as old as RHEL 8's Python 3.6, where `filter=` does
+            # not exist, so it must do its own path validation rather than
+            # lean on this.
+            tar.extractall(dest, filter="data")
 
 
 def _tree(root: Path) -> dict[str, bytes]:
@@ -71,21 +79,34 @@ def test_bundle_matches_publish_exactly(seeded, tmp_path):
     applied = tmp_path / "applied"
     _extract(result.out_path, applied)
 
-    # nginx/ is destination-scaffolding, not repository content: its conf
-    # embeds the literal serving root, which a live publish knows
-    # (`net_pub.root`) and a bundle deliberately does not (ROOT_PLACEHOLDER,
-    # resolved by apply.py at the far side) — see nginx.py's own docstring
-    # and tests/test_nginx_conf.py::test_placeholder_root_is_left_for_apply_time.
-    # Byte-identical nginx/ between the two destinations is therefore not
-    # possible, nor desired; excluded here exactly like `.mmw/` is, for the
-    # same reason — it is not "what the network contains".
-    published = {k: v for k, v in _tree(pub_root).items() if not k.startswith("nginx/")}
-    bundled = {
-        k: v for k, v in _tree(applied).items()
-        if not k.startswith(".mmw/") and not k.startswith("nginx/")
-    }
+    published = _tree(pub_root)
+    bundled = {k: v for k, v in _tree(applied).items() if not k.startswith(".mmw/")}
 
-    assert bundled == published
+    # nginx/ conf embeds the literal serving root, which a live publish knows
+    # (`net_pub.root`) and a bundle deliberately does not — it writes
+    # ROOT_PLACEHOLDER instead, to be resolved by apply.py at the far side
+    # (nginx.py's own docstring; independently locked in by
+    # test_nginx_conf.py::test_placeholder_root_is_left_for_apply_time).
+    # Byte-identical nginx/ between the two destinations is therefore
+    # impossible by design — but dropping the directory from the comparison
+    # entirely would make this, the one test whose job is catching exactly
+    # this kind of divergence, blind to a real BundleSink regression there
+    # (wrong rel, swapped per-host content, a host silently missing). So
+    # every nginx key is still required to be present on both sides, and its
+    # content is asserted to differ *only* by the root substitution: undo
+    # that one substitution and the bytes must match exactly.
+    nginx_published = {k: v for k, v in published.items() if k.startswith("nginx/")}
+    nginx_bundled = {k: v for k, v in bundled.items() if k.startswith("nginx/")}
+    assert set(nginx_bundled) == set(nginx_published)
+    for key, bundled_bytes in nginx_bundled.items():
+        substituted = bundled_bytes.replace(
+            ROOT_PLACEHOLDER.encode(), str(pub_root).encode())
+        assert substituted == nginx_published[key], key
+
+    # Everything else — the actual repository content — must match exactly.
+    other_published = {k: v for k, v in published.items() if not k.startswith("nginx/")}
+    other_bundled = {k: v for k, v in bundled.items() if not k.startswith("nginx/")}
+    assert other_bundled == other_published
 
 
 def test_second_bundle_of_unchanged_pool_sends_nothing(seeded, tmp_path):

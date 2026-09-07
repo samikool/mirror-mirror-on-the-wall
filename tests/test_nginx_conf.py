@@ -56,3 +56,16 @@ def test_non_standard_port_host_is_usable_as_a_server_name():
     the listen port is left to the admin."""
     files = nginx_files([_m("http://internal.example.com:8080/repo/", "a")], root="/srv/lab")
     assert "nginx/sites/internal.example.com_8080.conf" in files
+
+
+def test_install_instructions_include_this_exact_file():
+    """The header's install step must tell the admin to include mirror.conf
+    itself by its real published path — not `cp -r` it somewhere else, which
+    would leave the trailing `include .../sites/*.conf;` pointed at a root
+    nothing ever copied there. Both includes below must resolve under the
+    same `root`."""
+    files = nginx_files([_m("https://ports.ubuntu.com/", "a")], root="/srv/lab")
+    conf = files["nginx/mirror.conf"].decode()
+    assert "cp -r" not in conf
+    assert "include /srv/lab/nginx/mirror.conf;" in conf
+    assert "include /srv/lab/nginx/sites/*.conf;" in conf

@@ -124,11 +124,17 @@ def publish_network(
                 write_upgrade_md(sink, network, pool, paths, result.dist_upgrade_warnings,
                                  mirrors=[mirror_map[n] for n in selected_names
                                           if n in mirror_map])
+
+            # Must run before sink.close(): BundleSink (Task 6) finalizes the
+            # whole archive there, so anything written after close is dropped.
+            if not (stop_event and stop_event.is_set()):
+                published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
+                key_errors = publish_keys(sink, mirror_dir, published_mirrors)
+                if key_errors:
+                    r = MirrorPublishResult(mirror_name="keys")
+                    r.errors.extend(key_errors)
+                    result.mirrors.append(r)
     finally:
         sink.close()
-
-    if not (stop_event and stop_event.is_set()):
-        published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
-        publish_keys(sink, mirror_dir, published_mirrors)
 
     return result

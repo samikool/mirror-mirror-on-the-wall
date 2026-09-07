@@ -167,7 +167,7 @@ def publish_group(
     return result
 
 
-def publish_keys(sink, mirror_dir: Path, mirrors: list[MirrorConfig]) -> None:
+def publish_keys(sink, mirror_dir: Path, mirrors: list[MirrorConfig]) -> list[str]:
     """Publish GPG key directories to `keys/{label}/` on the sink.
 
     Keyed on the **label** (and the derived source name as a fallback), because
@@ -184,10 +184,17 @@ def publish_keys(sink, mirror_dir: Path, mirrors: list[MirrorConfig]) -> None:
 
     The presence of a key directory is the fact; a config field the pool does
     not carry is not.
+
+    Returns formatted errors for any key that failed to link — this function
+    has no `MirrorPublishResult` of its own to append to (it runs once per
+    network, not once per mirror group), so the caller folds these into one.
+    A link failure here must be exactly as loud as one on a package: an
+    unverifiable key silently missing from an airgapped bundle is the whole
+    bug this function's docstring above already describes once.
     """
     keys_src = mirror_dir / "keys"
     if not keys_src.is_dir():
-        return
+        return []
 
     groups: set[str] = set()
     for mirror in mirrors:
@@ -197,13 +204,21 @@ def publish_keys(sink, mirror_dir: Path, mirrors: list[MirrorConfig]) -> None:
         if source:
             groups.add(derive_name(source))
 
+    errors: list[str] = []
     for group in sorted(groups):
         src_dir = keys_src / group
         if not src_dir.is_dir():
             continue
         for f in sorted(src_dir.iterdir()):
-            if f.is_file():
-                sink.link(f, f"keys/{group}/{f.name}", f.stat().st_size, "", KIND_META)
+            if not f.is_file():
+                continue
+            rel = f"keys/{group}/{f.name}"
+            before = len(sink.errors)
+            status = sink.link(f, rel, f.stat().st_size, "", KIND_META)
+            if status == "error":
+                added = sink.errors[before:]
+                errors.extend(added if added else [f"{rel}: link error"])
+    return errors
 
 
 

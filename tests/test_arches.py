@@ -451,6 +451,97 @@ def test_a_network_only_publishes_its_own_repositories_keys(tmp_path):
     assert not (net.root / "keys" / "ubuntu").exists(), "published an unrelated key"
 
 
+def _nvidia_network(tmp_path):
+    """One synced apt mirror ("nvidia" label) plus a keys/nvidia/ directory,
+    wired through Config/Pool exactly as `publish_network` reads them back."""
+    import hashlib
+
+    from mmw.core.pool import KIND_PKG, KIND_RELEASE, Pool
+
+    mirror_dir = tmp_path / "mirror"
+    with Pool(mirror_dir) as pool:
+        relh = hashlib.sha256(b"release").hexdigest()
+        pool.add(b"release", relh, "sha256", "InRelease", 7)
+        debh = hashlib.sha256(b"deb").hexdigest()
+        pool.add(b"deb", debh, "sha256", "hello.deb", 3)
+        pool.reconcile_refs("nvidia-cuda-noble-main-amd64", [
+            (debh, "pool/main/h/hello/hello.deb", KIND_PKG),
+            (relh, "dists/noble/InRelease", KIND_RELEASE),
+        ])
+
+    (mirror_dir / "keys" / "nvidia").mkdir(parents=True)
+    (mirror_dir / "keys" / "nvidia" / "cuda.asc").write_text("ARMOUR")
+
+    net = config.NetworkConfig(name="n", root=tmp_path / "pub", prune=False)
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[config.SourceConfig(
+            name="nvidia-cuda", label="nvidia", provider="apt",
+            url="https://repo.download.nvidia.com/cuda", arches=["amd64"],
+            suites=["noble"], components=["main"],
+        )],
+        networks=[net],
+    )
+    return mirror_dir, net, cfg
+
+
+def test_a_failing_key_link_surfaces_in_the_network_result(tmp_path, monkeypatch):
+    """`publish_keys` used to discard `sink.link`'s return value entirely — a
+    hardlink failure on a key file (permission denied, disk full) completed
+    with no error anywhere: `mmw publish --quiet` reported success and an
+    airgapped machine got packages it could not verify."""
+    from mmw.core.publisher import publish_network
+    from mmw.core.publisher.sinks import TreeSink as RealTreeSink
+
+    mirror_dir, net, cfg = _nvidia_network(tmp_path)
+
+    class FaultyKeySink(RealTreeSink):
+        def link(self, src, rel, size, checksum, kind):
+            if rel.startswith("keys/"):
+                self.errors.append(f"{rel}: simulated failure")
+                return "error"
+            return super().link(src, rel, size, checksum, kind)
+
+    monkeypatch.setattr("mmw.core.publisher.TreeSink", FaultyKeySink)
+
+    result = publish_network(net, cfg, mirror_dir)
+
+    assert result.errors, "a failed key link must surface in NetworkPublishResult.errors"
+    assert any("simulated failure" in e for e in result.errors)
+    key_result = next(r for r in result.mirrors if r.mirror_name == "keys")
+    assert key_result.errors
+
+
+def test_publish_keys_runs_before_sink_close(tmp_path, monkeypatch):
+    """`publish_keys` used to run after `finally: sink.close()` — harmless only
+    because `TreeSink.close()` is a no-op today. `BundleSink` (Task 6)
+    finalizes the whole tar in `close()`, so keys handed to a closed sink would
+    be silently dropped."""
+    from mmw.core.publisher import publish_network
+    from mmw.core.publisher.sinks import TreeSink as RealTreeSink
+
+    mirror_dir, net, cfg = _nvidia_network(tmp_path)
+
+    closed = []
+
+    class OrderCheckingSink(RealTreeSink):
+        def link(self, src, rel, size, checksum, kind):
+            if closed:
+                pytest.fail(f"sink.link({rel!r}) called after sink.close()")
+            return super().link(src, rel, size, checksum, kind)
+
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    monkeypatch.setattr("mmw.core.publisher.TreeSink", OrderCheckingSink)
+
+    result = publish_network(net, cfg, mirror_dir)
+
+    assert result.errors == []
+    assert (net.root / "keys" / "nvidia" / "cuda.asc").exists()
+
+
 # ── the dist-upgrade guide must describe *this* network ──────────────────────
 
 def test_the_dns_table_names_the_hosts_this_network_actually_mirrors():

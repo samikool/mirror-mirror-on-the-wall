@@ -165,3 +165,25 @@ def test_write_upgrade_md_goes_to_sink_root(tmp_path):
     assert "ports.ubuntu.com" in body
     assert "archive.ubuntu.com" not in body   # never hardcoded — design-notes.md
     assert "changelogs.ubuntu.com" in body    # always appended
+
+
+def test_write_upgrade_md_with_no_root_never_prints_none(tmp_path):
+    """A bundle-only network has no local publish root — the guide is read on
+    the far side after extraction, so the literal string `None` must never
+    appear where the mirror root would otherwise be named."""
+    from mmw.core.publisher.dist_upgrade import write_upgrade_md
+
+    net = config.NetworkConfig(name="lab", root=None)
+    m = config.MirrorConfig(source_url="https://ports.ubuntu.com/",
+                            name="p", provider="apt", label="ubuntu")
+    sink = RecordingSink()
+    pool = Pool(tmp_path / "mirror")
+    try:
+        write_upgrade_md(sink, net, pool, [], [], mirrors=[m])
+    finally:
+        pool.close()
+
+    body = sink.written["UPGRADE.md"].decode()
+    mirror_root_line = next(line for line in body.splitlines() if line.startswith("Mirror root:"))
+    assert mirror_root_line == "Mirror root: the directory this bundle was applied to"
+    assert "None" not in mirror_root_line

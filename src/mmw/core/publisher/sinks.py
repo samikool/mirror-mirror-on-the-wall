@@ -220,6 +220,14 @@ class BundleSink:
             return "skipped"
         self._seen.add(rel)
         self.manifest_rows.append((rel, checksum))
+        # `and checksum` is a deliberate divergence from manifest.delta()'s
+        # pure `prev.get(rel) != cs` set difference: an empty checksum (a
+        # published GPG key — `publish_keys` calls `sink.link(f, rel,
+        # size, "", KIND_META)`, see links.py) must never compare equal to
+        # itself across bundles and be treated as "unchanged, skip resend" —
+        # a key has no content hash to trust that judgement on, so it is
+        # always resent. `test_bundle_sink_delta_agrees_with_manifest_delta`
+        # only asserts the two rules agree where both have a real checksum.
         if self._prev.get(rel) == checksum and checksum:
             return "skipped"
         self._send.append((rel, src, size, checksum))
@@ -245,6 +253,29 @@ class BundleSink:
         pruning: `publish_group` unpacks the return value unconditionally
         (`result.pruned, result.pruned_bytes = sink.finalize_group(...)`), so
         a bare `return` here would raise on every non-pruning network.
+
+        `by-hash/` paths need their own rule, exactly as `TreeSink` gives them
+        one (`if "by-hash" in here.parts: ...` before the generic sweep,
+        `sinks.py`). `publish_group` builds `keep` from canonical repo_paths
+        only — by-hash entries are synthesized separately by `_link_rows`
+        (`links.py`) and are never members of `keep` by construction. Running
+        the generic `rel not in keep` sweep over them would therefore schedule
+        every *live* by-hash path for deletion: its checksum is unchanged, so
+        `link()` correctly never re-sends it, and the naive sweep would then
+        tell the far side to delete a file this same bundle's own manifest
+        still lists as present — permanently eroding by-hash on every
+        pruning apt network, one bundle at a time, since by-hash exists
+        precisely to protect a client mid-`apt update`.
+
+        A by-hash entry's filename IS its checksum, so its retention rule is
+        exact and needs no directory listing: delete it only when that
+        checksum is absent from `live_checksums`. This deliberately does NOT
+        reproduce `TreeSink`'s `_BY_HASH_KEEP_STALE = 2` (keep a couple of
+        stale generations for in-flight clients) — that rule sorts a real
+        directory by mtime, and a bundle has no mtime information about the
+        far side's files at all. Deleting strictly on "checksum not live" is
+        still strictly safer than the bug this replaces, which deleted the
+        *live* generation.
         """
         if not self._prune:
             return 0, 0
@@ -252,6 +283,12 @@ class BundleSink:
         added = 0
         for rel in self._prev:
             if not rel.startswith(prefix):
+                continue
+            if "by-hash" in rel.split("/"):
+                checksum = rel.rsplit("/", 1)[-1]
+                if checksum not in live_checksums:
+                    self.deleted.append(rel)
+                    added += 1
                 continue
             if any(rel == x or rel.startswith(x + "/") for x in exclude):
                 continue

@@ -254,7 +254,9 @@ def test_bundle_sink_delta_agrees_with_manifest_delta(pool, tmp_path):
     `finalize_group()` what to delete; `manifest.delta()` states the same
     rule as one set difference. Two implementations of one rule drift —
     this pins them to the same answer on a mixed fixture: unchanged, changed,
-    brand new, and removed-since-the-last-bundle."""
+    brand new, and removed-since-the-last-bundle. Plain paths only: by-hash
+    paths follow their own retention rule (live checksum in live_checksums)
+    that delta() knows nothing about."""
     unchanged = b"same content"
     changed_old_content = b"stale payload"          # only its checksum matters
     changed_new_content = b"replacement payload"
@@ -295,6 +297,103 @@ def test_bundle_sink_delta_agrees_with_manifest_delta(pool, tmp_path):
 
     assert got_send == want_send
     assert set(sink.deleted) == want_delete
+
+
+def test_bundle_sink_by_hash_retention_differs_from_manifest_delta(pool, tmp_path):
+    """By-hash paths diverge from the pure `manifest.delta()` rule. `delta()` sees
+    only what's in cur vs prev; `BundleSink.finalize_group()` additionally retains
+    a by-hash entry if its checksum is in `live_checksums`, even when not in `keep`."""
+    cs, src = _seed(pool, b"index content", "Packages.gz")
+    base = "host/repo"
+    pkg_rel = f"{base}/dists/n/main/binary-amd64/Packages.gz"
+    by_hash_rel = f"{base}/dists/n/main/binary-amd64/by-hash/SHA256/{cs}"
+
+    # Both in prev, by-hash in cur (but links.py only puts the canonical path
+    # in keep, not the by-hash path).
+    prev = {
+        pkg_rel: cs,
+        by_hash_rel: cs,
+    }
+    keep = {pkg_rel}  # only the canonical path, not by-hash
+    live_checksums = {cs}  # but the checksum is still live upstream
+
+    sink = BundleSink(tmp_path / "lab.tar.zst", _hdr(previous="x", full=False),
+                      prev=dict(prev), apply_script=b"")
+    sink.link(src, pkg_rel, 13, cs, KIND_META)
+    sink.link(src, by_hash_rel, 13, cs, KIND_META)
+    sink.finalize_group(base, keep=keep, live_checksums=live_checksums, exclude=set())
+    sink.close()
+
+    # delta() would say to delete by_hash_rel (not in cur). BundleSink doesn't,
+    # because the checksum is in live_checksums.
+    assert by_hash_rel not in sink.deleted
+    # Plain path isn't deleted (it's in keep).
+    assert pkg_rel not in sink.deleted
+
+
+def test_bundle_sink_by_hash_deletion_on_stale_checksum(pool, tmp_path):
+    """A by-hash path is deleted only when its checksum stops appearing upstream."""
+    cs_stale = "aa" * 32
+    cs_live = "bb" * 32
+    base = "host/repo"
+    live_rel = f"{base}/dists/n/main/binary-amd64/by-hash/SHA256/{cs_live}"
+    stale_rel = f"{base}/dists/n/main/binary-amd64/by-hash/SHA256/{cs_stale}"
+
+    prev = {
+        live_rel: cs_live,
+        stale_rel: cs_stale,
+    }
+
+    sink = BundleSink(tmp_path / "lab.tar.zst", _hdr(full=False), prev=dict(prev),
+                      apply_script=b"", prune=True)
+    # Only link the live checksum; don't link stale at all.
+    sink.finalize_group(base, keep=set(), live_checksums={cs_live}, exclude=set())
+
+    assert stale_rel in sink.deleted
+    assert live_rel not in sink.deleted
+
+
+def test_bundle_sink_write_unchanged_does_not_increment_sent(pool, tmp_path):
+    """If write() produces a payload whose sha256 is already in prev, the
+    manifest still lists it (manifest is the whole tree, not the delta), but
+    sent must not increment and the data must not be queued for the archive."""
+    data = b"UPGRADE guide"
+    checksum = hashlib.sha256(data).hexdigest()
+    prev = {"UPGRADE.md": checksum}
+
+    out = tmp_path / "lab.tar.zst"
+    sink = BundleSink(out, _hdr(previous="x", full=False), prev=prev,
+                      apply_script=b"")
+    sink.write("UPGRADE.md", data)
+    sink.close()
+
+    # Manifest lists it (even though unchanged).
+    assert dict(sink.manifest_rows) == {"UPGRADE.md": checksum}
+    # But it was not sent.
+    assert sink.sent == 0
+    assert sink.sent_bytes == 0
+    # And it's not in the archive payload.
+    m = _members(out)
+    assert "UPGRADE.md" not in m
+
+
+def test_bundle_sink_finalize_group_exclude_parameter(tmp_path):
+    """A nested publish base in exclude must never be scheduled for deletion,
+    even when not in keep."""
+    base = "host/repo"
+    nested = f"{base}/sub"
+    prev = {
+        f"{nested}/keep": "aa" * 32,
+        f"{nested}/stale": "bb" * 32,
+    }
+
+    sink = BundleSink(tmp_path / "lab.tar.zst", _hdr(full=False), prev=dict(prev),
+                      apply_script=b"", prune=True)
+    # Nested base is excluded; even though it's not in keep, nothing under it
+    # is added to deleted.
+    sink.finalize_group(base, keep=set(), live_checksums=set(), exclude={nested})
+
+    assert len(sink.deleted) == 0
 
 
 class RecordingSink:

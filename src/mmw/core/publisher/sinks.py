@@ -15,9 +15,16 @@ all, so a contract that assumed one could not survive it. The one production
 consumer, `PublishProgressModal.record` (`tui/publish_modals.py`), expects a
 `str` and will raise on a `Path`.
 """
+import hashlib
+import io
 import os
+import tarfile
 from pathlib import Path
 from typing import Protocol
+
+import zstandard
+
+from mmw.core.publisher.manifest import ManifestHeader, write_manifest
 
 _SCAN_REPORT_EVERY = 5000
 _BY_HASH_KEEP_STALE = 2
@@ -177,3 +184,172 @@ def _prune_by_hash_dir(bh_dir: Path, live_checksums: set[str]) -> int:
         except OSError:
             pass
     return pruned
+
+
+class BundleSink:
+    """Collects a bundle plan, then writes one tar.zst in `close()`.
+
+    Not a streaming writer: `.mmw/manifest.jsonl.zst` must be FIRST in the tar
+    stream so apply.py can validate before extracting anything, and the
+    manifest is only complete once every group has been enumerated. So link()
+    and write() record rows and do no tar I/O. Payload bytes are never
+    buffered — only (rel, src, size, checksum) tuples, read straight from the
+    pool blob when close() finally streams the archive.
+    """
+
+    def __init__(self, out_path: Path, header: ManifestHeader, prev: dict[str, str],
+                apply_script: bytes, level: int = 3, prune: bool = True):
+        self.out_path = out_path
+        self.header = header
+        self._prev = prev
+        self._apply_script = apply_script
+        self._level = level
+        self._prune = prune
+
+        self.manifest_rows: list[tuple[str, str]] = []
+        self._send: list[tuple[str, Path, int, str]] = []
+        self._generated: dict[str, bytes] = {}
+        self._seen: set[str] = set()
+        self.deleted: list[str] = []
+        self.sent = 0
+        self.sent_bytes = 0
+        self.errors: list[str] = []
+
+    def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
+        if rel in self._seen:
+            return "skipped"
+        self._seen.add(rel)
+        self.manifest_rows.append((rel, checksum))
+        if self._prev.get(rel) == checksum and checksum:
+            return "skipped"
+        self._send.append((rel, src, size, checksum))
+        self.sent += 1
+        self.sent_bytes += size
+        return "linked"
+
+    def write(self, rel: str, data: bytes) -> None:
+        checksum = hashlib.sha256(data).hexdigest()
+        self._seen.add(rel)
+        self.manifest_rows.append((rel, checksum))
+        if self._prev.get(rel) == checksum:
+            return
+        self._generated[rel] = data
+        self.sent += 1
+        self.sent_bytes += len(data)
+
+    def finalize_group(self, base: str, keep: set[str],
+                       live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
+        """A bundle cannot delete; it records what the far side must remove.
+
+        Always returns a tuple — never `None` — even when this network isn't
+        pruning: `publish_group` unpacks the return value unconditionally
+        (`result.pruned, result.pruned_bytes = sink.finalize_group(...)`), so
+        a bare `return` here would raise on every non-pruning network.
+        """
+        if not self._prune:
+            return 0, 0
+        prefix = base + "/" if base else ""
+        added = 0
+        for rel in self._prev:
+            if not rel.startswith(prefix):
+                continue
+            if any(rel == x or rel.startswith(x + "/") for x in exclude):
+                continue
+            if rel not in keep:
+                self.deleted.append(rel)
+                added += 1
+        # Bundle deletions are far-side path removals, not local bytes freed —
+        # the previous manifest carries no size, only checksum. `bytes_pruned`
+        # is always 0 for this sink; see the Sink protocol docstring.
+        return added, 0
+
+    def close(self) -> None:
+        self.out_path.parent.mkdir(parents=True, exist_ok=True)
+        # The manifest is written to a temp file first: it goes in as the
+        # first tar member and tarfile needs its size up front.
+        tmp_manifest = self.out_path.parent / (self.out_path.name + ".manifest.tmp")
+        write_manifest(tmp_manifest, self.header, self.manifest_rows)
+
+        cctx = zstandard.ZstdCompressor(level=self._level, threads=-1)
+        tmp_out = self.out_path.with_suffix(self.out_path.suffix + ".tmp")
+        try:
+            with open(tmp_out, "wb") as raw:
+                with cctx.stream_writer(raw) as zw:
+                    with tarfile.open(fileobj=zw, mode="w|") as tar:
+                        self._add_file(tar, ".mmw/manifest.jsonl.zst",
+                                       tmp_manifest.read_bytes())
+                        if self._prune:
+                            body = "\n".join(sorted(self.deleted))
+                            if body:
+                                body += "\n"
+                            self._add_file(tar, ".mmw/delete.list", body.encode())
+                        self._add_file(tar, ".mmw/apply.py", self._apply_script,
+                                       mode=0o755)
+                        for rel, data in self._generated.items():
+                            self._add_file(tar, rel, data)
+                        by_checksum: dict[str, str] = {}
+                        for rel, src, size, checksum in self._send:
+                            first = by_checksum.get(checksum) if checksum else None
+                            if first is not None:
+                                ti = tarfile.TarInfo(rel)
+                                ti.type = tarfile.LNKTYPE
+                                ti.linkname = first
+                                ti.mode = 0o644
+                                tar.addfile(ti)
+                                continue
+                            # Verified BEFORE any tar write: TarFile.addfile()
+                            # writes the entry's header (and whatever chunks
+                            # it manages to read) straight to the compressed
+                            # stream before a short read can raise — so
+                            # catching that failure and continuing would
+                            # leave tarfile's offset bookkeeping out of sync
+                            # with bytes already flushed, corrupting every
+                            # entry after it. A pool blob is content-addressed
+                            # and shouldn't change, but the size recorded at
+                            # link() time must still be checked against the
+                            # file on disk before it is ever streamed.
+                            try:
+                                actual_size = src.stat().st_size
+                            except OSError as e:
+                                self.errors.append(f"{rel}: {e}")
+                                continue
+                            if actual_size != size:
+                                self.errors.append(
+                                    f"{rel}: pool blob is {actual_size} bytes, "
+                                    f"expected {size} — skipped rather than "
+                                    "write a truncated tar entry")
+                                continue
+                            try:
+                                fh = open(src, "rb")
+                            except OSError as e:
+                                self.errors.append(f"{rel}: {e}")
+                                continue
+                            ti = tarfile.TarInfo(rel)
+                            ti.size = size
+                            ti.mode = 0o644
+                            with fh:
+                                # Size is already verified — a failure here
+                                # means the blob changed under us between the
+                                # stat() above and this read. Let it
+                                # propagate: close() aborts and tmp_out is
+                                # discarded (finally, below), which is safer
+                                # than risking a silently misaligned archive.
+                                tar.addfile(ti, fh)
+                            # Only a successfully-written entry may become the
+                            # hardlink target for a later duplicate checksum —
+                            # registering it earlier would let a failed write
+                            # leave a hardlink entry pointing at nothing.
+                            if checksum:
+                                by_checksum[checksum] = rel
+            tmp_out.replace(self.out_path)
+        finally:
+            tmp_manifest.unlink(missing_ok=True)
+            tmp_out.unlink(missing_ok=True)
+
+    @staticmethod
+    def _add_file(tar: tarfile.TarFile, name: str, data: bytes,
+                  mode: int = 0o644) -> None:
+        ti = tarfile.TarInfo(name)
+        ti.size = len(data)
+        ti.mode = mode
+        tar.addfile(ti, io.BytesIO(data))

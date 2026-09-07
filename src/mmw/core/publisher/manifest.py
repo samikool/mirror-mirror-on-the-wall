@@ -46,11 +46,18 @@ def write_manifest(path: Path, header: ManifestHeader,
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     cctx = zstandard.ZstdCompressor(level=10)
-    with open(tmp, "wb") as raw, cctx.stream_writer(raw) as zw:
-        zw.write((json.dumps(asdict(header), sort_keys=True) + "\n").encode())
-        for rel, checksum in files:
-            zw.write((json.dumps({"p": rel, "c": checksum}) + "\n").encode())
-    tmp.replace(path)
+    try:
+        with open(tmp, "wb") as raw, cctx.stream_writer(raw) as zw:
+            zw.write((json.dumps(asdict(header), sort_keys=True) + "\n").encode())
+            for rel, checksum in files:
+                zw.write((json.dumps({"p": rel, "c": checksum}) + "\n").encode())
+        tmp.replace(path)
+    finally:
+        # A no-op after a successful replace() — tmp no longer exists there,
+        # so this only cleans up the partial file left by a `files` generator
+        # that raised mid-stream (a real path: a DB error while walking pool
+        # rows).
+        tmp.unlink(missing_ok=True)
 
 
 def read_manifest(path: Path) -> tuple[ManifestHeader, dict[str, str]]:

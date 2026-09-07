@@ -1,11 +1,14 @@
 import hashlib
+import tarfile
 from pathlib import Path
 
 import pytest
+import zstandard
 
 from mmw.core import config
-from mmw.core.pool import KIND_PKG, Pool
-from mmw.core.publisher.sinks import TreeSink
+from mmw.core.pool import KIND_META, KIND_PKG, Pool
+from mmw.core.publisher.manifest import ManifestHeader, delta
+from mmw.core.publisher.sinks import BundleSink, TreeSink
 
 
 @pytest.fixture
@@ -107,6 +110,191 @@ def test_tree_sink_finalize_group_progress_receives_rel_strings(tmp_path):
     assert any(s.startswith("prune-scan-done:") for s in statuses)
     pruned_events = [dst for dst, s in events if s == "pruned"]
     assert pruned_events == ["host/repo/dists/stale"]
+
+
+def _members(path: Path) -> dict[str, bytes]:
+    """Extract a .tar.zst into {name: content} for assertions."""
+    dctx = zstandard.ZstdDecompressor()
+    out: dict[str, bytes] = {}
+    with open(path, "rb") as raw, dctx.stream_reader(raw) as zr:
+        with tarfile.open(fileobj=zr, mode="r|") as tar:
+            for ti in tar:
+                if ti.isfile():
+                    out[ti.name] = tar.extractfile(ti).read()
+                elif ti.islnk():
+                    out[ti.name] = b"->" + ti.linkname.encode()
+    return out
+
+
+def _hdr(previous=None, full=True):
+    return ManifestHeader(network="lab", created="20260906T143000Z",
+                          previous=previous, full=full)
+
+
+def test_bundle_sink_writes_manifest_first(pool, tmp_path):
+    cs, src = _seed(pool, b"hello", "a.deb")
+    out = tmp_path / "lab.tar.zst"
+    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n")
+    sink.link(src, "host/repo/pool/a.deb", 5, cs, KIND_PKG)
+    sink.close()
+
+    dctx = zstandard.ZstdDecompressor()
+    with open(out, "rb") as raw, dctx.stream_reader(raw) as zr:
+        with tarfile.open(fileobj=zr, mode="r|") as tar:
+            first = next(iter(tar))
+    assert first.name == ".mmw/manifest.jsonl.zst"
+
+
+def test_bundle_sink_carries_payload_and_apply_script(pool, tmp_path):
+    cs, src = _seed(pool, b"hello", "a.deb")
+    out = tmp_path / "lab.tar.zst"
+    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n")
+    sink.link(src, "host/repo/pool/a.deb", 5, cs, KIND_PKG)
+    sink.write("UPGRADE.md", b"# guide\n")
+    sink.close()
+
+    m = _members(out)
+    assert m["host/repo/pool/a.deb"] == b"hello"
+    assert m["UPGRADE.md"] == b"# guide\n"
+    assert m[".mmw/apply.py"] == b"# apply\n"
+
+
+def test_bundle_sink_delta_sends_only_changed(pool, tmp_path):
+    cs_a, src_a = _seed(pool, b"unchanged", "a.deb")
+    cs_b, src_b = _seed(pool, b"brand new", "b.deb")
+    prev = {"host/repo/pool/a.deb": cs_a}
+
+    out = tmp_path / "lab.tar.zst"
+    sink = BundleSink(out, _hdr(previous="20260901T090000Z", full=False),
+                      prev=prev, apply_script=b"")
+    sink.link(src_a, "host/repo/pool/a.deb", 9, cs_a, KIND_PKG)
+    sink.link(src_b, "host/repo/pool/b.deb", 9, cs_b, KIND_PKG)
+    sink.close()
+
+    m = _members(out)
+    assert "host/repo/pool/b.deb" in m
+    assert "host/repo/pool/a.deb" not in m      # unchanged — not re-sent
+    assert sink.sent == 1
+
+
+def test_bundle_sink_manifest_lists_the_whole_tree_not_the_delta(pool, tmp_path):
+    cs_a, src_a = _seed(pool, b"unchanged", "a.deb")
+    cs_b, src_b = _seed(pool, b"brand new", "b.deb")
+    sink = BundleSink(tmp_path / "lab.tar.zst",
+                      _hdr(previous="20260901T090000Z", full=False),
+                      prev={"host/repo/pool/a.deb": cs_a}, apply_script=b"")
+    sink.link(src_a, "host/repo/pool/a.deb", 9, cs_a, KIND_PKG)
+    sink.link(src_b, "host/repo/pool/b.deb", 9, cs_b, KIND_PKG)
+    sink.close()
+
+    assert dict(sink.manifest_rows) == {
+        "host/repo/pool/a.deb": cs_a,
+        "host/repo/pool/b.deb": cs_b,
+    }
+
+
+def test_bundle_sink_dedups_by_checksum_as_tar_hardlinks(pool, tmp_path):
+    """An apt index file appears canonically and under by-hash/ — one copy."""
+    cs, src = _seed(pool, b"Packages content", "Packages.gz")
+    out = tmp_path / "lab.tar.zst"
+    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"")
+    sink.link(src, "h/r/dists/n/main/binary-amd64/Packages.gz", 16, cs, KIND_META)
+    sink.link(src, f"h/r/dists/n/main/binary-amd64/by-hash/SHA256/{cs}", 16, cs, KIND_META)
+    sink.close()
+
+    m = _members(out)
+    assert m["h/r/dists/n/main/binary-amd64/Packages.gz"] == b"Packages content"
+    assert m[f"h/r/dists/n/main/binary-amd64/by-hash/SHA256/{cs}"] == \
+        b"->h/r/dists/n/main/binary-amd64/Packages.gz"
+
+
+def test_bundle_sink_delete_list_only_when_pruning(pool, tmp_path):
+    prev = {"host/repo/pool/gone.deb": "aa" * 32}
+    for prune, expected in ((True, True), (False, False)):
+        out = tmp_path / f"lab-{prune}.tar.zst"
+        sink = BundleSink(out, _hdr(full=False), prev=dict(prev),
+                          apply_script=b"", prune=prune)
+        result = sink.finalize_group("host/repo", keep=set(), live_checksums=set(),
+                                     exclude=set())
+        assert result == ((1, 0) if prune else (0, 0))
+        sink.close()
+        m = _members(out)
+        assert (".mmw/delete.list" in m) is expected
+        if expected:
+            assert m[".mmw/delete.list"].decode().split() == ["host/repo/pool/gone.deb"]
+
+
+def test_bundle_sink_reports_error_on_size_mismatch_without_corrupting_archive(
+        pool, tmp_path):
+    """The size recorded at link() time (from the pool DB) is checked against
+    the blob actually on disk before anything is streamed. A stale/wrong size
+    must be reported and skipped, never silently written as a short tar
+    entry that would misalign every entry after it."""
+    cs, src = _seed(pool, b"hello", "a.deb")
+    out = tmp_path / "lab.tar.zst"
+    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"")
+    # Claim a size larger than the actual 5-byte blob.
+    sink.link(src, "host/repo/pool/a.deb", 999, cs, KIND_PKG)
+    sink.link(src, "host/repo/pool/b.deb", 5, cs, KIND_PKG)  # dup checksum, real size
+    sink.close()
+
+    assert len(sink.errors) == 1
+    assert "a.deb" in sink.errors[0]
+    assert "999" in sink.errors[0]
+    # The archive itself must still be well-formed and readable to the end —
+    # a bad entry does not corrupt what comes after it, because nothing for
+    # it was ever written to the tar stream.
+    m = _members(out)
+    assert "host/repo/pool/a.deb" not in m
+    assert m["host/repo/pool/b.deb"] == b"hello"
+
+
+def test_bundle_sink_delta_agrees_with_manifest_delta(pool, tmp_path):
+    """`BundleSink` decides per-row in `link()` what to send and per-prefix in
+    `finalize_group()` what to delete; `manifest.delta()` states the same
+    rule as one set difference. Two implementations of one rule drift —
+    this pins them to the same answer on a mixed fixture: unchanged, changed,
+    brand new, and removed-since-the-last-bundle."""
+    unchanged = b"same content"
+    changed_old_content = b"stale payload"          # only its checksum matters
+    changed_new_content = b"replacement payload"
+    new_content = b"never bundled before"
+
+    cs_unchanged, src_unchanged = _seed(pool, unchanged, "unchanged.deb")
+    cs_changed_old = hashlib.sha256(changed_old_content).hexdigest()
+    cs_changed_new, src_changed = _seed(pool, changed_new_content, "changed.deb")
+    cs_new, src_new = _seed(pool, new_content, "new.deb")
+
+    base = "host/repo"
+    prev = {
+        f"{base}/pool/unchanged.deb": cs_unchanged,
+        f"{base}/pool/changed.deb": cs_changed_old,
+        f"{base}/pool/removed.deb": "22" * 32,   # gone from the current listing
+    }
+    cur = {
+        f"{base}/pool/unchanged.deb": cs_unchanged,
+        f"{base}/pool/changed.deb": cs_changed_new,
+        f"{base}/pool/new.deb": cs_new,
+    }
+
+    want_send, want_delete = delta(prev, cur)
+
+    sink = BundleSink(tmp_path / "lab.tar.zst", _hdr(previous="x", full=False),
+                      prev=dict(prev), apply_script=b"")
+    got_send = set()
+    for rel, src, content, cs in (
+        (f"{base}/pool/unchanged.deb", src_unchanged, unchanged, cs_unchanged),
+        (f"{base}/pool/changed.deb", src_changed, changed_new_content, cs_changed_new),
+        (f"{base}/pool/new.deb", src_new, new_content, cs_new),
+    ):
+        status = sink.link(src, rel, len(content), cs, KIND_PKG)
+        if status == "linked":
+            got_send.add(rel)
+    sink.finalize_group(base, keep=set(cur), live_checksums=set(), exclude=set())
+    sink.close()
+
+    assert got_send == want_send
+    assert set(sink.deleted) == want_delete
 
 
 class RecordingSink:

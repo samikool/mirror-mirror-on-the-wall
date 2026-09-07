@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from mmw.core import config
 from mmw.core.pool import KIND_PKG, Pool
 from mmw.core.publisher.sinks import TreeSink
 
@@ -106,3 +107,61 @@ def test_tree_sink_finalize_group_progress_receives_rel_strings(tmp_path):
     assert any(s.startswith("prune-scan-done:") for s in statuses)
     pruned_events = [dst for dst, s in events if s == "pruned"]
     assert pruned_events == ["host/repo/dists/stale"]
+
+
+class RecordingSink:
+    """Captures sink calls so a writer can be tested without a filesystem."""
+
+    def __init__(self):
+        self.errors: list[str] = []
+        self.linked: dict[str, Path] = {}
+        self.written: dict[str, bytes] = {}
+        self.finalized: list[tuple[str, set[str]]] = []
+
+    def link(self, src, rel, size, checksum, kind):
+        self.linked[rel] = src
+        return "linked"
+
+    def write(self, rel, data):
+        self.written[rel] = data
+
+    def finalize_group(self, base, keep, live_checksums, exclude):
+        self.finalized.append((base, keep))
+        return (0, 0)
+
+    def close(self):
+        pass
+
+
+def test_publish_keys_writes_label_relative_paths(tmp_path):
+    from mmw.core.publisher.links import publish_keys
+
+    keys = tmp_path / "mirror" / "keys" / "nvidia"
+    keys.mkdir(parents=True)
+    (keys / "cuda.asc").write_bytes(b"-----BEGIN PGP PUBLIC KEY BLOCK-----\n")
+
+    m = config.MirrorConfig(source_url="https://repo.nvidia.com/cuda/",
+                            name="cuda", provider="apt", label="nvidia")
+    sink = RecordingSink()
+    publish_keys(sink, tmp_path / "mirror", [m])
+
+    assert "keys/nvidia/cuda.asc" in sink.linked
+
+
+def test_write_upgrade_md_goes_to_sink_root(tmp_path):
+    from mmw.core.publisher.dist_upgrade import write_upgrade_md
+
+    net = config.NetworkConfig(name="lab", root=tmp_path / "pub")
+    m = config.MirrorConfig(source_url="https://ports.ubuntu.com/",
+                            name="p", provider="apt", label="ubuntu")
+    sink = RecordingSink()
+    pool = Pool(tmp_path / "mirror")
+    try:
+        write_upgrade_md(sink, net, pool, [], [], mirrors=[m])
+    finally:
+        pool.close()
+
+    body = sink.written["UPGRADE.md"].decode()
+    assert "ports.ubuntu.com" in body
+    assert "archive.ubuntu.com" not in body   # never hardcoded — design-notes.md
+    assert "changelogs.ubuntu.com" in body    # always appended

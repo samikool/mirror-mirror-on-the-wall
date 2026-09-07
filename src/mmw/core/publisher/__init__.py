@@ -120,8 +120,8 @@ def publish_network(
                 paths, warnings = dist_upgrade_info(network, cfg, pool)
                 result.dist_upgrade_paths = paths
                 result.dist_upgrade_warnings = warnings
-                publish_changelogs(network, pool, result)
-                write_upgrade_md(network, pool, paths, result.dist_upgrade_warnings,
+                publish_changelogs(sink, pool, result)
+                write_upgrade_md(sink, network, pool, paths, result.dist_upgrade_warnings,
                                  mirrors=[mirror_map[n] for n in selected_names
                                           if n in mirror_map])
     finally:
@@ -129,6 +129,6 @@ def publish_network(
 
     if not (stop_event and stop_event.is_set()):
         published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
-        publish_keys(network, mirror_dir, published_mirrors)
+        publish_keys(sink, mirror_dir, published_mirrors)
 
     return result

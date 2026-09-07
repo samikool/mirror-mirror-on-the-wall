@@ -382,6 +382,7 @@ def test_inline_keys_reach_the_published_tree(tmp_path):
     inline NVIDIA key was written to `keys/` and silently never published.
     """
     from mmw.core.publisher.links import publish_keys
+    from mmw.core.publisher.sinks import TreeSink
 
     mirror_dir = tmp_path / "pool"
     (mirror_dir / "keys" / "nvidia").mkdir(parents=True)
@@ -404,7 +405,7 @@ def test_inline_keys_reach_the_published_tree(tmp_path):
     ]
     assert all(m.gpg_key is None for m in pooled), "fixture must match pool reality"
 
-    publish_keys(net, mirror_dir, pooled)
+    publish_keys(TreeSink(net.root), mirror_dir, pooled)
 
     published = sorted(
         str(p.relative_to(net.root / "keys"))
@@ -417,6 +418,7 @@ def test_inline_keys_reach_the_published_tree(tmp_path):
 
 def test_publishing_keys_twice_is_idempotent(tmp_path):
     from mmw.core.publisher.links import publish_keys
+    from mmw.core.publisher.sinks import TreeSink
 
     mirror_dir = tmp_path / "pool"
     (mirror_dir / "keys" / "nvidia").mkdir(parents=True)
@@ -425,13 +427,15 @@ def test_publishing_keys_twice_is_idempotent(tmp_path):
     m = config.MirrorConfig(name="m", provider="apt", label="nvidia",
                             source="https://x/y", source_url="https://x/y", arch="arm64")
 
-    publish_keys(net, mirror_dir, [m])
-    publish_keys(net, mirror_dir, [m])
+    sink = TreeSink(net.root)
+    publish_keys(sink, mirror_dir, [m])
+    publish_keys(sink, mirror_dir, [m])
     assert (net.root / "keys" / "nvidia" / "k.asc").read_text() == "ARMOUR"
 
 
 def test_a_network_only_publishes_its_own_repositories_keys(tmp_path):
     from mmw.core.publisher.links import publish_keys
+    from mmw.core.publisher.sinks import TreeSink
 
     mirror_dir = tmp_path / "pool"
     for group in ("nvidia", "ubuntu"):
@@ -439,7 +443,7 @@ def test_a_network_only_publishes_its_own_repositories_keys(tmp_path):
         (mirror_dir / "keys" / group / "k.asc").write_text(group)
 
     net = config.NetworkConfig(name="lab", root=tmp_path / "lab")
-    publish_keys(net, mirror_dir, [config.MirrorConfig(
+    publish_keys(TreeSink(net.root), mirror_dir, [config.MirrorConfig(
         name="m", provider="apt", label="nvidia",
         source="https://x/y", source_url="https://x/y", arch="arm64")])
 

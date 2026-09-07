@@ -11,7 +11,7 @@ enumeration, ordering and accounting, not filesystem writes.
 import shutil
 from pathlib import Path
 
-from mmw.core.config import MirrorConfig, NetworkConfig, derive_name
+from mmw.core.config import MirrorConfig, derive_name
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 
 from mmw.core.publisher.results import MirrorPublishResult
@@ -167,8 +167,8 @@ def publish_group(
     return result
 
 
-def publish_keys(network: NetworkConfig, mirror_dir: Path, mirrors: list[MirrorConfig]) -> None:
-    """Publish GPG key directories into {network.root}/keys/.
+def publish_keys(sink, mirror_dir: Path, mirrors: list[MirrorConfig]) -> None:
+    """Publish GPG key directories to `keys/{label}/` on the sink.
 
     Keyed on the **label** (and the derived source name as a fallback), because
     that is how `keys/` is grouped and — critically — what the pool actually
@@ -186,7 +186,6 @@ def publish_keys(network: NetworkConfig, mirror_dir: Path, mirrors: list[MirrorC
     not carry is not.
     """
     keys_src = mirror_dir / "keys"
-    keys_dst = network.root / "keys"
     if not keys_src.is_dir():
         return
 
@@ -204,7 +203,7 @@ def publish_keys(network: NetworkConfig, mirror_dir: Path, mirrors: list[MirrorC
             continue
         for f in sorted(src_dir.iterdir()):
             if f.is_file():
-                hardlink_or_copy(f, keys_dst / group / f.name)
+                sink.link(f, f"keys/{group}/{f.name}", f.stat().st_size, "", KIND_META)
 
 
 

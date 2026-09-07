@@ -104,6 +104,10 @@ def write_instructions(
 ) -> Path:
     cert_path = out_dir / "mirror.crt"
     hosts_block = "\n".join(f"  - {h}" for h in hostnames)
+    # certs are network-scoped, but a network with no publish root yet (bundle-
+    # only, applied elsewhere) has no root to name here — see
+    # write_upgrade_md's identical guard in publisher/dist_upgrade.py.
+    root_desc = f"`{network.root}`" if network.root else "the directory this publish tree is extracted to"
 
     content = f"""\
 # TLS Certificate — {network.name}
@@ -123,7 +127,7 @@ Generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
 | `{csr_path.name}` | Certificate signing request — send this to your CA |
 | `mirror.crt` | Signed certificate — put here after signing |
 
-These files live outside the published tree (`{network.root}`) on purpose —
+These files live outside the published tree ({root_desc}) on purpose —
 never move the private key anywhere a web server can reach.
 
 ## Step 1 — Transfer the CSR to your CA machine
@@ -153,27 +157,23 @@ Requires OpenSSL 1.1.1+.  `-copy_extensions copy` preserves the SANs from the CS
 scp user@ca-machine:/tmp/mirror.crt {cert_path}
 ```
 
-## Step 4 — Configure your reverse proxy
+## Step 4 — Add TLS to the generated nginx config
 
-Point your reverse proxy at `{cert_path}` (cert) and `{key_path}` (key).
-
-Since all published files live under `{network.root}/{{hostname}}/`, a single
-server block using the `$host` variable as part of the document root covers
-every hostname without per-host configuration:
+`mmw publish` already generated one nginx site file per hostname under
+`nginx/sites/*.conf` in the published tree — those files are the source of
+truth for what nginx serves; this file only names the certificate. Add these
+three lines inside each site's `server {{}}` block you want served over TLS
+(`listen 80;` can stay alongside `listen 443 ssl;`, or be removed to force
+HTTPS):
 
 ```nginx
-# Single block — serves all mirrored hostnames
-server {{
     listen 443 ssl;
-    server_name {' '.join(hostnames)};
-
     ssl_certificate     {cert_path};
     ssl_certificate_key {key_path};
-
-    root {network.root}/$host;
-    autoindex on;
-}}
 ```
+
+One certificate covers every hostname in this network ({', '.join(hostnames)}),
+so the same three lines go into each site file unchanged.
 
 Reload nginx after placing the cert:  `nginx -t && systemctl reload nginx`
 

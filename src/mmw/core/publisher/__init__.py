@@ -129,6 +129,12 @@ def publish_network(
             # whole archive there, so anything written after close is dropped.
             if not (stop_event and stop_event.is_set()):
                 published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
+
+                if network.nginx:
+                    from mmw.core.publisher.nginx import nginx_files
+                    for rel, data in nginx_files(published_mirrors, str(network.root)).items():
+                        sink.write(rel, data)
+
                 key_errors = publish_keys(sink, mirror_dir, published_mirrors)
                 if key_errors:
                     r = MirrorPublishResult(mirror_name="keys")

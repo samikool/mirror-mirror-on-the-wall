@@ -174,6 +174,44 @@ def test_publish_network_without_root_returns_error(tmp_path, mirror_dir):
     assert not (mirror_dir / ".pool").exists()
 
 
+def test_publish_writes_nginx_site_files(tmp_path, pool, mirror_dir):
+    """A real publish generates nginx/mirror.conf + one site file per host, with
+    the network's own root substituted — no placeholder left behind."""
+    _seed_flat(pool, "m", "https://example.com/repo/", "pkg.deb")
+    net = config.NetworkConfig(name="n", root=tmp_path / "pub")
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[config.SourceConfig(name="m", label="custom", provider="apt-flat",
+                                     url="https://example.com/repo/")],
+        networks=[net],
+    )
+
+    result = publish_network(net, cfg, mirror_dir)
+    assert result.errors == []
+
+    site = net.root / "nginx" / "sites" / "example.com.conf"
+    assert site.exists()
+    content = site.read_text()
+    assert f"root {net.root}/example.com;" in content
+    assert "__MMW_ROOT__" not in content
+    assert (net.root / "nginx" / "mirror.conf").exists()
+
+
+def test_publish_nginx_false_writes_no_site_files(tmp_path, pool, mirror_dir):
+    _seed_flat(pool, "m", "https://example.com/repo/", "pkg.deb")
+    net = config.NetworkConfig(name="n", root=tmp_path / "pub", nginx=False)
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[config.SourceConfig(name="m", label="custom", provider="apt-flat",
+                                     url="https://example.com/repo/")],
+        networks=[net],
+    )
+
+    result = publish_network(net, cfg, mirror_dir)
+    assert result.errors == []
+    assert not (net.root / "nginx").exists()
+
+
 def test_publish_group_prune_exclude_direct(tmp_path, pool):
     m = _apt_flat_mirror()
     _seed_flat_index(pool, "m", 1)

@@ -148,6 +148,32 @@ def test_nested_publish_base_not_pruned(tmp_path, pool, mirror_dir):
     assert sum(r.pruned for r in result2.mirrors) == 0
 
 
+def test_publish_network_without_root_returns_error(tmp_path, mirror_dir):
+    """A bundle-only network (no publish root) must not attempt to build a
+    TreeSink — publish_base would raise ValueError, and `mmw bundle` owns
+    this case instead. Nothing in the pool/filesystem should be touched."""
+    net = config.NetworkConfig(name="dgx-site")  # root=None, bundle_dir=None
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[],
+        networks=[net],
+    )
+
+    result = publish_network(net, cfg, mirror_dir)
+
+    assert len(result.mirrors) == 1
+    only = result.mirrors[0]
+    assert only.mirror_name == "dgx-site"
+    assert only.errors == [
+        "network 'dgx-site' has no publish root — use `mmw bundle` instead"
+    ]
+    assert only.linked == 0
+    assert only.skipped == 0
+    assert only.pruned == 0
+    # The pool was never opened — an early return, not a failed operation.
+    assert not (mirror_dir / ".pool").exists()
+
+
 def test_publish_group_prune_exclude_direct(tmp_path, pool):
     m = _apt_flat_mirror()
     _seed_flat_index(pool, "m", 1)

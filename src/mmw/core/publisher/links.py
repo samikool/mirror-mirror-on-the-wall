@@ -78,6 +78,10 @@ def _link_rows(
             rel = f"{base}/{repo_path}"
             is_pkg = kind == KIND_PKG
 
+            # `errors` is part of the Sink protocol: capture the length before
+            # the call so an "error" status can attribute exactly the entries
+            # THIS call added, not just assume the last one is ours.
+            before = len(sink.errors)
             status = sink.link(Path(pool_path), rel, size, checksum, kind)
             if status == "linked":
                 result.linked += 1
@@ -90,11 +94,8 @@ def _link_rows(
                 if progress:
                     progress(rel, "skipped" if is_pkg else "skipped-meta")
             else:  # "error"
-                # A concrete Sink records the OSError text on itself (there's
-                # no protocol-level channel for it); recover it when present
-                # rather than reporting a bare "something failed".
-                detail = sink.errors[-1] if getattr(sink, "errors", None) else f"{repo_path}: link error"
-                result.errors.append(detail)
+                added = sink.errors[before:]
+                result.errors.extend(added if added else [f"{rel}: link error"])
                 continue
 
             # by-hash link for apt index files — the pool key IS the sha256,

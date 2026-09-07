@@ -272,10 +272,14 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
             self._mirror_linked = 0
             self._mirror_skipped = 0
 
-    def record(self, dst: Path, status: str) -> None:
-        """Called from publish thread — pure counter + buffer update, no DOM work."""
-        parts = dst.parts
-        short = "/".join(parts[-4:]) if len(parts) >= 4 else str(dst)
+    def record(self, dst: str, status: str) -> None:
+        """Called from publish thread — pure counter + buffer update, no DOM work.
+
+        `dst` is a sink-relative POSIX string (never a `Path`) — see the Sink
+        progress contract in `core/publisher/sinks.py`.
+        """
+        parts = dst.split("/")
+        short = "/".join(parts[-4:]) if len(parts) >= 4 else dst
         with self._lock:
             if status == "linked":
                 self._linked += 1

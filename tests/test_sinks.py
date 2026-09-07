@@ -67,3 +67,42 @@ def test_tree_sink_finalize_group_honours_exclude(tmp_path):
 
     assert (root / nested / "theirs").exists()
     assert sink.pruned == 0
+
+
+def test_tree_sink_finalize_group_returns_this_groups_count(tmp_path):
+    """The return value is THIS call's own count, not the sink's running
+    total — a shared sink across several groups must not hand one group
+    another group's prune count."""
+    root = tmp_path / "pub"
+    base = "host/repo"
+    (root / base).mkdir(parents=True)
+    (root / base / "stale").write_bytes(b"12345")
+
+    sink = TreeSink(root)
+    files, size = sink.finalize_group(base, keep=set(), live_checksums=set(), exclude=set())
+
+    assert (files, size) == (1, 5)
+    assert sink.pruned == 1  # cumulative attribute still tracks the total
+
+
+def test_tree_sink_finalize_group_progress_receives_rel_strings(tmp_path):
+    """`progress` is the Sink contract used by the TUI's PublishProgressModal,
+    which calls `dst.split("/")` — a Path here breaks that on the first
+    event, not caught by anything that never drives this path."""
+    root = tmp_path / "pub"
+    base = "host/repo"
+    (root / base / "dists").mkdir(parents=True)
+    (root / base / "dists" / "stale").write_bytes(b"x")
+
+    events = []
+    sink = TreeSink(root, progress=lambda dst, status: events.append((dst, status)))
+    sink.finalize_group(base, keep=set(), live_checksums=set(), exclude=set())
+
+    assert events  # something fired
+    for dst, _status in events:
+        assert isinstance(dst, str), f"progress() received a {type(dst)}, not str: {dst!r}"
+    statuses = [s for _, s in events]
+    assert "prune-scan-start" in statuses
+    assert any(s.startswith("prune-scan-done:") for s in statuses)
+    pruned_events = [dst for dst, s in events if s == "pruned"]
+    assert pruned_events == ["host/repo/dists/stale"]

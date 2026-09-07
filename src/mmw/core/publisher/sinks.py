@@ -7,6 +7,13 @@ crosses an airgap.
 
 `rel` is always network-root-relative and POSIX:
     archive.ubuntu.com/ubuntu/dists/noble/Release
+
+**The `progress` callback a Sink is constructed with follows the same rule:**
+every call is `progress(rel: str, status: str)` — a sink-relative POSIX
+string, never a `Path`. `BundleSink` has no destination path to hand back at
+all, so a contract that assumed one could not survive it. The one production
+consumer, `PublishProgressModal.record` (`tui/publish_modals.py`), expects a
+`str` and will raise on a `Path`.
 """
 import os
 from pathlib import Path
@@ -17,8 +24,19 @@ _BY_HASH_KEEP_STALE = 2
 
 
 class Sink(Protocol):
+    errors: list[str]
+    """Every failure a `link()` call recorded, in call order. `_link_rows`
+    slices this (`sink.errors[before:]`) to attribute the entries one `link()`
+    call added to that call's own row — an explicit contract instead of an
+    implicit "the last entry belongs to the caller" assumption."""
+
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
-        """Place a pool blob at `rel`. Returns 'linked' | 'skipped' | 'error'."""
+        """Place a pool blob at `rel`. Returns 'linked' | 'skipped' | 'error'.
+
+        On 'error', append the failure detail to `self.errors` before
+        returning — `_link_rows` reads it from there, not from the return
+        value.
+        """
         ...
 
     def write(self, rel: str, data: bytes) -> None:
@@ -80,8 +98,11 @@ class TreeSink:
         group_pruned_bytes = 0
         bh_dirs: set[Path] = set()
         checked = 0
+        # `progress` always receives a sink-relative POSIX str, never a Path —
+        # a BundleSink has no destination path at all, so the callback
+        # contract cannot assume one. `base` stands in for `dst_root` here.
         if self._progress:
-            self._progress(dst_root, "prune-scan-start")
+            self._progress(base, "prune-scan-start")
         # os.walk (scandir) rather than rglob: kept files — the overwhelming
         # majority — cost no stat at all, and whole subtrees are skipped by
         # pruning dirnames instead of testing every file under them.
@@ -100,7 +121,7 @@ class TreeSink:
             for fname in filenames:
                 checked += 1
                 if self._progress and checked % _SCAN_REPORT_EVERY == 0:
-                    self._progress(here, f"prune-scan-progress:{checked}")
+                    self._progress(rel_dir, f"prune-scan-progress:{checked}")
                 rel = f"{rel_dir}/{fname}" if rel_dir != "." else fname
                 if rel in keep:
                     continue
@@ -111,7 +132,7 @@ class TreeSink:
                     group_pruned += 1
                     group_pruned_bytes += size
                     if self._progress:
-                        self._progress(target, "pruned")
+                        self._progress(rel, "pruned")
                 except OSError:
                     pass
         bh_pruned = 0
@@ -124,8 +145,8 @@ class TreeSink:
         self.pruned_bytes += group_pruned_bytes
         if self._progress:
             if bh_pruned:
-                self._progress(dst_root, f"by-hash:{bh_pruned}")
-            self._progress(dst_root, f"prune-scan-done:{checked}:{group_pruned}")
+                self._progress(base, f"by-hash:{bh_pruned}")
+            self._progress(base, f"prune-scan-done:{checked}:{group_pruned}")
         return group_pruned, group_pruned_bytes
 
     def close(self) -> None:

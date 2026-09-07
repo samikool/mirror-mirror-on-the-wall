@@ -11,6 +11,7 @@ from pathlib import Path
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import Pool
 
+from mmw.core.publisher.bundle import bundle_network, bundle_output_path
 from mmw.core.publisher.dist_upgrade import (
     dist_upgrade_info,
     parse_meta_release_lts,
@@ -25,7 +26,7 @@ from mmw.core.publisher.links import (
     publish_keys,
 )
 from mmw.core.resolve import network_mirrors
-from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
+from mmw.core.publisher.results import BundleResult, MirrorPublishResult, NetworkPublishResult
 from mmw.core.publisher.sinks import TreeSink
 from mmw.core.publisher.stats import (
     dry_run_mirror,
@@ -36,10 +37,13 @@ from mmw.core.publisher.stats import (
 )
 
 __all__ = [
+    "BundleResult",
     "MirrorPublishResult",
     "NetworkPublishResult",
     "ROOT_RELATIVE_PREFIX",
     "TreeSink",
+    "bundle_network",
+    "bundle_output_path",
     "dist_upgrade_info",
     "dry_run_mirror",
     "dry_run_network",

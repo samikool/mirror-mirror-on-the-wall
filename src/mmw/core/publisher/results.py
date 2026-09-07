@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -66,3 +67,30 @@ class NetworkPublishResult:
     @property
     def errors(self) -> list[str]:
         return [e for r in self.mirrors for e in r.errors]
+
+
+@dataclass
+class BundleResult:
+    """Mirrors `NetworkPublishResult`'s shape, but for one `.tar.zst`.
+
+    Unlike `NetworkPublishResult.errors` (a property folding every group's own
+    `MirrorPublishResult.errors`), `errors` here is a plain list: bundling has
+    no per-group result to attribute a key or dist-upgrade failure to, so
+    `bundle_network` appends directly.
+    """
+    network_name: str
+    out_path: Path | None = None
+    created: str = ""
+    previous: str | None = None
+    full: bool = False
+    sent: int = 0
+    sent_bytes: int = 0
+    deleted: int = 0
+    manifest_path: Path | None = None
+    mirrors: list[MirrorPublishResult] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    dist_upgrade_warnings: list[str] = field(default_factory=list)
+
+    @property
+    def total_files(self) -> int:
+        return sum(r.total_files for r in self.mirrors)

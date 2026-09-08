@@ -758,12 +758,40 @@ class NetworkPanel(Widget):
         # cancelled with it, and a crash surfaces rather than being swallowed.
         self.run_worker(_run(), name="bundle", exit_on_error=False)
         result = await self.app.push_screen_wait(prog)
+
         if result is None:
+            # Stopped by user or error — notification already shown in modal
             return
-        self.app.notify(
-            f"Bundled {result.sent:,} file(s) → {result.out_path}",
-            timeout=15,
+
+        # Mirrors `_execute_publish`'s branching: a non-None result can still
+        # be a stopped or partially-failed run (dist-upgrade failures populate
+        # `BundleResult.errors` directly, per its own dataclass docstring), and
+        # reporting either of those as unqualified success is exactly what
+        # this project's "nothing is silent" outcome discipline forbids — the
+        # modal's own title bar (⚠ Stopped / ✗ Error / ✓ Bundled) already knows
+        # better, so the notification must agree with it.
+        deleted_str = f", {result.deleted:,} to delete" if result.deleted else ""
+        du_warn_str = (
+            f", {len(result.dist_upgrade_warnings)} dist-upgrade warning(s)"
+            if result.dist_upgrade_warnings else ""
         )
+        if prog.stop_event.is_set():
+            self.app.notify(
+                f"Bundle stopped: {result.sent:,} sent{deleted_str}.",
+                severity="warning",
+            )
+        elif result.errors:
+            self.app.notify(
+                f"Bundle complete with {len(result.errors)} error(s). "
+                f"{result.sent:,} sent{deleted_str}{du_warn_str}.",
+                severity="warning",
+            )
+        else:
+            sev = "warning" if result.dist_upgrade_warnings else "information"
+            self.app.notify(
+                f"Bundled {net.name}: {result.sent:,} sent{deleted_str}{du_warn_str} → {result.out_path}.",
+                severity=sev,
+            )
 
     async def _run_certs(self, net: "config.NetworkConfig") -> None:
         """Generate key+CSR for net, showing a preview modal then a results modal."""

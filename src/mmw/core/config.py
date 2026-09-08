@@ -563,7 +563,12 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
     networks_data = [
         {
             "name": n.name,
-            "root": str(n.root),
+            # root/bundle_dir are destinations belonging to the publish/bundle
+            # verbs, not the network itself — a network may have neither, so
+            # each is written only when set. `str(None)` would silently write
+            # the literal string "None" and round-trip as a bogus path.
+            **({"root": str(n.root)} if n.root is not None else {}),
+            **({"bundle_dir": str(n.bundle_dir)} if n.bundle_dir is not None else {}),
             "prune": n.prune,
             **(
                 {"select": [
@@ -577,6 +582,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
                 ]}
                 if n.select else {}
             ),
+            **({"nginx": False} if not n.nginx else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
         }

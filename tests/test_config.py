@@ -121,3 +121,19 @@ def test_publish_base_rejects_rootless_network():
                             name="m", provider="apt", label="ubuntu")
     with pytest.raises(ValueError, match="no publish root"):
         publish_base(net, m)
+
+
+def test_save_load_round_trip_bundle_only_network(tmp_path):
+    """A network with no publish root but a bundle_dir must round-trip as such
+    — not as the literal string "None" written where a path belongs, and not
+    silently dropping bundle_dir since it never had a serializer."""
+    cfg = _sample_config()
+    cfg.networks.append(
+        config.NetworkConfig(name="dgx-site", bundle_dir=tmp_path / "out")
+    )
+    config.save(cfg, tmp_path)
+    loaded = config.load(tmp_path)
+    assert loaded == cfg
+    bundle_only = [n for n in loaded.networks if n.name == "dgx-site"][0]
+    assert bundle_only.root is None
+    assert bundle_only.bundle_dir == tmp_path / "out"

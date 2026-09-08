@@ -434,8 +434,9 @@ class NetworkPanel(Widget):
         if result is None:
             return
 
-        new_select, prune, dist_upgrade, certs = result
+        new_select, prune, dist_upgrade, certs, root, bundle_dir, nginx = result
         net.select, net.prune, net.dist_upgrade, net.certs = new_select, prune, dist_upgrade, certs
+        net.root, net.bundle_dir, net.nginx = root, bundle_dir, nginx
         new_set = {m.name for m in network_mirrors(net, self._cfg, mirror_dir)}
         removed_names = old_mirrors - new_set
         self._save()

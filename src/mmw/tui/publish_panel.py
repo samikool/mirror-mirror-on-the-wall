@@ -1,4 +1,7 @@
-"""Publish tab: network list, detail panel, and the publish/dry-run flows."""
+"""Networks tab: network list, detail panel, and the publish/dry-run/bundle flows.
+
+A network is a noun — a named downselect of the mirror — and publish and
+bundle are two verbs over it, sharing one list and one detail panel."""
 import asyncio
 import re
 from pathlib import Path
@@ -17,7 +20,9 @@ from mmw.core.resolve import available_mirrors, network_mirrors
 from mmw.core.format import fmt_size as _fmt_bytes
 from mmw.tui.modals import ConfirmModal, DeleteProgressModal, InfoModal
 from mmw.tui.network_screens import AddNetworkScreen, EditNetworkScreen
-from mmw.tui.publish_modals import CertsModal, DryRunResultModal, PreparePublishModal, PublishProgressModal
+from mmw.tui.publish_modals import (
+    BundleProgressModal, CertsModal, DryRunResultModal, PreparePublishModal, PublishProgressModal,
+)
 from mmw.tui.widgets import Button
 
 
@@ -65,7 +70,12 @@ def exclusive_publish_dirs(
     mirror would take the kept suites with it. Only bases no kept mirror
     publishes to are safe to delete; the rest lose their stale files on the
     next publish's prune pass.
+
+    A bundle-only network has no `root` — nothing was ever hardlinked to a
+    tree, so there is nothing here to offer deleting.
     """
+    if net.root is None:
+        return [], []
     kept_bases = {mirror_map[n].mirror_base for n in kept_names if n in mirror_map}
     removed_bases = {mirror_map[n].mirror_base for n in removed_names if n in mirror_map}
     dirs = [
@@ -108,7 +118,10 @@ class NetworkDetail(Widget):
         self._cfg = cfg
         self._stats = None
         self._rebuild()
-        if network is not None:
+        # A bundle-only network (no `root`) has no published tree to stat —
+        # `publish_base()` raises ValueError for exactly this case, so the
+        # background scan is skipped rather than crashing a worker thread.
+        if network is not None and network.root is not None:
             self._load_stats()
 
     @staticmethod
@@ -134,10 +147,24 @@ class NetworkDetail(Widget):
         certs_str = "[green]on[/]" if n.certs else "[dim]off[/]"
 
         self.mount(Label(f"[bold]{n.name}[/]", classes="detail-title"))
-        self.mount(Label(f"  Root          {n.root}", classes="detail-meta"))
+        root_str = str(n.root) if n.root is not None else "[dim]not set — publish disabled[/]"
+        self.mount(Label(f"  Root          {root_str}", classes="detail-meta"))
         self.mount(Label(f"  Prune         {prune_str}", classes="detail-meta"))
         self.mount(Label(f"  Dist-upgrade  {du_str}", classes="detail-meta"))
         self.mount(Label(f"  Certs         {certs_str}", classes="detail-meta"))
+
+        # Bundle destination + the newest ledger entry, when this network has
+        # ever been pointed at one — a bundle-only network (no `root`) still
+        # needs to show *something* other than "publish disabled".
+        if n.bundle_dir is not None:
+            from mmw.core.publisher.manifest import latest_manifest_path
+
+            self.mount(Label(f"  Bundle to     {n.bundle_dir}", classes="detail-meta"))
+            manifest_path = None
+            if self._cfg is not None:
+                manifest_path = latest_manifest_path(self._cfg.settings.mirror_dir, n.name)
+            when = self._fmt_age(manifest_path.stat().st_mtime) if manifest_path else "never bundled"
+            self.mount(Label(f"  Last bundle   {when}", classes="detail-meta"))
 
         # What this network selects. Without this the only visible thing is the
         # resulting mirror list, which hides *why* it is that list — and an
@@ -162,7 +189,9 @@ class NetworkDetail(Widget):
 
         # Stats section
         self.mount(Label("  Published", classes="section-hdr"))
-        if self._stats is None:
+        if n.root is None:
+            self.mount(Label("  [dim]No publish root set for this network[/]", classes="stats-loading"))
+        elif self._stats is None:
             self.mount(Label("  [dim]Loading…[/]", classes="stats-loading"))
         else:
             total_files, total_bytes, last_mod, per_mirror = self._stats
@@ -257,18 +286,18 @@ class NetworkDetail(Widget):
         self._stats = (total_files, total_bytes, last_mod, per_mirror)
         self._rebuild()
 
-class PublishPanel(Widget):
+class NetworkPanel(Widget):
     DEFAULT_CSS = """
-    PublishPanel {
+    NetworkPanel {
         height: 1fr;
         layout: horizontal;
     }
-    PublishPanel #pub-list-panel {
+    NetworkPanel #pub-list-panel {
         width: 30;
         border-right: solid $primary-darken-2;
         background: $surface;
     }
-    PublishPanel #pub-list-panel .panel-title {
+    NetworkPanel #pub-list-panel .panel-title {
         background: $primary-darken-3;
         color: $text;
         padding: 0 1;
@@ -276,25 +305,26 @@ class PublishPanel(Widget):
         height: 1;
         width: 100%;
     }
-    PublishPanel #pub-list-panel ListView {
+    NetworkPanel #pub-list-panel ListView {
         height: 1fr;
     }
-    PublishPanel #pub-detail-panel {
+    NetworkPanel #pub-detail-panel {
         width: 1fr;
         background: $background;
     }
-    PublishPanel #pub-action-bar {
+    NetworkPanel #pub-action-bar {
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: left middle;
         padding: 0 2;
         border-top: solid $primary-darken-2;
         background: $surface;
         dock: bottom;
+        overflow-x: auto;
     }
-    /* Default Button min-width is 16; five of them overflow the detail panel
+    /* Default Button min-width is 16; six of them overflow the detail panel
        on an 80- or 100-column terminal. Size to the label and scroll if the
        row still cannot fit. */
-    PublishPanel #pub-action-bar Button {
+    NetworkPanel #pub-action-bar Button {
         margin-right: 1;
         min-width: 0;
         width: auto;
@@ -322,6 +352,7 @@ class PublishPanel(Widget):
                 yield Button("Remove", id="btn-remove-network", variant="error")
                 yield Button("Publish", id="btn-publish", variant="success")
                 yield Button("Dry Run", id="btn-dry-run", variant="default")
+                yield Button("Bundle", id="btn-bundle", variant="warning")
 
     def _available(self) -> "list[config.MirrorConfig]":
         """Mirrors that actually exist — from the pool, not config expansion.
@@ -446,7 +477,7 @@ class PublishPanel(Widget):
         await self._refresh_list()
         self.query_one(NetworkDetail).show(None, self._cfg)
 
-        if net.root.exists():
+        if net.root is not None and net.root.exists():
             msg = f"Also delete all published files?\n  [dim]{net.root}[/dim]"
             if await self.app.push_screen_wait(
                 ConfirmModal("Delete Published Files?", msg, confirm_label="Yes", cancel_label="No",
@@ -687,6 +718,53 @@ class PublishPanel(Widget):
         except Exception as e:
             self.app.notify(f"Publish error: {e}", severity="error", timeout=15)
 
+    @on(Button.Pressed, "#btn-bundle")
+    @work(exit_on_error=False)
+    async def do_bundle(self):
+        net = self._selected_network()
+        if net is None:
+            self.app.notify("Select a network first.", severity="warning")
+            return
+        if net.bundle_dir is None:
+            self.app.notify(
+                f"Network '{net.name}' has no bundle directory — set one in Edit.",
+                severity="warning",
+            )
+            return
+        try:
+            await self._execute_bundle(net)
+        except Exception as e:
+            self.app.notify(f"Bundle error: {e}", severity="error", timeout=15)
+
+    async def _execute_bundle(self, net: "config.NetworkConfig") -> None:
+        """Run bundle_network behind a BundleProgressModal and notify the outcome."""
+        from mmw.core.publisher.bundle import bundle_network
+
+        mirror_dir = self._cfg.settings.mirror_dir
+        prog = BundleProgressModal(net.name)
+
+        async def _run():
+            try:
+                r = await asyncio.to_thread(
+                    bundle_network, net, self._cfg, mirror_dir,
+                    None, False, 3, prog.record, prog.stop_event,
+                    prog.notify_mirror_start,
+                )
+                prog.mark_done(r)
+            except Exception as exc:
+                prog.mark_error(str(exc) or type(exc).__name__)
+
+        # run_worker, not ensure_future: the task is owned by the widget and
+        # cancelled with it, and a crash surfaces rather than being swallowed.
+        self.run_worker(_run(), name="bundle", exit_on_error=False)
+        result = await self.app.push_screen_wait(prog)
+        if result is None:
+            return
+        self.app.notify(
+            f"Bundled {result.sent:,} file(s) → {result.out_path}",
+            timeout=15,
+        )
+
     async def _run_certs(self, net: "config.NetworkConfig") -> None:
         """Generate key+CSR for net, showing a preview modal then a results modal."""
         from mmw.core.certs import collect_hostnames, generate_certs
@@ -716,3 +794,10 @@ class PublishPanel(Widget):
             self.app.notify("Select a network first.", severity="warning")
             return
         await self._run_certs(net)
+
+
+# Compatibility alias for one release — the tab and class were renamed from
+# "Publish"/`PublishPanel` to "Networks"/`NetworkPanel` when bundling joined
+# publish as a second verb over the same noun. Remove once nothing outside
+# this module still imports the old name.
+PublishPanel = NetworkPanel

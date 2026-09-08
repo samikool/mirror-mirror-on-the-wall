@@ -300,7 +300,7 @@ def cmd_publish(
 
     from mmw.tui.init_wizard import InitWizardApp
 
-    result = _run_manage_sync_loop(cfg, cfg_dir, initial_tab="tab-publish")
+    result = _run_manage_sync_loop(cfg, cfg_dir, initial_tab="tab-networks")
     if result == "reinit":
         _run_tui(InitWizardApp(cfg_dir))
 

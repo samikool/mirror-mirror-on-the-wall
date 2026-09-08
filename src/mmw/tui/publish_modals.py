@@ -17,6 +17,7 @@ from mmw.tui.widgets import Button
 
 if TYPE_CHECKING:
     from mmw.core.publisher import NetworkPublishResult
+    from mmw.core.publisher.results import BundleResult
 
 
 class DryRunResultModal(ModalScreen[bool]):
@@ -457,6 +458,346 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
                 else:
                     self.query_one("#pub-title-bar", Static).update(
                         f"  [bold green]✓ Published[/]  {self._network_name}"
+                    )
+                    btn = self.query_one("#btn-stop", Button)
+                    btn.label = "Close"
+                    btn.variant = "primary"
+                    btn.disabled = False
+            except Exception:
+                pass
+            # Auto-close after 4 s so user can read the result; they can also
+            # click Close or press Escape to dismiss immediately.
+            self.set_timer(4.0, lambda: self._safe_dismiss(result))
+
+class BundleProgressModal(ModalScreen["BundleResult | None"]):
+    """Full-screen progress view shown while bundle_network runs.
+
+    Same pipeline as `PublishProgressModal` — `publish_group` fires the same
+    `progress(rel, status)` calls into a `BundleSink` as it does into a
+    `TreeSink` (see `core/publisher/sinks.py`), so this is a copy with the
+    wording changed ("Bundling", "sent" rather than "linked") and the result
+    type swapped for `BundleResult`. A `BundleSink` never prunes locally — a
+    bundle only *records* what the far side must delete — so no
+    `prune-scan-*` status ever arrives here, but the handling stays in
+    `record()` for parity with the publish path rather than as a silent gap.
+    """
+
+    BINDINGS = [Binding("escape", "action_close_or_stop", "Close/Stop")]
+
+    DEFAULT_CSS = """
+    BundleProgressModal { align: center middle; }
+    BundleProgressModal > Vertical {
+        width: 95%;
+        height: 90%;
+        border: double $primary;
+        background: $surface;
+    }
+    BundleProgressModal #bun-title-bar {
+        background: $primary-darken-3;
+        padding: 0 2;
+        height: 1;
+        color: $text;
+        text-style: bold;
+    }
+    BundleProgressModal #bun-progress-area {
+        height: auto;
+        padding: 1 2 0 2;
+    }
+    BundleProgressModal ProgressBar {
+        margin: 0 0 1 0;
+    }
+    BundleProgressModal .bun-section-label {
+        height: 1;
+        color: $text-muted;
+        text-style: bold;
+    }
+    BundleProgressModal .bun-mirror-label {
+        height: 1;
+        color: $accent;
+        margin-top: 1;
+    }
+    BundleProgressModal .bun-stats {
+        height: 1;
+        color: $text;
+        margin-top: 1;
+    }
+    BundleProgressModal .bun-eta {
+        height: 1;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    BundleProgressModal #bun-log {
+        height: 1fr;
+        border-top: solid $primary-darken-2;
+        background: $background;
+    }
+    BundleProgressModal #bun-controls {
+        height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
+        align: right middle;
+        padding: 0 2;
+        background: $primary-darken-3;
+        border-top: solid $primary-darken-1;
+        dock: bottom;
+    }
+    BundleProgressModal #bun-footer-label {
+        width: 1fr;
+        color: $text-muted;
+        content-align: left middle;
+    }
+    BundleProgressModal #btn-stop {
+        margin-left: 1;
+    }
+    """
+
+    def __init__(self, network_name: str, total: int = 0):
+        super().__init__()
+        self._network_name = network_name
+        self._total = total
+        self._start = time.monotonic()
+        self._lock = threading.Lock()
+        # Global counters
+        self._sent = 0
+        self._skipped = 0
+        self._log_pending: list[str] = []
+        # Per-mirror counters (reset each mirror)
+        self._mirror_sent = 0
+        self._mirror_skipped = 0
+        self._mirror_name = ""
+        self._mirror_index = 0
+        self._mirror_total_mirrors = 0
+        self._phase = ""
+        self._pending_mirror_change: tuple | None = None
+        # Speed
+        self._speed_ema: float = 0.0
+        self._last_speed_time: float = 0.0
+        self._last_speed_sent: int = 0
+        self.stop_event = threading.Event()
+        # Set by mark_done / mark_error from the bundle thread
+        self._bundle_done: bool = False
+        self._bundle_result: "BundleResult | None" = None
+        self._bundle_error: str = ""
+        self._done_displayed: bool = False
+        self._dismissed: bool = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(f"  Bundling  {self._network_name}", id="bun-title-bar")
+            with Vertical(id="bun-progress-area"):
+                yield Label("  Overall", id="bun-overall-label", classes="bun-section-label")
+                yield ProgressBar(
+                    total=self._total if self._total else None,
+                    show_eta=False,
+                    id="bun-pbar",
+                )
+                yield Label("  Waiting for first mirror…", id="bun-mirror-label", classes="bun-mirror-label")
+                yield Label("  Starting…", id="bun-stats", classes="bun-stats")
+                yield Label("", id="bun-eta", classes="bun-eta")
+            log = RichLog(id="bun-log", highlight=False, markup=True, wrap=False, max_lines=2000)
+            log.can_focus = False
+            yield log
+            with Horizontal(id="bun-controls"):
+                yield Static("", id="bun-footer-label")
+                yield Button("Stop", id="btn-stop", variant="error")
+
+    def on_mount(self) -> None:
+        self._last_speed_time = time.monotonic()
+        self.set_interval(1 / 60, self._tick)
+
+    def _safe_dismiss(self, result: "BundleResult | None") -> None:
+        if not self._dismissed:
+            self._dismissed = True
+            self.dismiss(result)
+
+    def action_close_or_stop(self) -> None:
+        if self._done_displayed:
+            self._safe_dismiss(self._bundle_result)
+        elif not self.stop_event.is_set():
+            self.stop_event.set()
+            try:
+                self.query_one("#btn-stop", Button).disabled = True
+                self.query_one("#bun-title-bar", Static).update(
+                    f"  Stopping  {self._network_name}  [dim](finishing current file…)[/]"
+                )
+            except Exception:
+                pass
+
+    @on(Button.Pressed, "#btn-stop")
+    def _btn_stop_pressed(self) -> None:
+        self.action_close_or_stop()
+
+    def mark_done(self, result: "BundleResult") -> None:
+        """Called from the bundle thread (or its await) when it completes."""
+        with self._lock:
+            self._bundle_done = True
+            self._bundle_result = result
+
+    def mark_error(self, msg: str) -> None:
+        """Called when the bundle thread raises an exception."""
+        with self._lock:
+            self._bundle_done = True
+            self._bundle_error = msg
+
+    def notify_mirror_start(self, name: str, index: int, total_mirrors: int) -> None:
+        """Called from the bundle thread when a new mirror_base group begins."""
+        with self._lock:
+            self._pending_mirror_change = (name, index, total_mirrors)
+            self._mirror_sent = 0
+            self._mirror_skipped = 0
+
+    def record(self, dst: str, status: str) -> None:
+        """Called from the bundle thread — pure counter + buffer update, no DOM work.
+
+        `dst` is a sink-relative POSIX string (never a `Path`) — the same
+        contract `PublishProgressModal.record` follows, and `BundleSink`
+        shares the identical `progress()` call sites in `publish_group`.
+        """
+        parts = dst.split("/")
+        short = "/".join(parts[-4:]) if len(parts) >= 4 else dst
+        with self._lock:
+            if status == "linked":
+                self._sent += 1
+                self._mirror_sent += 1
+                self._log_pending.append(f"  [green]→[/] {short}")
+            elif status == "skipped":
+                self._skipped += 1
+                self._mirror_skipped += 1
+            elif status in ("linked-meta", "skipped-meta"):
+                pass  # metadata ops don't count toward package totals
+            elif status.startswith("by-hash:"):
+                n = status.split(":", 1)[1]
+                self._log_pending.append(f"  [dim]# by-hash links: {n}[/]")
+            elif status == "enumerate-start":
+                self._phase = "reading pool index…"
+                self._log_pending.append("  [dim]# reading pool index…[/]")
+            elif status.startswith("enumerate-done:"):
+                n = int(status.split(":", 1)[1])
+                self._phase = ""
+                self._log_pending.append(f"  [dim]# {n:,} files to consider[/]")
+            elif status == "prune-scan-start":
+                self._phase = "scanning destination…"
+            elif status.startswith("prune-scan-progress:"):
+                n = int(status.split(":", 1)[1])
+                self._phase = f"scanning destination · {n:,} checked"
+            elif status.startswith("prune-scan-done:"):
+                self._phase = ""
+
+    def _tick(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            sent = self._sent
+            skipped = self._skipped
+            mirror_sent = self._mirror_sent
+            mirror_skipped = self._mirror_skipped
+            pending = self._log_pending[:]
+            self._log_pending.clear()
+            mirror_change = self._pending_mirror_change
+            self._pending_mirror_change = None
+            phase = self._phase
+
+        total_done = sent + skipped
+
+        # Apply mirror change
+        if mirror_change:
+            name, index, total_mirrors = mirror_change
+            self._mirror_name = name
+            self._mirror_index = index
+            self._mirror_total_mirrors = total_mirrors
+
+        # Speed EMA — files/s (sent + skipped), sampled every 250 ms
+        dt = now - self._last_speed_time
+        if dt >= 0.25:
+            instant = (total_done - self._last_speed_sent) / dt
+            self._speed_ema = 0.3 * instant + 0.7 * self._speed_ema
+            self._last_speed_sent = total_done
+            self._last_speed_time = now
+
+        speed = self._speed_ema
+        elapsed = now - self._start
+
+        # Overall progress bar
+        try:
+            if self._total:
+                self.query_one("#bun-pbar", ProgressBar).progress = total_done
+        except Exception:
+            pass
+
+        # Mirror label
+        try:
+            if self._mirror_name:
+                phase_str = f"  [dim]·[/]  [dim]{phase}[/]" if phase else ""
+                self.query_one("#bun-mirror-label", Label).update(
+                    f"  Mirror {self._mirror_index} / {self._mirror_total_mirrors}"
+                    f"  [dim]·[/]  [bold]{self._mirror_name}[/]"
+                    f"  [dim]{mirror_sent + mirror_skipped:,} considered[/]"
+                    f"{phase_str}"
+                )
+        except Exception:
+            pass
+
+        pct = f"  [dim]{100 * total_done / self._total:.0f}%[/]" if self._total else ""
+        total_str = f"{self._total:,}" if self._total else "?"
+
+        try:
+            self.query_one("#bun-stats", Label).update(
+                f"  [green]↗ {sent:,}[/] sent"
+                f"  [cyan]= {skipped:,}[/] already current"
+                f"  [dim]·[/]  [bold]{speed:,.0f}[/] files/s"
+                f"{pct}"
+            )
+            self.query_one("#bun-eta", Label).update(
+                f"  [dim]elapsed {_fmt_duration(elapsed)}"
+                f"  ·  {total_done:,} / {total_str} files[/]"
+            )
+        except Exception:
+            pass
+
+        # Flush log entries into RichLog
+        if pending:
+            try:
+                log = self.query_one("#bun-log", RichLog)
+                for entry in pending:
+                    log.write(entry)
+            except Exception:
+                pass
+
+        # Footer label
+        try:
+            stopping = "  [bold red]Stopping…[/]  " if self.stop_event.is_set() else ""
+            self.query_one("#bun-footer-label", Static).update(
+                f"{stopping}[dim]{self._network_name}  ·  {_fmt_duration(elapsed)}[/]"
+            )
+        except Exception:
+            pass
+
+        # Bundle completion — runs once when thread signals done
+        if self._bundle_done and not self._done_displayed:
+            self._done_displayed = True
+            with self._lock:
+                result = self._bundle_result
+                error = self._bundle_error
+            try:
+                if error:
+                    self.query_one("#bun-title-bar", Static).update(
+                        f"  [bold red]✗ Error[/]  {self._network_name}"
+                    )
+                    self.query_one("#bun-log", RichLog).write(
+                        f"  [red]✗ {_escape(error)}[/]"
+                    )
+                    btn = self.query_one("#btn-stop", Button)
+                    btn.label = "Close"
+                    btn.variant = "error"
+                    btn.disabled = False
+                elif self.stop_event.is_set():
+                    self.query_one("#bun-title-bar", Static).update(
+                        f"  [bold yellow]⚠ Stopped[/]  {self._network_name}"
+                    )
+                    btn = self.query_one("#btn-stop", Button)
+                    btn.label = "Close"
+                    btn.variant = "warning"
+                    btn.disabled = False
+                else:
+                    self.query_one("#bun-title-bar", Static).update(
+                        f"  [bold green]✓ Bundled[/]  {self._network_name}"
                     )
                     btn = self.query_one("#btn-stop", Button)
                     btn.label = "Close"

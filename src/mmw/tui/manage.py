@@ -24,7 +24,7 @@ from mmw.core.format import fmt_size as _fmt_bytes
 from mmw.core.resolve import available_mirrors, pooled_mirrors
 from mmw.tui.init_wizard import AddMirrorScreen
 from mmw.tui.modals import ConfirmModal
-from mmw.tui.publish_panel import PublishPanel
+from mmw.tui.publish_panel import NetworkPanel
 from mmw.tui.widgets import Button
 
 
@@ -147,11 +147,11 @@ def _safe_id(name: str) -> str:
 
 
 
-# ── Publish detail panel ──────────────────────────────────────────────────────
+# ── Network detail panel ──────────────────────────────────────────────────────
 
 
 
-# ── Publish panel ─────────────────────────────────────────────────────────────
+# ── Network panel ─────────────────────────────────────────────────────────────
 
 
 
@@ -276,7 +276,7 @@ class ManageApp(App):
 
     BINDINGS = [
         Binding("1", "manage_tab", "Manage", show=False),
-        Binding("2", "publish_tab", "Publish", show=False),
+        Binding("2", "publish_tab", "Networks", show=False),
         Binding("a", "add_mirror", "Add"),
         Binding("d", "delete_mirror", "Delete"),
         # Manage-tab only
@@ -289,7 +289,7 @@ class ManageApp(App):
         Binding("s", "launch_sync", "Sync"),
         Binding("p", "prune_pool", "Prune Pool"),
         Binding("w", "wipe_pool", "Wipe Pool"),
-        # Publish-tab only
+        # Networks-tab only
         Binding("e", "edit_network", "Edit"),
         Binding("p", "publish_network", "Publish"),
         Binding("q", "quit", "Quit"),
@@ -372,7 +372,7 @@ class ManageApp(App):
                             yield Button("Wipe Pool", id="btn-wipe-pool", variant="warning")
                             yield Static(classes="spacer")
                             yield Button("⚠ Re-init", id="btn-reinit", variant="warning")
-            with TabPane("Publish", id="tab-publish"):
+            with TabPane("Networks", id="tab-networks"):
                 pass  # mounted lazily on first visit
         yield Footer()
 
@@ -634,7 +634,7 @@ class ManageApp(App):
     @work(exit_on_error=False)
     async def action_delete_mirror(self):
         if self._on_publish_tab():
-            panel = self._publish_panel()
+            panel = self._network_panel()
             if panel:
                 panel.remove_network()
             return
@@ -743,11 +743,11 @@ class ManageApp(App):
 
     @work(exit_on_error=False)
     async def action_add_mirror(self):
-        if self.query_one(TabbedContent).active == "tab-publish":
+        if self.query_one(TabbedContent).active == "tab-networks":
             try:
-                self.query_one(PublishPanel).add_network()
+                self.query_one(NetworkPanel).add_network()
             except Exception:
-                self.notify("Switch to the Publish tab first.", severity="warning")
+                self.notify("Switch to the Networks tab first.", severity="warning")
             return
 
         new_sources = await self.push_screen_wait(
@@ -795,21 +795,21 @@ class ManageApp(App):
                                    sorted(self._selection - covered))))
 
     def action_edit_network(self) -> None:
-        panel = self._publish_panel()
+        panel = self._network_panel()
         if panel:
             panel.edit_network()
 
     def action_publish_network(self) -> None:
-        panel = self._publish_panel()
+        panel = self._network_panel()
         if panel:
             panel.do_publish()
 
     def _on_publish_tab(self) -> bool:
-        return self.query_one(TabbedContent).active == "tab-publish"
+        return self.query_one(TabbedContent).active == "tab-networks"
 
-    def _publish_panel(self) -> "PublishPanel | None":
+    def _network_panel(self) -> "NetworkPanel | None":
         try:
-            return self.query_one(PublishPanel)
+            return self.query_one(NetworkPanel)
         except Exception:
             return None
 
@@ -850,13 +850,13 @@ class ManageApp(App):
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        if event.pane and event.pane.id == "tab-publish":
-            if not event.pane.query(PublishPanel):
-                event.pane.mount(PublishPanel(self._cfg, self._cfg_dir))
+        if event.pane and event.pane.id == "tab-networks":
+            if not event.pane.query(NetworkPanel):
+                event.pane.mount(NetworkPanel(self._cfg, self._cfg_dir))
         self.refresh_bindings()
 
     def action_manage_tab(self) -> None:
         self.query_one(TabbedContent).active = "tab-manage"
 
     def action_publish_tab(self) -> None:
-        self.query_one(TabbedContent).active = "tab-publish"
+        self.query_one(TabbedContent).active = "tab-networks"

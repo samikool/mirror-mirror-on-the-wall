@@ -311,3 +311,18 @@ def test_removed_mirror_base_that_was_never_published_is_skipped(tmp_path):
     dirs, shared = exclusive_publish_dirs(net, {ports.name: ports}, {ports.name}, set())
     assert dirs == []  # nothing on disk
     assert shared == []
+
+
+def test_bundle_only_network_offers_nothing_to_delete(tmp_path):
+    """A network with no `root` never hardlinked anything — nothing to offer deleting."""
+    from mmw.tui.publish_panel import exclusive_publish_dirs
+
+    ports = config.MirrorConfig(name="u-ports-noble-main-arm64", provider="apt", label="ubuntu",
+                                source_url="http://ports.ubuntu.com/ubuntu-ports",
+                                suite="noble", component="main", arch="arm64")
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "bundles")
+    assert net.root is None
+
+    dirs, shared = exclusive_publish_dirs(net, {ports.name: ports}, {ports.name}, set())
+    assert dirs == []
+    assert shared == []

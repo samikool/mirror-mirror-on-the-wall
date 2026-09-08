@@ -2,6 +2,7 @@ import ast
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -192,3 +193,196 @@ def test_stale_tmp_is_swept_on_next_apply(tmp_path):
     assert rc == 0
     assert not orphan.exists()
     assert (dest / payload_name).read_bytes() == content
+
+
+def test_truncated_manifest_is_detected(tmp_path):
+    """A truncated manifest that lands on a line boundary produces valid
+    JSON lines but is incomplete — a manifest is 200k+ lines, truncating to
+    100 lines is a valid JSONL file. Only the zstd return code can detect
+    this. On a garbage blob or truncated frame, zstd exits 1."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    # A real manifest-like structure, but truncated before the zstd frame ends.
+    # We can't do byte-precise truncation (zstd compression is non-deterministic),
+    # so we test by providing garbage to the zstd decompression inside
+    # read_manifest_bytes — that is reached via the manifest member extraction.
+    payload_name = "archive.ubuntu.com/ubuntu/dists/noble/InRelease"
+    content = b"a" * 1000
+
+    # Create a tar with manifest first, but the manifest blob will be garbage.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        # Add a manifest member with garbage zstd data (not actually valid zstd).
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
+        garbage = b"not valid zstd data at all"
+        ti.size = len(garbage)
+        tar.addfile(ti, io.BytesIO(garbage))
+
+        ti = tarfile.TarInfo(payload_name)
+        ti.size = len(content)
+        tar.addfile(ti, io.BytesIO(content))
+
+    bundle_bytes = buf.getvalue()
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    # Should fail because the manifest is corrupt (zstd will exit 1).
+    assert rc != 0
+    # Nothing should be written.
+    assert not (dest / payload_name).exists()
+
+
+def test_truncated_manifest_on_line_boundary(tmp_path):
+    """A manifest truncated exactly on a line boundary still has valid JSON
+    lines but is missing the tail. This should be detected by the zstd
+    return code. Simulate this by creating a valid manifest and truncating
+    the compressed form."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    # Build a multi-line manifest, compress it with zstd, then truncate it.
+    header = {"network": "lab", "created": "20260101T000000Z",
+              "previous": None, "full": True}
+    lines = [json.dumps(header)]
+    # Add enough lines to create a multi-block zstd stream.
+    for i in range(5000):
+        lines.append(json.dumps({"p": "archive.ubuntu.com/pool/p%d" % i,
+                                  "c": "c" * 64}))
+    manifest_jsonl = ("\n".join(lines) + "\n").encode()
+    full_compressed = zstandard.ZstdCompressor().compress(manifest_jsonl)
+
+    # Truncate the compressed manifest — remove last 100 bytes.
+    truncated = full_compressed[:-100]
+
+    payload_name = "archive.ubuntu.com/ubuntu/dists/noble/InRelease"
+    content = b"content"
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
+        ti.size = len(truncated)
+        tar.addfile(ti, io.BytesIO(truncated))
+
+        ti = tarfile.TarInfo(payload_name)
+        ti.size = len(content)
+        tar.addfile(ti, io.BytesIO(content))
+
+    bundle_bytes = buf.getvalue()
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    # Should fail because zstd will exit 1 on truncated frame.
+    assert rc != 0
+    assert not (dest / payload_name).exists()
+
+
+def test_missing_manifest_header_field(tmp_path):
+    """A manifest with valid JSON but missing a required field should be
+    rejected. This catches a partially-truncated manifest that still has a
+    header line."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    # Header missing the 'full' field.
+    header = {"network": "lab", "created": "20260101T000000Z",
+              "previous": None}
+    lines = [json.dumps(header)]
+    lines.append(json.dumps({"p": "path", "c": "c" * 64}))
+    manifest_jsonl = ("\n".join(lines) + "\n").encode()
+    manifest_zst = zstandard.ZstdCompressor().compress(manifest_jsonl)
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
+        ti.size = len(manifest_zst)
+        tar.addfile(ti, io.BytesIO(manifest_zst))
+
+    bundle_bytes = buf.getvalue()
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    # Should fail because header is missing 'full' field.
+    assert rc != 0
+
+
+def test_permission_error_creating_tmp_dir(tmp_path):
+    """A PermissionError when creating .mmw/tmp should be caught and
+    reported, not produce a raw traceback."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+    dest.mkdir()
+
+    # Make the root read-only so makedirs fails with PermissionError.
+    os.chmod(str(dest), 0o500)
+
+    try:
+        payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
+        content = b"hello-package-content"
+        bundle_bytes = _fake_bundle_bytes(payload_name, content)
+        ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+        rc = ns["apply"]("ignored", str(dest))
+
+        # Should fail with EXIT_UNSAFE or EXIT_TOOLING, not a traceback.
+        assert rc != 0
+    finally:
+        # Restore permissions so cleanup works.
+        os.chmod(str(dest), 0o755)
+
+
+def test_symlink_in_mmw_tmp_is_refused(tmp_path):
+    """A symlink at {root}/.mmw/tmp would allow _sweep_tmp to delete
+    outside --root. Refuse it outright."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+    dest.mkdir()
+
+    # Create a symlink pretending to be the tmp directory, pointing outside.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    mmw_dir = dest / ".mmw"
+    mmw_dir.mkdir()
+    tmp_link = mmw_dir / "tmp"
+    tmp_link.symlink_to(str(outside))
+
+    payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
+    content = b"hello-package-content"
+    bundle_bytes = _fake_bundle_bytes(payload_name, content)
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    # Should fail because tmp is a symlink.
+    assert rc != 0
+    # Nothing should be written to the outside directory.
+    assert list(outside.iterdir()) == []
+
+
+def test_symlink_at_mmw_is_refused(tmp_path):
+    """A symlink at {root}/.mmw would allow writes outside --root. Refuse it
+    before attempting to create tmp beneath it."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+    dest.mkdir()
+
+    # Create a symlink pretending to be .mmw, pointing outside.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    mmw_link = dest / ".mmw"
+    mmw_link.symlink_to(str(outside))
+
+    payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
+    content = b"hello-package-content"
+    bundle_bytes = _fake_bundle_bytes(payload_name, content)
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    # Should fail because .mmw is a symlink.
+    assert rc != 0
+    # Nothing should be written to the outside directory.
+    assert list(outside.iterdir()) == []

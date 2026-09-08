@@ -115,14 +115,31 @@ def read_manifest_bytes(blob):
     (manifest.py writes it that way before BundleSink ever adds it as a tar
     member), so this is a second, independent zstd invocation from the one
     unpacking the outer tar.zst stream. A corrupt or hand-truncated manifest
-    blob surfaces here as json.JSONDecodeError — apply()'s caller wraps this
-    call, it does not catch its own errors.
+    blob surfaces here as json.JSONDecodeError, or via subprocess return
+    code check — a truncation on a line boundary otherwise produces valid
+    JSON lines that are merely incomplete. The caller wraps this call; it
+    does not catch its own errors.
     """
     proc = subprocess.Popen(["zstd", "-dc"], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE)
     out, _ = proc.communicate(blob)
+    if proc.returncode != 0:
+        # zstd exited 1 on both truncated frames and garbage. A return-code
+        # check is necessary and sufficient to detect both.
+        raise json.JSONDecodeError(
+            "zstd decompression failed (exit %d)" % proc.returncode,
+            "", 0)
     lines = out.decode("utf-8").splitlines()
+    if not lines:
+        raise json.JSONDecodeError("empty manifest", "", 0)
     header = json.loads(lines[0])
+    # Require the header to carry the fields the script relies on, not just
+    # valid JSON. A partially-truncated manifest might have a header line but
+    # lack required fields.
+    required_fields = ["network", "created", "previous", "full"]
+    for field in required_fields:
+        if field not in header:
+            raise KeyError(field)
     files = {}
     for line in lines[1:]:
         if line:
@@ -218,8 +235,16 @@ def _sweep_tmp(root):
     Called at the start of every non-dry-run apply, before anything is
     extracted, so a bundle applied on top of debris from a previous failed
     run starts from a clean slate rather than accumulating it.
+
+    A cleanup routine that can delete outside its own directory is
+    indefensible. Refuse a symlink, regardless of who created it.
     """
     d = _tmp_dir(root)
+    if os.path.islink(d):
+        sys.stderr.write(
+            "refusing to sweep tmp directory: %r is a symlink; this would "
+            "delete outside --root\n" % (d,))
+        raise OSError("tmp directory is a symlink")
     try:
         entries = os.listdir(d)
     except OSError:
@@ -232,10 +257,6 @@ def _sweep_tmp(root):
 
 
 def apply(bundle, root, dry_run=False, verify=False):
-    if not dry_run:
-        os.makedirs(_tmp_dir(root), exist_ok=True)
-        _sweep_tmp(root)
-
     header = None
     manifest = {}
     deletes = []
@@ -246,6 +267,15 @@ def apply(bundle, root, dry_run=False, verify=False):
     current = None
 
     try:
+        if not dry_run:
+            mmw_dir = os.path.join(root, ".mmw")
+            if os.path.islink(mmw_dir):
+                sys.stderr.write(
+                    "refusing to create tmp directory: %r is a symlink; this "
+                    "would write outside --root\n" % (mmw_dir,))
+                return EXIT_UNSAFE
+            os.makedirs(_tmp_dir(root), exist_ok=True)
+            _sweep_tmp(root)
         proc = open_stream(bundle)
         tar = tarfile.open(fileobj=proc.stdout, mode="r|")
         for member in tar:

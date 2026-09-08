@@ -104,10 +104,12 @@ components = ["main", "contrib"]
 # suite = "bookworm-updates"
 # components = ["main"]
 
-# Publish target
+# Publish/bundle target — root and bundle_dir are independent optional
+# destinations; a network may have either, both, or neither.
 [[networks]]
 name = "lab"
 root = "/srv/lab"
+# bundle_dir = "/media/usb"  # destination for the Networks tab's Bundle button
 prune = true           # remove destination files no longer in the mirror
 # mirrors = ["..."]    # subset by mirror name; omit for ALL mirrors
 # dist_upgrade = true  # Ubuntu do-release-upgrade support
@@ -170,6 +172,61 @@ detected LTS upgrade paths — `do-release-upgrade` works fully offline.
 TLS: networks with `certs = true` get a 4096-bit key + CSR generated under
 `{mirror_dir}/certs/{network}/` (never inside the served tree), with a
 `CERTS.md` walking through signing on your CA and the matching nginx config.
+
+## Bundling — moving a network across an airgap
+
+Transferring a network by copying its published tree by hand doesn't scale
+past the first sync, and a second transfer a month later has no way to carry
+only what changed. `bundle` is the alternative: it packages a network into
+**one `.tar.zst` file** containing exactly what `publish` would have written
+— packages, indexes, GPG keys, nginx config — plus a manifest and a small
+applier script, and each re-bundle carries only the files that changed since
+the last one.
+
+There is no `mmw bundle` CLI command yet — bundling is a TUI verb, reached
+from `mmw manage`'s **Networks** tab:
+
+1. Give the network a **Bundle directory** in the network editor (a second,
+   independent destination alongside its publish root — a network can have
+   either, both, or neither).
+2. Press **Bundle**. A progress modal reports files sent and any deletions,
+   and writes `{network}-{timestamp}.tar.zst` plus a plain `apply.py` copy
+   next to it in the bundle directory.
+3. Copy both files to your transfer media and carry them across the airgap.
+
+On the airgapped side, no `mmw` install is required — `apply.py` is a single
+stdlib-only Python 3 script (Python 3.6+, so it works on older RHEL too). It
+needs the `zstd` binary on `PATH` and nothing else:
+
+```bash
+python3 apply.py lab-20260906T143000Z.tar.zst --root /srv/www
+# 20260901T090000Z -> 20260906T143000Z
+# 12,481 applied  3,902 removed
+```
+
+Run it again with each new bundle as it arrives — `apply.py` refuses to apply
+one out of order (it tracks the last-applied bundle in `.mmw-state` at
+`--root`), so a skipped transfer is caught rather than silently leaving files
+missing. `--dry-run` reports what would change without touching disk;
+`--verify` hashes every file the bundle's manifest describes against what's
+on disk afterward, so you can confirm a transfer landed intact.
+
+Every bundle carries its own nginx configuration (`nginx/mirror.conf` plus one
+file per hostname under `nginx/sites/`) — `apply.py` fills in the destination
+path automatically, so serving the result is:
+
+```bash
+# after apply.py has written into /srv/www:
+ln -s /srv/www/nginx/mirror.conf /etc/nginx/conf.d/mmw-mirror.conf
+nginx -t && systemctl reload nginx
+```
+
+Then point DNS for each mirrored hostname (`archive.ubuntu.com`,
+`security.ubuntu.com`, …) at the serving machine, same as a live publish.
+TLS certificates are **never** included in a bundle — `certs = true`
+networks keep their key and CSR outside the published tree on the connected
+side, and that boundary holds across the airgap too; provision TLS on the far
+side separately if you need it.
 
 ## How the pool works
 

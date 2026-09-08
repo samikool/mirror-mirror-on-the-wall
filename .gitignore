@@ -21,3 +21,6 @@ mirror/
 
 # Profiler output (machine-local, appended to by running syncs)
 mmw-profile-*.txt
+
+# Live machine-local config — per working directory, never shared
+mmw.toml

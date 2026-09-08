@@ -25,6 +25,7 @@ from typing import Protocol
 import zstandard
 
 from mmw.core.publisher.manifest import ManifestHeader, write_manifest
+from mmw.core.publisher.nginx import ROOT_PLACEHOLDER
 
 _SCAN_REPORT_EVERY = 5000
 _BY_HASH_KEEP_STALE = 2
@@ -92,6 +93,18 @@ class TreeSink:
             return "error"
 
     def write(self, rel: str, data: bytes) -> None:
+        # A TreeSink destination is live-served. The nginx root placeholder
+        # must always have already been substituted for a real path by the
+        # caller (`str(network.root)`, publisher/__init__.py and bundle.py) —
+        # an unsubstituted placeholder reaching disk here is a bug in that
+        # caller, not something this sink should silently write out. See
+        # nginx.py's own docstring: "An unsubstituted placeholder reaching
+        # disk on either side is a bug."
+        if ROOT_PLACEHOLDER.encode() in data:
+            raise ValueError(
+                f"{rel}: unsubstituted {ROOT_PLACEHOLDER} would have been "
+                "written to a live-served destination"
+            )
         dst = self.root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(data)
@@ -198,13 +211,20 @@ class BundleSink:
     """
 
     def __init__(self, out_path: Path, header: ManifestHeader, prev: dict[str, str],
-                apply_script: bytes, level: int = 3, prune: bool = True):
+                apply_script: bytes, level: int = 3, prune: bool = True,
+                full: bool = False):
         self.out_path = out_path
         self.header = header
         self._prev = prev
         self._apply_script = apply_script
         self._level = level
         self._prune = prune
+        # `--full` means "send everything", never "forget what the far side
+        # has". `prev` is populated the same way for a full bundle as for a
+        # delta one (bundle.py always reads the latest manifest) — the delete
+        # set in `finalize_group` is computed from it exactly as usual. `full`
+        # only bypasses `prev` for the SEND decision in link()/write() below.
+        self._full = full
 
         self.manifest_rows: list[tuple[str, str]] = []
         self._send: list[tuple[str, Path, int, str]] = []
@@ -228,7 +248,7 @@ class BundleSink:
         # a key has no content hash to trust that judgement on, so it is
         # always resent. `test_bundle_sink_delta_agrees_with_manifest_delta`
         # only asserts the two rules agree where both have a real checksum.
-        if self._prev.get(rel) == checksum and checksum:
+        if not self._full and self._prev.get(rel) == checksum and checksum:
             return "skipped"
         self._send.append((rel, src, size, checksum))
         self.sent += 1
@@ -239,7 +259,7 @@ class BundleSink:
         checksum = hashlib.sha256(data).hexdigest()
         self._seen.add(rel)
         self.manifest_rows.append((rel, checksum))
-        if self._prev.get(rel) == checksum:
+        if not self._full and self._prev.get(rel) == checksum:
             return
         self._generated[rel] = data
         self.sent += 1

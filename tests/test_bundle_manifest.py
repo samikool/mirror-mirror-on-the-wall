@@ -1,7 +1,7 @@
 import pytest
 
 from mmw.core.publisher.manifest import (
-    ManifestHeader, delta, latest_manifest_path, ledger_dir,
+    ManifestHeader, bump_stamp, delta, latest_manifest_path, ledger_dir,
     now_stamp, read_manifest, write_manifest,
 )
 
@@ -86,3 +86,12 @@ def test_latest_manifest_is_none_when_never_bundled(tmp_path):
 def test_now_stamp_shape():
     s = now_stamp()
     assert len(s) == 16 and s[8] == "T" and s.endswith("Z")
+
+
+def test_bump_stamp_advances_one_second():
+    assert bump_stamp("20260906T143000Z") == "20260906T143001Z"
+
+
+def test_bump_stamp_rolls_over_minute_and_day_boundaries():
+    assert bump_stamp("20260906T143059Z") == "20260906T143100Z"
+    assert bump_stamp("20260906T235959Z") == "20260907T000000Z"

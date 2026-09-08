@@ -8,6 +8,7 @@ import zstandard
 from mmw.core import config
 from mmw.core.pool import KIND_META, KIND_PKG, Pool
 from mmw.core.publisher.manifest import ManifestHeader, delta
+from mmw.core.publisher.nginx import ROOT_PLACEHOLDER
 from mmw.core.publisher.sinks import BundleSink, TreeSink
 
 
@@ -40,6 +41,18 @@ def test_tree_sink_write_creates_parents(tmp_path):
     sink = TreeSink(tmp_path / "pub")
     sink.write("UPGRADE.md", b"# guide\n")
     assert (tmp_path / "pub" / "UPGRADE.md").read_bytes() == b"# guide\n"
+
+
+def test_tree_sink_write_refuses_unsubstituted_placeholder(tmp_path):
+    """A TreeSink destination is live-served; the nginx root placeholder must
+    always already be substituted for a real path by the caller before it
+    ever reaches write(). The spec says an unsubstituted placeholder reaching
+    disk on either side is a bug -- nothing enforced that here."""
+    sink = TreeSink(tmp_path / "pub")
+    with pytest.raises(ValueError, match=ROOT_PLACEHOLDER):
+        sink.write("nginx/sites/example.com.conf",
+                  f"root {ROOT_PLACEHOLDER}/example.com;\n".encode())
+    assert not (tmp_path / "pub" / "nginx").exists()
 
 
 def test_tree_sink_finalize_group_prunes_unwanted(tmp_path):
@@ -208,6 +221,41 @@ def test_bundle_sink_dedups_by_checksum_as_tar_hardlinks(pool, tmp_path):
         b"->h/r/dists/n/main/binary-amd64/Packages.gz"
 
 
+def test_bundle_sink_full_resends_despite_matching_prev(pool, tmp_path):
+    """`full=True` bypasses `prev` for the SEND decision -- "send everything"
+    -- but `prev` itself is still supplied and still drives deletions (see
+    the next test)."""
+    cs, src = _seed(pool, b"unchanged", "a.deb")
+    prev = {"host/repo/pool/a.deb": cs}   # identical to what's being linked
+
+    out = tmp_path / "lab-full.tar.zst"
+    sink = BundleSink(out, _hdr(full=True), prev=dict(prev), apply_script=b"",
+                      full=True)
+    status = sink.link(src, "host/repo/pool/a.deb", 9, cs, KIND_PKG)
+    sink.close()
+
+    assert status == "linked"
+    assert sink.sent == 1
+    assert "host/repo/pool/a.deb" in _members(out)
+
+
+def test_bundle_sink_full_still_computes_deletions_from_prev(pool, tmp_path):
+    """IMPORTANT 4 -- `--full` means "send everything", never "forget what
+    the far side has". `finalize_group` must still read `prev` for the
+    delete set even when `full=True` -- setting `prev={}` for a full bundle
+    (the original implementation) computed zero deletions, permanently
+    stranding files the far side no longer wants."""
+    prev = {"host/repo/pool/gone.deb": "aa" * 32}
+    sink = BundleSink(tmp_path / "lab-full.tar.zst", _hdr(full=True),
+                      prev=dict(prev), apply_script=b"", full=True)
+
+    result = sink.finalize_group("host/repo", keep=set(), live_checksums=set(),
+                                 exclude=set())
+
+    assert result == (1, 0)
+    assert sink.deleted == ["host/repo/pool/gone.deb"]
+
+
 def test_bundle_sink_delete_list_only_when_pruning(pool, tmp_path):
     prev = {"host/repo/pool/gone.deb": "aa" * 32}
     for prune, expected in ((True, True), (False, False)):
@@ -297,6 +345,33 @@ def test_bundle_sink_delta_agrees_with_manifest_delta(pool, tmp_path):
 
     assert got_send == want_send
     assert set(sink.deleted) == want_delete
+
+
+def test_bundle_sink_resends_empty_checksum_key_even_when_prev_matches(pool, tmp_path):
+    """Pins the `and checksum` guard in `link()`: a published GPG key has no
+    content hash (`sink.link(f, rel, size, "", KIND_META)` -- links.py's
+    `publish_keys`), so `prev.get(rel) == ""` must never compare true against
+    itself and skip a resend -- unlike a real checksum, `""` carries no
+    trustworthy claim that the content is unchanged.
+    `test_bundle_sink_delta_agrees_with_manifest_delta` explicitly excludes
+    this case; this test is what actually pins it."""
+    key_bytes = b"-----BEGIN PGP PUBLIC KEY BLOCK-----"
+    _, src = _seed(pool, key_bytes, "cuda.asc")
+    rel = "keys/nvidia/cuda.asc"
+    # What bundle 1's own manifest recorded for this key -- no checksum, by
+    # construction (publish_keys always calls link() with checksum="").
+    prev = {rel: ""}
+
+    out = tmp_path / "lab2.tar.zst"
+    sink = BundleSink(out, _hdr(previous="x", full=False), prev=dict(prev),
+                      apply_script=b"")
+    status = sink.link(src, rel, len(key_bytes), "", KIND_META)
+    sink.close()
+
+    assert sink.errors == []
+
+    assert status == "linked"
+    assert rel in _members(out)
 
 
 def test_bundle_sink_by_hash_retention_differs_from_manifest_delta(pool, tmp_path):

@@ -107,6 +107,20 @@ def dry_run_network(
     from mmw.core.publisher.dist_upgrade import dist_upgrade_info
 
     result = NetworkPublishResult(network_name=network.name, dry_run=True)
+
+    # A bundle-only network has no publish root — `publish_base()` below
+    # would raise ValueError for every mirror. Mirror `publish_network`'s own
+    # guard (publisher/__init__.py) and its exact message, rather than
+    # letting that exception surface here: this function is read-only and
+    # must never crash a caller iterating several networks in one dry-run.
+    if network.root is None:
+        r = MirrorPublishResult(mirror_name=network.name)
+        r.errors.append(
+            f"network '{network.name}' has no publish root — use `mmw bundle` instead"
+        )
+        result.mirrors.append(r)
+        return result
+
     from mmw.core.resolve import network_mirrors
     mirror_map = {m.name: m for m in network_mirrors(network, cfg, mirror_dir)}
     selected_names = list(mirror_map)

@@ -24,6 +24,7 @@ from mmw.core.publisher.links import publish_keys, publish_group
 from mmw.core.publisher.manifest import (
     MANIFEST_SUFFIX,
     ManifestHeader,
+    bump_stamp,
     latest_manifest_path,
     ledger_dir,
     now_stamp,
@@ -69,12 +70,30 @@ def bundle_network(
     `BundleSink` in place of a `TreeSink` is the only difference. The delta
     against the previous bundle (`full=False`, the default) comes from the
     newest manifest in `{mirror_dir}/bundles/{network.name}/`; `full=True`
-    ignores it and resends everything.
+    resends everything but still reads that same manifest to compute what
+    should be deleted — `--full` means "send everything", not "forget what
+    the far side has" (a full bundle that skipped this would strand every
+    file the far side no longer wants, permanently: the new manifest no
+    longer lists the path either, so no future delta could delete it).
     """
     created = now_stamp()
-    target = bundle_output_path(network, created, out_path)
+    manifest_dir = ledger_dir(mirror_dir, network.name)
+    # now_stamp() has 1-second resolution: two bundles started in the same
+    # wall-clock second would otherwise silently overwrite each other's
+    # tarball and manifest. Bump forward until the stamp collides with
+    # neither — bundle_output_path() also validates the destination
+    # (raises ValueError with no bundle_dir/out), so that check still
+    # happens on the very first iteration, unchanged.
+    while True:
+        target = bundle_output_path(network, created, out_path)
+        if not target.exists() and not (manifest_dir / f"{created}{MANIFEST_SUFFIX}").exists():
+            break
+        created = bump_stamp(created)
 
-    prev_path = None if full else latest_manifest_path(mirror_dir, network.name)
+    # The delete set always comes from the latest manifest, `full` or not —
+    # see the docstring above. `BundleSink`'s own `full` flag is what makes a
+    # full bundle resend everything despite `prev` being populated here.
+    prev_path = latest_manifest_path(mirror_dir, network.name)
     prev: dict[str, str] = {}
     previous = None
     if prev_path is not None:
@@ -84,7 +103,7 @@ def bundle_network(
     header = ManifestHeader(network=network.name, created=created,
                             previous=previous, full=full)
     sink = BundleSink(target, header, prev, apply_script_bytes(),
-                      level=level, prune=network.prune)
+                      level=level, prune=network.prune, full=full)
     result = BundleResult(network_name=network.name, out_path=target,
                           created=created, previous=previous, full=full)
 
@@ -179,7 +198,7 @@ def bundle_network(
     # not exist, or the next delta would skip files the far side never
     # received. close() itself is tmp-then-rename, so this ordering makes the
     # pair atomic in the right direction.
-    manifest_path = ledger_dir(mirror_dir, network.name) / f"{created}{MANIFEST_SUFFIX}"
+    manifest_path = manifest_dir / f"{created}{MANIFEST_SUFFIX}"
     write_manifest(manifest_path, header, sink.manifest_rows)
     (target.parent / "apply.py").write_bytes(apply_script_bytes())
 

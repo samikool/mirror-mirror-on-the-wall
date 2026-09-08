@@ -174,6 +174,35 @@ def test_publish_network_without_root_returns_error(tmp_path, mirror_dir):
     assert not (mirror_dir / ".pool").exists()
 
 
+def test_dry_run_network_without_root_returns_error(tmp_path, mirror_dir):
+    """IMPORTANT 3 (whole-branch review) — `publish_network` guards
+    `network.root is None`; `dry_run_network` did not, so it fell straight
+    into `publish_base()`, which raises `ValueError: network 'x' has no
+    publish root`. `cmd_publish` iterates every configured network when `-n`
+    is omitted, so one bundle-only network aborted `mmw publish --dry-run`
+    for every other network too, with an uncaught traceback. Must return the
+    same graceful per-network error `publish_network` uses instead."""
+    from mmw.core.publisher import dry_run_network
+
+    net = config.NetworkConfig(name="dgx-site")  # root=None, bundle_dir=None
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[],
+        networks=[net],
+    )
+
+    result = dry_run_network(net, cfg, mirror_dir)
+
+    assert len(result.mirrors) == 1
+    only = result.mirrors[0]
+    assert only.mirror_name == "dgx-site"
+    assert only.errors == [
+        "network 'dgx-site' has no publish root — use `mmw bundle` instead"
+    ]
+    # No pool touched, no filesystem scan attempted.
+    assert not (mirror_dir / ".pool").exists()
+
+
 def test_publish_writes_nginx_site_files(tmp_path, pool, mirror_dir):
     """A real publish generates nginx/mirror.conf + one site file per host, with
     the network's own root substituted — no placeholder left behind."""

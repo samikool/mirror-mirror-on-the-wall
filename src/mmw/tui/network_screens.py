@@ -615,10 +615,18 @@ class EditNetworkScreen(
 
     @work
     async def _browse_root(self) -> None:
-        """Only the base is picked — see `_StepNetworkPath._browse_root`."""
+        """Unlike `_StepNetworkPath._browse_root` (Add), Edit shows and saves
+        the full path verbatim — it never appends the network name (`_save`
+        below does `root = Path(root_str)`, no join). The hint must describe
+        that, not Add's behaviour: describing Add's rule here told an
+        operator to pick the *base* and the network name would be added
+        inside it, which is false for Edit — picking `/srv` when the network
+        already publishes to `/srv/lab` silently changed its publish root to
+        `/srv`, and with `prune = True` (the default) two networks edited
+        that way each pruned the other's files out of a live-served tree."""
         picked = await self.app.push_screen_wait(PathPickModal(
             "Where should this network publish?",
-            "pick the base path — the network name is created inside it",
+            "pick the directory this network publishes into",
             self.query_one("#inp-root", Input).value.strip(),
         ))
         if picked is None:

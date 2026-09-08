@@ -254,3 +254,184 @@ def test_apply_refuses_out_of_order(seeded, tmp_path):
     )
     assert proc.returncode != 0
     assert b"expects" in proc.stderr or b"out of order" in proc.stderr
+    # The message must recover the operator, not name a capability no
+    # user-facing surface can invoke (`_execute_bundle` hardcodes
+    # `full=False` -- see design-notes.md's Bundling section).
+    assert b"--full" not in proc.stderr
+
+
+def test_apply_verify_succeeds_immediately_after_apply(seeded, tmp_path):
+    """CRITICAL 2 (whole-branch review) -- `--verify` is the far side's only
+    way to distinguish a good transfer from a corrupt one. Before the fix,
+    every nginx/ file failed verification on every healthy bundle (nginx
+    defaults to True): BundleSink hashes the ROOT_PLACEHOLDER bytes it wrote
+    into the manifest, and apply() then rewrites those exact files in place
+    with the real --root before verify_tree hashes them off disk -- a
+    guaranteed mismatch ("0 missing, 2 wrong", exit 4). No test invoked
+    --verify at all before this one."""
+    mirror_dir, cfg = seeded
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+    result = bundle_network(net, cfg, mirror_dir)
+    assert result.errors == []
+
+    dest = tmp_path / "far-side"
+    proc = subprocess.run(
+        [sys.executable, str(tmp_path / "out" / "apply.py"),
+         str(result.out_path), "--root", str(dest), "--verify"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert b"verify FAILED" not in proc.stdout
+    assert b"verified" in proc.stdout
+
+
+def test_full_bundle_still_carries_deletions(seeded, tmp_path):
+    """IMPORTANT 4 -- `--full` means "send everything", never "forget what
+    the far side has". The original implementation set `prev = {}` for
+    `full=True`, so a full bundle always computed zero deletions -- and
+    permanently: the new manifest it writes doesn't list the stale path
+    either, so no future *delta* bundle could ever propose deleting it
+    either."""
+    mirror_dir, cfg = seeded
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+    bundle_network(net, cfg, mirror_dir)
+
+    # The package falls out of the upstream index, as a real re-sync would
+    # produce -- only the meta/release refs remain.
+    pool = Pool(mirror_dir)
+    pool.reconcile_refs("ubuntu-noble-main-amd64", [
+        (hashlib.sha256(b"pkg-index").hexdigest(),
+         "dists/noble/main/binary-amd64/Packages.gz", KIND_META),
+        (hashlib.sha256(b"signed-release").hexdigest(),
+         "dists/noble/InRelease", KIND_RELEASE),
+    ], source="https://archive.ubuntu.com/ubuntu")
+    pool.close()
+
+    full = bundle_network(net, cfg, mirror_dir, full=True)
+    assert full.full is True
+    assert full.deleted == 1
+
+    applied = tmp_path / "applied-full"
+    _extract(full.out_path, applied)
+    deletes = (applied / ".mmw" / "delete.list").read_text().split()
+    assert deletes == [
+        "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello_1.0_amd64.deb"
+    ]
+
+
+def test_two_bundles_in_the_same_second_get_distinct_stamps(seeded, tmp_path, monkeypatch):
+    """IMPORTANT 5 -- now_stamp() has 1-second resolution; two bundles run
+    back-to-back (well under a second for a near-empty delta, which is
+    exactly what an operator does when unsure a first run worked) used to
+    collide: the second run's tmp-then-rename silently replaced the first
+    run's tarball AND its ledger manifest, destroying the record of what the
+    far side was actually sent, and made `previous == created` -- a
+    self-referential header."""
+    from mmw.core.publisher import bundle as bundle_mod
+
+    mirror_dir, cfg = seeded
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+
+    # Force the collision deterministically rather than hoping two real
+    # calls land in the same wall-clock second.
+    monkeypatch.setattr(bundle_mod, "now_stamp", lambda: "20260906T143000Z")
+
+    first = bundle_network(net, cfg, mirror_dir)
+    second = bundle_network(net, cfg, mirror_dir)
+
+    assert first.created == "20260906T143000Z"
+    assert second.created == "20260906T143001Z"   # bumped forward exactly 1s
+    assert first.out_path != second.out_path
+    assert first.out_path.exists()
+    assert second.out_path.exists()
+    assert first.manifest_path.exists()
+    assert second.manifest_path.exists()
+
+
+def test_bundle_matches_publish_across_two_rounds(seeded, tmp_path):
+    """Extends `test_bundle_matches_publish_exactly`, which only ever
+    exercises ONE round -- no prune, no by-hash retirement, no delta -- so
+    the "one prune contract" this whole pipeline claims to have was never
+    actually tested end to end. Round 2 drops a package and republishes a
+    changed index, then diffs the applied-from-bundle tree against the
+    published-directly tree.
+
+    The only allowed divergence is a stale by-hash generation `TreeSink`
+    deliberately keeps for in-flight clients (`_BY_HASH_KEEP_STALE = 2`,
+    sinks.py) that `BundleSink` -- having no directory to read mtimes from --
+    retires the instant a checksum stops being live (also documented in
+    sinks.py). Anything else diverging here would be a real bundle/publish
+    parity bug.
+    """
+    mirror_dir, cfg = seeded
+
+    pub_root = tmp_path / "published"
+    net_pub = config.NetworkConfig(name="lab", root=pub_root)
+    publish_network(net_pub, cfg, mirror_dir)
+
+    net_bun = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+    first = bundle_network(net_bun, cfg, mirror_dir)
+
+    dest = tmp_path / "far-side"
+    subprocess.run(
+        [sys.executable, str(tmp_path / "out" / "apply.py"),
+         str(first.out_path), "--root", str(dest)],
+        check=True,
+    )
+    assert _tree(dest / "archive.ubuntu.com") == _tree(pub_root / "archive.ubuntu.com")
+
+    # ── Round 2: change an index, drop a package ───────────────────────────
+    pool = Pool(mirror_dir)
+    new_index = b"pkg-index-v2"
+    cs_new = hashlib.sha256(new_index).hexdigest()
+    pool.add(new_index, cs_new, "sha256", "Packages.gz", len(new_index))
+    pool.reconcile_refs("ubuntu-noble-main-amd64", [
+        (cs_new, "dists/noble/main/binary-amd64/Packages.gz", KIND_META),
+        (hashlib.sha256(b"signed-release").hexdigest(),
+         "dists/noble/InRelease", KIND_RELEASE),
+        # hello_1.0_amd64.deb is gone -- dropped from the upstream index.
+    ], source="https://archive.ubuntu.com/ubuntu")
+    pool.close()
+
+    publish_network(net_pub, cfg, mirror_dir)
+    second = bundle_network(net_bun, cfg, mirror_dir)
+    subprocess.run(
+        [sys.executable, str(tmp_path / "out" / "apply.py"),
+         str(second.out_path), "--root", str(dest)],
+        check=True,
+    )
+
+    published = _tree(pub_root)
+    applied = {k: v for k, v in _tree(dest).items() if not k.startswith(".mmw")}
+
+    # nginx/ is already substituted in place by apply.py on both sides, but
+    # with two DIFFERENT real roots (pub_root vs dest) -- normalize each back
+    # to a common placeholder before comparing, same idea as the
+    # single-round test's ROOT_PLACEHOLDER undo.
+    nginx_published = {k: v for k, v in published.items() if k.startswith("nginx/")}
+    nginx_applied = {k: v for k, v in applied.items() if k.startswith("nginx/")}
+    assert set(nginx_applied) == set(nginx_published)
+    for key, applied_bytes in nginx_applied.items():
+        norm_applied = applied_bytes.replace(str(dest).encode(), b"<ROOT>")
+        norm_published = nginx_published[key].replace(str(pub_root).encode(), b"<ROOT>")
+        assert norm_applied == norm_published, key
+
+    other_published = {k: v for k, v in published.items() if not k.startswith("nginx/")}
+    other_applied = {k: v for k, v in applied.items() if not k.startswith("nginx/")}
+
+    # Everything present on both sides must be byte-identical.
+    common = set(other_applied) & set(other_published)
+    for k in common:
+        assert other_applied[k] == other_published[k], k
+
+    # Published-only files must be exactly the stale-by-hash-retention gap
+    # documented above -- nothing else may diverge.
+    only_published = set(other_published) - set(other_applied)
+    assert all("by-hash" in p for p in only_published), only_published
+    # Nothing may exist only on the applied side -- a bundle never invents
+    # content publish doesn't also have.
+    assert set(other_applied) - set(other_published) == set()
+
+    # The dropped package must actually be gone from both trees.
+    assert not any("hello_1.0_amd64.deb" in k for k in other_published)
+    assert not any("hello_1.0_amd64.deb" in k for k in other_applied)

@@ -279,6 +279,20 @@ def cmd_publish(
 
         label = "[dry-run] " if dry_run else ""
         for net in networks:
+            if net.root is None:
+                # A bundle-only network — publish_base() has no destination
+                # to derive, and printing `net.root` unconditionally below
+                # used to print the literal string "None" for exactly this
+                # case. `dry_run_network`/`publish_network` both already
+                # return a graceful per-network error instead of raising, but
+                # skip here too so an `mmw publish` iterating several
+                # networks never even calls into either for one that can only
+                # be bundled.
+                typer.echo(
+                    f"\n{label}Skipping network: {net.name} — no publish root "
+                    f"set (use `mmw bundle` instead)"
+                )
+                continue
             typer.echo(f"\n{label}Publishing network: {net.name}  →  {net.root}")
             if dry_run:
                 result = dry_run_network(net, cfg, cfg.settings.mirror_dir)

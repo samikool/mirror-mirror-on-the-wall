@@ -362,6 +362,30 @@ def test_symlink_in_mmw_tmp_is_refused(tmp_path):
     assert list(outside.iterdir()) == []
 
 
+def test_apply_warns_if_placeholder_survives_substitution(tmp_path, capsys):
+    """The spec says an unsubstituted placeholder must never reach disk;
+    nothing enforced it on the far side. `substitute_root` is a no-op here
+    (standing in for a bug in that function, or some future case where it
+    fails to fire) -- apply.py must at least warn rather than silently ship
+    a config `nginx -t` will refuse to load with no clue why."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    payload_name = "nginx/sites/example.com.conf"
+    content = ("root %s/example.com;\n" % ns["ROOT_PLACEHOLDER"]).encode()
+    bundle_bytes = _fake_bundle_bytes(payload_name, content)
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    ns["substitute_root"] = lambda root, path: None  # never actually substitutes
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    assert rc == 0  # a leftover placeholder warns; it does not fail the apply
+    assert (dest / payload_name).read_bytes() == content  # still has it
+    err = capsys.readouterr().err
+    assert "still contains" in err
+    assert ns["ROOT_PLACEHOLDER"] in err
+
+
 def test_symlink_at_mmw_is_refused(tmp_path):
     """A symlink at {root}/.mmw would allow writes outside --root. Refuse it
     before attempting to create tmp beneath it."""

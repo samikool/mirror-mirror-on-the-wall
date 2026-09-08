@@ -223,6 +223,76 @@ def test_the_base_path_need_not_contain_the_network_yet(tmp_path):
     _run(scenario)
 
 
+def test_edit_screen_browse_root_saves_verbatim_no_name_appended(tmp_path):
+    """IMPORTANT 6 (whole-branch review) — Edit shows and saves the full path
+    verbatim (`EditNetworkScreen._save`: `root = Path(root_str)`, no join
+    with the network name), unlike Add, which appends the name. The picker's
+    hint text used to describe Add's rule ("pick the base path — the network
+    name is created inside it") even inside Edit — so a lab already
+    published at /srv/lab, browsed and re-picked at /srv, silently changed
+    its own root to /srv. With prune=True (the default) two networks edited
+    this way would each prune the other's files out of a live-served tree.
+    This drives the actual picker (not just field text) and asserts the
+    picked path lands verbatim, with nothing appended."""
+    from textual import work
+    from textual.app import App, ComposeResult
+    from textual.widgets import Button, Input
+
+    from mmw.tui.network_screens import EditNetworkScreen
+
+    (tmp_path / "srv").mkdir()
+    net = config.NetworkConfig(
+        name="lab", root=tmp_path / "srv" / "lab",
+        select=[config.NetworkSelect(source="https://x/y")],
+    )
+    mirrors = [_mirror()]
+
+    class _Host(App):
+        result = "unset"
+
+        def compose(self) -> ComposeResult:
+            yield from ()
+
+        def on_mount(self):
+            self._go()
+
+        @work
+        async def _go(self):
+            self.result = await self.push_screen_wait(EditNetworkScreen(net, mirrors))
+
+    async def scenario():
+        app = _Host()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            assert app.screen.query_one("#inp-root", Input).value == str(tmp_path / "srv" / "lab")
+
+            app.screen.query_one("#btn-browse-root", Button).press()
+            await _settle(pilot)
+            picker = pilot.app.screen
+            assert isinstance(picker, PathPickModal)
+            # The hint must describe what Edit actually does with the picked
+            # path (saves it verbatim), not Add's "base path, name appended"
+            # rule.
+            subtitle = str(picker.query_one("#path-subtitle").render())
+            assert "publishes into" in subtitle
+            assert "created inside it" not in subtitle
+            picker.query_one("#path-input", Input).value = str(tmp_path / "srv")
+            picker.query_one("#btn-use", Button).press()
+            await _settle(pilot)
+
+            # Picking the base path is saved VERBATIM — no network name
+            # appended, unlike Add.
+            assert app.screen.query_one("#inp-root", Input).value == str(tmp_path / "srv")
+            app.screen.query_one("#btn-save", Button).press()
+            await _settle(pilot)
+        return app.result
+
+    result = asyncio.run(scenario())
+    assert result is not None
+    selects, prune, dist_upgrade, certs, root, bundle_dir, nginx = result
+    assert root == tmp_path / "srv"   # verbatim — not tmp_path/"srv"/"lab"
+
+
 def test_edit_screen_round_trips_a_bundle_only_network(tmp_path):
     """The editor must pre-fill whichever destination(s) a network already has
     — and save back exactly that, not invent or drop one on the way through.

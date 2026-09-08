@@ -50,12 +50,18 @@ def test_placeholder_root_is_left_for_apply_time():
     assert f"root {ROOT_PLACEHOLDER}/ports.ubuntu.com;" in conf
 
 
-def test_non_standard_port_host_is_usable_as_a_server_name():
-    """mirror_base encodes a port as host_port; a server_name may not contain '_'
-    followed by digits as a port, so the underscore form is used verbatim and
-    the listen port is left to the admin."""
+def test_non_standard_port_host_uses_real_hostname_for_server_name():
+    """mirror_base encodes a port as host_port to keep two repos on the same
+    host at different ports from colliding on disk. That mangled form is
+    right for the on-disk directory (and thus the site filename and `root`
+    path) but was also being used verbatim as `server_name` — which nginx
+    would never match against any real request's Host header. Only
+    `server_name` needed fixing; the directory/root naming is unchanged."""
     files = nginx_files([_m("http://internal.example.com:8080/repo/", "a")], root="/srv/lab")
     assert "nginx/sites/internal.example.com_8080.conf" in files
+    conf = files["nginx/sites/internal.example.com_8080.conf"].decode()
+    assert "server_name internal.example.com;" in conf
+    assert "root /srv/lab/internal.example.com_8080;" in conf
 
 
 def test_install_instructions_include_this_exact_file():

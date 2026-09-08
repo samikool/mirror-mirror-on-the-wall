@@ -9,6 +9,7 @@ rather than hold millions of entries in memory. zstd-compressed on disk.
 
 Timestamps, not generation numbers: `20260906T143000Z`. Newest wins.
 """
+import calendar
 import json
 import time
 from dataclasses import asdict, dataclass
@@ -23,6 +24,21 @@ MANIFEST_SUFFIX = ".manifest.jsonl.zst"
 
 def now_stamp() -> str:
     return time.strftime(TS_FORMAT, time.gmtime())
+
+
+def bump_stamp(stamp: str) -> str:
+    """The next second after `stamp`, same format.
+
+    `now_stamp()` has 1-second resolution, so two bundles started within the
+    same wall-clock second would otherwise collide on both the ledger
+    manifest filename and the output tarball filename — the second run's
+    `.replace()` silently destroying the first run's record of what the far
+    side was actually sent (and, when both stamps are equal, making
+    `previous == created`, which degenerates the out-of-order check).
+    `bundle_network` bumps forward until neither exists on disk.
+    """
+    t = calendar.timegm(time.strptime(stamp, TS_FORMAT))
+    return time.strftime(TS_FORMAT, time.gmtime(t + 1))
 
 
 def ledger_dir(mirror_dir: Path, network: str) -> Path:
@@ -63,10 +79,14 @@ def write_manifest(path: Path, header: ManifestHeader,
 def read_manifest(path: Path) -> tuple[ManifestHeader, dict[str, str]]:
     """Load a manifest fully.
 
-    Memory note: a 2M-file network costs roughly 600 MB as a Python dict. That
-    is the documented bound for delta computation; `--full` skips this load
-    entirely. If it bites, the format is internal — swap JSONL for a SQLite
-    manifest without changing any caller.
+    Memory note: measured at roughly 1.5 GB peak for a 2M-file network, not
+    the ~600 MB once documented here — that figure only counted this dict;
+    `manifest_rows` + `BundleSink._send`/`_seen` cost another ~440 MB on top
+    of it during a bundle, and `--full` no longer skips this load at all (it
+    still needs `prev` to compute the delete set — see bundle.py). A
+    streaming refactor would fix this properly; deferred, see design-notes.md
+    "Next up". If it bites before then, the format is internal — swap JSONL
+    for a SQLite manifest without changing any caller.
     """
     dctx = zstandard.ZstdDecompressor()
     files: dict[str, str] = {}

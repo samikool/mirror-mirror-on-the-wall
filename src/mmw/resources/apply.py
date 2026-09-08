@@ -320,8 +320,10 @@ def apply(bundle, root, dry_run=False, verify=False):
                     sys.stderr.write(
                         "this bundle expects the mirror to be at %s but it is at %s\n"
                         "applying out of order would leave the tree silently "
-                        "incomplete. Re-bundle with --full, or apply the missing "
-                        "bundle first.\n" % (want or "(empty)", have or "(empty)")
+                        "incomplete. Apply the missing bundle first, or ask for a "
+                        "fresh bundle — a failed apply never advances %s, so the "
+                        "next normal bundle already covers what this one would "
+                        "have.\n" % (want or "(empty)", have or "(empty)", STATE_FILE)
                     )
                     return EXIT_OUT_OF_ORDER
                 sys.stdout.write("%s -> %s\n" % (want or "(new)", header["created"]))
@@ -430,6 +432,18 @@ def apply(bundle, root, dry_run=False, verify=False):
                     target = os.path.join(root, rel)
                     if os.path.exists(target):
                         substitute_root(root, target)
+                        # The spec says an unsubstituted placeholder must
+                        # never reach disk (nginx.py's own docstring: "An
+                        # unsubstituted placeholder reaching disk on either
+                        # side is a bug"). substitute_root() is a no-op when
+                        # the placeholder isn't present at all, so this can
+                        # only fire on a real bug — warn rather than silently
+                        # serve a config nginx will refuse to load.
+                        with open(target, "rb") as fh:
+                            if ROOT_PLACEHOLDER.encode() in fh.read():
+                                sys.stderr.write(
+                                    "warning: %r still contains %s after "
+                                    "substitution\n" % (rel, ROOT_PLACEHOLDER))
             current = STATE_FILE
             with open(os.path.join(root, STATE_FILE), "w") as fh:
                 fh.write(header["created"] + "\n")
@@ -485,9 +499,20 @@ def verify_tree(root, manifest):
     manifest never mentioned (including, before the tmp-directory change
     above, a `.mmw-tmp` left by a killed process). A future reader should
     not read "verified N files OK" as "the tree contains nothing else."
+
+    nginx/ note: the manifest's checksum for an `nginx/*.conf` file was
+    computed by BundleSink over the bytes it actually wrote — the
+    ROOT_PLACEHOLDER form, since a bundle is built before anyone knows where
+    it will land (nginx.py). `apply()` rewrites that file in place with the
+    real `--root` once the archive lands (`substitute_root`). Hashing the
+    on-disk bytes directly against that manifest checksum would therefore
+    fail on every healthy bundle — reverse the one substitution before
+    hashing so this checks the same bytes the manifest describes.
     """
     missing = []
     wrong = []
+    root_bytes = root.encode()
+    placeholder_bytes = ROOT_PLACEHOLDER.encode()
     for rel, want in manifest.items():
         if not want:
             continue
@@ -496,12 +521,21 @@ def verify_tree(root, manifest):
             missing.append(rel)
             continue
         h = hashlib.sha256()
-        with open(path, "rb") as fh:
-            while True:
-                chunk = fh.read(1 << 20)
-                if not chunk:
-                    break
-                h.update(chunk)
+        if rel.startswith("nginx/"):
+            # These files are tiny generated configs — reading the whole
+            # thing to reverse one substitution is fine; nothing else here
+            # gets that treatment, so the streaming read below still bounds
+            # memory for every real payload file.
+            with open(path, "rb") as fh:
+                data = fh.read()
+            h.update(data.replace(root_bytes, placeholder_bytes))
+        else:
+            with open(path, "rb") as fh:
+                while True:
+                    chunk = fh.read(1 << 20)
+                    if not chunk:
+                        break
+                    h.update(chunk)
         if h.hexdigest() != want:
             wrong.append(rel)
     if missing or wrong:

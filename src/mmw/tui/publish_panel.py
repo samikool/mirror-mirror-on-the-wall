@@ -732,7 +732,23 @@ class NetworkPanel(Widget):
                 severity="warning",
             )
             return
+
+        # Same completeness gate `do_publish` runs before it will publish: a
+        # ref the pool doesn't hold a blob for (refs - packages) is invisible
+        # to `pool.mirror_files()` — the query both publish and bundle
+        # enumerate from — so it lands in neither a published tree NOR a
+        # bundle's tar or manifest. Skipping this let a bundle ship an apt
+        # index referencing a .deb that isn't there: `apply.py --verify`
+        # passes, and the 404 only surfaces as `apt install` failing on the
+        # far side of the airgap, where nobody can debug it.
+        selected_mirrors = self._selected_mirrors_for(net)
         try:
+            mirror_dir = self._cfg.settings.mirror_dir
+            verify_results, _, _ = await self._run_pre_publish(
+                net, selected_mirrors, mirror_dir, include_file_counts=False,
+            )
+            if await self._show_incomplete(verify_results):
+                return
             await self._execute_bundle(net)
         except Exception as e:
             self.app.notify(f"Bundle error: {e}", severity="error", timeout=15)

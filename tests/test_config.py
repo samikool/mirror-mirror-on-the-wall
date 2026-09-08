@@ -137,3 +137,48 @@ def test_save_load_round_trip_bundle_only_network(tmp_path):
     bundle_only = [n for n in loaded.networks if n.name == "dgx-site"][0]
     assert bundle_only.root is None
     assert bundle_only.bundle_dir == tmp_path / "out"
+
+
+def test_full_network_config_round_trip(tmp_path):
+    """M1/M2 (whole-branch review) — every `NetworkConfig` field, set to a
+    non-default value, must survive save()/load() with its actual value, not
+    just its key. This is the exact class of bug that hid `root = "None"`
+    and a never-serialized `bundle_dir` for ten implementation tasks: a
+    round-trip test that never *sets* a field can't catch a regression in
+    serializing it. `_sample_config`'s "lab" network above never set
+    `bundle_dir` and never set `nginx=False`, so neither was ever exercised
+    by `test_save_load_round_trip`."""
+    net = config.NetworkConfig(
+        name="dgx-site",
+        root=tmp_path / "srv" / "dgx",
+        bundle_dir=tmp_path / "out" / "dgx",
+        select=[config.NetworkSelect(
+            source="https://deb.debian.org/debian",
+            suites=["bookworm"], components=["main"], arches=["amd64"],
+        )],
+        prune=False,
+        dist_upgrade=True,
+        certs=True,
+        nginx=False,
+    )
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=tmp_path / "mirror", max_connections=3),
+        networks=[net],
+    )
+    config.save(cfg, tmp_path)
+    loaded = config.load(tmp_path)
+
+    assert loaded == cfg
+    got = loaded.networks[0]
+    # Not just `==` on the whole object — pin every field's actual value so a
+    # future field addition that forgets to set a non-default in this test
+    # (and so trivially "round-trips" its own default) still gets caught by
+    # someone reading this test, not just by object equality.
+    assert got.name == "dgx-site"
+    assert got.root == tmp_path / "srv" / "dgx"
+    assert got.bundle_dir == tmp_path / "out" / "dgx"
+    assert got.select == net.select
+    assert got.prune is False
+    assert got.dist_upgrade is True
+    assert got.certs is True
+    assert got.nginx is False

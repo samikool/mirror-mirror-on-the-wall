@@ -44,6 +44,12 @@ def cfg(tmp_path: Path):
     return config.load(tmp_path), tmp_path
 
 
+def _cfg_with_network(tmp_path: Path) -> config.Config:
+    """A loaded config carrying the `lab` network from `CFG`, cfg_dir == tmp_path."""
+    (tmp_path / "mmw.toml").write_text(CFG)
+    return config.load(tmp_path)
+
+
 def _scrollable_on(widget, axis: str) -> bool:
     """True if some ancestor can actually scroll `axis` to bring widget into view.
 
@@ -129,7 +135,7 @@ def test_manage_tab_layout(cfg, size):
 
 
 @pytest.mark.parametrize("size", SIZES)
-def test_publish_tab_layout(cfg, size):
+def test_networks_tab_layout(cfg, size):
     cfg_obj, cfg_dir = cfg
     from mmw.tui.manage import ManageApp
 
@@ -137,10 +143,59 @@ def test_publish_tab_layout(cfg, size):
         app = ManageApp(cfg_obj, cfg_dir)
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
-            app.query_one(TabbedContent).active = "tab-publish"
+            app.query_one(TabbedContent).active = "tab-networks"
             await pilot.pause()
             await pilot.pause()
             _check(app.screen, size)
+
+    asyncio.run(scenario())
+
+
+def test_networks_tab_exists_and_has_a_bundle_button(tmp_path):
+    from mmw.tui.manage import ManageApp
+
+    cfg_obj = _cfg_with_network(tmp_path)
+
+    async def scenario():
+        app = ManageApp(cfg_obj, tmp_path, initial_tab="tab-networks")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tabs = app.query_one(TabbedContent)
+            assert tabs.active == "tab-networks"
+            assert app.query_one("#btn-bundle", Button)
+
+    asyncio.run(scenario())
+
+
+def test_bundle_button_warns_when_no_network_selected(tmp_path):
+    from mmw.tui.manage import ManageApp
+
+    cfg_obj = config.Config(settings=config.Settings(mirror_dir=tmp_path / "mirror"))
+
+    async def scenario():
+        app = ManageApp(cfg_obj, tmp_path, initial_tab="tab-networks")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.click("#btn-bundle")
+            await pilot.pause()
+            # No crash, and nothing was written.
+            assert not (tmp_path / "out").exists()
+
+    asyncio.run(scenario())
+
+
+def test_every_network_row_is_one_screen_row(tmp_path):
+    """Same rule the manage list has: border-top + margin-top makes one row three."""
+    from mmw.tui.manage import ManageApp
+
+    cfg_obj = _cfg_with_network(tmp_path)
+
+    async def scenario():
+        app = ManageApp(cfg_obj, tmp_path, initial_tab="tab-networks")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for item in app.query("#pub-list ListItem"):
+                assert item.size.height == 1
 
     asyncio.run(scenario())
 

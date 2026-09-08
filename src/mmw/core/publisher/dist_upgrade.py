@@ -1,10 +1,9 @@
 """Ubuntu dist-upgrade support: meta-release publishing, upgrade-path detection,
 and the generated UPGRADE.md."""
 from mmw.core.config import Config, NetworkConfig
-from mmw.core.pool import Pool
+from mmw.core.pool import KIND_META, Pool
 from mmw.core.resolve import network_mirrors
 
-from mmw.core.publisher.links import hardlink_or_copy
 from mmw.core.publisher.results import NetworkPublishResult
 
 
@@ -70,11 +69,8 @@ def dist_upgrade_info(network: NetworkConfig, cfg: Config, pool: Pool) -> tuple[
     return upgrade_paths, warnings
 
 
-def publish_changelogs(network: NetworkConfig, pool: Pool, result: NetworkPublishResult) -> None:
-    """Hardlink pooled meta-release blobs into the network publish tree."""
-    dst_dir = network.root / "changelogs.ubuntu.com"
-    dst_dir.mkdir(parents=True, exist_ok=True)
-
+def publish_changelogs(sink, pool: Pool, result: NetworkPublishResult) -> None:
+    """Publish pooled meta-release blobs to `changelogs.ubuntu.com/` on the sink."""
     for name in ("meta-release", "meta-release-lts"):
         src = pool.find_blob(f"changelogs.ubuntu.com/{name}")
         if src is None or not src.exists():
@@ -82,10 +78,13 @@ def publish_changelogs(network: NetworkConfig, pool: Pool, result: NetworkPublis
                 f"{name} not synced yet — run `mmw sync` for a Ubuntu main mirror first"
             )
             continue
-        try:
-            hardlink_or_copy(src, dst_dir / name)
-        except OSError as e:
-            result.dist_upgrade_warnings.append(f"could not publish {name}: {e}")
+        before = len(sink.errors)
+        status = sink.link(src, f"changelogs.ubuntu.com/{name}", src.stat().st_size, "", KIND_META)
+        if status == "error":
+            added = sink.errors[before:]
+            result.dist_upgrade_warnings.append(
+                f"could not publish {name}: {added[-1] if added else 'link error'}"
+            )
 
 
 def upgrade_hostnames(mirrors: "list | None") -> list[tuple[str, str]]:
@@ -110,16 +109,17 @@ def upgrade_hostnames(mirrors: "list | None") -> list[tuple[str, str]]:
     return hosts
 
 
-def write_upgrade_md(network: NetworkConfig, pool: Pool, paths: list[tuple[str, str]],
+def write_upgrade_md(sink, network: NetworkConfig, pool: Pool, paths: list[tuple[str, str]],
                      warnings: list[str], mirrors: "list | None" = None) -> None:
-    """Write UPGRADE.md at the network root."""
+    """Write UPGRADE.md through the sink."""
     versions = dict(parse_meta_release_lts(pool))
 
     lines = [
         "# Dist-Upgrade Guide",
         "",
         f"Network: **{network.name}**",
-        f"Mirror root: `{network.root}`",
+        f"Mirror root: `{network.root}`" if network.root else
+        "Mirror root: the directory this bundle was applied to",
         "",
         "## DNS Configuration Required",
         "",
@@ -164,4 +164,4 @@ def write_upgrade_md(network: NetworkConfig, pool: Pool, paths: list[tuple[str, 
             lines.append(f"- {w}")
         lines.append("")
 
-    (network.root / "UPGRADE.md").write_text("\n".join(lines))
+    sink.write("UPGRADE.md", ("\n".join(lines)).encode())

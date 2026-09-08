@@ -338,12 +338,21 @@ class NetworkSelect(_StrictModel):
 
 
 class NetworkConfig(_StrictModel):
+    """A named downselect of the mirror — what one site gets.
+
+    `root` and `bundle_dir` are NOT part of what a network is: they are
+    remembered destinations for the `publish` and `bundle` verbs. A network
+    may have neither, one, or both. A verb whose destination is unset says so
+    rather than inventing one.
+    """
     name: str
-    root: Path
+    root: Path | None = None          # publish's destination
+    bundle_dir: Path | None = None    # bundle's destination
     select: list[NetworkSelect] = []  # empty = every mirrored repository
-    prune: bool = True        # remove destination files no longer in source on publish
+    prune: bool = True        # remove destination files no longer in source
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
     certs: bool = False       # manage TLS key/CSR for this network
+    nginx: bool = True        # generate conf.d-style nginx site files
 
 
 class Config(_StrictModel):
@@ -554,7 +563,12 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
     networks_data = [
         {
             "name": n.name,
-            "root": str(n.root),
+            # root/bundle_dir are destinations belonging to the publish/bundle
+            # verbs, not the network itself — a network may have neither, so
+            # each is written only when set. `str(None)` would silently write
+            # the literal string "None" and round-trip as a bogus path.
+            **({"root": str(n.root)} if n.root is not None else {}),
+            **({"bundle_dir": str(n.bundle_dir)} if n.bundle_dir is not None else {}),
             "prune": n.prune,
             **(
                 {"select": [
@@ -568,6 +582,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
                 ]}
                 if n.select else {}
             ),
+            **({"nginx": False} if not n.nginx else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
         }

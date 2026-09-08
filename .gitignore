@@ -18,3 +18,9 @@ mirror/
 
 # Subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
+
+# Profiler output (machine-local, appended to by running syncs)
+mmw-profile-*.txt
+
+# Live machine-local config — per working directory, never shared
+mmw.toml

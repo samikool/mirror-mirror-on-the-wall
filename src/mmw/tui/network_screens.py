@@ -18,13 +18,18 @@ from mmw.tui.widgets import Button, JumpSelectionList
 
 
 class _StepNetworkPath(Widget):
+    """A network is a downselect of the mirror; `root` and `bundle_dir` are
+    remembered destinations belonging to the publish/bundle verbs, not to the
+    network itself. Both are optional and independent — a network may have
+    neither, one, or both."""
+
     DEFAULT_CSS = """
     _StepNetworkPath { padding: 1 2; height: auto; }
     _StepNetworkPath .field-label { color: $text-muted; margin-bottom: 0; }
     _StepNetworkPath Input { margin-bottom: 1; }
-    _StepNetworkPath #root-row { height: 3; }
-    _StepNetworkPath #root-row Input { width: 1fr; margin-bottom: 0; }
-    _StepNetworkPath #root-row Button { width: auto; min-width: 12; margin-left: 1; }
+    _StepNetworkPath #root-row, _StepNetworkPath #bundle-row { height: 3; }
+    _StepNetworkPath #root-row Input, _StepNetworkPath #bundle-row Input { width: 1fr; margin-bottom: 0; }
+    _StepNetworkPath #root-row Button, _StepNetworkPath #bundle-row Button { width: auto; min-width: 12; margin-left: 1; }
     _StepNetworkPath #preview {
         height: 3;
         color: $primary;
@@ -36,20 +41,32 @@ class _StepNetworkPath(Widget):
     """
 
     def compose(self) -> ComposeResult:
-        yield Label("Base path  (absolute path)", classes="field-label")
+        yield Label("Publish root (optional)", classes="field-label")
         with Horizontal(id="root-row"):
             yield Input(id="inp-root")
             yield Button("Browse…", id="btn-browse-root", variant="default")
+        yield Label("Bundle output directory (optional)", classes="field-label")
+        with Horizontal(id="bundle-row"):
+            yield Input(id="inp-bundle-dir")
+            yield Button("Browse…", id="btn-browse-bundle", variant="default")
         yield Label("Network name", classes="field-label")
         yield Input(id="inp-name")
         yield Label("", id="preview")
 
     def _update_preview(self) -> None:
         root = self.query_one("#inp-root", Input).value.strip()
+        bundle_dir = self.query_one("#inp-bundle-dir", Input).value.strip()
         name = self.query_one("#inp-name", Input).value.strip()
-        if root or name:
+        lines = []
+        if root:
+            lines.append(f"publish → [bold]{root}/{name or '…'}[/]")
+        if bundle_dir:
+            lines.append(f"bundle → [bold]{bundle_dir}[/]")
+        if lines:
+            self.query_one("#preview", Label).update("  [dim]→[/] " + "   ".join(lines))
+        elif name:
             self.query_one("#preview", Label).update(
-                f"  [dim]→[/] [bold]{root or '…'}/{name or '…'}[/]"
+                "  [dim]no destination — this network can be edited and synced, not published[/]"
             )
         else:
             self.query_one("#preview", Label).update("")
@@ -59,9 +76,14 @@ class _StepNetworkPath(Widget):
         self._update_preview()
 
     @on(Button.Pressed, "#btn-browse-root")
-    def _browse_pressed(self, event: "Button.Pressed") -> None:
+    def _browse_root_pressed(self, event: "Button.Pressed") -> None:
         event.stop()
         self._browse_root()
+
+    @on(Button.Pressed, "#btn-browse-bundle")
+    def _browse_bundle_pressed(self, event: "Button.Pressed") -> None:
+        event.stop()
+        self._browse_bundle()
 
     @work
     async def _browse_root(self) -> None:
@@ -80,14 +102,31 @@ class _StepNetworkPath(Widget):
         self.query_one("#inp-root", Input).value = picked
         self._update_preview()
 
-    def get_values(self) -> tuple[str, str]:
+    @work
+    async def _browse_bundle(self) -> None:
+        """Same rule as the publish root: only the base is picked, and it must
+        neither be required to exist nor be created by picking it — the bundle
+        verb creates its own output file inside this directory."""
+        picked = await self.app.push_screen_wait(PathPickModal(
+            "Where should bundles for this network be written?",
+            "pick the output directory — nothing is created by picking it",
+            self.query_one("#inp-bundle-dir", Input).value.strip(),
+        ))
+        if picked is None:
+            return                                  # cancelled: leave it alone
+        self.query_one("#inp-bundle-dir", Input).value = picked
+        self._update_preview()
+
+    def get_values(self) -> tuple[str, str, str]:
         return (
             self.query_one("#inp-root", Input).value.strip(),
+            self.query_one("#inp-bundle-dir", Input).value.strip(),
             self.query_one("#inp-name", Input).value.strip(),
         )
 
-    def restore(self, root: str, name: str) -> None:
+    def restore(self, root: str, bundle_dir: str, name: str) -> None:
         self.query_one("#inp-root", Input).value = root
+        self.query_one("#inp-bundle-dir", Input).value = bundle_dir
         self.query_one("#inp-name", Input).value = name
 
 class _StepNetworkMirrors(Widget):
@@ -132,16 +171,27 @@ class _StepNetworkConfirm(Widget):
     _StepNetworkConfirm #du-row Label, _StepNetworkConfirm #certs-row Label { margin: 0 0 0 1; }
     """
 
-    def __init__(self, name: str, root: Path, selects: "list[config.NetworkSelect]"):
+    def __init__(
+        self, name: str, root: Path | None, bundle_dir: Path | None,
+        selects: "list[config.NetworkSelect]",
+    ):
         super().__init__()
         self._name = name
         self._root = root
+        self._bundle_dir = bundle_dir
         self._selects = selects
 
     def compose(self) -> ComposeResult:
         yield Label("[bold]Confirm[/]")
         yield Label(f"  Network name:  [cyan]{self._name}[/]")
-        yield Label(f"  Publish root:  [cyan]{self._root}[/]")
+        if self._root is not None:
+            yield Label(f"  Publish root:  [cyan]{self._root}[/]")
+        if self._bundle_dir is not None:
+            yield Label(f"  Bundle to:     [cyan]{self._bundle_dir}[/]")
+        if self._root is None and self._bundle_dir is None:
+            yield Label(
+                "  [dim]no destination — this network can be edited and synced, not published[/]"
+            )
         yield Label(f"  Repositories:  [cyan]{len(self._selects)}[/]")
         yield Label("")
         for s in self._selects:
@@ -292,6 +342,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
         self._existing = existing or set()
         self._step_idx = 0
         self._root = ""
+        self._bundle_dir = ""
         self._name = ""
         self._selected_mirrors: "list[config.NetworkSelect]" = []
 
@@ -347,14 +398,14 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
         container = self.query_one("#step-container", ScrollableContainer)
 
         if self._step_idx == 0:
-            root, name = container.query_one(_StepNetworkPath).get_values()
-            if not root or not name:
-                self.notify("Both base path and name are required.", severity="warning")
+            root, bundle_dir, name = container.query_one(_StepNetworkPath).get_values()
+            if not name:
+                self.notify("Network name is required.", severity="warning")
                 return
             if name in self._existing:
                 self.notify(f"Network '{name}' already exists.", severity="warning")
                 return
-            self._root, self._name = root, name
+            self._root, self._bundle_dir, self._name = root, bundle_dir, name
             self._step_idx = 1
             self._update_indicator()
             container.remove_children()
@@ -372,8 +423,10 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
             self._step_idx = 2
             self._update_indicator()
             container.remove_children()
+            root = Path(self._root) / self._name if self._root else None
+            bundle_dir = Path(self._bundle_dir) if self._bundle_dir else None
             await container.mount(
-                _StepNetworkConfirm(self._name, Path(self._root) / self._name, self._selected_mirrors)
+                _StepNetworkConfirm(self._name, root, bundle_dir, self._selected_mirrors)
             )
             self.query_one("#btn-next", Button).label = "Add Network ✓"
 
@@ -382,7 +435,8 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
             self.dismiss(
                 config.NetworkConfig(
                     name=self._name,
-                    root=Path(self._root) / self._name,
+                    root=Path(self._root) / self._name if self._root else None,
+                    bundle_dir=Path(self._bundle_dir) if self._bundle_dir else None,
                     select=self._selected_mirrors,
                     dist_upgrade=confirm.get_dist_upgrade(),
                     certs=confirm.get_certs(),
@@ -405,7 +459,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
             self._step_idx = 0
             step = _StepNetworkPath()
             await container.mount(step)
-            self.call_after_refresh(lambda: step.restore(self._root, self._name))
+            self.call_after_refresh(lambda: step.restore(self._root, self._bundle_dir, self._name))
         elif self._step_idx == 2:
             self._step_idx = 1
             await container.mount(_StepNetworkMirrors(self._mirrors))
@@ -414,7 +468,11 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
         self.query_one("#btn-back", Button).disabled = self._step_idx == 0
         self.call_after_refresh(self._focus_step)
 
-class EditNetworkScreen(ModalScreen[tuple[list[str], bool, bool, bool] | None]):
+class EditNetworkScreen(
+    ModalScreen[
+        "tuple[list[config.NetworkSelect], bool, bool, bool, Path | None, Path | None, bool] | None"
+    ]
+):
     """Edit the mirror list and settings for an existing network."""
 
     DEFAULT_CSS = """
@@ -474,6 +532,10 @@ class EditNetworkScreen(ModalScreen[tuple[list[str], bool, bool, bool] | None]):
     EditNetworkScreen .axis-dim   { color: $text-muted; }
     EditNetworkScreen .axis-list  { height: auto; max-height: 8; margin-bottom: 0; }
     EditNetworkScreen #axis-scroll { height: 1fr; }
+    EditNetworkScreen .field-label { color: $text-muted; margin-bottom: 0; }
+    EditNetworkScreen #root-row, EditNetworkScreen #bundle-row { height: 3; }
+    EditNetworkScreen #root-row Input, EditNetworkScreen #bundle-row Input { width: 1fr; margin-bottom: 0; }
+    EditNetworkScreen #root-row Button, EditNetworkScreen #bundle-row Button { width: auto; min-width: 12; margin-left: 1; }
     EditNetworkScreen #nav-bar {
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: right middle;
@@ -497,6 +559,17 @@ class EditNetworkScreen(ModalScreen[tuple[list[str], bool, bool, bool] | None]):
         with Vertical():
             yield Static(f"  Editing  [bold]{self._network.name}[/]", id="edit-title")
             with Vertical(id="edit-container"):
+                yield Label("Publish root (optional)", classes="field-label")
+                with Horizontal(id="root-row"):
+                    yield Input(str(self._network.root) if self._network.root else "", id="inp-root")
+                    yield Button("Browse…", id="btn-browse-root", variant="default")
+                yield Label("Bundle output directory (optional)", classes="field-label")
+                with Horizontal(id="bundle-row"):
+                    yield Input(
+                        str(self._network.bundle_dir) if self._network.bundle_dir else "",
+                        id="inp-bundle-dir",
+                    )
+                    yield Button("Browse…", id="btn-browse-bundle", variant="default")
                 yield Label("[dim]What this network publishes  ·  ctrl+a toggles a list[/]")
                 with ScrollableContainer(id="axis-scroll"):
                     for axis in self._axes:
@@ -530,6 +603,49 @@ class EditNetworkScreen(ModalScreen[tuple[list[str], bool, bool, bool] | None]):
     def _cancel(self) -> None:
         self.dismiss(None)
 
+    @on(Button.Pressed, "#btn-browse-root")
+    def _browse_root_pressed(self, event: "Button.Pressed") -> None:
+        event.stop()
+        self._browse_root()
+
+    @on(Button.Pressed, "#btn-browse-bundle")
+    def _browse_bundle_pressed(self, event: "Button.Pressed") -> None:
+        event.stop()
+        self._browse_bundle()
+
+    @work
+    async def _browse_root(self) -> None:
+        """Unlike `_StepNetworkPath._browse_root` (Add), Edit shows and saves
+        the full path verbatim — it never appends the network name (`_save`
+        below does `root = Path(root_str)`, no join). The hint must describe
+        that, not Add's behaviour: describing Add's rule here told an
+        operator to pick the *base* and the network name would be added
+        inside it, which is false for Edit — picking `/srv` when the network
+        already publishes to `/srv/lab` silently changed its publish root to
+        `/srv`, and with `prune = True` (the default) two networks edited
+        that way each pruned the other's files out of a live-served tree."""
+        picked = await self.app.push_screen_wait(PathPickModal(
+            "Where should this network publish?",
+            "pick the directory this network publishes into",
+            self.query_one("#inp-root", Input).value.strip(),
+        ))
+        if picked is None:
+            return                                  # cancelled: leave it alone
+        self.query_one("#inp-root", Input).value = picked
+
+    @work
+    async def _browse_bundle(self) -> None:
+        """Directory only, nothing required to exist — see
+        `_StepNetworkPath._browse_bundle`."""
+        picked = await self.app.push_screen_wait(PathPickModal(
+            "Where should bundles for this network be written?",
+            "pick the output directory — nothing is created by picking it",
+            self.query_one("#inp-bundle-dir", Input).value.strip(),
+        ))
+        if picked is None:
+            return                                  # cancelled: leave it alone
+        self.query_one("#inp-bundle-dir", Input).value = picked
+
     @on(Button.Pressed, "#btn-save")
     def _save(self) -> None:
         selects = [s for s in (a.to_select(self) for a in self._axes) if s is not None]
@@ -542,4 +658,8 @@ class EditNetworkScreen(ModalScreen[tuple[list[str], bool, bool, bool] | None]):
         prune = self.query_one("#prune-switch", Switch).value
         dist_upgrade = self.query_one("#du-switch", Switch).value
         certs = self.query_one("#certs-switch", Switch).value
-        self.dismiss((selects, prune, dist_upgrade, certs))
+        root_str = self.query_one("#inp-root", Input).value.strip()
+        bundle_str = self.query_one("#inp-bundle-dir", Input).value.strip()
+        root = Path(root_str) if root_str else None
+        bundle_dir = Path(bundle_str) if bundle_str else None
+        self.dismiss((selects, prune, dist_upgrade, certs, root, bundle_dir, self._network.nginx))

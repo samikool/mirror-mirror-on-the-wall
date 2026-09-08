@@ -8,7 +8,7 @@ import pytest
 
 from mmw.core import config
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
-from mmw.core.publisher import publish_base, publish_group, publish_network
+from mmw.core.publisher import TreeSink, publish_base, publish_group, publish_network
 
 
 @pytest.fixture
@@ -50,14 +50,14 @@ def test_by_hash_created_from_pool_key(tmp_path, pool):
     cs = _seed_flat_index(pool, "m", 1)
     net = config.NetworkConfig(name="n", root=tmp_path / "pub")
 
-    publish_group([m], net, pool)
+    publish_group([m], TreeSink(net.root), pool)
     dst = publish_base(net, m)
     link = dst / "by-hash" / "SHA256" / cs
     assert link.exists()
     assert link.stat().st_ino == (dst / "Packages").stat().st_ino
 
     # idempotent
-    result2 = publish_group([m], net, pool)
+    result2 = publish_group([m], TreeSink(net.root), pool)
     assert link.exists()
     assert result2.errors == []
 
@@ -68,7 +68,7 @@ def test_by_hash_prunes_old_generations(tmp_path, pool):
     hashes = []
     for gen in range(6):
         hashes.append(_seed_flat_index(pool, "m", gen))
-        publish_group([m], net, pool)
+        publish_group([m], TreeSink(net.root), pool)
         # stagger mtimes so retention ordering is deterministic
         bh = publish_base(net, m) / "by-hash" / "SHA256"
         t = time.time() - (6 - gen) * 10
@@ -148,6 +148,99 @@ def test_nested_publish_base_not_pruned(tmp_path, pool, mirror_dir):
     assert sum(r.pruned for r in result2.mirrors) == 0
 
 
+def test_publish_network_without_root_returns_error(tmp_path, mirror_dir):
+    """A bundle-only network (no publish root) must not attempt to build a
+    TreeSink — publish_base would raise ValueError, and `mmw bundle` owns
+    this case instead. Nothing in the pool/filesystem should be touched."""
+    net = config.NetworkConfig(name="dgx-site")  # root=None, bundle_dir=None
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[],
+        networks=[net],
+    )
+
+    result = publish_network(net, cfg, mirror_dir)
+
+    assert len(result.mirrors) == 1
+    only = result.mirrors[0]
+    assert only.mirror_name == "dgx-site"
+    assert only.errors == [
+        "network 'dgx-site' has no publish root — use `mmw bundle` instead"
+    ]
+    assert only.linked == 0
+    assert only.skipped == 0
+    assert only.pruned == 0
+    # The pool was never opened — an early return, not a failed operation.
+    assert not (mirror_dir / ".pool").exists()
+
+
+def test_dry_run_network_without_root_returns_error(tmp_path, mirror_dir):
+    """IMPORTANT 3 (whole-branch review) — `publish_network` guards
+    `network.root is None`; `dry_run_network` did not, so it fell straight
+    into `publish_base()`, which raises `ValueError: network 'x' has no
+    publish root`. `cmd_publish` iterates every configured network when `-n`
+    is omitted, so one bundle-only network aborted `mmw publish --dry-run`
+    for every other network too, with an uncaught traceback. Must return the
+    same graceful per-network error `publish_network` uses instead."""
+    from mmw.core.publisher import dry_run_network
+
+    net = config.NetworkConfig(name="dgx-site")  # root=None, bundle_dir=None
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[],
+        networks=[net],
+    )
+
+    result = dry_run_network(net, cfg, mirror_dir)
+
+    assert len(result.mirrors) == 1
+    only = result.mirrors[0]
+    assert only.mirror_name == "dgx-site"
+    assert only.errors == [
+        "network 'dgx-site' has no publish root — use `mmw bundle` instead"
+    ]
+    # No pool touched, no filesystem scan attempted.
+    assert not (mirror_dir / ".pool").exists()
+
+
+def test_publish_writes_nginx_site_files(tmp_path, pool, mirror_dir):
+    """A real publish generates nginx/mirror.conf + one site file per host, with
+    the network's own root substituted — no placeholder left behind."""
+    _seed_flat(pool, "m", "https://example.com/repo/", "pkg.deb")
+    net = config.NetworkConfig(name="n", root=tmp_path / "pub")
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[config.SourceConfig(name="m", label="custom", provider="apt-flat",
+                                     url="https://example.com/repo/")],
+        networks=[net],
+    )
+
+    result = publish_network(net, cfg, mirror_dir)
+    assert result.errors == []
+
+    site = net.root / "nginx" / "sites" / "example.com.conf"
+    assert site.exists()
+    content = site.read_text()
+    assert f"root {net.root}/example.com;" in content
+    assert "__MMW_ROOT__" not in content
+    assert (net.root / "nginx" / "mirror.conf").exists()
+
+
+def test_publish_nginx_false_writes_no_site_files(tmp_path, pool, mirror_dir):
+    _seed_flat(pool, "m", "https://example.com/repo/", "pkg.deb")
+    net = config.NetworkConfig(name="n", root=tmp_path / "pub", nginx=False)
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[config.SourceConfig(name="m", label="custom", provider="apt-flat",
+                                     url="https://example.com/repo/")],
+        networks=[net],
+    )
+
+    result = publish_network(net, cfg, mirror_dir)
+    assert result.errors == []
+    assert not (net.root / "nginx").exists()
+
+
 def test_publish_group_prune_exclude_direct(tmp_path, pool):
     m = _apt_flat_mirror()
     _seed_flat_index(pool, "m", 1)
@@ -157,7 +250,8 @@ def test_publish_group_prune_exclude_direct(tmp_path, pool):
     protected.mkdir(parents=True)
     (protected / "keep.deb").write_bytes(b"keep")
 
-    result = publish_group([m], net, pool, prune=True, prune_exclude={protected})
+    result = publish_group([m], TreeSink(net.root), pool, prune=True,
+                           prune_exclude={f"{m.mirror_base}/sub"})
     assert (protected / "keep.deb").exists()
     assert result.pruned == 0
 
@@ -188,7 +282,8 @@ def test_publish_group_stop_between_chunks(tmp_path, pool, monkeypatch):
         if len(seen) == 2:
             stop.set()
 
-    result = publish_group([m], net, pool, progress=progress, stop_event=stop)
+    result = publish_group([m], TreeSink(net.root, stop_event=stop), pool,
+                           progress=progress, stop_event=stop)
     assert result.linked < 10  # interrupted between chunks
     assert result.linked >= 2
 
@@ -244,4 +339,19 @@ def test_removed_mirror_base_that_was_never_published_is_skipped(tmp_path):
 
     dirs, shared = exclusive_publish_dirs(net, {ports.name: ports}, {ports.name}, set())
     assert dirs == []  # nothing on disk
+    assert shared == []
+
+
+def test_bundle_only_network_offers_nothing_to_delete(tmp_path):
+    """A network with no `root` never hardlinked anything — nothing to offer deleting."""
+    from mmw.tui.publish_panel import exclusive_publish_dirs
+
+    ports = config.MirrorConfig(name="u-ports-noble-main-arm64", provider="apt", label="ubuntu",
+                                source_url="http://ports.ubuntu.com/ubuntu-ports",
+                                suite="noble", component="main", arch="arm64")
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "bundles")
+    assert net.root is None
+
+    dirs, shared = exclusive_publish_dirs(net, {ports.name: ports}, {ports.name}, set())
+    assert dirs == []
     assert shared == []

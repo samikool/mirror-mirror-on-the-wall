@@ -2,7 +2,6 @@
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from rich.markup import escape as _escape
 from textual import on
@@ -14,9 +13,6 @@ from textual.widgets import DataTable, Label, ProgressBar, RichLog, Static
 
 from mmw.core.format import fmt_duration as _fmt_duration, fmt_size as _fmt_bytes
 from mmw.tui.widgets import Button
-
-if TYPE_CHECKING:
-    from mmw.core.publisher import NetworkPublishResult
 
 
 class DryRunResultModal(ModalScreen[bool]):
@@ -102,77 +98,114 @@ class DryRunResultModal(ModalScreen[bool]):
     def _proceed(self) -> None:
         self.dismiss(True)
 
-class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
-    """Full-screen progress view shown while publish_network runs."""
-
-    BINDINGS = [Binding("escape", "action_close_or_stop", "Close/Stop")]
-
-    DEFAULT_CSS = """
-    PublishProgressModal { align: center middle; }
-    PublishProgressModal > Vertical {
+def _transfer_progress_css(cls_name: str, prefix: str) -> str:
+    """CSS for a `_TransferProgressModal` subclass, parameterized by its own
+    class name (Textual CSS type selectors match by name, not by base class)
+    and its `ID_PREFIX`. Generated rather than duplicated so the geometry the
+    two variants share can never drift — see `_TransferProgressModal`'s
+    docstring for why the duplicate this replaces was worth removing."""
+    return f"""
+    {cls_name} {{ align: center middle; }}
+    {cls_name} > Vertical {{
         width: 95%;
         height: 90%;
         border: double $primary;
         background: $surface;
-    }
-    PublishProgressModal #pub-title-bar {
+    }}
+    {cls_name} #{prefix}-title-bar {{
         background: $primary-darken-3;
         padding: 0 2;
         height: 1;
         color: $text;
         text-style: bold;
-    }
-    PublishProgressModal #pub-progress-area {
+    }}
+    {cls_name} #{prefix}-progress-area {{
         height: auto;
         padding: 1 2 0 2;
-    }
-    PublishProgressModal ProgressBar {
+    }}
+    {cls_name} ProgressBar {{
         margin: 0 0 1 0;
-    }
-    PublishProgressModal .pub-section-label {
+    }}
+    {cls_name} .{prefix}-section-label {{
         height: 1;
         color: $text-muted;
         text-style: bold;
-    }
-    PublishProgressModal .pub-mirror-label {
+    }}
+    {cls_name} .{prefix}-mirror-label {{
         height: 1;
         color: $accent;
         margin-top: 1;
-    }
-    PublishProgressModal .pub-stats {
+    }}
+    {cls_name} .{prefix}-stats {{
         height: 1;
         color: $text;
         margin-top: 1;
-    }
-    PublishProgressModal .pub-eta {
+    }}
+    {cls_name} .{prefix}-eta {{
         height: 1;
         color: $text-muted;
         margin-bottom: 1;
-    }
-    PublishProgressModal #pub-log {
+    }}
+    {cls_name} #{prefix}-log {{
         height: 1fr;
         border-top: solid $primary-darken-2;
         background: $background;
-    }
-    PublishProgressModal #pub-controls {
+    }}
+    {cls_name} #{prefix}-controls {{
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: right middle;
         padding: 0 2;
         background: $primary-darken-3;
         border-top: solid $primary-darken-1;
         dock: bottom;
-    }
-    PublishProgressModal #pub-footer-label {
+    }}
+    {cls_name} #{prefix}-footer-label {{
         width: 1fr;
         color: $text-muted;
         content-align: left middle;
-    }
-    PublishProgressModal #btn-stop {
+    }}
+    {cls_name} #btn-stop {{
         margin-left: 1;
-    }
+    }}
     """
 
-    def __init__(self, network_name: str, total: int = 0, per_mirror_counts: dict[str, int] | None = None):
+
+class _TransferProgressModal(ModalScreen):
+    """Shared machinery behind `PublishProgressModal` and `BundleProgressModal`.
+
+    `publish_group` (`core/publisher/links.py`) fires the identical
+    `progress(rel, status)` calls into a `BundleSink` as it does into a
+    `TreeSink` (`core/publisher/sinks.py`) — "linked"/"skipped"/"pruned"/
+    "by-hash:N"/"enumerate-*"/"prune-scan-*" are the Sink protocol's own
+    vocabulary, not publish-specific wording — so a live progress screen over
+    either one is the same counters, the same lock-protected buffer drained by
+    a 60 Hz `_tick`, and the same completion states. Extracted here rather
+    than kept as two copies because this exact counter/tick/completion logic
+    has already needed three separate one-at-a-time fixes (the
+    flush-before-done bug, the try-block-scope bug, the rate-limit-timing
+    bug) — a duplicate means every future fix like that has to be applied
+    twice, with nothing enforcing that it will be.
+
+    Subclasses supply wording (`VERB_ING`/`VERB_PAST`/`COUNT_LABEL`), the
+    widget id prefix (`ID_PREFIX`), and whether a per-mirror progress bar
+    renders (`SHOW_MIRROR_BAR`) — a bundle has no destination-scan file count
+    to bound one against ahead of time, so it shows a running "N considered"
+    count instead. Only `notify_mirror_start`/`record`/`_tick` read that flag,
+    and each check is a single `if`, never an `isinstance` — if a future
+    caller needs more than that, this base has stopped being a good fit and
+    should not be stretched further to cover it.
+    """
+
+    BINDINGS = [Binding("escape", "action_close_or_stop", "Close/Stop")]
+
+    ID_PREFIX = "xfer"
+    VERB_ING = "Transferring"
+    VERB_PAST = "Transferred"
+    COUNT_LABEL = "done"
+    SHOW_MIRROR_BAR = True
+
+    def __init__(self, network_name: str, total: int = 0,
+                 per_mirror_counts: dict[str, int] | None = None):
         super().__init__()
         self._network_name = network_name
         self._total = total
@@ -198,51 +231,53 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
         self._last_speed_time: float = 0.0
         self._last_speed_linked: int = 0
         self.stop_event = threading.Event()
-        # Set by mark_done / mark_error from the publish thread
-        self._publish_done: bool = False
-        self._publish_result: "NetworkPublishResult | None" = None
-        self._publish_error: str = ""
+        # Set by mark_done / mark_error from the transfer thread
+        self._transfer_done: bool = False
+        self._result = None
+        self._error_msg: str = ""
         self._done_displayed: bool = False
         self._dismissed: bool = False
 
     def compose(self) -> ComposeResult:
+        p = self.ID_PREFIX
         with Vertical():
-            yield Static(f"  Publishing  {self._network_name}", id="pub-title-bar")
-            with Vertical(id="pub-progress-area"):
-                yield Label("  Overall", id="pub-overall-label", classes="pub-section-label")
+            yield Static(f"  {self.VERB_ING}  {self._network_name}", id=f"{p}-title-bar")
+            with Vertical(id=f"{p}-progress-area"):
+                yield Label("  Overall", id=f"{p}-overall-label", classes=f"{p}-section-label")
                 yield ProgressBar(
                     total=self._total if self._total else None,
                     show_eta=False,
-                    id="pub-pbar",
+                    id=f"{p}-pbar",
                 )
-                yield Label("  Waiting for first mirror…", id="pub-mirror-label", classes="pub-mirror-label")
-                yield ProgressBar(total=None, show_eta=False, id="pub-mirror-pbar")
-                yield Label("  Starting…", id="pub-stats", classes="pub-stats")
-                yield Label("", id="pub-eta", classes="pub-eta")
-            log = RichLog(id="pub-log", highlight=False, markup=True, wrap=False, max_lines=2000)
+                yield Label("  Waiting for first mirror…", id=f"{p}-mirror-label", classes=f"{p}-mirror-label")
+                if self.SHOW_MIRROR_BAR:
+                    yield ProgressBar(total=None, show_eta=False, id=f"{p}-mirror-pbar")
+                yield Label("  Starting…", id=f"{p}-stats", classes=f"{p}-stats")
+                yield Label("", id=f"{p}-eta", classes=f"{p}-eta")
+            log = RichLog(id=f"{p}-log", highlight=False, markup=True, wrap=False, max_lines=2000)
             log.can_focus = False
             yield log
-            with Horizontal(id="pub-controls"):
-                yield Static("", id="pub-footer-label")
+            with Horizontal(id=f"{p}-controls"):
+                yield Static("", id=f"{p}-footer-label")
                 yield Button("Stop", id="btn-stop", variant="error")
 
     def on_mount(self) -> None:
         self._last_speed_time = time.monotonic()
         self.set_interval(1 / 60, self._tick)
 
-    def _safe_dismiss(self, result: "NetworkPublishResult | None") -> None:
+    def _safe_dismiss(self, result) -> None:
         if not self._dismissed:
             self._dismissed = True
             self.dismiss(result)
 
     def action_close_or_stop(self) -> None:
         if self._done_displayed:
-            self._safe_dismiss(self._publish_result)
+            self._safe_dismiss(self._result)
         elif not self.stop_event.is_set():
             self.stop_event.set()
             try:
                 self.query_one("#btn-stop", Button).disabled = True
-                self.query_one("#pub-title-bar", Static).update(
+                self.query_one(f"#{self.ID_PREFIX}-title-bar", Static).update(
                     f"  Stopping  {self._network_name}  [dim](finishing current file…)[/]"
                 )
             except Exception:
@@ -252,30 +287,34 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
     def _btn_stop_pressed(self) -> None:
         self.action_close_or_stop()
 
-    def mark_done(self, result: "NetworkPublishResult") -> None:
-        """Called from the publish thread (or its await) when publish completes."""
+    def mark_done(self, result) -> None:
+        """Called from the transfer thread (or its await) when it completes."""
         with self._lock:
-            self._publish_done = True
-            self._publish_result = result
+            self._transfer_done = True
+            self._result = result
 
     def mark_error(self, msg: str) -> None:
-        """Called when the publish thread raises an exception."""
+        """Called when the transfer thread raises an exception."""
         with self._lock:
-            self._publish_done = True
-            self._publish_error = msg
+            self._transfer_done = True
+            self._error_msg = msg
 
     def notify_mirror_start(self, name: str, index: int, total_mirrors: int) -> None:
-        """Called from publish thread when a new mirror begins."""
+        """Called from the transfer thread when a new mirror/group begins."""
         file_count = self._per_mirror_counts.get(name, 0)
         with self._lock:
             self._pending_mirror_change = (name, index, total_mirrors, file_count)
             self._mirror_linked = 0
             self._mirror_skipped = 0
 
-    def record(self, dst: Path, status: str) -> None:
-        """Called from publish thread — pure counter + buffer update, no DOM work."""
-        parts = dst.parts
-        short = "/".join(parts[-4:]) if len(parts) >= 4 else str(dst)
+    def record(self, dst: str, status: str) -> None:
+        """Called from the transfer thread — pure counter + buffer update, no DOM work.
+
+        `dst` is a sink-relative POSIX string (never a `Path`) — see the Sink
+        progress contract in `core/publisher/sinks.py`.
+        """
+        parts = dst.split("/")
+        short = "/".join(parts[-4:]) if len(parts) >= 4 else dst
         with self._lock:
             if status == "linked":
                 self._linked += 1
@@ -317,6 +356,7 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
                 )
 
     def _tick(self) -> None:
+        p = self.ID_PREFIX
         now = time.monotonic()
         with self._lock:
             linked = self._linked
@@ -339,14 +379,15 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
             self._mirror_index = index
             self._mirror_total_mirrors = total_mirrors
             self._mirror_total_count = file_count
-            try:
-                pbar = self.query_one("#pub-mirror-pbar", ProgressBar)
-                pbar.total = file_count if file_count else None
-                pbar.progress = 0
-            except Exception:
-                pass
+            if self.SHOW_MIRROR_BAR:
+                try:
+                    pbar = self.query_one(f"#{p}-mirror-pbar", ProgressBar)
+                    pbar.total = file_count if file_count else None
+                    pbar.progress = 0
+                except Exception:
+                    pass
 
-        # Speed EMA — pkg files/s (linked + skipped), sampled every 250 ms
+        # Speed EMA — files/s (linked + skipped), sampled every 250 ms
         dt = now - self._last_speed_time
         if dt >= 0.25:
             instant = (total_done - self._last_speed_linked) / dt
@@ -360,26 +401,38 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
         # Overall progress bar
         try:
             if self._total:
-                self.query_one("#pub-pbar", ProgressBar).progress = total_done
+                self.query_one(f"#{p}-pbar", ProgressBar).progress = total_done
         except Exception:
             pass
 
-        # Per-mirror progress bar + label
+        # Per-mirror progress bar — only when this variant renders one. Kept
+        # as its own try block, separate from the label update below: the two
+        # used to share one, so a variant with no bar widget at all raised on
+        # the very first `query_one` and the label update below it never ran.
+        if self.SHOW_MIRROR_BAR:
+            try:
+                mirror_done = mirror_linked + mirror_skipped
+                pbar = self.query_one(f"#{p}-mirror-pbar", ProgressBar)
+                if self._mirror_total_count:
+                    pbar.progress = mirror_done
+            except Exception:
+                pass
+
+        # Mirror label
         try:
-            mirror_done = mirror_linked + mirror_skipped
-            pbar = self.query_one("#pub-mirror-pbar", ProgressBar)
-            if self._mirror_total_count:
-                pbar.progress = mirror_done
             if self._mirror_name:
+                mirror_done = mirror_linked + mirror_skipped
                 if self._mirror_total_count:
                     pbar_pct = f"  [dim]{100 * mirror_done / self._mirror_total_count:.0f}%[/]"
                     count_str = f"  [dim]{mirror_done:,} / {self._mirror_total_count:,}[/]{pbar_pct}"
-                else:
+                elif self.SHOW_MIRROR_BAR:
                     count_str = ""
+                else:
+                    count_str = f"  [dim]{mirror_done:,} considered[/]"
                 # The counters stall during enumeration and the destination
                 # scan; the phase says which one is running.
                 phase_str = f"  [dim]·[/]  [dim]{phase}[/]" if phase else ""
-                self.query_one("#pub-mirror-label", Label).update(
+                self.query_one(f"#{p}-mirror-label", Label).update(
                     f"  Mirror {self._mirror_index} / {self._mirror_total_mirrors}"
                     f"  [dim]·[/]  [bold]{self._mirror_name}[/]"
                     f"{count_str}{phase_str}"
@@ -392,14 +445,14 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
 
         pruned_str = f"  [red]✂ {pruned:,}[/] pruned" if pruned else ""
         try:
-            self.query_one("#pub-stats", Label).update(
-                f"  [green]↗ {linked:,}[/] linked"
+            self.query_one(f"#{p}-stats", Label).update(
+                f"  [green]↗ {linked:,}[/] {self.COUNT_LABEL}"
                 f"  [cyan]= {skipped:,}[/] already current"
                 f"{pruned_str}"
                 f"  [dim]·[/]  [bold]{speed:,.0f}[/] files/s"
                 f"{pct}"
             )
-            self.query_one("#pub-eta", Label).update(
+            self.query_one(f"#{p}-eta", Label).update(
                 f"  [dim]elapsed {_fmt_duration(elapsed)}"
                 f"  ·  {total_done:,} / {total_str} files[/]"
             )
@@ -409,7 +462,7 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
         # Flush log entries into RichLog
         if pending:
             try:
-                log = self.query_one("#pub-log", RichLog)
+                log = self.query_one(f"#{p}-log", RichLog)
                 for entry in pending:
                     log.write(entry)
             except Exception:
@@ -418,24 +471,24 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
         # Footer label
         try:
             stopping = "  [bold red]Stopping…[/]  " if self.stop_event.is_set() else ""
-            self.query_one("#pub-footer-label", Static).update(
+            self.query_one(f"#{p}-footer-label", Static).update(
                 f"{stopping}[dim]{self._network_name}  ·  {_fmt_duration(elapsed)}[/]"
             )
         except Exception:
             pass
 
-        # Publish completion — runs once when thread signals done
-        if self._publish_done and not self._done_displayed:
+        # Transfer completion — runs once when thread signals done
+        if self._transfer_done and not self._done_displayed:
             self._done_displayed = True
             with self._lock:
-                result = self._publish_result
-                error = self._publish_error
+                result = self._result
+                error = self._error_msg
             try:
                 if error:
-                    self.query_one("#pub-title-bar", Static).update(
+                    self.query_one(f"#{p}-title-bar", Static).update(
                         f"  [bold red]✗ Error[/]  {self._network_name}"
                     )
-                    self.query_one("#pub-log", RichLog).write(
+                    self.query_one(f"#{p}-log", RichLog).write(
                         f"  [red]✗ {_escape(error)}[/]"
                     )
                     btn = self.query_one("#btn-stop", Button)
@@ -443,7 +496,7 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
                     btn.variant = "error"
                     btn.disabled = False
                 elif self.stop_event.is_set():
-                    self.query_one("#pub-title-bar", Static).update(
+                    self.query_one(f"#{p}-title-bar", Static).update(
                         f"  [bold yellow]⚠ Stopped[/]  {self._network_name}"
                     )
                     btn = self.query_one("#btn-stop", Button)
@@ -451,8 +504,8 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
                     btn.variant = "warning"
                     btn.disabled = False
                 else:
-                    self.query_one("#pub-title-bar", Static).update(
-                        f"  [bold green]✓ Published[/]  {self._network_name}"
+                    self.query_one(f"#{p}-title-bar", Static).update(
+                        f"  [bold green]✓ {self.VERB_PAST}[/]  {self._network_name}"
                     )
                     btn = self.query_one("#btn-stop", Button)
                     btn.label = "Close"
@@ -463,6 +516,42 @@ class PublishProgressModal(ModalScreen["NetworkPublishResult | None"]):
             # Auto-close after 4 s so user can read the result; they can also
             # click Close or press Escape to dismiss immediately.
             self.set_timer(4.0, lambda: self._safe_dismiss(result))
+
+
+class PublishProgressModal(_TransferProgressModal):
+    """Full-screen progress view shown while publish_network runs."""
+
+    ID_PREFIX = "pub"
+    VERB_ING = "Publishing"
+    VERB_PAST = "Published"
+    COUNT_LABEL = "linked"
+    SHOW_MIRROR_BAR = True
+
+    DEFAULT_CSS = _transfer_progress_css("PublishProgressModal", "pub")
+
+
+class BundleProgressModal(_TransferProgressModal):
+    """Full-screen progress view shown while bundle_network runs.
+
+    Same pipeline as `PublishProgressModal` — `publish_group` fires the same
+    `progress(rel, status)` calls into a `BundleSink` as it does into a
+    `TreeSink` — so this differs from it only in wording ("Bundling", "sent"
+    rather than "linked"), the result type (`BundleResult`), and having no
+    per-mirror progress bar: a bundle group has no destination-scan file count
+    to bound one against ahead of time. A `BundleSink` never prunes locally —
+    a bundle only *records* what the far side must delete — so no
+    `prune-scan-*` status ever arrives here; the shared `record()` handling
+    stays for parity with the publish path rather than as a silent gap.
+    """
+
+    ID_PREFIX = "bun"
+    VERB_ING = "Bundling"
+    VERB_PAST = "Bundled"
+    COUNT_LABEL = "sent"
+    SHOW_MIRROR_BAR = False
+
+    DEFAULT_CSS = _transfer_progress_css("BundleProgressModal", "bun")
+
 
 class PreparePublishModal(ModalScreen[None]):
     """Non-dismissable modal shown during verify and optional dry-run phases."""

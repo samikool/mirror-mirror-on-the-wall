@@ -4,7 +4,6 @@ Never walks mirror source trees — sizes come from the pool DB and from the
 metadata indexes already present at the publish destination.
 """
 from pathlib import Path
-from urllib.parse import urlparse
 
 from mmw.core.compress import decompress
 from mmw.core.config import Config, MirrorConfig, NetworkConfig
@@ -20,12 +19,11 @@ def publish_base(network: NetworkConfig, mirror: MirrorConfig) -> Path:
     source_url = "https://archive.ubuntu.com/ubuntu/"
     → network.root / "archive.ubuntu.com" / "ubuntu"
     """
-    parsed = urlparse(mirror.source_url)
-    host = parsed.hostname or "unknown"
-    if parsed.port:
-        host = f"{host}_{parsed.port}"
-    upstream_path = parsed.path.strip("/")
-    return network.root / host / upstream_path
+    if network.root is None:
+        raise ValueError(
+            f"network '{network.name}' has no publish root — it can only be bundled"
+        )
+    return network.root / mirror.mirror_base
 
 
 def dst_stats_apt(dst_root: Path, suite: str, component: str, arch: str) -> tuple[int, int]:
@@ -109,6 +107,20 @@ def dry_run_network(
     from mmw.core.publisher.dist_upgrade import dist_upgrade_info
 
     result = NetworkPublishResult(network_name=network.name, dry_run=True)
+
+    # A bundle-only network has no publish root — `publish_base()` below
+    # would raise ValueError for every mirror. Mirror `publish_network`'s own
+    # guard (publisher/__init__.py) and its exact message, rather than
+    # letting that exception surface here: this function is read-only and
+    # must never crash a caller iterating several networks in one dry-run.
+    if network.root is None:
+        r = MirrorPublishResult(mirror_name=network.name)
+        r.errors.append(
+            f"network '{network.name}' has no publish root — use `mmw bundle` instead"
+        )
+        result.mirrors.append(r)
+        return result
+
     from mmw.core.resolve import network_mirrors
     mirror_map = {m.name: m for m in network_mirrors(network, cfg, mirror_dir)}
     selected_names = list(mirror_map)

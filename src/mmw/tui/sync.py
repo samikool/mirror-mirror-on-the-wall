@@ -276,7 +276,7 @@ class MirrorCard(Static, can_focus=True):
             return
 
         now = time.monotonic()
-        self._update_speed(now)
+        speed_updated = self._update_speed(now)
 
         n = self._pending_downloaded + self._pending_pooled + self._pending_failed + self._pending_skipped
         if n > 0:
@@ -331,7 +331,12 @@ class MirrorCard(Static, can_focus=True):
             except Exception:
                 pass
 
-        self._refresh_stats(now)
+        # Re-render the stats line only when something it shows actually moved —
+        # a new completion, or the speed EMA (which also drives stall detection,
+        # so this still catches a mirror going quiet). Re-rendering unconditionally
+        # at 60 Hz per card was pure work, same as the footer's own throttle above.
+        if n > 0 or speed_updated:
+            self._refresh_stats(now)
 
     def finish(self, metadata_ok: bool = True, metadata_errors: tuple[str, ...] = (),
                stopped: bool = False, resnapshotted: bool = False):
@@ -445,10 +450,11 @@ class MirrorCard(Static, can_focus=True):
 
     _SPEED_INTERVAL = 0.25
 
-    def _update_speed(self, now: float) -> None:
+    def _update_speed(self, now: float) -> bool:
+        """Returns True if the EMA was recomputed (i.e. `_SPEED_INTERVAL` elapsed)."""
         dt = now - self._speed_last_time
         if dt < self._SPEED_INTERVAL:
-            return
+            return False
         with self._chunk_lock:
             new_bytes = self._chunk_bytes
             self._chunk_bytes = 0
@@ -456,6 +462,7 @@ class MirrorCard(Static, can_focus=True):
         instant = new_bytes / dt
         α = 0.3
         self._speed_ema = α * instant + (1 - α) * self._speed_ema
+        return True
 
     _STALL_TIMEOUT = 30.0
 

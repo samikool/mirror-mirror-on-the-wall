@@ -4,6 +4,7 @@ A network is a noun — a named downselect of the mirror — and publish and
 bundle are two verbs over it, sharing one list and one detail panel."""
 import asyncio
 import re
+import shutil
 from pathlib import Path
 
 from textual import on, work
@@ -18,10 +19,12 @@ from rich.markup import escape as _escape
 from mmw.core import config
 from mmw.core.resolve import available_mirrors, network_mirrors
 from mmw.core.format import fmt_size as _fmt_bytes
+from mmw.core.publisher.manifest import ledger_dir
 from mmw.tui.modals import ConfirmModal, DeleteProgressModal, InfoModal
 from mmw.tui.network_screens import AddNetworkScreen, EditNetworkScreen
 from mmw.tui.publish_modals import (
-    BundleProgressModal, CertsModal, DryRunResultModal, PreparePublishModal, PublishProgressModal,
+    BundleModeModal, BundleProgressModal, CertsModal, DryRunResultModal, PreparePublishModal,
+    PublishProgressModal,
 )
 from mmw.tui.widgets import Button
 
@@ -434,9 +437,10 @@ class NetworkPanel(Widget):
         if result is None:
             return
 
-        new_select, prune, dist_upgrade, certs, root, bundle_dir, nginx = result
+        new_select, prune, dist_upgrade, certs, root, bundle_dir, nginx, compress = result
         net.select, net.prune, net.dist_upgrade, net.certs = new_select, prune, dist_upgrade, certs
         net.root, net.bundle_dir, net.nginx = root, bundle_dir, nginx
+        net.bundle_compress = compress
         new_set = {m.name for m in network_mirrors(net, self._cfg, mirror_dir)}
         removed_names = old_mirrors - new_set
         self._save()
@@ -477,6 +481,20 @@ class NetworkPanel(Widget):
         self._save()
         await self._refresh_list()
         self.query_one(NetworkDetail).show(None, self._cfg)
+
+        # The bundle ledger (a handful of small manifest files, this
+        # network's own delta bookkeeping) is not served content and isn't
+        # shared with anything else, unlike root/bundle_dir below — cleared
+        # unconditionally, no extra prompt. Otherwise a network added later
+        # under the same name would silently inherit stale delta history
+        # from a network that no longer exists.
+        ledger = ledger_dir(self._cfg.settings.mirror_dir, net.name)
+        if ledger.exists():
+            try:
+                shutil.rmtree(ledger)
+            except OSError as e:
+                self.app.notify(f"Could not remove bundle history for '{net.name}': {e}",
+                                severity="warning")
 
         if net.root is not None and net.root.exists():
             msg = f"Also delete all published files?\n  [dim]{net.root}[/dim]"
@@ -733,6 +751,10 @@ class NetworkPanel(Widget):
             )
             return
 
+        full = await self.app.push_screen_wait(BundleModeModal(net.name))
+        if full is None:
+            return   # cancelled — never falls back to delta silently
+
         # Same completeness gate `do_publish` runs before it will publish: a
         # ref the pool doesn't hold a blob for (refs - packages) is invisible
         # to `pool.mirror_files()` — the query both publish and bundle
@@ -749,11 +771,11 @@ class NetworkPanel(Widget):
             )
             if await self._show_incomplete(verify_results):
                 return
-            await self._execute_bundle(net)
+            await self._execute_bundle(net, full=full)
         except Exception as e:
             self.app.notify(f"Bundle error: {e}", severity="error", timeout=15)
 
-    async def _execute_bundle(self, net: "config.NetworkConfig") -> None:
+    async def _execute_bundle(self, net: "config.NetworkConfig", full: bool = False) -> None:
         """Run bundle_network behind a BundleProgressModal and notify the outcome."""
         from mmw.core.publisher.bundle import bundle_network
 
@@ -764,8 +786,8 @@ class NetworkPanel(Widget):
             try:
                 r = await asyncio.to_thread(
                     bundle_network, net, self._cfg, mirror_dir,
-                    None, False, 3, prog.record, prog.stop_event,
-                    prog.notify_mirror_start,
+                    None, full, 3, prog.record, prog.stop_event,
+                    prog.notify_mirror_start, compress=net.bundle_compress,
                 )
                 prog.mark_done(r)
             except Exception as exc:

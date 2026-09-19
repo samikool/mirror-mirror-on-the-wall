@@ -111,6 +111,21 @@ def test_bundle_matches_publish_exactly(seeded, tmp_path):
     assert other_bundled == other_published
 
 
+def test_bundle_network_forwards_archive_progress(seeded, tmp_path):
+    """`bundle_network` threads its `progress` callback into `BundleSink` so
+    the archive-writing phase — the actual I/O, which happens entirely
+    inside `close()` — is visible too, not just the fast in-memory
+    enumeration phase `publish_group` reports on."""
+    mirror_dir, cfg = seeded
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+
+    events: list[str] = []
+    bundle_network(net, cfg, mirror_dir, progress=lambda rel, status: events.append(status))
+
+    assert any(s.startswith("archive-start:") for s in events)
+    assert any(s.startswith("archive-done:") for s in events)
+
+
 def test_second_bundle_of_unchanged_pool_sends_nothing(seeded, tmp_path):
     mirror_dir, cfg = seeded
     net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")

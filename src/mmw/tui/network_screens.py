@@ -129,8 +129,44 @@ class _StepNetworkPath(Widget):
         self.query_one("#inp-bundle-dir", Input).value = bundle_dir
         self.query_one("#inp-name", Input).value = name
 
+class _StepNetworkRepos(Widget):
+    """Pick which repositories this network publishes at all, before seeing
+    any suite/component/arch pickers. Without this step every repository's
+    dimensions render pre-ticked and a user who wants only one repository has
+    to hunt through the rest to uncheck them — see the docstring on
+    AddNetworkScreen for the bug report this fixed."""
+
+    DEFAULT_CSS = """
+    _StepNetworkRepos { padding: 1 2; height: 1fr; }
+    _StepNetworkRepos Label { margin-bottom: 0; }
+    _StepNetworkRepos #repo-list { height: 1fr; margin-top: 1; }
+    """
+
+    def __init__(self, mirrors: list[config.MirrorConfig], selected: "set[str] | None" = None):
+        super().__init__()
+        self._axes = build_axes(mirrors, None)
+        self._selected = selected or set()
+
+    def compose(self) -> ComposeResult:
+        yield Label("[bold]Which repositories should this network publish?[/]")
+        yield Label("[dim]Nothing selected yet — tick the ones you want. ctrl+a toggles all[/]")
+        yield JumpSelectionList(
+            *[
+                Selection(f"{a.label}  {a.source}", a.source, a.source in self._selected)
+                for a in self._axes
+            ],
+            id="repo-list",
+        )
+
+    def get_axes(self) -> "list[_Axis]":
+        return self._axes
+
+    def get_selected_sources(self) -> "set[str]":
+        return set(self.query_one("#repo-list", SelectionList).selected)
+
 class _StepNetworkMirrors(Widget):
-    """Pick what the network publishes, by dimension rather than by name."""
+    """Pick what the network publishes, by dimension, for the repositories
+    already chosen in the preceding _StepNetworkRepos step."""
 
     DEFAULT_CSS = """
     _StepNetworkMirrors { padding: 1 2; height: 1fr; overflow-y: auto; }
@@ -143,10 +179,9 @@ class _StepNetworkMirrors(Widget):
     _StepNetworkMirrors .axis-list { height: auto; max-height: 6; }
     """
 
-    def __init__(self, mirrors: list[config.MirrorConfig]):
+    def __init__(self, axes: "list[_Axis]"):
         super().__init__()
-        self._mirrors = mirrors
-        self._axes = build_axes(mirrors, None)
+        self._axes = axes
 
     def compose(self) -> ComposeResult:
         yield Label("[bold]Choose what to publish[/]")
@@ -162,13 +197,14 @@ class _StepNetworkConfirm(Widget):
     _StepNetworkConfirm { padding: 1 2; }
     _StepNetworkConfirm Label { margin-bottom: 1; }
     _StepNetworkConfirm .mirror-entry { color: $primary; }
-    _StepNetworkConfirm #du-row, _StepNetworkConfirm #certs-row {
+    _StepNetworkConfirm #du-row, _StepNetworkConfirm #certs-row, _StepNetworkConfirm #compress-row {
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: left middle;
         border-top: solid $primary-darken-2;
         margin-top: 1;
     }
-    _StepNetworkConfirm #du-row Label, _StepNetworkConfirm #certs-row Label { margin: 0 0 0 1; }
+    _StepNetworkConfirm #du-row Label, _StepNetworkConfirm #certs-row Label,
+    _StepNetworkConfirm #compress-row Label { margin: 0 0 0 1; }
     """
 
     def __init__(
@@ -209,6 +245,10 @@ class _StepNetworkConfirm(Widget):
         with Horizontal(id="certs-row"):
             yield Switch(value=False, id="certs-switch")
             yield Label("Manage TLS certs for this network (generate key + CSR)")
+        if self._bundle_dir is not None:
+            with Horizontal(id="compress-row"):
+                yield Switch(value=True, id="compress-switch")
+                yield Label("Compress bundle tarballs (zstd; off writes a plain .tar)")
 
     def get_dist_upgrade(self) -> bool:
         try:
@@ -222,6 +262,12 @@ class _StepNetworkConfirm(Widget):
         except Exception:
             return False
 
+    def get_compress(self) -> bool:
+        try:
+            return self.query_one("#compress-switch", Switch).value
+        except Exception:
+            return True   # matches NetworkConfig.bundle_compress's own default
+
 @dataclass
 class _Axis:
     """One repository's three dimension pickers inside a network editor."""
@@ -234,6 +280,9 @@ class _Axis:
 
     def _id(self, dim: str) -> str:
         return "axis-" + re.sub(r"[^a-zA-Z0-9_-]", "-", self.source) + "-" + dim
+
+    def block_id(self) -> str:
+        return "axis-block-" + re.sub(r"[^a-zA-Z0-9_-]", "-", self.source)
 
     def _picked(self, dim: str, available: list[str]) -> set[str]:
         """Empty in the stored select means all — show that as everything ticked."""
@@ -303,7 +352,14 @@ def build_axes(mirrors, existing_select) -> "list[_Axis]":
 
 
 class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
-    """3-step wizard: path & name → mirror selection → confirm."""
+    """4-step wizard: path & name → repositories → dimensions → confirm.
+
+    Repository selection is its own step, ahead of the per-repository
+    suite/component/arch pickers, and starts with nothing ticked: a repo
+    checklist first means excluding a repository is one click, not unticking
+    every dimension it exposes. Dimensions default to "all" once a
+    repository is picked, since narrowing what an already-wanted repository
+    serves is comparatively rare."""
 
     DEFAULT_CSS = """
     AddNetworkScreen { align: center middle; }
@@ -344,6 +400,8 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
         self._root = ""
         self._bundle_dir = ""
         self._name = ""
+        self._selected_sources: "set[str]" = set()
+        self._axes: "list[_Axis]" = []
         self._selected_mirrors: "list[config.NetworkSelect]" = []
 
     def compose(self) -> ComposeResult:
@@ -360,7 +418,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
         self._focus_step()
 
     def _indicator_text(self) -> str:
-        labels = ["Path & Name", "Mirrors", "Confirm"]
+        labels = ["Path & Name", "Repositories", "Dimensions", "Confirm"]
         parts = []
         for i, label in enumerate(labels):
             if i == self._step_idx:
@@ -409,18 +467,34 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
             self._step_idx = 1
             self._update_indicator()
             container.remove_children()
-            await container.mount(_StepNetworkMirrors(self._mirrors))
+            await container.mount(_StepNetworkRepos(self._mirrors, self._selected_sources))
 
         elif self._step_idx == 1:
-            selection = container.query_one(_StepNetworkMirrors).get_selection()
-            if not selection:
+            repos_step = container.query_one(_StepNetworkRepos)
+            selected = repos_step.get_selected_sources()
+            if not selected:
                 self.notify(
                     "Select at least one repository — nothing selected publishes nothing.",
                     severity="warning",
                 )
                 return
-            self._selected_mirrors = selection
+            self._selected_sources = selected
+            self._axes = [a for a in repos_step.get_axes() if a.source in selected]
             self._step_idx = 2
+            self._update_indicator()
+            container.remove_children()
+            await container.mount(_StepNetworkMirrors(self._axes))
+
+        elif self._step_idx == 2:
+            selection = container.query_one(_StepNetworkMirrors).get_selection()
+            if not selection:
+                self.notify(
+                    "Select at least one suite/component/arch — nothing selected publishes nothing.",
+                    severity="warning",
+                )
+                return
+            self._selected_mirrors = selection
+            self._step_idx = 3
             self._update_indicator()
             container.remove_children()
             root = Path(self._root) / self._name if self._root else None
@@ -430,7 +504,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
             )
             self.query_one("#btn-next", Button).label = "Add Network ✓"
 
-        elif self._step_idx == 2:
+        elif self._step_idx == 3:
             confirm = container.query_one(_StepNetworkConfirm)
             self.dismiss(
                 config.NetworkConfig(
@@ -440,6 +514,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
                     select=self._selected_mirrors,
                     dist_upgrade=confirm.get_dist_upgrade(),
                     certs=confirm.get_certs(),
+                    bundle_compress=confirm.get_compress(),
                 )
             )
             return
@@ -462,7 +537,10 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
             self.call_after_refresh(lambda: step.restore(self._root, self._bundle_dir, self._name))
         elif self._step_idx == 2:
             self._step_idx = 1
-            await container.mount(_StepNetworkMirrors(self._mirrors))
+            await container.mount(_StepNetworkRepos(self._mirrors, self._selected_sources))
+        elif self._step_idx == 3:
+            self._step_idx = 2
+            await container.mount(_StepNetworkMirrors(self._axes))
 
         self._update_indicator()
         self.query_one("#btn-back", Button).disabled = self._step_idx == 0
@@ -470,7 +548,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
 
 class EditNetworkScreen(
     ModalScreen[
-        "tuple[list[config.NetworkSelect], bool, bool, bool, Path | None, Path | None, bool] | None"
+        "tuple[list[config.NetworkSelect], bool, bool, bool, Path | None, Path | None, bool, bool] | None"
     ]
 ):
     """Edit the mirror list and settings for an existing network."""
@@ -496,13 +574,15 @@ class EditNetworkScreen(
     }
     EditNetworkScreen Label { margin-bottom: 1; }
     EditNetworkScreen SelectionList { height: 1fr; }
-    EditNetworkScreen #prune-row, EditNetworkScreen #du-row, EditNetworkScreen #certs-row {
+    EditNetworkScreen #prune-row, EditNetworkScreen #du-row, EditNetworkScreen #certs-row,
+    EditNetworkScreen #compress-row {
         height: auto;
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: left middle;
         border-top: solid $primary-darken-2;
     }
-    EditNetworkScreen #prune-row Label, EditNetworkScreen #du-row Label, EditNetworkScreen #certs-row Label {
+    EditNetworkScreen #prune-row Label, EditNetworkScreen #du-row Label, EditNetworkScreen #certs-row Label,
+    EditNetworkScreen #compress-row Label {
         margin: 0 0 0 1;
         color: $text;
     }
@@ -510,7 +590,8 @@ class EditNetworkScreen(
        fixed that but let them WRAP, and beside a switch in a narrow row the
        column got so thin the row grew to 60+ rows. Take the remaining width and
        truncate — a hint is expendable, the layout is not. */
-    EditNetworkScreen #prune-row .prune-hint, EditNetworkScreen #du-row .du-hint, EditNetworkScreen #certs-row .certs-hint {
+    EditNetworkScreen #prune-row .prune-hint, EditNetworkScreen #du-row .du-hint, EditNetworkScreen #certs-row .certs-hint,
+    EditNetworkScreen #compress-row .compress-hint {
         color: $text-muted;
         margin: 0 0 0 2;
         width: 1fr;
@@ -532,6 +613,8 @@ class EditNetworkScreen(
     EditNetworkScreen .axis-dim   { color: $text-muted; }
     EditNetworkScreen .axis-list  { height: auto; max-height: 8; margin-bottom: 0; }
     EditNetworkScreen #axis-scroll { height: 1fr; }
+    EditNetworkScreen #repo-checklist { height: auto; max-height: 8; margin-bottom: 1; }
+    EditNetworkScreen .axis-block { height: auto; }
     EditNetworkScreen .field-label { color: $text-muted; margin-bottom: 0; }
     EditNetworkScreen #root-row, EditNetworkScreen #bundle-row { height: 3; }
     EditNetworkScreen #root-row Input, EditNetworkScreen #bundle-row Input { width: 1fr; margin-bottom: 0; }
@@ -554,6 +637,13 @@ class EditNetworkScreen(
         self._network = network
         self._all_mirrors = all_mirrors
         self._axes = build_axes(all_mirrors, network.select)
+        # No `select` at all means "every mirrored repository" (see mmw.toml
+        # docs), so every repo starts checked in that case; otherwise only a
+        # repo already named in `select` is currently included.
+        self._checked_sources: "set[str]" = (
+            {a.source for a in self._axes} if not network.select
+            else {a.source for a in self._axes if a.chosen is not None}
+        )
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -570,10 +660,19 @@ class EditNetworkScreen(
                         id="inp-bundle-dir",
                     )
                     yield Button("Browse…", id="btn-browse-bundle", variant="default")
+                yield Label("[dim]Which repositories to include  ·  ctrl+a toggles all[/]")
+                yield JumpSelectionList(
+                    *[
+                        Selection(f"{a.label}  {a.source}", a.source, a.source in self._checked_sources)
+                        for a in self._axes
+                    ],
+                    id="repo-checklist",
+                )
                 yield Label("[dim]What this network publishes  ·  ctrl+a toggles a list[/]")
                 with ScrollableContainer(id="axis-scroll"):
                     for axis in self._axes:
-                        yield from axis.compose_widgets()
+                        with Vertical(id=axis.block_id(), classes="axis-block"):
+                            yield from axis.compose_widgets()
                 with Horizontal(id="prune-row"):
                     yield Switch(value=self._network.prune, id="prune-switch")
                     yield Label("Prune stale files on publish")
@@ -586,15 +685,35 @@ class EditNetworkScreen(
                     yield Switch(value=self._network.certs, id="certs-switch")
                     yield Label("Manage TLS certs for this network")
                     yield Label("(generate key + CSR covering all mirror hostnames)", classes="certs-hint")
+                with Horizontal(id="compress-row"):
+                    yield Switch(value=self._network.bundle_compress, id="compress-switch")
+                    yield Label("Compress bundle tarballs")
+                    yield Label("(zstd; off writes a plain .tar — faster on slow disks, larger files)", classes="compress-hint")
             with Horizontal(id="nav-bar"):
                 yield Button("Cancel", id="btn-cancel", variant="default")
                 yield Button("Save", id="btn-save", variant="primary")
 
     def on_mount(self) -> None:
+        self._apply_repo_visibility()
         try:
             self.query_one(SelectionList).focus()
         except Exception:
             pass
+
+    def _apply_repo_visibility(self) -> None:
+        """Show only the dimension pickers for a currently-checked repo. A
+        block is hidden, never unmounted, so unchecking then rechecking a
+        repo keeps whatever suite/component/arch ticks were already made."""
+        for axis in self._axes:
+            try:
+                self.query_one("#" + axis.block_id()).display = axis.source in self._checked_sources
+            except Exception:
+                pass
+
+    @on(SelectionList.SelectedChanged, "#repo-checklist")
+    def _repo_checklist_changed(self, event: SelectionList.SelectedChanged) -> None:
+        self._checked_sources = set(self.query_one("#repo-checklist", SelectionList).selected)
+        self._apply_repo_visibility()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -648,7 +767,11 @@ class EditNetworkScreen(
 
     @on(Button.Pressed, "#btn-save")
     def _save(self) -> None:
-        selects = [s for s in (a.to_select(self) for a in self._axes) if s is not None]
+        checked = set(self.query_one("#repo-checklist", SelectionList).selected)
+        selects = [
+            s for s in (a.to_select(self) for a in self._axes if a.source in checked)
+            if s is not None
+        ]
         if not selects:
             self.notify(
                 "Select at least one repository — nothing selected publishes nothing.",
@@ -658,8 +781,10 @@ class EditNetworkScreen(
         prune = self.query_one("#prune-switch", Switch).value
         dist_upgrade = self.query_one("#du-switch", Switch).value
         certs = self.query_one("#certs-switch", Switch).value
+        compress = self.query_one("#compress-switch", Switch).value
         root_str = self.query_one("#inp-root", Input).value.strip()
         bundle_str = self.query_one("#inp-bundle-dir", Input).value.strip()
         root = Path(root_str) if root_str else None
         bundle_dir = Path(bundle_str) if bundle_str else None
-        self.dismiss((selects, prune, dist_upgrade, certs, root, bundle_dir, self._network.nginx))
+        self.dismiss((selects, prune, dist_upgrade, certs, root, bundle_dir,
+                      self._network.nginx, compress))

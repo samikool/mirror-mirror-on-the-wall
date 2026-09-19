@@ -160,6 +160,7 @@ def test_full_network_config_round_trip(tmp_path):
         dist_upgrade=True,
         certs=True,
         nginx=False,
+        bundle_compress=False,
     )
     cfg = config.Config(
         settings=config.Settings(mirror_dir=tmp_path / "mirror", max_connections=3),
@@ -182,3 +183,4 @@ def test_full_network_config_round_trip(tmp_path):
     assert got.dist_upgrade is True
     assert got.certs is True
     assert got.nginx is False
+    assert got.bundle_compress is False

@@ -1,15 +1,15 @@
 [project]
 name = "mirror-mirror-on-the-wall"
-version = "0.1.0"
-description = "Universal package repository mirror — apt, rpm, and beyond"
+version = "1.0.0"
+description = "APT repository mirror for airgapped networks — exact upstream mirroring, GPG signatures preserved, content-addressable pool"
 readme = "README.md"
 license = "MIT"
 authors = [
     { name = "Sam Morgan", email = "sam.morgan44@gmail.com" }
 ]
-keywords = ["mirror", "apt", "rpm", "debian", "centos", "ubuntu", "repository"]
+keywords = ["mirror", "apt", "debian", "ubuntu", "repository", "airgap"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",

@@ -273,53 +273,8 @@ def cmd_publish(
     cfg = _load_config_or_exit(cfg_dir)
 
     if quiet or dry_run:
-        from mmw.core.publisher import dry_run_network, publish_network
-
-        networks = cfg.networks
-        if not networks:
-            typer.echo("No networks configured. Use `mmw publish` (TUI) to add one.")
-            raise typer.Exit(1)
-
-        if network:
-            networks = [n for n in networks if n.name == network]
-            if not networks:
-                typer.echo(f"Network '{network}' not found.", err=True)
-                raise typer.Exit(1)
-
-        label = "[dry-run] " if dry_run else ""
-        for net in networks:
-            if net.root is None:
-                # A bundle-only network — publish_base() has no destination
-                # to derive, and printing `net.root` unconditionally below
-                # used to print the literal string "None" for exactly this
-                # case. `dry_run_network`/`publish_network` both already
-                # return a graceful per-network error instead of raising, but
-                # skip here too so an `mmw publish` iterating several
-                # networks never even calls into either for one that can only
-                # be bundled.
-                typer.echo(
-                    f"\n{label}Skipping network: {net.name} — no publish root "
-                    f"set (use `mmw bundle` instead)"
-                )
-                continue
-            typer.echo(f"\n{label}Publishing network: {net.name}  →  {net.root}")
-            if dry_run:
-                result = dry_run_network(net, cfg, cfg.settings.mirror_dir)
-            else:
-                result = publish_network(net, cfg, cfg.settings.mirror_dir)
-            for mr in result.mirrors:
-                status = f"  {mr.mirror_name:<40} linked={mr.linked}  skipped={mr.skipped}"
-                if mr.errors:
-                    status += f"  errors={len(mr.errors)}"
-                typer.echo(status)
-                for e in mr.errors:
-                    typer.echo(f"    ✗ {e}", err=True)
-            typer.echo(
-                f"\n  Total: {result.linked} {'would link' if dry_run else 'linked'}, "
-                f"{result.skipped} already current"
-                + (f", {len(result.errors)} error(s)" if result.errors else "")
-            )
-        return
+        from mmw.commands.publish import run
+        raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run))
 
     from mmw.tui.init_wizard import InitWizardApp
 
@@ -375,3 +330,32 @@ def cmd_prune():
     """Remove orphaned pool packages not referenced by any mirror."""
     from mmw.commands.prune import run
     run()
+
+
+@app.command("certs")
+def cmd_certs(
+    network: str = typer.Option(None, "--network", "-n", help="Generate certs for a specific network by name"),
+):
+    """Generate (or refresh) TLS key/CSR material for `certs = true` networks."""
+    from mmw.commands.certs import run
+    raise typer.Exit(run(Path("."), network=network))
+
+
+@app.command("bundle")
+def cmd_bundle(
+    network: str = typer.Option(None, "--network", "-n", help="Bundle one network by name"),
+    full: bool = typer.Option(False, "--full", help="Send the whole network, not just the delta"),
+    out: Path = typer.Option(None, "--out", help="Write here instead of the network's bundle_dir"),
+):
+    """Write a network's mirrors to a transferable bundle."""
+    from mmw.commands.bundle import run
+    raise typer.Exit(run(Path("."), network=network, full=full, out=out))
+
+
+@app.command("verify")
+def cmd_verify(
+    network: str = typer.Option(None, "--network", "-n", help="Verify only this network's mirrors"),
+):
+    """Check the pool holds every blob its mirrors' refs want (read-only)."""
+    from mmw.commands.verify import run
+    raise typer.Exit(run(Path("."), network=network))

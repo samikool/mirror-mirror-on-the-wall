@@ -375,6 +375,7 @@ class NetworkConfig(_StrictModel):
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
     certs: bool = False       # manage TLS key/CSR for this network
     nginx: bool = True        # generate conf.d-style nginx site files
+    bundle_compress: bool = True  # zstd-compress the bundle tarball
 
 
 class Config(_StrictModel):
@@ -607,6 +608,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"nginx": False} if not n.nginx else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
+            **({"bundle_compress": False} if not n.bundle_compress else {}),
         }
         for n in cfg.networks
     ]

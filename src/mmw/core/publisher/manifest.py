@@ -51,6 +51,16 @@ class ManifestHeader:
     created: str
     previous: str | None
     full: bool
+    # How many real files (payload + generated, never the fixed .mmw/
+    # control members) THIS bundle's tar actually contains — set by
+    # BundleSink.close() once its own send/generate lists are final, just
+    # before the manifest is written. Never confused with the manifest's own
+    # (always-complete) file list: a delta bundle's file_count is correctly
+    # much smaller than len(files), since most of the tree is carried
+    # forward unchanged. Optional and defaulted so an older manifest already
+    # on disk — written before this field existed — still parses; apply.py
+    # treats its absence as "can't check this, don't try."
+    file_count: int | None = None
 
 
 def write_manifest(path: Path, header: ManifestHeader,

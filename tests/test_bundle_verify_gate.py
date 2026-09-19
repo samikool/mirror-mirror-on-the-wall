@@ -100,6 +100,10 @@ def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
 
             panel.query_one("#btn-bundle", Button).press()
             await _settle(pilot)
+            # BundleModeModal (delta/full choice) is now on top -- pick one
+            # to reach the verify gate this test is actually about.
+            panel.app.screen.query_one("#delta", Button).press()
+            await _settle(pilot)
             # The InfoModal("Incomplete Mirrors") should now be on top --
             # dismiss it the way a user would (its own Escape binding).
             await pilot.press("escape")

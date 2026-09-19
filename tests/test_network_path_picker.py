@@ -128,12 +128,19 @@ def _host_app(screen):
 
 
 async def _finish(pilot, app):
-    """Drive the 3-step wizard (Path & Name → Mirrors → Confirm) to
-    completion, leaving the mirror-selection step at its default of
+    """Drive the 4-step wizard (Path & Name → Repositories → Dimensions →
+    Confirm) to completion, selecting every repository (nothing is
+    pre-ticked there) and leaving the dimension step at its default of
     everything ticked, and return the dismissed `NetworkConfig`."""
-    app.screen.query_one("#btn-next", Button).press()   # path & name -> mirrors
+    from textual.widgets import SelectionList
+
+    app.screen.query_one("#btn-next", Button).press()   # path & name -> repositories
     await _settle(pilot)
-    app.screen.query_one("#btn-next", Button).press()   # mirrors -> confirm
+    app.screen.query_one("#repo-list", SelectionList).select_all()
+    await _settle(pilot)
+    app.screen.query_one("#btn-next", Button).press()   # repositories -> dimensions
+    await _settle(pilot)
+    app.screen.query_one("#btn-next", Button).press()   # dimensions -> confirm
     await _settle(pilot)
     app.screen.query_one("#btn-next", Button).press()   # confirm -> dismiss
     await _settle(pilot)
@@ -289,7 +296,7 @@ def test_edit_screen_browse_root_saves_verbatim_no_name_appended(tmp_path):
 
     result = asyncio.run(scenario())
     assert result is not None
-    selects, prune, dist_upgrade, certs, root, bundle_dir, nginx = result
+    selects, prune, dist_upgrade, certs, root, bundle_dir, nginx, compress = result
     assert root == tmp_path / "srv"   # verbatim — not tmp_path/"srv"/"lab"
 
 
@@ -338,7 +345,7 @@ def test_edit_screen_round_trips_a_bundle_only_network(tmp_path):
 
     result = asyncio.run(scenario())
     assert result is not None
-    selects, prune, dist_upgrade, certs, root, bundle_dir, nginx = result
+    selects, prune, dist_upgrade, certs, root, bundle_dir, nginx, compress = result
     # Round-trip check 2: Save carries the unchanged fields straight through.
     assert root is None
     assert bundle_dir == tmp_path / "out"

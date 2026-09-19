@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -279,6 +280,170 @@ def test_truncated_manifest_on_line_boundary(tmp_path):
     assert not (dest / payload_name).exists()
 
 
+def _fake_bundle_bytes_multi(files, deletes=None, full=True, previous=None, file_count=None):
+    """Like `_fake_bundle_bytes`, but the manifest may list more files than
+    actually appear as tar members — for simulating a tar stream that ends
+    cleanly (no exception from tarfile) but is missing content the manifest
+    promises, exactly the failure mode a live spike found: a plain tar
+    truncated near its end reads as 100% successful with no error at all.
+
+    `files` is [(name, content_or_None)] — content_or_None means "listed in
+    the manifest but never actually added as a tar member". `file_count`,
+    when given, is `ManifestHeader.file_count` — how many real files (not
+    the fixed .mmw/ control members) THIS bundle's tar declares it will
+    contain; omitting it (None) simulates an older manifest written before
+    that field existed.
+    """
+    header = {"network": "lab", "created": "20260101T000000Z",
+              "previous": previous, "full": full}
+    if file_count is not None:
+        header["file_count"] = file_count
+    lines = [json.dumps(header)]
+    for name, content in files:
+        checksum = hashlib.sha256(content or b"").hexdigest()
+        lines.append(json.dumps({"p": name, "c": checksum}))
+    manifest_jsonl = ("\n".join(lines) + "\n").encode()
+    manifest_zst = zstandard.ZstdCompressor().compress(manifest_jsonl)
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
+        ti.size = len(manifest_zst)
+        tar.addfile(ti, io.BytesIO(manifest_zst))
+
+        if deletes:
+            body = ("\n".join(deletes) + "\n").encode()
+            ti = tarfile.TarInfo(".mmw/delete.list")
+            ti.size = len(body)
+            tar.addfile(ti, io.BytesIO(body))
+
+        for name, content in files:
+            if content is None:
+                continue    # the simulated "never made it into the tar" case
+            ti = tarfile.TarInfo(name)
+            ti.size = len(content)
+            tar.addfile(ti, io.BytesIO(content))
+    return buf.getvalue()
+
+
+# Completeness check: a first attempt compared `manifest` (the network's
+# COMPLETE expected tree) directly against paths seen in the tar, and broke
+# every delta bundle — a delta's tar deliberately contains only what changed,
+# so every legitimately-unchanged file (in the manifest, never a member of
+# THIS tar) looked "missing" (see test_bundle_matches_publish_across_two_rounds
+# in test_bundle.py, which this broke). The corrected version compares
+# `written` against a declared `file_count` in the manifest header instead —
+# BundleSink.close() computes it from its own send/generate lists, which ARE
+# the exact scope of the bundle that produced this manifest, so a delta
+# bundle simply declares a smaller number and is never flagged.
+
+def test_declared_file_count_mismatch_is_detected(tmp_path):
+    """The actual regression this check exists for: a tar stream tarfile
+    reads as completely clean (no exception at all — proven live to be what
+    a plain tar truncated right after its last complete member does) but
+    that's missing a file the bundle declared it would contain."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    have = "archive.ubuntu.com/ubuntu/dists/noble/InRelease"
+    missing = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
+    # The bundle declares 2 files but the tar stream only actually got one —
+    # simulating a truncation tarfile itself would never catch.
+    bundle_bytes = _fake_bundle_bytes_multi(
+        [(have, b"release content"), (missing, None)],
+        file_count=2,
+    )
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    assert rc != 0
+    assert (dest / have).exists(), "the file that WAS present should still land"
+    assert not (dest / missing).exists()
+
+
+def test_declared_file_count_matching_written_succeeds(tmp_path):
+    """No false positive: a complete bundle whose declared count matches
+    what was actually applied succeeds — this is what a real, healthy
+    bundle (full or delta) looks like."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    files = [
+        ("archive.ubuntu.com/ubuntu/dists/noble/InRelease", b"release content"),
+        ("archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb", b"hello-bytes"),
+    ]
+    bundle_bytes = _fake_bundle_bytes_multi(files, file_count=len(files))
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    assert rc == 0
+    for name, content in files:
+        assert (dest / name).read_bytes() == content
+
+
+def test_a_delta_bundles_smaller_declared_count_is_not_flagged(tmp_path):
+    """The exact shape of a real delta bundle: only ONE file actually
+    changed and is present in the tar, declaring file_count=1 — even though
+    a real manifest in this situation would separately list many more
+    unchanged paths (identical to what this test's own manifest already
+    does, since `files` here only ever contains what's actually present).
+    Must succeed, not be treated as though 1 were "supposed to be more"."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    changed = "archive.ubuntu.com/ubuntu/dists/noble/InRelease"
+    bundle_bytes = _fake_bundle_bytes_multi([(changed, b"new release content")],
+                                            file_count=1)
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    assert rc == 0
+    assert (dest / changed).read_bytes() == b"new release content"
+
+
+def test_no_declared_file_count_skips_the_check(tmp_path):
+    """A manifest written before this field existed has no `file_count` at
+    all — the check must not fire on its absence (backward compatible with
+    bundles already produced)."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    have = "archive.ubuntu.com/ubuntu/dists/noble/InRelease"
+    missing = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
+    bundle_bytes = _fake_bundle_bytes_multi(
+        [(have, b"release content"), (missing, None)],
+        # file_count omitted entirely
+    )
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    assert rc == 0, "no declared count means nothing to compare against"
+
+
+def test_a_complete_bundle_is_not_flagged_as_missing(tmp_path):
+    """A normal, complete bundle (nothing reverted touches this) must still
+    apply cleanly."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    files = [
+        ("archive.ubuntu.com/ubuntu/dists/noble/InRelease", b"release content"),
+        ("archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb", b"hello-bytes"),
+    ]
+    bundle_bytes = _fake_bundle_bytes_multi(files)
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    assert rc == 0
+    for name, content in files:
+        assert (dest / name).read_bytes() == content
+
+
 def test_missing_manifest_header_field(tmp_path):
     """A manifest with valid JSON but missing a required field should be
     rejected. This catches a partially-truncated manifest that still has a
@@ -410,3 +575,60 @@ def test_symlink_at_mmw_is_refused(tmp_path):
     assert rc != 0
     # Nothing should be written to the outside directory.
     assert list(outside.iterdir()) == []
+
+
+# ── optional bundle compression: real open_stream/_is_zstd, not mocked ──────
+# Everything above overrides `open_stream` directly to inject fake tar bytes.
+# These exercise the real function — the actual magic-byte sniffing and the
+# real `zstd` binary / plain-file dispatch — since that's the part unique to
+# supporting an uncompressed bundle.
+
+def test_is_zstd_detects_real_compressed_and_plain_files(tmp_path):
+    ns = _load_module()
+
+    compressed = tmp_path / "c.tar.zst"
+    compressed.write_bytes(zstandard.ZstdCompressor().compress(b"hello"))
+    assert ns["_is_zstd"](str(compressed)) is True
+
+    plain = tmp_path / "p.tar"
+    plain.write_bytes(b"not zstd at all")
+    assert ns["_is_zstd"](str(plain)) is False
+
+
+def test_open_stream_reads_a_real_plain_tar_without_zstd(tmp_path):
+    """The actual regression this feature is for: apply() must be able to
+    read a bundle mmw produced with compression turned off, via the real
+    (unmocked) open_stream — no `zstd` binary involved for the outer stream."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
+    content = b"hello-package-content"
+    bundle_bytes = _fake_bundle_bytes(payload_name, content)
+    bundle_path = tmp_path / "lab.tar"   # no .zst — a genuinely plain tar
+    bundle_path.write_bytes(bundle_bytes)
+
+    rc = ns["apply"](str(bundle_path), str(dest))
+
+    assert rc == 0
+    assert (dest / payload_name).read_bytes() == content
+
+
+@pytest.mark.skipif(shutil.which("zstd") is None, reason="requires the zstd binary")
+def test_open_stream_reads_a_real_compressed_bundle_via_zstd(tmp_path):
+    """The other half of the same dispatch: a genuinely zstd-compressed
+    bundle still goes through the real `zstd -dc` subprocess, unmocked —
+    proving detection didn't just remove the compressed path."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+
+    payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
+    content = b"hello-package-content"
+    bundle_bytes = _fake_bundle_bytes(payload_name, content)
+    bundle_path = tmp_path / "lab.tar.zst"
+    bundle_path.write_bytes(zstandard.ZstdCompressor().compress(bundle_bytes))
+
+    rc = ns["apply"](str(bundle_path), str(dest))
+
+    assert rc == 0
+    assert (dest / payload_name).read_bytes() == content

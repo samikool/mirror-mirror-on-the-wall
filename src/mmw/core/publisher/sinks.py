@@ -15,10 +15,13 @@ all, so a contract that assumed one could not survive it. The one production
 consumer, `PublishProgressModal.record` (`tui/publish_modals.py`), expects a
 `str` and will raise on a `Path`.
 """
+import contextlib
 import hashlib
 import io
 import os
 import tarfile
+import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
@@ -29,6 +32,75 @@ from mmw.core.publisher.nginx import ROOT_PLACEHOLDER
 
 _SCAN_REPORT_EVERY = 5000
 _BY_HASH_KEEP_STALE = 2
+_ARCHIVE_REPORT_INTERVAL = 0.25  # seconds — matches the TUI's own EMA sample rate
+# A file this size or larger gets its own immediate, unthrottled "now
+# compressing X" announcement the instant it starts — not just whenever it
+# finishes. The throttled per-file sampling below only ever reports a file
+# AFTER tar.addfile() returns, so one big file (this pool holds driver/kernel
+# packages in the multiple-GB range) can leave the log silent for however
+# long that single file takes, reading as a stall rather than real,
+# in-progress work. 50 MB is comfortably above where most content sits (this
+# pool: 43% of blobs under 50 KB) and comfortably below where a single file's
+# own processing time could plausibly outlast the report interval.
+_ANNOUNCE_LARGE_FILE_BYTES = 50 * 1024 * 1024
+
+
+class _CountingWriter:
+    """Wraps a binary file object, tallying bytes actually written to it.
+
+    zstandard's `stream_writer` sits between tarfile and the real file
+    handle, so this is the only point that sees genuine compressed-on-disk
+    bytes — reading `tmp_out.stat().st_size` mid-write would race an
+    unflushed compressor buffer. Everything but `write()` is forwarded
+    straight to the wrapped handle (`flush()`, `tell()`, …) since zstandard
+    and tarfile both expect a real file-like object.
+    """
+
+    def __init__(self, fh):
+        self._fh = fh
+        self.written = 0
+
+    def write(self, data: bytes) -> int:
+        n = self._fh.write(data)
+        self.written += n if n is not None else len(data)
+        return n
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+
+class _ProgressFile:
+    """Wraps a file object being read; reports percentage-through progress on
+    a large file as `tarfile.addfile()`'s internal copy loop calls `.read()`.
+
+    Only used for files at or above `_ANNOUNCE_LARGE_FILE_BYTES` — a small
+    file finishes fast enough that the per-file sampling in
+    `_maybe_report_archive_progress` already covers it; a multi-GB one can
+    otherwise sit at "compressing…" with no sense of how far through it is.
+    `tarfile` needs no changes: it only ever calls `.read()` in a loop, so
+    wrapping the handle is enough — no internal offset/padding bookkeeping to
+    replicate.
+    """
+
+    def __init__(self, fh, size: int, progress, rel: str):
+        self._fh = fh
+        self._size = size
+        self._progress = progress
+        self._rel = rel
+        self._done = 0
+        self._last_report = 0.0
+
+    def read(self, n: int = -1) -> bytes:
+        chunk = self._fh.read(n)
+        self._done += len(chunk)
+        now = time.monotonic()
+        if now - self._last_report >= _ARCHIVE_REPORT_INTERVAL:
+            self._last_report = now
+            self._progress(self._rel, f"archive-large-file-progress:{self._done}:{self._size}")
+        return chunk
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
 
 
 class Sink(Protocol):
@@ -212,13 +284,25 @@ class BundleSink:
 
     def __init__(self, out_path: Path, header: ManifestHeader, prev: dict[str, str],
                 apply_script: bytes, level: int = 3, prune: bool = True,
-                full: bool = False):
+                full: bool = False, progress=None, compress: bool = True):
         self.out_path = out_path
         self.header = header
         self._prev = prev
         self._apply_script = apply_script
         self._level = level
         self._prune = prune
+        # Whether the tar payload itself is zstd-compressed. `.mmw/
+        # manifest.jsonl.zst` is unaffected either way — it's a small,
+        # independently-compressed blob apply.py's read_manifest_bytes()
+        # already decompresses on its own, regardless of the outer container.
+        self._compress = compress
+        # link()/write() only ever append to in-memory lists — close() is
+        # where the real I/O happens (reading pool blobs, streaming them
+        # through zstd into the tar), so it is the only place archive
+        # progress can be reported from. Same `progress(rel, status)`
+        # contract as the Sink protocol, with its own status vocabulary
+        # (`archive-start`/`archive-progress`/`archive-done`) — see close().
+        self._progress = progress
         # `--full` means "send everything", never "forget what the far side
         # has". `prev` is populated the same way for a full bundle as for a
         # delta one (bundle.py always reads the latest manifest) — the delete
@@ -322,28 +406,71 @@ class BundleSink:
 
     def close(self) -> None:
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
+        # `_send`/`_generated` are final the instant link()/write() stop being
+        # called, so exactly how many real files (never the fixed .mmw/
+        # control members) THIS bundle's tar will contain is known before any
+        # archive I/O runs — declared in the manifest header apply.py reads
+        # first, so it can tell "this bundle never meant to include that path"
+        # (a delta bundle's normal, correct shape) apart from "this bundle's
+        # tar got cut short" (see ManifestHeader.file_count's docstring).
+        header = replace(self.header, file_count=len(self._send) + len(self._generated))
         # The manifest is written to a temp file first: it goes in as the
         # first tar member and tarfile needs its size up front.
         tmp_manifest = self.out_path.parent / (self.out_path.name + ".manifest.tmp")
-        write_manifest(tmp_manifest, self.header, self.manifest_rows)
+        write_manifest(tmp_manifest, header, self.manifest_rows)
 
-        cctx = zstandard.ZstdCompressor(level=self._level, threads=-1)
+        # `sent`/`sent_bytes` are final the instant link()/write() stop being
+        # called (both only ever append to in-memory lists), so the totals
+        # for a determinate progress bar are known before any archive I/O
+        # runs at all — the UI need never show an indeterminate spinner.
+        if self._progress:
+            self._progress("", f"archive-start:{self.sent}:{self.sent_bytes}")
+        files_written = 0
+        # Bytes of *source* data fed into the tar so far — comparable to
+        # `self.sent_bytes` (both uncompressed), unlike `counting.written`
+        # (the compressed bytes actually hitting disk). Comparing those two
+        # directly as "X / TOTAL" is comparing different units and can never
+        # cleanly reach 100%; this is what makes an apples-to-apples fraction
+        # (and a live compression ratio) possible instead.
+        raw_written = 0
+        self._archive_last_report = time.monotonic()
+
         tmp_out = self.out_path.with_suffix(self.out_path.suffix + ".tmp")
         try:
-            with open(tmp_out, "wb") as raw:
-                with cctx.stream_writer(raw) as zw:
+            with open(tmp_out, "wb") as raw_fh:
+                counting = _CountingWriter(raw_fh)
+                # Uncompressed: `tarfile` writes straight to the counting
+                # wrapper, no zstd layer at all — not "zstd at level 0",
+                # which still carries frame overhead and wouldn't produce a
+                # plain, universally-readable .tar. `nullcontext` keeps this
+                # a one-branch difference rather than duplicating everything
+                # below it for the two cases.
+                if self._compress:
+                    cctx = zstandard.ZstdCompressor(level=self._level, threads=-1)
+                    stream_ctx = cctx.stream_writer(counting)
+                else:
+                    stream_ctx = contextlib.nullcontext(counting)
+                with stream_ctx as zw:
                     with tarfile.open(fileobj=zw, mode="w|") as tar:
-                        self._add_file(tar, ".mmw/manifest.jsonl.zst",
-                                       tmp_manifest.read_bytes())
+                        manifest_bytes = tmp_manifest.read_bytes()
+                        self._add_file(tar, ".mmw/manifest.jsonl.zst", manifest_bytes)
+                        files_written += 1
+                        raw_written += len(manifest_bytes)
                         if self._prune:
                             body = "\n".join(sorted(self.deleted))
                             if body:
                                 body += "\n"
                             self._add_file(tar, ".mmw/delete.list", body.encode())
+                            files_written += 1
+                            raw_written += len(body.encode())
                         self._add_file(tar, ".mmw/apply.py", self._apply_script,
                                        mode=0o755)
+                        files_written += 1
+                        raw_written += len(self._apply_script)
                         for rel, data in self._generated.items():
                             self._add_file(tar, rel, data)
+                            files_written += 1
+                            raw_written += len(data)
                         by_checksum: dict[str, str] = {}
                         for rel, src, size, checksum in self._send:
                             first = by_checksum.get(checksum) if checksum else None
@@ -353,6 +480,12 @@ class BundleSink:
                                 ti.linkname = first
                                 ti.mode = 0o644
                                 tar.addfile(ti)
+                                files_written += 1
+                                # A hardlink entry carries no payload bytes of
+                                # its own — the size was already counted for
+                                # the first occurrence of this checksum.
+                                self._maybe_report_archive_progress(
+                                    rel, files_written, raw_written, counting.written)
                                 continue
                             # Verified BEFORE any tar write: TarFile.addfile()
                             # writes the entry's header (and whatever chunks
@@ -376,6 +509,9 @@ class BundleSink:
                                     f"expected {size} — skipped rather than "
                                     "write a truncated tar entry")
                                 continue
+                            is_large = size >= _ANNOUNCE_LARGE_FILE_BYTES
+                            if self._progress and is_large:
+                                self._progress(rel, f"archive-large-file:{size}")
                             try:
                                 fh = open(src, "rb")
                             except OSError as e:
@@ -391,17 +527,52 @@ class BundleSink:
                                 # propagate: close() aborts and tmp_out is
                                 # discarded (finally, below), which is safer
                                 # than risking a silently misaligned archive.
-                                tar.addfile(ti, fh)
+                                # Wrapping `fh` for a large file only costs a
+                                # `.read()` indirection — `tarfile` only ever
+                                # calls `.read()` on it, so nothing else here
+                                # needs to know or care which one it got.
+                                stream = (_ProgressFile(fh, size, self._progress, rel)
+                                         if self._progress and is_large else fh)
+                                tar.addfile(ti, stream)
+                            files_written += 1
+                            raw_written += size
+                            self._maybe_report_archive_progress(
+                                rel, files_written, raw_written, counting.written)
                             # Only a successfully-written entry may become the
                             # hardlink target for a later duplicate checksum —
                             # registering it earlier would let a failed write
                             # leave a hardlink entry pointing at nothing.
                             if checksum:
                                 by_checksum[checksum] = rel
+            # `counting.written` is only trustworthy once the compressor and
+            # the file handle above have both been flushed and closed — read
+            # it after the `with open(...)` block exits, not inside it.
+            if self._progress:
+                self._progress("", f"archive-done:{files_written}:{raw_written}:{counting.written}")
             tmp_out.replace(self.out_path)
         finally:
             tmp_manifest.unlink(missing_ok=True)
             tmp_out.unlink(missing_ok=True)
+
+    def _maybe_report_archive_progress(
+        self, rel: str, files_written: int, raw_written: int, compressed_written: int
+    ) -> None:
+        """Throttled to `_ARCHIVE_REPORT_INTERVAL` — `rel` is whichever file
+        happened to complete at the moment a report is allowed through, not
+        every file. Unlike `link()`'s per-file log during the (in-memory, no
+        natural rate limit) enumeration phase, this loop does real disk I/O:
+        a burst of cache-hit small files could still fire fast enough to
+        flood a log kept at full per-file fidelity, so "what's being archived
+        right now" rides the same throttle as the byte/file counters instead
+        of adding a second, unthrottled path to the same UI.
+        """
+        if not self._progress:
+            return
+        now = time.monotonic()
+        if now - self._archive_last_report < _ARCHIVE_REPORT_INTERVAL:
+            return
+        self._archive_last_report = now
+        self._progress(rel, f"archive-progress:{files_written}:{raw_written}:{compressed_written}")
 
     @staticmethod
     def _add_file(tar: tarfile.TarFile, name: str, data: bytes,

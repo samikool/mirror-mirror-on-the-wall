@@ -8,6 +8,7 @@ user to hunt through all three to drop one. A repository checklist first
 means excluding one is a single click.
 """
 import asyncio
+from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Switch, SelectionList
@@ -318,3 +319,39 @@ def test_edit_persists_every_networkconfig_field_except_name():
     )
     # And the exclusion is deliberate and singular.
     assert 'field != "name"' in src
+
+
+def test_add_network_refuses_clearly_when_there_are_no_mirrors_yet():
+    """Before the first sync there is nothing to publish, and saying so beats
+    walking the user into an empty checklist.
+
+    A source with `arches = []` expands to no mirrors offline — that is the
+    "never invent an architecture" rule — and available_mirrors()'s config
+    fallback therefore has nothing to offer either. The wizard's own guard
+    would have refused with "select at least one repository", which is true
+    but blames the user for an empty list they could not have filled.
+    """
+    from mmw.tui.publish_panel import NetworkPanel
+
+    notes: list[tuple[str, str]] = []
+
+    class _FakeApp:
+        def notify(self, msg, severity="information"):
+            notes.append((msg, severity))
+
+    panel = NetworkPanel.__new__(NetworkPanel)
+    panel._available = lambda: []
+    panel._cfg = config.Config(
+        settings=config.Settings(mirror_dir=Path("/tmp/none")), sources=[], networks=[],
+    )
+    object.__setattr__(panel, "_fake_app", _FakeApp())
+    type(panel).app = property(lambda self: self._fake_app)
+    try:
+        asyncio.run(NetworkPanel.add_network.__wrapped__(panel))
+    finally:
+        del type(panel).app
+
+    assert notes, "adding a network with no mirrors must say something"
+    msg, severity = notes[0]
+    assert "sync" in msg.lower()
+    assert severity == "warning"

@@ -242,9 +242,16 @@ class SourceConfig(_StrictModel):
         """Arches to expand into sync units.
 
         An empty list means "every architecture upstream serves" — resolved by
-        directory listing at sync time (stage 3). Until that lands it falls back
-        to amd64 rather than the old x86_64, which is meaningless for apt: there
-        is no `binary-x86_64/` anywhere.
+        directory listing at sync time (`core/resolve.py`, stage 3). This
+        property is offline and pure, so for an apt source it cannot do that
+        listing itself; it returns `[]` and leaves resolution to the sync path,
+        exactly like an unresolved `components` list already does. Inventing an
+        arch here (the old `amd64` fallback) is what design-notes.md's "never invent
+        an architecture" rule forbids: a repository nobody has listed yet has no
+        business being labelled as anything, least of all before the first sync
+        — `to_mirrors()` yields no sync units and callers that display "what
+        will this expand to" (the network editor, `manage.py`'s `_unresolved()`)
+        render that honestly as "all — resolved at sync".
 
         **A flat repository is never arch-expanded** — the architecture is baked
         into its URL, so there is nothing to expand and nothing to guess.
@@ -258,7 +265,7 @@ class SourceConfig(_StrictModel):
             return self.arches
         if self.provider == "apt-flat":
             return [arch_from_url(self.url)]
-        return ["amd64"]
+        return []
 
     def to_mirrors(self) -> list[MirrorConfig]:
         """Expand this source into individual MirrorConfig sync units.

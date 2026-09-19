@@ -26,11 +26,36 @@ def test_top_level_help():
     assert result.exit_code == 0
 
 
-@pytest.mark.parametrize("cmd", ["init", "manage", "sync", "dry-run", "publish", "prune"])
+def _all_commands() -> list[str]:
+    """Every command actually registered on the app.
+
+    Derived, never hardcoded. The literal list this replaced had already
+    drifted — it never gained `add`, so that command's --help went unsmoked
+    from the day it landed, and every command added since would have been
+    missed the same silent way. A list that cannot drift is the only kind
+    worth having here, since the failure mode is absence of a test rather
+    than a failing one.
+    """
+    from mmw.cli import app
+    return sorted(
+        c.name or c.callback.__name__.removeprefix("cmd_").replace("_", "-")
+        for c in app.registered_commands
+    )
+
+
+@pytest.mark.parametrize("cmd", _all_commands())
 def test_command_help(cmd):
     from mmw.cli import app
     result = runner.invoke(app, [cmd, "--help"])
     assert result.exit_code == 0
+
+
+def test_every_command_is_smoke_tested():
+    """Guards the guard: _all_commands() must find them all, so a future
+    command cannot slip past by being registered in some other way."""
+    assert set(_all_commands()) >= {
+        "init", "manage", "sync", "dry-run", "publish", "add", "prune", "bundle",
+    }
 
 
 @pytest.mark.parametrize("args", [

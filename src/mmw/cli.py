@@ -375,3 +375,14 @@ def cmd_prune():
     """Remove orphaned pool packages not referenced by any mirror."""
     from mmw.commands.prune import run
     run()
+
+
+@app.command("bundle")
+def cmd_bundle(
+    network: str = typer.Option(None, "--network", "-n", help="Bundle one network by name"),
+    full: bool = typer.Option(False, "--full", help="Send the whole network, not just the delta"),
+    out: Path = typer.Option(None, "--out", help="Write here instead of the network's bundle_dir"),
+):
+    """Write a network's mirrors to a transferable bundle."""
+    from mmw.commands.bundle import run
+    raise typer.Exit(run(Path("."), network=network, full=full, out=out))

@@ -69,6 +69,7 @@ uv run mmw prune                # reclaim packages no mirror's index wants
 | `mmw publish` | Publish TUI; `--quiet`/`--dry-run` headless; `-n NAME` for one network |
 | `mmw add` | Headless import of an apt config file (`-f`, stdin, or `--url`); `--dry-run` prints the TOML without writing |
 | `mmw prune` | Delete pool content no configured mirror's index references |
+| `mmw bundle` | Headless bundle to a `.tar.zst`; `-n NAME` for one network, `--full` to send everything, `--out` to override `bundle_dir` |
 
 ## Configuration (`mmw.toml`)
 
@@ -182,8 +183,21 @@ only what changed. `bundle` is the alternative: it packages a network into
 applier script, and each re-bundle carries only the files that changed since
 the last one.
 
-There is no `mmw bundle` CLI command yet — bundling is a TUI verb, reached
-from `mmw manage`'s **Networks** tab:
+There are two doors onto the same pipeline. Headless, for cron:
+
+```bash
+uv run mmw bundle                     # bundle every network with a bundle_dir
+uv run mmw bundle -n lab              # one network by name
+uv run mmw bundle -n lab --full       # send everything, not just the delta
+uv run mmw bundle -n lab --out /media/usb   # write here instead of bundle_dir
+```
+
+A network with neither `--out` nor a configured `bundle_dir` is skipped with a
+message explaining why, rather than aborting the whole run — the same
+"keep processing the rest" behaviour `mmw publish` already has for a network
+with no `root`.
+
+Or from `mmw manage`'s **Networks** tab, TUI-first:
 
 1. Give the network a **Bundle directory** in the network editor (a second,
    independent destination alongside its publish root — a network can have

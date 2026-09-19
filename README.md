@@ -1,7 +1,7 @@
 # mirror-mirror-on-the-wall (mmw)
 
-Universal package repository mirror for airgapped networks — **apt**, **rpm**, and
-pre-repomd **rpm-legacy** formats in one tool.
+APT repository mirror for airgapped networks — **apt** (`dists/` hierarchy) and
+**apt-flat** (`Packages` at the root) repositories in one tool.
 
 mmw mirrors upstream repositories *exactly*: metadata is copied byte-for-byte so
 upstream GPG signatures stay valid, and files land on disk in the same URL
@@ -32,8 +32,7 @@ server and clients work with **zero client-side configuration**.
 
 ## Install
 
-Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/). Optional: `rsync`
-(faster version discovery for some distros; falls back to HTTP automatically).
+Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone <repo> && cd mirror-mirror-on-the-wall
@@ -44,7 +43,7 @@ uv run mmw --help
 ## Quickstart
 
 ```bash
-uv run mmw init        # wizard: pick distros → versions → repos → settings
+uv run mmw init        # wizard: probe a repository URL → suites/components/arches → settings
 uv run mmw sync        # TUI: parallel download with live progress
 uv run mmw publish     # TUI: define a network, dry-run, publish
 ```
@@ -68,6 +67,7 @@ uv run mmw prune                # reclaim packages no mirror's index wants
 | `mmw sync` | TUI sync; `--quiet` headless; `--dry-run` check without downloading |
 | `mmw dry-run` | Alias for `mmw sync --quiet --dry-run` |
 | `mmw publish` | Publish TUI; `--quiet`/`--dry-run` headless; `-n NAME` for one network |
+| `mmw add` | Headless import of an apt config file (`-f`, stdin, or `--url`); `--dry-run` prints the TOML without writing |
 | `mmw prune` | Delete pool content no configured mirror's index references |
 
 ## Configuration (`mmw.toml`)
@@ -80,26 +80,17 @@ fail loudly instead of being silently ignored.
 mirror_dir = "/data/repos"     # where everything lands
 max_connections = 10           # global download concurrency
 
-# RPM source: one entry per distro version. "{arch}" in a repo path expands
-# to one sync unit per selected arch.
+# A source is a repository URI. Everything else is optional: name and label
+# are derived from the URL when absent, and an empty (or missing) suites /
+# components / arches list means "all of them", resolved by listing the
+# repository at sync time.
 [[sources]]
-name = "rocky-9.4"
-distro = "rocky"
-provider = "rpm"
-url = "https://dl.rockylinux.org/pub/rocky/9.4"
-arches = ["x86_64", "aarch64"]
-repos = ["BaseOS/{arch}/os", "AppStream/{arch}/os"]
-
-# APT source: suites × components × arches expand to individual sync units
-[[sources]]
-name = "debian"
-distro = "debian"
-provider = "apt"
 url = "https://deb.debian.org/debian"
-arches = ["amd64", "arm64"]
 suites = ["bookworm", "bookworm-updates"]
 components = ["main", "contrib"]
+# arches omitted — mirror every architecture this host serves
 # include_sources = true            # also mirror deb-src
+# gpg_key_url = "https://…"         # fetched to keys/{label}/ during sync
 # [[sources.suite_overrides]]       # different components for one suite
 # suite = "bookworm-updates"
 # components = ["main"]
@@ -111,34 +102,42 @@ name = "lab"
 root = "/srv/lab"
 # bundle_dir = "/media/usb"  # destination for the Networks tab's Bundle button
 prune = true           # remove destination files no longer in the mirror
-# mirrors = ["..."]    # subset by mirror name; omit for ALL mirrors
 # dist_upgrade = true  # Ubuntu do-release-upgrade support
 # certs = true         # manage a TLS key + CSR for this network
+
+  # What this network publishes, by dimension — never by mirror name. No
+  # [[networks.select]] at all means every mirrored repository; an empty
+  # dimension inside one means all of that dimension.
+  [[networks.select]]
+  source = "https://deb.debian.org/debian"
+  suites = ["bookworm"]
+  arches = ["amd64"]
+  # components = []    # omitted = all mirrored components
 ```
 
 ### Architectures
 
 `arches` is a list — every entry becomes its own sync unit, and the arch is part
 of the mirror name (`debian-bookworm-main-arm64`), so arches never collide in
-the pool. The wizard discovers what a release actually publishes and lets you
-pick a subset; nothing is downloaded for an arch you didn't select.
+the pool. An empty (or omitted) `arches` means "every architecture this
+repository serves", discovered by listing it at sync time — the wizard reports
+what that expanded to before anything downloads.
 
-Ubuntu splits its archive by arch and mmw follows it automatically: amd64/i386
-come from `archive.ubuntu.com`, everything else (arm64, armhf, ppc64el, riscv64,
-s390x) from `ports.ubuntu.com` — including their `-security` suites. Selecting
-both arches produces two sources, `ubuntu-archive` and `ubuntu-ports`, published
-to their own hostname trees. Debian and Kali serve every arch from one host and
-stay a single source.
+Ubuntu splits its archive by arch: `archive.ubuntu.com` serves amd64 and i386,
+while `ports.ubuntu.com` serves everything else (arm64, armhf, ppc64el,
+riscv64, s390x) — including their `-security` suites — as two entirely
+separate repositories. Add both as sources to mirror every architecture; each
+is identified by its own URI and publishes to its own hostname tree. Debian
+and Kali serve every arch from one host and stay a single source.
 
-Providers: `rpm` (repomd.xml), `apt` (dists/ hierarchy), `apt-flat` (Packages
-at the root, suite "/"), `rpm-legacy` (recursive directory walk, pre-2003 Red
-Hat). The wizard's **Custom Repository** flow can probe any URL, fetch a
-`.list`/`.repo` file, or parse pasted deb822 / sources.list / .repo text.
+Providers: `apt` (`dists/` hierarchy) and `apt-flat` (`Packages` at the root,
+suite `/`) — nothing else exists. The wizard's **Probe URL** / **Paste config**
+flow can probe any repository URL, fetch a sources.list or deb822 `.sources`
+file by URL, or parse pasted deb822 / one-line sources.list text.
 
-Built-in catalog: CentOS (vault), Rocky, AlmaLinux, Fedora (current + archive),
-Debian, Ubuntu (kernel.org archive + current + security + ports), Kali, Raspberry Pi
-OS, and legacy Red Hat Linux. EOL versions are discovered from vault/archive
-hosts automatically.
+There is no built-in distro catalog. A source is a repository URI (host +
+path); `mmw` detects the apt shape and lists what that repository actually
+publishes — pasting a repository URL is a first-class path, not a fallback.
 
 ## Serving an airgapped network
 
@@ -158,8 +157,8 @@ hosts automatically.
    ```
 
 4. **DNS** — point the upstream hostnames (`archive.ubuntu.com`,
-   `dl.rockylinux.org`, …) at the mirror server. Clients need no changes.
-5. **GPG keys** are collected to `{root}/keys/{distro}/`, each with an
+   `security.ubuntu.com`, …) at the mirror server. Clients need no changes.
+5. **GPG keys** are collected to `{root}/keys/{label}/`, each with an
    `IMPORT.md` walkthrough for first-time import.
 
 Notes for airgapped apt clients: Ubuntu/Debian `Release` files carry a
@@ -239,8 +238,8 @@ Sync stores everything — packages *and* repo metadata — once, content-addres
   keys/                                 ← collected GPG keys
 
 {network.root}/                         ← built by publish, the only tree
-  dl.rockylinux.org/pub/rocky/9.4/...   ← hardlinks into the pool
   deb.debian.org/debian/pool/...        ← hardlinks into the pool
+  archive.ubuntu.com/ubuntu/pool/...    ← hardlinks into the pool
 ```
 
 Syncing records *what each mirror's index wants* (refs) and fills the pool with
@@ -256,7 +255,7 @@ automatically.
 ## Development
 
 ```bash
-uv run pytest              # ~175 offline tests, ~2 s
+uv run pytest              # offline test suite, no network
 uv run ruff check src tests
 ```
 

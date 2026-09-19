@@ -8,7 +8,8 @@ import pytest
 
 from mmw.core import discover
 from mmw.core.apt_sources import parse_apt_sources
-from mmw.core.draft import RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders
+from mmw.core.config import SourceConfig
+from mmw.core.draft import DIMENSIONS, RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders
 
 
 @pytest.fixture
@@ -185,6 +186,85 @@ def test_a_supplied_key_reaches_the_source():
     src = d.to_source()
 
     assert src.gpg_key and src.gpg_key_name == "foo.gpg"
+
+
+# ── editing an existing source (`from_source`) ──────────────────────────────
+# `from_source()` is `to_source()`'s mirror image: opening an existing config
+# entry for editing must reproduce it exactly if the user probes nothing and
+# changes nothing. See design-notes.md's "empty means all" rule — the case that
+# matters is the empty one, not the explicit one.
+
+def test_an_explicit_selection_round_trips_unchanged():
+    src = SourceConfig(url="http://example.com/ubuntu", suites=["noble"],
+                        components=["main"], arches=["arm64"])
+    d = RepositoryDraft.from_source(src)
+
+    assert d.to_source().suites == ["noble"]
+    assert d.to_source().components == ["main"]
+    assert d.to_source().arches == ["arm64"]
+
+
+def test_empty_dimensions_survive_the_round_trip_as_empty():
+    """The important case: a source following upstream must reopen as still
+    following upstream, not freeze at whatever `available` happens to hold."""
+    src = SourceConfig(url="http://example.com/ubuntu")
+    d = RepositoryDraft.from_source(src)
+
+    for dim in DIMENSIONS:
+        assert d.chosen[dim] == []
+        assert d.available[dim] == []
+    assert d.to_source().suites == []
+    assert d.to_source().components == []
+    assert d.to_source().arches == []
+
+
+def test_every_dimension_starts_unenumerated():
+    """Nothing has been listed yet — only a `probe()` may set this."""
+    src = SourceConfig(url="http://example.com/ubuntu", arches=["amd64"])
+    d = RepositoryDraft.from_source(src)
+
+    assert all(d.enumerated[dim] is False for dim in DIMENSIONS)
+
+
+def test_metadata_and_inline_key_carry_across():
+    src = SourceConfig(url="http://example.com/ubuntu", name="my-ubuntu", provider="apt-flat",
+                        include_sources=True, gpg_key="-----BEGIN PGP PUBLIC KEY BLOCK-----",
+                        gpg_key_name="ubuntu.asc")
+    d = RepositoryDraft.from_source(src)
+
+    assert d.name == "my-ubuntu"
+    assert d.provider == "apt-flat"
+    assert d.include_sources is True
+    assert d.gpg_key == "-----BEGIN PGP PUBLIC KEY BLOCK-----"
+    assert d.gpg_key_name == "ubuntu.asc"
+    assert d.key_source == "inline"
+
+
+def test_a_needs_only_key_name_is_not_marked_inline():
+    """`key_state()` distinguishes `have` from `needs` — a source that only
+    named a keyring (`Signed-By: /usr/share/...`) has no key material yet."""
+    src = SourceConfig(url="http://example.com/ubuntu", gpg_key_name="ubuntu.asc")
+    d = RepositoryDraft.from_source(src)
+
+    assert d.gpg_key is None
+    assert d.key_source == ""
+    assert d.key_state() == "needs"
+
+
+def test_probing_after_from_source_widens_available_without_moving_chosen(stub):
+    """The behaviour the edit screen depends on: reopening an arm64-only source
+    and probing shows every arch the repository serves, with only arm64 still
+    ticked — exactly like a pasted config, because both go through `probe()`."""
+    stub(suites=("noble",), components=("main",), arches=("amd64", "arm64", "i386"))
+    src = SourceConfig(url="http://example.com/ubuntu", suites=["noble"],
+                        components=["main"], arches=["arm64"])
+    d = RepositoryDraft.from_source(src)
+    d.probe()
+
+    assert d.available["arches"] == ["amd64", "arm64", "i386"]
+    assert d.chosen["arches"] == ["arm64"]
+    assert d.enumerated["arches"] is True
+    assert d.to_source().arches == ["arm64"]
 
 
 # ── $(ARCH) placeholder resolution ───────────────────────────────────────────

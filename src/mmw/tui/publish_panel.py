@@ -356,6 +356,7 @@ class NetworkPanel(Widget):
                 yield Button("Publish", id="btn-publish", variant="success")
                 yield Button("Dry Run", id="btn-dry-run", variant="default")
                 yield Button("Bundle", id="btn-bundle", variant="warning")
+                yield Button("Certs", id="btn-certs", variant="default")
 
     def _available(self) -> "list[config.MirrorConfig]":
         """Mirrors that actually exist — from the pool, not config expansion.
@@ -437,10 +438,16 @@ class NetworkPanel(Widget):
         if result is None:
             return
 
-        new_select, prune, dist_upgrade, certs, root, bundle_dir, nginx, compress = result
-        net.select, net.prune, net.dist_upgrade, net.certs = new_select, prune, dist_upgrade, certs
-        net.root, net.bundle_dir, net.nginx = root, bundle_dir, nginx
-        net.bundle_compress = compress
+        # Derived from the model, not a hand-written list. A literal tuple of
+        # field names here would be the positional 8-tuple's drift hazard in a
+        # new shape: add a field to NetworkConfig, forget this line, and the
+        # editor silently stops persisting it — which is exactly how
+        # `bundle_compress` would have been missed. `name` is excluded because
+        # the editor does not rename, and it is the key this network is found
+        # by everywhere else.
+        for field in config.NetworkConfig.model_fields:
+            if field != "name":
+                setattr(net, field, getattr(result, field))
         new_set = {m.name for m in network_mirrors(net, self._cfg, mirror_dir)}
         removed_names = old_mirrors - new_set
         self._save()
@@ -854,6 +861,7 @@ class NetworkPanel(Widget):
         except Exception as e:
             await self.app.push_screen_wait(CertsModal(net.name, hostnames, error=str(e)))
 
+    @on(Button.Pressed, "#btn-certs")
     @work(exit_on_error=False)
     async def action_certs(self):
         net = self._selected_network()

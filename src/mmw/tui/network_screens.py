@@ -197,14 +197,15 @@ class _StepNetworkConfirm(Widget):
     _StepNetworkConfirm { padding: 1 2; }
     _StepNetworkConfirm Label { margin-bottom: 1; }
     _StepNetworkConfirm .mirror-entry { color: $primary; }
-    _StepNetworkConfirm #du-row, _StepNetworkConfirm #certs-row, _StepNetworkConfirm #compress-row {
+    _StepNetworkConfirm #du-row, _StepNetworkConfirm #certs-row, _StepNetworkConfirm #nginx-row,
+    _StepNetworkConfirm #compress-row {
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: left middle;
         border-top: solid $primary-darken-2;
         margin-top: 1;
     }
     _StepNetworkConfirm #du-row Label, _StepNetworkConfirm #certs-row Label,
-    _StepNetworkConfirm #compress-row Label { margin: 0 0 0 1; }
+    _StepNetworkConfirm #nginx-row Label, _StepNetworkConfirm #compress-row Label { margin: 0 0 0 1; }
     """
 
     def __init__(
@@ -245,6 +246,9 @@ class _StepNetworkConfirm(Widget):
         with Horizontal(id="certs-row"):
             yield Switch(value=False, id="certs-switch")
             yield Label("Manage TLS certs for this network (generate key + CSR)")
+        with Horizontal(id="nginx-row"):
+            yield Switch(value=True, id="nginx-switch")
+            yield Label("Generate nginx site files (conf.d style; one file per host under nginx/sites/)")
         if self._bundle_dir is not None:
             with Horizontal(id="compress-row"):
                 yield Switch(value=True, id="compress-switch")
@@ -261,6 +265,12 @@ class _StepNetworkConfirm(Widget):
             return self.query_one("#certs-switch", Switch).value
         except Exception:
             return False
+
+    def get_nginx(self) -> bool:
+        try:
+            return self.query_one("#nginx-switch", Switch).value
+        except Exception:
+            return True   # matches NetworkConfig.nginx's own default
 
     def get_compress(self) -> bool:
         try:
@@ -514,6 +524,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
                     select=self._selected_mirrors,
                     dist_upgrade=confirm.get_dist_upgrade(),
                     certs=confirm.get_certs(),
+                    nginx=confirm.get_nginx(),
                     bundle_compress=confirm.get_compress(),
                 )
             )
@@ -546,11 +557,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
         self.query_one("#btn-back", Button).disabled = self._step_idx == 0
         self.call_after_refresh(self._focus_step)
 
-class EditNetworkScreen(
-    ModalScreen[
-        "tuple[list[config.NetworkSelect], bool, bool, bool, Path | None, Path | None, bool, bool] | None"
-    ]
-):
+class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
     """Edit the mirror list and settings for an existing network."""
 
     DEFAULT_CSS = """
@@ -575,14 +582,14 @@ class EditNetworkScreen(
     EditNetworkScreen Label { margin-bottom: 1; }
     EditNetworkScreen SelectionList { height: 1fr; }
     EditNetworkScreen #prune-row, EditNetworkScreen #du-row, EditNetworkScreen #certs-row,
-    EditNetworkScreen #compress-row {
+    EditNetworkScreen #nginx-row, EditNetworkScreen #compress-row {
         height: auto;
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: left middle;
         border-top: solid $primary-darken-2;
     }
     EditNetworkScreen #prune-row Label, EditNetworkScreen #du-row Label, EditNetworkScreen #certs-row Label,
-    EditNetworkScreen #compress-row Label {
+    EditNetworkScreen #nginx-row Label, EditNetworkScreen #compress-row Label {
         margin: 0 0 0 1;
         color: $text;
     }
@@ -591,7 +598,7 @@ class EditNetworkScreen(
        column got so thin the row grew to 60+ rows. Take the remaining width and
        truncate — a hint is expendable, the layout is not. */
     EditNetworkScreen #prune-row .prune-hint, EditNetworkScreen #du-row .du-hint, EditNetworkScreen #certs-row .certs-hint,
-    EditNetworkScreen #compress-row .compress-hint {
+    EditNetworkScreen #nginx-row .nginx-hint, EditNetworkScreen #compress-row .compress-hint {
         color: $text-muted;
         margin: 0 0 0 2;
         width: 1fr;
@@ -685,6 +692,10 @@ class EditNetworkScreen(
                     yield Switch(value=self._network.certs, id="certs-switch")
                     yield Label("Manage TLS certs for this network")
                     yield Label("(generate key + CSR covering all mirror hostnames)", classes="certs-hint")
+                with Horizontal(id="nginx-row"):
+                    yield Switch(value=self._network.nginx, id="nginx-switch")
+                    yield Label("Generate nginx site files")
+                    yield Label("(conf.d style; one file per host under nginx/sites/)", classes="nginx-hint")
                 with Horizontal(id="compress-row"):
                     yield Switch(value=self._network.bundle_compress, id="compress-switch")
                     yield Label("Compress bundle tarballs")
@@ -781,10 +792,20 @@ class EditNetworkScreen(
         prune = self.query_one("#prune-switch", Switch).value
         dist_upgrade = self.query_one("#du-switch", Switch).value
         certs = self.query_one("#certs-switch", Switch).value
+        nginx = self.query_one("#nginx-switch", Switch).value
         compress = self.query_one("#compress-switch", Switch).value
         root_str = self.query_one("#inp-root", Input).value.strip()
         bundle_str = self.query_one("#inp-bundle-dir", Input).value.strip()
         root = Path(root_str) if root_str else None
         bundle_dir = Path(bundle_str) if bundle_str else None
-        self.dismiss((selects, prune, dist_upgrade, certs, root, bundle_dir,
-                      self._network.nginx, compress))
+        self.dismiss(config.NetworkConfig(
+            name=self._network.name,  # the editor does not rename
+            root=root,
+            bundle_dir=bundle_dir,
+            select=selects,
+            prune=prune,
+            dist_upgrade=dist_upgrade,
+            certs=certs,
+            nginx=nginx,
+            bundle_compress=compress,
+        ))

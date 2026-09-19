@@ -25,6 +25,7 @@ from mmw.core.resolve import available_mirrors, pooled_mirrors
 from mmw.tui.init_wizard import AddMirrorScreen
 from mmw.tui.modals import ConfirmModal
 from mmw.tui.publish_panel import NetworkPanel
+from mmw.tui.source_screens import EditSourceScreen
 from mmw.tui.widgets import Button
 
 
@@ -279,6 +280,7 @@ class ManageApp(App):
         Binding("2", "publish_tab", "Networks", show=False),
         Binding("a", "add_mirror", "Add"),
         Binding("d", "delete_mirror", "Delete"),
+        Binding("e", "edit_source", "Edit"),
         # Manage-tab only
         # Shown in the footer: multi-select is invisible otherwise, and there
         # is nothing else on screen that hints the list can be ticked at all.
@@ -292,6 +294,8 @@ class ManageApp(App):
         # Networks-tab only
         Binding("e", "edit_network", "Edit"),
         Binding("p", "publish_network", "Publish"),
+        Binding("r", "dry_run_network", "Dry Run"),
+        Binding("b", "bundle_network", "Bundle"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -526,6 +530,18 @@ class ManageApp(App):
     def _selected_mirror(self) -> config.MirrorConfig | None:
         kind, obj = self._highlighted_item()
         return obj if kind == "mirror" else None  # type: ignore[return-value]
+
+    def _selected_source(self) -> config.SourceConfig | None:
+        """The repository to edit: the highlighted source row itself, or —
+        for an expanded mirror row — its parent. A mirror row belongs to
+        exactly one repository, so refusing to edit from there would be
+        arbitrary."""
+        kind, obj = self._highlighted_item()
+        if kind == "source":
+            return obj  # type: ignore[return-value]
+        if kind == "mirror":
+            return self._source_for_mirror(obj)  # type: ignore[arg-type]
+        return None
 
     def _save(self):
         config.save(self._cfg, self._cfg_dir)
@@ -779,6 +795,29 @@ class ManageApp(App):
         self.notify(f"Sources: {', '.join(parts)}.")
 
     @work(exit_on_error=False)
+    async def action_edit_source(self):
+        src = self._selected_source()
+        if src is None:
+            self.notify("Highlight a repository (or one of its mirrors) to edit.",
+                        severity="warning")
+            return
+        edited = await self.push_screen_wait(EditSourceScreen(src))
+        if edited is None:
+            return
+        # Replace by identity, never merge: `config.merge_sources()` is
+        # union-only by design, so it can widen a selection but can never
+        # narrow one — which is the entire reason this screen exists.
+        self._cfg.sources = [
+            edited if s.identity == src.identity else s for s in self._cfg.sources
+        ]
+        self._save()
+        # Without this the list — and `action_launch_sync`'s gate — keep the
+        # answer computed before the edit.
+        self._refresh_available()
+        await self._refresh_list()
+        self.notify(f"Updated {edited.name}.")
+
+    @work(exit_on_error=False)
     async def action_launch_sync(self):
         if not self._cfg.sources:
             self.notify("No repositories configured — press A to add one.",
@@ -804,6 +843,16 @@ class ManageApp(App):
         if panel:
             panel.do_publish()
 
+    def action_dry_run_network(self) -> None:
+        panel = self._network_panel()
+        if panel:
+            panel.do_dry_run()
+
+    def action_bundle_network(self) -> None:
+        panel = self._network_panel()
+        if panel:
+            panel.do_bundle()
+
     def _on_publish_tab(self) -> bool:
         return self.query_one(TabbedContent).active == "tab-networks"
 
@@ -818,8 +867,11 @@ class ManageApp(App):
             on_publish = self._on_publish_tab()
         except Exception:
             return True
-        manage_only = {"launch_sync", "prune_pool", "wipe_pool", "toggle_selection", "select_all"}
-        publish_only = {"publish_network", "edit_network"}
+        manage_only = {
+            "launch_sync", "prune_pool", "wipe_pool", "toggle_selection", "select_all",
+            "edit_source",
+        }
+        publish_only = {"publish_network", "edit_network", "dry_run_network", "bundle_network"}
         if on_publish and action in manage_only:
             return False
         if not on_publish and action in publish_only:

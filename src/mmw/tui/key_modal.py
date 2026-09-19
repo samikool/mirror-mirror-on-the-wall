@@ -1,16 +1,26 @@
 """Providing a GPG key for a repository by hand.
 
-Airgapped is the whole point: a `gpg_key_url` cannot be fetched from the
-network that needs the key, and a `Signed-By: /usr/share/keyrings/foo.gpg`
-names a file that lives on the machine the config came from, not in the config.
-So the key has to arrive some other way, and there are exactly two:
+Airgapped is the whole point: `keys.sync_custom_key()`'s `gpg_key_url` fetch
+happens on the network that *mirrors*, not the one adding the repository, and
+a `Signed-By: /usr/share/keyrings/foo.gpg` names a file that lives on the
+machine the config came from, not in the config. So the key has to arrive some
+other way, and there are three:
 
-1. **Paste it** — armoured text straight into the box.
-2. **Point at a directory** — the keyrings copied off the source machine.
+1. **Point at a directory** — the keyrings copied off the source machine.
    `keys.find_keys()` walks it recursively and matches by basename, which is
    what a `Signed-By:` path gives us. Binary keyrings are accepted: `read_key`
-   armours them losslessly (`enarmor`), and `write_key` emits both encodings
-   again at sync time.
+   armours them losslessly (`enarmor`).
+2. **Fetch it from a URL** — the vendor's own published key (this machine
+   *can* usually reach the public internet even when it can't reach the
+   airgapped side). `keys.fetch_key()` accepts either encoding, same as
+   `read_key()` for a local file: armoured, or the raw binary form vendor
+   docs often tell you to produce yourself with `gpg --dearmor` — either way
+   it lands in the box already armoured.
+3. **Paste it** — armoured text straight into the box.
+
+All three converge on the same box (`#key-area`) and the same validation, so
+`write_key` emitting both `.asc` and `.gpg` encodings at sync time works
+identically regardless of which door the key came in.
 """
 from pathlib import Path
 
@@ -63,6 +73,9 @@ class KeyModal(ModalScreen):
     KeyModal #dir-row Input { width: 1fr; }
     KeyModal #dir-row Button { width: auto; min-width: 8; margin-left: 1; }
     KeyModal #key-found { height: auto; max-height: 8; margin: 0 2; border: solid $primary-darken-2; }
+    KeyModal #url-row { height: 3; padding: 0 2; }
+    KeyModal #url-row Input { width: 1fr; }
+    KeyModal #url-row Button { width: auto; min-width: 8; margin-left: 1; }
     KeyModal #key-area { height: 1fr; margin: 0 2; }
     KeyModal #key-status { height: 1; padding: 0 2; color: $text-muted; }
     KeyModal #key-bar {
@@ -100,6 +113,10 @@ class KeyModal(ModalScreen):
                 yield Button("Browse…", id="btn-browse", variant="default")
                 yield Button("Scan", id="btn-scan", variant="primary")
             yield OptionList(id="key-found")
+            yield Label("  …or fetch it from a URL", classes="section")
+            with Horizontal(id="url-row"):
+                yield Input(placeholder="https://example.com/repo.gpg", id="key-url")
+                yield Button("Fetch", id="btn-fetch", variant="primary")
             yield Label("  …or paste the armoured key", classes="section")
             yield TextArea(self._armour, id="key-area", show_line_numbers=False)
             yield Label("", id="key-status")
@@ -190,6 +207,47 @@ class KeyModal(ModalScreen):
         self._key_name = name
         self.query_one("#key-status", Label).update(
             f"  [green]✓ loaded {_escape(name)}[/] [dim]({len(armour)} bytes armoured)[/]"
+        )
+
+    # ── fetching from a URL ──────────────────────────────────────────────────
+
+    @on(Button.Pressed, "#btn-fetch")
+    def _fetch_pressed(self, event: "Button.Pressed") -> None:
+        event.stop()
+        self._fetch(self.query_one("#key-url", Input).value.strip())
+
+    @on(Input.Submitted, "#key-url")
+    def _fetch_submitted(self, event: "Input.Submitted") -> None:
+        self._fetch(event.value.strip())
+
+    def _fetch(self, url: str) -> None:
+        status = self.query_one("#key-status", Label)
+        if not url:
+            status.update("  [dim]Enter a URL to fetch.[/]")
+            return
+        status.update("  [dim]Fetching…[/]")
+        self._fetch_worker(url)
+
+    @work(thread=True, exit_on_error=False)
+    def _fetch_worker(self, url: str) -> None:
+        import httpx
+        try:
+            with httpx.Client() as client:
+                armour = keys.fetch_key(url, client)
+        except Exception as e:
+            self.app.call_from_thread(self._on_fetch_failed, e)
+            return
+        self.app.call_from_thread(self._on_fetched, armour)
+
+    def _on_fetched(self, armour: str) -> None:
+        self.query_one("#key-area", TextArea).text = armour
+        self.query_one("#key-status", Label).update(
+            f"  [green]✓ fetched[/] [dim]({len(armour)} bytes armoured)[/]"
+        )
+
+    def _on_fetch_failed(self, error: Exception) -> None:
+        self.query_one("#key-status", Label).update(
+            f"  [red]✗ {_escape(str(error) or type(error).__name__)}[/]"
         )
 
     # ── result ───────────────────────────────────────────────────────────────

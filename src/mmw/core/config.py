@@ -82,7 +82,7 @@ def arch_from_url(url: str) -> str:
 
 
 def derive_name(url: str, taken: set[str] | None = None,
-                suites: list[str] | None = None) -> str:
+                suites: list[str] | None = None, provider: str = "apt") -> str:
     """Readable, unique name derived from the repository URI.
 
     `{domain}-{host prefix}` reads the way people already refer to these:
@@ -90,6 +90,10 @@ def derive_name(url: str, taken: set[str] | None = None,
     One host serving several repositories (packages.microsoft.com/repos/code vs
     /repos/edge) collides, so path segments are appended until it is unique.
     Cosmetic and user-editable — identity is the URI.
+
+    `provider="apt-flat"` additionally excludes vendor arch spellings
+    (`x86_64`, `sbsa`, …) from the segments considered informative, and
+    appends the normalized arch to the name — see the block below.
     """
     parsed = urlparse(url)
     labels = [p for p in (parsed.hostname or "").lower().split(".") if p]
@@ -113,10 +117,26 @@ def derive_name(url: str, taken: set[str] | None = None,
     # (`…/baseos/ubuntu/noble/arm64`) — that says which release, not which
     # repository, so it is skipped when the suites are known.
     suite_words = {s.lower() for s in (suites or [])}
+    # A flat repository is never arch-expanded (see config.py's own
+    # `effective_arches` docstring) — its arch is a single value baked into
+    # the URL and appears nowhere else in the mirror name, unlike a regular
+    # apt source whose `to_mirrors()` already appends `-{arch}` per sync
+    # unit. So for apt-flat: vendor arch spellings (`x86_64`, `sbsa`, …) are
+    # excluded from "what's the informative segment" the same way
+    # KNOWN_ARCHES's Debian-native spellings already are — reusing
+    # `arch_from_url()`'s own `_ARCH_ALIASES` table rather than a second
+    # copy of it — and the normalized arch is appended explicitly below, so
+    # `…/ubuntu2204/x86_64` and `…/ubuntu2404/arm64` read as
+    # `…-ubuntu2204-amd64` / `…-ubuntu2404-arm64` instead of one of them
+    # losing its OS-version segment to disambiguation-by-accident.
+    is_flat = provider == "apt-flat"
+    flat_arch = arch_from_url(url) if is_flat else ""
+    vendor_arch_words = set(_ARCH_ALIASES) if is_flat else set()
     segments = [
         s for s in parsed.path.strip("/").split("/")
         if s
         and s not in KNOWN_ARCHES
+        and s.lower() not in vendor_arch_words
         and s.lower() not in _GENERIC_SEGMENTS
         and s.lower() not in suite_words
         and not set(s.split("-")) <= base_parts
@@ -126,6 +146,8 @@ def derive_name(url: str, taken: set[str] | None = None,
         # reads better as "debian-deb-security" than "debian-deb-debian-security".
         tail = "-".join(p for p in segments[-1].split("-") if p not in base_parts)
         base = f"{base}-{tail}" if tail else base
+    if flat_arch:
+        base = f"{base}-{flat_arch}"
 
     taken = taken if taken is not None else set()
     name = base
@@ -195,7 +217,7 @@ class SourceConfig(_StrictModel):
     def _fill_derived(self):
         """A source needs only a URL; name and label follow from it."""
         if not self.name:
-            self.name = derive_name(self.url, suites=self.suites)
+            self.name = derive_name(self.url, suites=self.suites, provider=self.provider)
         if not self.label:
             self.label = derive_label(self.url)
         return self
@@ -522,7 +544,7 @@ def source_to_dict(s: SourceConfig) -> dict:
     d: dict = {"url": s.url, "provider": s.provider}
     # The suites hint must match what derived the name in the first place, or
     # a name that *is* the derived one gets written out as an override.
-    if s.name != derive_name(s.url, suites=s.suites or None):
+    if s.name != derive_name(s.url, suites=s.suites or None, provider=s.provider):
         d["name"] = s.name
     if s.label != derive_label(s.url):
         d["label"] = s.label

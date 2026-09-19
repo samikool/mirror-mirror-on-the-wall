@@ -9,8 +9,8 @@ from pathlib import Path
 
 import tomli_w
 
-from mmw.core import config, keys
-from mmw.core.apt_sources import entries_to_sources, parse_apt_sources
+from mmw.core import config, discover, keys
+from mmw.core.apt_sources import AptEntry, entries_to_sources, expand_placeholder_entry, parse_apt_sources
 
 
 def read_input(files: "list[Path] | Path | None", url: str | None) -> str:
@@ -76,6 +76,36 @@ def attach_keys(sources: list[config.SourceConfig], keys_dir: Path) -> tuple[int
     return matched, missing
 
 
+def _resolve_arch_placeholders(entries: list[AptEntry], arch: str, echo) -> list[AptEntry] | None:
+    """Fan out a `$(ARCH)`-templated entry into one concrete entry per
+    architecture it actually serves.
+
+    `--arch` resolves it without touching the network — an explicit user
+    choice is not a guess. Otherwise this is the one case where headless
+    `mmw add` must reach into `discover` (see the module docstring): apt's own
+    substitution has no local machine to run on here, and the repository root
+    usually has nothing else at it to fall back to (see
+    `apt_sources._parse_one_line_body`). Never writes an unresolved
+    placeholder into the config — resolving to nothing is a hard error.
+    """
+    resolved: list[AptEntry] = []
+    for e in entries:
+        if not e.arch_placeholder:
+            resolved.append(e)
+            continue
+        if arch:
+            resolved.extend(expand_placeholder_entry(e, [arch]))
+            continue
+        found = discover.expand_arch_placeholder(e.url, e.arch_placeholder)
+        if not found:
+            echo(f"{e.url}: {e.arch_placeholder} resolved to no architecture — "
+                 "pass --arch to force one, or check the repository is reachable.")
+            return None
+        echo(f"# {e.url}: {e.arch_placeholder} -> {', '.join(found)}")
+        resolved.extend(expand_placeholder_entry(e, found))
+    return resolved
+
+
 def _as_toml(sources: list[config.SourceConfig]) -> str:
     """Render sources exactly as config.save() would write them."""
     return tomli_w.dumps({"sources": [config.source_to_dict(s) for s in sources]})
@@ -107,6 +137,10 @@ def run(
             "`Enabled: no` stanzas, deb-src-only entries, and non-http "
             "sources (cdrom:/file:) are skipped."
         )
+        return 1
+
+    entries = _resolve_arch_placeholders(entries, arch, echo)
+    if entries is None:
         return 1
 
     new_sources = entries_to_sources(entries, label=label, default_arch=arch)

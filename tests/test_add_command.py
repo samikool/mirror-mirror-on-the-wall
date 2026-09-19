@@ -118,6 +118,50 @@ def test_label_and_arch_overrides(cfg_dir):
     assert s.arches == ["ppc64el"]
 
 
+# ── $(ARCH) placeholder resolution ───────────────────────────────────────────
+# apt fills $(ARCH) in from the local machine's dpkg architecture; mmw has no
+# such machine (see design-notes.md: "never invent an architecture" and
+# core/apt_sources.py's arch_placeholder). --arch resolves it without network;
+# omitting --arch probes each known architecture via discover, monkeypatched
+# here since this module is deliberately network-free (see file docstring).
+
+PLACEHOLDER = "deb https://nvidia.example/deb/$(ARCH) /\n"
+
+
+def test_arch_override_resolves_placeholder_without_network(cfg_dir):
+    code, out = _run(cfg_dir, PLACEHOLDER, arch="arm64")
+    assert code == 0
+    sources = config.load(cfg_dir).sources
+    assert len(sources) == 1
+    assert sources[0].url == "https://nvidia.example/deb/arm64"
+    assert sources[0].arches == ["arm64"]
+
+
+def test_placeholder_is_probed_and_expanded_into_one_source_per_arch(cfg_dir, monkeypatch):
+    from mmw.core import discover
+    monkeypatch.setattr(discover, "expand_arch_placeholder",
+                         lambda url, token: ["amd64", "arm64"])
+
+    code, out = _run(cfg_dir, PLACEHOLDER)
+    assert code == 0
+    sources = {s.url: s.arches for s in config.load(cfg_dir).sources}
+    assert sources == {
+        "https://nvidia.example/deb/amd64": ["amd64"],
+        "https://nvidia.example/deb/arm64": ["arm64"],
+    }
+    assert any("amd64" in line and "arm64" in line for line in out)
+
+
+def test_placeholder_resolving_to_nothing_is_a_hard_error(cfg_dir, monkeypatch):
+    from mmw.core import discover
+    monkeypatch.setattr(discover, "expand_arch_placeholder", lambda url, token: [])
+
+    code, out = _run(cfg_dir, PLACEHOLDER)
+    assert code == 1
+    assert config.load(cfg_dir).sources == []
+    assert any("$(ARCH)" in line for line in out)
+
+
 def test_stdin_is_read_when_no_file(monkeypatch):
     import io
     monkeypatch.setattr("sys.stdin", io.StringIO("deb http://x/deb noble main\n"))

@@ -16,7 +16,7 @@ The one-line format is the same data denormalized — one line per suite — so
 several lines regroup by URL back into a single source.
 """
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from mmw.core.config import SourceConfig, SuiteOverride, derive_name
 
@@ -31,6 +31,40 @@ class AptEntry:
     include_sources: bool = False
     gpg_key: str | None = None       # armoured key from an inline `Signed-By:`
     gpg_key_name: str | None = None  # keyring basename a `Signed-By:` path named
+    # apt's own runtime substitution token ("$(ARCH)" or "$ARCH"), if the URL
+    # carried one. Left un-substituted in `url` — see `_parse_one_line_body`.
+    arch_placeholder: str | None = None
+
+
+def detect_arch_placeholder(text: str) -> str | None:
+    """Which apt runtime-substitution token (`$(ARCH)` or `$ARCH`), if any,
+    appears in `text`. Shared by the one-line parser and by anything probing a
+    bare URL directly (the TUI's "Probe URL" field never goes through
+    `parse_apt_sources` at all, since it isn't a config file) — one place
+    recognizing the token, not two copies of the same check."""
+    if "$(ARCH)" in text:
+        return "$(ARCH)"
+    if "$ARCH" in text:
+        return "$ARCH"
+    return None
+
+
+def expand_placeholder_entry(entry: AptEntry, archs: list[str]) -> list[AptEntry]:
+    """One concrete entry per already-resolved architecture.
+
+    Pure — takes the resolution as input rather than performing it, so this
+    stays usable from both the offline `mmw add` path (an `--arch` override
+    needs no network) and a network-capable caller (`discover.
+    expand_arch_placeholder` via `core.draft`) without duplicating the
+    substitution logic in either place.
+    """
+    if not entry.arch_placeholder:
+        return [entry]
+    return [
+        replace(entry, url=entry.url.replace(entry.arch_placeholder, arch),
+                arch_placeholder=None, arches=[arch])
+        for arch in archs
+    ]
 
 
 def parse_apt_sources(text: str) -> list[AptEntry]:
@@ -266,7 +300,13 @@ def _parse_one_line_body(rest: str) -> AptEntry | None:
             if opt.startswith("arch="):
                 arches = _split_list(opt[5:])
         rest = rest[end + 1:].strip()
-    rest = rest.replace("$(ARCH)", "amd64").replace("$ARCH", "amd64")
+    # apt fills $(ARCH)/$ARCH in from the *local machine's* dpkg architecture
+    # at update time — mmw has no such machine, so guessing one here (this
+    # used to hardcode "amd64") silently drops every other architecture a
+    # repository serves. Record which token appeared and leave it in the URL
+    # verbatim; a network-capable caller (discover.expand_arch_placeholder)
+    # resolves it by checking which arch actually exists.
+    placeholder = detect_arch_placeholder(rest)
     parts = rest.split()
     if len(parts) < 2 or not _is_mirrorable(parts[0]):
         return None
@@ -276,6 +316,7 @@ def _parse_one_line_body(rest: str) -> AptEntry | None:
         suite=None if suite == "/" else suite,
         components=parts[2:],
         arches=arches,
+        arch_placeholder=placeholder,
     )
 
 

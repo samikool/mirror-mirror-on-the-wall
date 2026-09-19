@@ -119,13 +119,15 @@ class _FakeResponse:
 
 
 class _FakeClient:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, content=b"key-bytes", status=200):
         self.fail = fail
+        self.content = content
+        self.status = status
 
-    def get(self, url, timeout=None):
+    def get(self, url, **kwargs):
         if self.fail:
             raise ConnectionError("no route to host")
-        return _FakeResponse()
+        return _FakeResponse(self.content, self.status)
 
 
 def test_sync_custom_key_success(tmp_path):
@@ -147,6 +149,32 @@ def test_sync_custom_key_failure_reported(tmp_path):
     assert not r.ok
     assert "no route to host" in r.failed[0]
     assert not (r.dest_dir / "repo.key").exists()  # no half-written file
+
+
+# ── fetch_key: the add-time "paste a URL" method ────────────────────
+
+def test_fetch_key_passes_through_an_already_armoured_key():
+    from mmw.core.keys import fetch_key
+    armour = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQINBGXf\n-----END PGP PUBLIC KEY BLOCK-----\n"
+    client = _FakeClient(content=armour.encode())
+    assert fetch_key("https://x/key.asc", client) == armour
+
+
+def test_fetch_key_dearmors_a_binary_keyring():
+    """A server handing out a raw `.gpg` keyring (the form NVIDIA's own docs
+    tell you to produce yourself with `gpg --dearmor`) must come back armoured
+    — mmw.toml is a text file, so a key can only be stored there armoured."""
+    from mmw.core.keys import fetch_key
+    client = _FakeClient(content=b"\x99\x01\x0estray-binary-bytes-not-utf8\xff\xfe")
+    armour = fetch_key("https://x/key.gpg", client)
+    assert armour.startswith("-----BEGIN PGP PUBLIC KEY BLOCK-----")
+
+
+def test_fetch_key_raises_on_http_failure():
+    from mmw.core.keys import fetch_key
+    import pytest
+    with pytest.raises(RuntimeError):
+        fetch_key("https://x/key.asc", _FakeClient(status=404))
 
 
 def test_detect_unreachable_carries_error(monkeypatch):

@@ -7,7 +7,7 @@ say yes to eight of them and no to four, and how the keys those configs only
 import asyncio
 
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Checkbox, Input, OptionList, SelectionList, TextArea
+from textual.widgets import Button, Checkbox, Input, Label, OptionList, SelectionList, TextArea
 
 from mmw.core import discover
 from mmw.core.apt_sources import parse_apt_sources
@@ -290,6 +290,51 @@ def test_cancelling_the_browser_leaves_the_key_directory_alone(tmp_path):
             await _settle(pilot)
 
             assert app.screen.query_one("#keydir", Input).value == "/already/typed"
+
+    _run(scenario)
+
+
+def test_the_key_modal_can_fetch_from_a_url(monkeypatch):
+    from mmw.core import keys
+
+    monkeypatch.setattr(keys, "fetch_key", lambda url, client: ARMOUR)
+
+    async def scenario():
+        app = _Harness(KeyModal("repo-a", "a.gpg"))
+        async with app.run_test() as pilot:
+            await _settle(pilot)
+            app.screen.query_one("#key-url", Input).value = "https://nvidia.example/gpgkey"
+            app.screen.query_one("#btn-fetch", Button).press()
+            await _settle(pilot, 60)
+
+            assert app.screen.query_one("#key-area", TextArea).text == ARMOUR
+            app.screen.query_one("#btn-save", Button).press()
+            await _settle(pilot)
+
+        armour, name = app.result
+        assert armour == ARMOUR.strip()
+
+    _run(scenario)
+
+
+def test_the_key_modal_reports_a_failed_fetch_and_does_not_advance(monkeypatch):
+    from mmw.core import keys
+
+    def boom(url, client):
+        raise RuntimeError("HTTP 404")
+
+    monkeypatch.setattr(keys, "fetch_key", boom)
+
+    async def scenario():
+        app = _Harness(KeyModal("repo-a", "a.gpg"))
+        async with app.run_test() as pilot:
+            await _settle(pilot)
+            app.screen.query_one("#key-url", Input).value = "https://nvidia.example/gpgkey"
+            app.screen.query_one("#btn-fetch", Button).press()
+            await _settle(pilot, 60)
+
+            assert app.screen.query_one("#key-area", TextArea).text == ""
+            assert "404" in str(app.screen.query_one("#key-status", Label).content)
 
     _run(scenario)
 

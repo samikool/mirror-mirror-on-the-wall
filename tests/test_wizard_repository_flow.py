@@ -9,7 +9,7 @@ import asyncio
 
 from textual import work
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Input, RadioButton, SelectionList, Switch, TextArea
+from textual.widgets import Button, Input, Label, RadioButton, SelectionList, Switch, TextArea
 
 from mmw.core import config, discover
 from mmw.tui.custom_repo import StepCustom
@@ -292,6 +292,55 @@ def test_a_dead_url_is_reported_not_crawled(monkeypatch):
     _run(scenario)
 
 
+def test_probing_an_arch_placeholder_url_resolves_into_one_repo_per_arch(monkeypatch):
+    """Typing `.../deb/$(ARCH)` straight into the URL field (NVIDIA's own docs
+    call this the "repository root") never goes through `parse_apt_sources` at
+    all, so it needs its own $(ARCH) check — separate from the config-paste
+    path's, and from `probers.probe_url`'s ordinary single-result dispatch."""
+    def fake_detect(url):
+        if url.endswith("/amd64"):
+            return discover.DetectResult(provider="apt-flat", suites=["stable"])
+        if url.endswith("/arm64"):
+            return discover.DetectResult(provider="apt-flat", suites=["stable"])
+        return discover.DetectResult(provider=None, error="404")
+
+    monkeypatch.setattr(discover, "detect_repository", fake_detect)
+
+    async def scenario():
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            step = await _probe(pilot, "https://nvidia.example/deb/$(ARCH)")
+            assert len(step._bundle) == 2
+            assert step.query_one("#bulk-row").display is True
+            sources = step.get_sources()
+
+        assert sorted(s.url for s in sources) == [
+            "https://nvidia.example/deb/amd64",
+            "https://nvidia.example/deb/arm64",
+        ]
+
+    _run(scenario)
+
+
+def test_probing_an_arch_placeholder_url_that_resolves_to_nothing_is_reported(monkeypatch):
+    monkeypatch.setattr(discover, "detect_repository",
+                         lambda url: discover.DetectResult(provider=None, error="404"))
+
+    async def scenario():
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            step = await _probe(pilot, "https://nvidia.example/deb/$(ARCH)")
+            assert step._bundle == []
+            assert step._draft is None
+            assert step.query_one("#fields-container").display is False
+            assert step.query_one("#bulk-row").display is False
+            assert "no architecture" in str(step.query_one("#detect-status", Label).content)
+
+    _run(scenario)
+
+
 # ── mode 2: paste a config — the same flow, pre-filtered ─────────────────────
 
 def test_a_pasted_filter_is_preselected_and_the_rest_still_offered(monkeypatch):
@@ -383,6 +432,53 @@ def test_a_paste_naming_several_repositories_imports_all_of_them(monkeypatch):
             "http://archive.example.com/ubuntu",
             "http://security.example.com/ubuntu",
         ]
+
+    _run(scenario)
+
+
+ARCH_PLACEHOLDER = "deb https://nvidia.example/deb/$(ARCH) /\n"
+
+
+def test_a_placeholder_paste_resolves_off_thread_into_one_repo_per_arch(monkeypatch):
+    """`$(ARCH)` (NVIDIA's libnvidia-container ships exactly this) can't be
+    resolved on the UI thread — resolving it means probing each known
+    architecture over the network. This drives the real paste → worker →
+    call_from_thread path, not just the pure functions underneath it."""
+    monkeypatch.setattr(discover, "expand_arch_placeholder",
+                         lambda url, token: ["amd64", "arm64", "ppc64el"])
+
+    async def scenario():
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            step = await _paste(pilot, ARCH_PLACEHOLDER)
+            assert len(step._bundle) == 3
+            assert step.query_one("#bulk-row").display is True
+            sources = step.get_sources()
+
+        assert sorted(s.url for s in sources) == [
+            "https://nvidia.example/deb/amd64",
+            "https://nvidia.example/deb/arm64",
+            "https://nvidia.example/deb/ppc64el",
+        ]
+        assert all(s.provider == "apt-flat" for s in sources)
+
+    _run(scenario)
+
+
+def test_a_placeholder_that_resolves_to_nothing_reports_and_does_not_advance(monkeypatch):
+    monkeypatch.setattr(discover, "expand_arch_placeholder", lambda url, token: [])
+
+    async def scenario():
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            step = await _paste(pilot, ARCH_PLACEHOLDER)
+            assert step._bundle == []
+            assert step._draft is None
+            assert step.query_one("#fields-container").display is False
+            assert step.query_one("#bulk-row").display is False
+            assert "no architecture" in str(step.query_one("#detect-status", Label).content)
 
     _run(scenario)
 

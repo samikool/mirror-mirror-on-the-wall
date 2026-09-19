@@ -11,7 +11,11 @@ from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Label, ProgressBar, RichLog, Static
 
-from mmw.core.format import fmt_duration as _fmt_duration, fmt_size as _fmt_bytes
+from mmw.core.format import (
+    fmt_duration as _fmt_duration,
+    fmt_size as _fmt_bytes,
+    fmt_speed as _fmt_speed,
+)
 from mmw.tui.widgets import Button
 
 
@@ -136,6 +140,14 @@ def _transfer_progress_css(cls_name: str, prefix: str) -> str:
         color: $accent;
         margin-top: 1;
     }}
+    {cls_name} .{prefix}-archive-rate-label {{
+        height: 1;
+        color: $accent;
+    }}
+    {cls_name} .{prefix}-archive-file-label {{
+        height: 1;
+        color: $warning;
+    }}
     {cls_name} .{prefix}-stats {{
         height: 1;
         color: $text;
@@ -230,6 +242,42 @@ class _TransferProgressModal(ModalScreen):
         self._speed_ema: float = 0.0
         self._last_speed_time: float = 0.0
         self._last_speed_linked: int = 0
+        # Archive-writing phase (BundleSink.close()) — the actual I/O for a
+        # bundle happens entirely here, invisible to the counters above,
+        # which only track the fast in-memory enumeration phase. Totals
+        # arrive via "archive-start" the instant they're known (before any
+        # archive I/O runs), so the bar is determinate from the first tick.
+        #
+        # Raw and compressed bytes are tracked separately, never conflated:
+        # `_archive_total_bytes` (from archive-start) is uncompressed source
+        # size, and `_archive_raw_bytes_done` is comparable to it — an
+        # apples-to-apples fraction that can reach a clean 100%. Comparing
+        # `_archive_total_bytes` against the compressed bytes actually
+        # written to disk was the bug this replaced: two different units
+        # that could never cleanly reach 100% against each other. The
+        # compressed figure is kept too — it drives the write-speed EMA
+        # (the "how fast are we actually writing to disk" number) and the
+        # live compression ratio, the way an archiving tool's progress
+        # display would show both.
+        self._archive_total_files: int = 0
+        self._archive_total_bytes: int = 0
+        self._archive_files_done: int = 0
+        self._archive_raw_bytes_done: int = 0
+        self._archive_compressed_bytes_done: int = 0
+        self._archive_files_ema: float = 0.0
+        self._archive_bps_ema: float = 0.0
+        self._archive_last_sample_time: float = 0.0
+        self._archive_last_sample_files: int = 0
+        self._archive_last_sample_bytes: int = 0
+        # A single large file's own progress (see BundleSink._ProgressFile) —
+        # separate from the counters above, which only advance once a whole
+        # file finishes. Rendered as an extra clause on the status line rather
+        # than its own log lines, since it can update many times a second for
+        # as long as one multi-GB file takes to compress. `_current_large_file`
+        # empty means none in flight.
+        self._current_large_file: str = ""
+        self._current_large_file_done: int = 0
+        self._current_large_file_size: int = 0
         self.stop_event = threading.Event()
         # Set by mark_done / mark_error from the transfer thread
         self._transfer_done: bool = False
@@ -250,6 +298,14 @@ class _TransferProgressModal(ModalScreen):
                     id=f"{p}-pbar",
                 )
                 yield Label("  Waiting for first mirror…", id=f"{p}-mirror-label", classes=f"{p}-mirror-label")
+                archive_rate_label = Label(
+                    "", id=f"{p}-archive-rate-label", classes=f"{p}-archive-rate-label")
+                archive_rate_label.display = False
+                yield archive_rate_label
+                archive_file_label = Label(
+                    "", id=f"{p}-archive-file-label", classes=f"{p}-archive-file-label")
+                archive_file_label.display = False
+                yield archive_file_label
                 if self.SHOW_MIRROR_BAR:
                     yield ProgressBar(total=None, show_eta=False, id=f"{p}-mirror-pbar")
                 yield Label("  Starting…", id=f"{p}-stats", classes=f"{p}-stats")
@@ -354,6 +410,75 @@ class _TransferProgressModal(ModalScreen):
                     f"  [dim]# destination scan done: {int(checked):,} checked, "
                     f"{int(removed):,} removed[/]"
                 )
+            # Archive-writing phase (BundleSink.close()) — see the __init__
+            # comment above these fields. `link()`/`write()` only ever append
+            # to in-memory lists, so these are the only status events that
+            # correspond to real disk I/O for a bundle.
+            elif status.startswith("archive-large-file:"):
+                # Unthrottled and immediate, unlike the sampled per-file line
+                # below — a single multi-hundred-MB/GB file (driver/kernel
+                # packages this pool holds plenty of) can otherwise leave the
+                # log silent for however long it takes to compress, reading
+                # as a stall instead of real, in-progress work.
+                size = int(status.split(":", 1)[1])
+                self._current_large_file = dst
+                self._current_large_file_done = 0
+                self._current_large_file_size = size
+                self._log_pending.append(
+                    f"  [magenta]▶[/] compressing {short}  [dim]({_fmt_bytes(size)})[/]"
+                )
+            elif status.startswith("archive-large-file-progress:"):
+                # No log line — this can fire many times a second for as long
+                # as one big file takes; it updates the persistent status line
+                # instead (see _tick()), the same way the mirror-label line
+                # already reports without spamming the scrolling log.
+                _, done, size = status.split(":")
+                if dst == self._current_large_file:
+                    self._current_large_file_done = int(done)
+                    self._current_large_file_size = int(size)
+            elif status.startswith("archive-start:"):
+                _, total_files, total_bytes = status.split(":")
+                self._archive_total_files = int(total_files)
+                self._archive_total_bytes = int(total_bytes)
+                self._log_pending.append(
+                    f"  [dim]# writing archive: {int(total_files):,} files, "
+                    f"{_fmt_bytes(int(total_bytes))}…[/]"
+                )
+            elif status.startswith("archive-progress:"):
+                _, files_done, raw_done, compressed_done = status.split(":")
+                self._archive_files_done = int(files_done)
+                self._archive_raw_bytes_done = int(raw_done)
+                self._archive_compressed_bytes_done = int(compressed_done)
+                # `dst` is whichever file happened to complete the instant
+                # this (throttled, see BundleSink._maybe_report_archive_
+                # progress) report fired — not every file, the same way the
+                # numeric counters above only sample rather than tick per
+                # file. Enough to show real motion through the archive
+                # without a second unthrottled log path into this widget.
+                if dst:
+                    self._log_pending.append(f"  [magenta]⇢[/] {short}")
+                # This file has finished (that's what `archive-progress` fires
+                # on) — if it was the large file currently shown as "in
+                # progress", clear it so the status line stops claiming it's
+                # still being worked on.
+                if dst and dst == self._current_large_file:
+                    self._current_large_file = ""
+                    self._current_large_file_done = 0
+                    self._current_large_file_size = 0
+            elif status.startswith("archive-done:"):
+                _, files_done, raw_done, compressed_done = status.split(":")
+                self._archive_files_done = int(files_done)
+                self._archive_raw_bytes_done = int(raw_done)
+                self._archive_compressed_bytes_done = int(compressed_done)
+                self._current_large_file = ""
+                self._current_large_file_done = 0
+                self._current_large_file_size = 0
+                ratio = (int(raw_done) / int(compressed_done)) if int(compressed_done) else 0.0
+                self._log_pending.append(
+                    f"  [dim]# archive written: {int(files_done):,} files, "
+                    f"{_fmt_bytes(int(compressed_done))} written "
+                    f"({ratio:.1f}x from {_fmt_bytes(int(raw_done))})[/]"
+                )
 
     def _tick(self) -> None:
         p = self.ID_PREFIX
@@ -369,6 +494,14 @@ class _TransferProgressModal(ModalScreen):
             mirror_change = self._pending_mirror_change
             self._pending_mirror_change = None
             phase = self._phase
+            archive_total_files = self._archive_total_files
+            archive_total_bytes = self._archive_total_bytes
+            archive_files_done = self._archive_files_done
+            archive_raw_bytes_done = self._archive_raw_bytes_done
+            archive_compressed_bytes_done = self._archive_compressed_bytes_done
+            current_large_file = self._current_large_file
+            current_large_file_done = self._current_large_file_done
+            current_large_file_size = self._current_large_file_size
 
         total_done = linked + skipped
 
@@ -398,9 +531,40 @@ class _TransferProgressModal(ModalScreen):
         speed = self._speed_ema
         elapsed = now - self._start
 
-        # Overall progress bar
+        # Archive-writing phase EMA — files/s and bytes/s, sampled every
+        # 250 ms exactly like the enumeration-phase speed above. Only ticks
+        # once `archive-start` has fired (see record()). Bytes/s is deliberately
+        # sampled from the *compressed* counter — "how fast are we actually
+        # writing to disk" — not the raw/uncompressed one, which drives the
+        # completion fraction instead (see the field comments in __init__).
+        if archive_total_files:
+            if self._archive_last_sample_time == 0.0:
+                self._archive_last_sample_time = now
+                self._archive_last_sample_files = archive_files_done
+                self._archive_last_sample_bytes = archive_compressed_bytes_done
+            adt = now - self._archive_last_sample_time
+            if adt >= 0.25:
+                inst_files = (archive_files_done - self._archive_last_sample_files) / adt
+                inst_bytes = (archive_compressed_bytes_done - self._archive_last_sample_bytes) / adt
+                self._archive_files_ema = 0.3 * inst_files + 0.7 * self._archive_files_ema
+                self._archive_bps_ema = 0.3 * inst_bytes + 0.7 * self._archive_bps_ema
+                self._archive_last_sample_time = now
+                self._archive_last_sample_files = archive_files_done
+                self._archive_last_sample_bytes = archive_compressed_bytes_done
+
+        # Overall progress bar — once the archive-writing phase has started,
+        # it repurposes this bar: the enumeration phase it tracked before
+        # that is already over, and the archive's own totals are known and
+        # determinate the moment `archive-start` fires. Bytes, not files: this
+        # pool holds files from a few KB to 5+ GB, so a file-count fraction
+        # would read as "almost done" the instant the many small files clear,
+        # while the actual data volume remaining could still be most of it.
         try:
-            if self._total:
+            if archive_total_files:
+                bar = self.query_one(f"#{p}-pbar", ProgressBar)
+                bar.total = archive_total_bytes if archive_total_bytes else None
+                bar.progress = archive_raw_bytes_done
+            elif self._total:
                 self.query_one(f"#{p}-pbar", ProgressBar).progress = total_done
         except Exception:
             pass
@@ -418,9 +582,63 @@ class _TransferProgressModal(ModalScreen):
             except Exception:
                 pass
 
-        # Mirror label
+        # Mirror label — repurposed for the archive-writing phase, which has
+        # no mirror of its own (it runs once, after every group is done).
+        #
+        # The label's own CSS sets a single base color ($accent); markup like
+        # [bold]/[dim] only ever adjusts weight or intensity of THAT color, so
+        # without explicit color tags every segment renders as shades of one
+        # hue. Each stat gets its own color here instead — matching the
+        # palette record() already uses elsewhere (green for real progress,
+        # cyan for rates, dim for secondary/contextual numbers) — so the four
+        # different kinds of information (data progress, file count, speed,
+        # compressed output) read as visually distinct at a glance.
         try:
-            if self._mirror_name:
+            if archive_total_files:
+                # Percentage is bytes-based (raw/uncompressed), same reasoning
+                # as the progress bar above — file count alone is misleading
+                # when a handful of multi-GB files dominate the actual work.
+                pct = (f" [dim]({100 * archive_raw_bytes_done / archive_total_bytes:.0f}%)[/]"
+                       if archive_total_bytes else "")
+                ratio = (archive_raw_bytes_done / archive_compressed_bytes_done
+                         if archive_compressed_bytes_done else 0.0)
+                ratio_str = f" [dim]({ratio:.1f}x)[/]" if archive_compressed_bytes_done else ""
+                # Split across three lines/widgets, not one long one: at
+                # realistic scale (multi-TB, six-figure file counts) the
+                # combined line ran past 130 columns before a filename was
+                # even added — well past any terminal width worth assuming.
+                self.query_one(f"#{p}-mirror-label", Label).update(
+                    f"  [bold]Writing archive[/]"
+                    f"  [dim]·[/]  [green]{_fmt_bytes(archive_raw_bytes_done)} / "
+                    f"{_fmt_bytes(archive_total_bytes)}[/]{pct}"
+                    f"  [dim]·[/]  [dim]{archive_files_done:,} / {archive_total_files:,} files[/]"
+                )
+                rate_label = self.query_one(f"#{p}-archive-rate-label", Label)
+                rate_label.update(
+                    f"  [cyan]{self._archive_files_ema:,.0f} files/s[/]"
+                    f"  [dim]·[/]  [cyan]{_fmt_speed(self._archive_bps_ema)}[/]"
+                    f"  [dim]·[/]  [magenta]{_fmt_bytes(archive_compressed_bytes_done)} written[/]{ratio_str}"
+                )
+                rate_label.display = True
+                # One big file's own progress, when there is one in flight —
+                # see BundleSink._ProgressFile. Filename only, on its own line.
+                file_label = self.query_one(f"#{p}-archive-file-label", Label)
+                if current_large_file and current_large_file_size:
+                    file_pct = 100 * current_large_file_done / current_large_file_size
+                    fname = current_large_file.rsplit("/", 1)[-1]
+                    file_label.update(f"  [yellow]▶ compressing {fname}: {file_pct:.0f}%[/]")
+                    file_label.display = True
+                else:
+                    file_label.display = False
+            elif self._mirror_name:
+                # Not in the archive-writing phase (or never entering it at
+                # all — the common case for PublishProgressModal): the two
+                # extra lines it uses must not linger from a previous tick.
+                try:
+                    self.query_one(f"#{p}-archive-rate-label", Label).display = False
+                    self.query_one(f"#{p}-archive-file-label", Label).display = False
+                except Exception:
+                    pass
                 mirror_done = mirror_linked + mirror_skipped
                 if self._mirror_total_count:
                     pbar_pct = f"  [dim]{100 * mirror_done / self._mirror_total_count:.0f}%[/]"
@@ -551,6 +769,65 @@ class BundleProgressModal(_TransferProgressModal):
     SHOW_MIRROR_BAR = False
 
     DEFAULT_CSS = _transfer_progress_css("BundleProgressModal", "bun")
+
+
+class BundleModeModal(ModalScreen["bool | None"]):
+    """Delta or full, asked every time a bundle starts.
+
+    Returns `True` for full, `False` for delta, `None` on cancel (Escape or
+    the Cancel button) — three real outcomes, not two: declining this choice
+    must abort the bundle entirely, not silently fall back to delta the way
+    `ConfirmModal`'s plain yes/no would if reused here.
+    """
+
+    DEFAULT_CSS = """
+    BundleModeModal { align: center middle; }
+    BundleModeModal > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        border: double $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    BundleModeModal .title { text-style: bold; margin-bottom: 1; }
+    BundleModeModal Label { width: 100%; margin-bottom: 1; }
+    BundleModeModal Horizontal { align: center middle; height: auto; margin-top: 1; }
+    BundleModeModal Button { margin: 0 1; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, network_name: str):
+        super().__init__()
+        self._network_name = network_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"Bundle — {_escape(self._network_name)}", classes="title")
+            yield Label(
+                "Send only what changed since the last bundle, "
+                "or the whole network again?"
+            )
+            with Horizontal():
+                yield Button("Cancel", variant="default", id="cancel")
+                yield Button("Delta", variant="primary", id="delta")
+                yield Button("Full", variant="warning", id="full")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#delta")
+    def _delta(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#full")
+    def _full(self) -> None:
+        self.dismiss(True)
 
 
 class PreparePublishModal(ModalScreen[None]):

@@ -39,9 +39,9 @@ from mmw.resources import apply_script_bytes
 
 
 def bundle_output_path(network: NetworkConfig, created: str,
-                       out: Path | None = None) -> Path:
+                       out: Path | None = None, compress: bool = True) -> Path:
     """Where this bundle lands. `out` may be a file or a directory."""
-    name = f"{network.name}-{created}.tar.zst"
+    name = f"{network.name}-{created}.{'tar.zst' if compress else 'tar'}"
     if out is not None:
         return out / name if out.is_dir() or not out.suffix else out
     if network.bundle_dir is None:
@@ -62,6 +62,7 @@ def bundle_network(
     progress=None,
     stop_event=None,
     mirror_start_callback=None,
+    compress: bool = True,
 ) -> BundleResult:
     """Materialize all of a network's mirrors into one `.tar.zst`.
 
@@ -85,7 +86,7 @@ def bundle_network(
     # (raises ValueError with no bundle_dir/out), so that check still
     # happens on the very first iteration, unchanged.
     while True:
-        target = bundle_output_path(network, created, out_path)
+        target = bundle_output_path(network, created, out_path, compress=compress)
         if not target.exists() and not (manifest_dir / f"{created}{MANIFEST_SUFFIX}").exists():
             break
         created = bump_stamp(created)
@@ -103,7 +104,8 @@ def bundle_network(
     header = ManifestHeader(network=network.name, created=created,
                             previous=previous, full=full)
     sink = BundleSink(target, header, prev, apply_script_bytes(),
-                      level=level, prune=network.prune, full=full)
+                      level=level, prune=network.prune, full=full,
+                      progress=progress, compress=compress)
     result = BundleResult(network_name=network.name, out_path=target,
                           created=created, previous=previous, full=full)
 

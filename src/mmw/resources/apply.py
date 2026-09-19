@@ -100,12 +100,47 @@ def is_safe_path(name):
     return posixpath.normpath(name) == name.rstrip("/")
 
 
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _is_zstd(path):
+    """Sniff the actual bytes rather than trust the filename — a bundle
+    copied across filesystems or renamed by hand shouldn't change how it's
+    read."""
+    with open(path, "rb") as fh:
+        return fh.read(4) == _ZSTD_MAGIC
+
+
+class _PlainStream(object):
+    """Stands in for the subprocess.Popen open_stream normally returns, for
+    a bundle mmw produced with compression turned off. apply() only ever
+    touches `.stdout` (to read) and `.wait()` (to check for a decompression
+    failure) on what this returns — both duck-typed identically here, so
+    nothing below this function needs to know or care which kind it got.
+    There is nothing to wait on for a plain tar: whatever integrity problem
+    it has, tarfile's own exceptions and the manifest-completeness check
+    below already cover it.
+    """
+
+    def __init__(self, path):
+        self.stdout = open(path, "rb")
+
+    def wait(self):
+        return 0
+
+
 def open_stream(path):
-    """zstd -dc <path> as a readable pipe. Raises FileNotFoundError if the
-    zstd binary itself is missing — main() turns that into one clear line
-    instead of a raw traceback, since "zstd assumed present" is an
-    assumption, not a guarantee, on a machine we've never seen."""
-    return subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE)
+    """A readable stream over the bundle's tar content, however it's stored.
+
+    zstd -dc <path> as a pipe when the bundle is actually zstd-compressed
+    (raises FileNotFoundError if the zstd binary itself is missing — main()
+    turns that into one clear line instead of a raw traceback, since "zstd
+    assumed present" is an assumption, not a guarantee, on a machine we've
+    never seen); the file itself, opened directly, when it isn't.
+    """
+    if _is_zstd(path):
+        return subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE)
+    return _PlainStream(path)
 
 
 def read_manifest_bytes(blob):
@@ -392,6 +427,25 @@ def apply(bundle, root, dry_run=False, verify=False):
                 "zstd exited with status %d decompressing %r — the bundle is "
                 "truncated or corrupt; nothing after the last good entry was "
                 "applied\n" % (rc, bundle))
+            return EXIT_TOOLING
+
+        # A first attempt at this compared `manifest` (the network's COMPLETE
+        # expected tree — that's what makes --verify meaningful) against
+        # `applied_paths` directly, and broke every delta bundle: a delta's
+        # tar deliberately contains only what changed, so every legitimately
+        # unchanged file (listed in the manifest, never a member of THIS tar)
+        # looked "missing". `file_count` sidesteps that: BundleSink.close()
+        # declares it from its own send/generate lists — which ARE the exact
+        # scope of the bundle that produced this manifest — before writing a
+        # single tar byte, so a delta bundle simply declares a smaller count
+        # than the manifest's full file list, correctly. Absent on an older
+        # manifest written before this field existed: skip rather than guess.
+        declared = header.get("file_count") if header is not None else None
+        if declared is not None and written != declared:
+            sys.stderr.write(
+                "bundle is incomplete: expected %d file(s) from this bundle, "
+                "applied %d — the archive is truncated or corrupt\n"
+                % (declared, written))
             return EXIT_TOOLING
 
         if header is None:

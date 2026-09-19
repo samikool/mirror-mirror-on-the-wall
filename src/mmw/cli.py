@@ -332,6 +332,15 @@ def cmd_prune():
     run()
 
 
+@app.command("certs")
+def cmd_certs(
+    network: str = typer.Option(None, "--network", "-n", help="Generate certs for a specific network by name"),
+):
+    """Generate (or refresh) TLS key/CSR material for `certs = true` networks."""
+    from mmw.commands.certs import run
+    raise typer.Exit(run(Path("."), network=network))
+
+
 @app.command("bundle")
 def cmd_bundle(
     network: str = typer.Option(None, "--network", "-n", help="Bundle one network by name"),

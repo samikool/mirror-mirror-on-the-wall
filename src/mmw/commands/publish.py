@@ -13,6 +13,7 @@ from mmw.core import config
 # the function body would bind a fresh reference to the real one every call,
 # silently defeating the patch.
 from mmw.core.publisher import dry_run_network, publish_network
+from mmw.commands.certs import generate_for
 
 
 def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = False) -> int:
@@ -93,6 +94,15 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         # warnings, not failures, so they never set `ok`.
         for w in result.dist_upgrade_warnings:
             print(f"    ⚠ {w}", file=sys.stderr)
+
+        # `net.certs` is the TUI's cue too (publish_panel._execute_publish
+        # calls `_run_certs` after a clean publish) — headless never called
+        # it at all, so the same config produced a cert from the TUI and none
+        # from cron. Skipped on a dry run: generating real key material is
+        # exactly the kind of write a dry run promises not to make.
+        if net.certs and not dry_run:
+            generate_for(net, cfg)
+
         print(
             f"\n  Total: {result.linked} {'would link' if dry_run else 'linked'}, "
             f"{result.skipped} already current"

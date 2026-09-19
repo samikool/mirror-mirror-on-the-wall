@@ -70,6 +70,7 @@ uv run mmw prune                # reclaim packages no mirror's index wants
 | `mmw add` | Headless import of an apt config file (`-f`, stdin, or `--url`); `--dry-run` prints the TOML without writing |
 | `mmw prune` | Delete pool content no configured mirror's index references |
 | `mmw bundle` | Headless bundle to a `.tar.zst`; `-n NAME` for one network, `--full` to send everything, `--out` to override `bundle_dir` |
+| `mmw certs` | Generate/refresh TLS key + CSR for `certs = true` networks; `-n NAME` for one network |
 
 ## Configuration (`mmw.toml`)
 
@@ -172,6 +173,11 @@ detected LTS upgrade paths — `do-release-upgrade` works fully offline.
 TLS: networks with `certs = true` get a 4096-bit key + CSR generated under
 `{mirror_dir}/certs/{network}/` (never inside the served tree), with a
 `CERTS.md` walking through signing on your CA and the matching nginx config.
+Headless `mmw publish --quiet` generates certs for a `certs = true` network
+too, after a clean publish — the same thing the TUI's Publish button does, so
+a cron-driven publish no longer needs a human at the keyboard to get TLS
+material. `mmw certs` runs the same step standalone, for a first cert or a
+refresh without a full publish.
 
 ## Bundling — moving a network across an airgap
 

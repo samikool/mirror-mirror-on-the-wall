@@ -273,53 +273,8 @@ def cmd_publish(
     cfg = _load_config_or_exit(cfg_dir)
 
     if quiet or dry_run:
-        from mmw.core.publisher import dry_run_network, publish_network
-
-        networks = cfg.networks
-        if not networks:
-            typer.echo("No networks configured. Use `mmw publish` (TUI) to add one.")
-            raise typer.Exit(1)
-
-        if network:
-            networks = [n for n in networks if n.name == network]
-            if not networks:
-                typer.echo(f"Network '{network}' not found.", err=True)
-                raise typer.Exit(1)
-
-        label = "[dry-run] " if dry_run else ""
-        for net in networks:
-            if net.root is None:
-                # A bundle-only network — publish_base() has no destination
-                # to derive, and printing `net.root` unconditionally below
-                # used to print the literal string "None" for exactly this
-                # case. `dry_run_network`/`publish_network` both already
-                # return a graceful per-network error instead of raising, but
-                # skip here too so an `mmw publish` iterating several
-                # networks never even calls into either for one that can only
-                # be bundled.
-                typer.echo(
-                    f"\n{label}Skipping network: {net.name} — no publish root "
-                    f"set (use `mmw bundle` instead)"
-                )
-                continue
-            typer.echo(f"\n{label}Publishing network: {net.name}  →  {net.root}")
-            if dry_run:
-                result = dry_run_network(net, cfg, cfg.settings.mirror_dir)
-            else:
-                result = publish_network(net, cfg, cfg.settings.mirror_dir)
-            for mr in result.mirrors:
-                status = f"  {mr.mirror_name:<40} linked={mr.linked}  skipped={mr.skipped}"
-                if mr.errors:
-                    status += f"  errors={len(mr.errors)}"
-                typer.echo(status)
-                for e in mr.errors:
-                    typer.echo(f"    ✗ {e}", err=True)
-            typer.echo(
-                f"\n  Total: {result.linked} {'would link' if dry_run else 'linked'}, "
-                f"{result.skipped} already current"
-                + (f", {len(result.errors)} error(s)" if result.errors else "")
-            )
-        return
+        from mmw.commands.publish import run
+        raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run))
 
     from mmw.tui.init_wizard import InitWizardApp
 

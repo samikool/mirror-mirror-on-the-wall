@@ -350,3 +350,12 @@ def cmd_bundle(
     """Write a network's mirrors to a transferable bundle."""
     from mmw.commands.bundle import run
     raise typer.Exit(run(Path("."), network=network, full=full, out=out))
+
+
+@app.command("verify")
+def cmd_verify(
+    network: str = typer.Option(None, "--network", "-n", help="Verify only this network's mirrors"),
+):
+    """Check the pool holds every blob its mirrors' refs want (read-only)."""
+    from mmw.commands.verify import run
+    raise typer.Exit(run(Path("."), network=network))

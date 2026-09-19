@@ -71,6 +71,7 @@ uv run mmw prune                # reclaim packages no mirror's index wants
 | `mmw prune` | Delete pool content no configured mirror's index references |
 | `mmw bundle` | Headless bundle to a `.tar.zst`; `-n NAME` for one network, `--full` to send everything, `--out` to override `bundle_dir` |
 | `mmw certs` | Generate/refresh TLS key + CSR for `certs = true` networks; `-n NAME` for one network |
+| `mmw verify` | Read-only: check the pool holds every blob its mirrors' refs want; `-n NAME` for one network |
 
 ## Configuration (`mmw.toml`)
 
@@ -270,7 +271,11 @@ first, release files last — safe for live-served destinations). Re-syncing an
 unchanged mirror is a metadata fetch plus a database diff: seconds, no
 downloads, no link storms. `mmw prune` deletes pool content no configured
 mirror's index references anymore — superseded versions are reclaimed
-automatically.
+automatically. Publish and bundle only ever see refs the pool can also fill
+(`refs ⋈ packages`), so a blob lost between sync and publish drops silently out
+of what gets served — no error, just a package that 404s during `apt install`
+on the far side of an airgap. `mmw verify` is the read-only check that catches
+this ahead of time.
 
 ## Development
 

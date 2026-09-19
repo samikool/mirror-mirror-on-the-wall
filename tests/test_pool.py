@@ -1,4 +1,5 @@
 import hashlib
+import time
 
 import pytest
 
@@ -77,3 +78,100 @@ def test_verify_checksum(tmp_path):
     good = hashlib.sha256(b"hello").hexdigest()
     assert verify_checksum(f, good, "sha256")
     assert not verify_checksum(f, "0" * 64, "sha256")
+
+
+def _wal_size(pool: Pool) -> int:
+    wal = pool.pool_dir / "mmw.db-wal"
+    return wal.stat().st_size if wal.exists() else 0
+
+
+def _add_batch(pool: Pool, tag: str, n: int) -> None:
+    for i in range(n):
+        _add(pool, f"{tag}-{i}".encode(), f"{tag}-{i}.rpm")
+    pool.flush_writes()
+
+
+def _run_workload(mirror_dir, checkpoint_interval: float) -> int:
+    """Same insert workload under a given checkpoint interval. Returns the WAL
+    size measured *before* close() (which always TRUNCATEs and would hide
+    what we're comparing)."""
+    pool = Pool(mirror_dir, checkpoint_interval=checkpoint_interval)
+    for round_num in range(4):
+        _add_batch(pool, f"round{round_num}", 1000)
+        time.sleep(0.2)
+    size = _wal_size(pool)
+    pool.close()
+    return size
+
+
+def test_periodic_checkpoint_bounds_wal(tmp_path):
+    """The writer thread's periodic PASSIVE checkpoint reclaims WAL frames for
+    reuse mid-sync, instead of letting the WAL grow unboundedly the way a real
+    sync's did (140MB+, see design-notes.md's WAL note) — checked here by comparing
+    the same workload with checkpointing on vs. effectively off, since the
+    packages table's random (sha256) primary key means WAL size per batch
+    naturally grows with table size regardless of checkpointing, so a bare
+    "does it grow" assertion doesn't isolate the effect."""
+    with_checkpoints = _run_workload(tmp_path / "a", checkpoint_interval=0.05)
+    without_checkpoints = _run_workload(tmp_path / "b", checkpoint_interval=9999)
+
+    assert with_checkpoints < without_checkpoints, (
+        f"periodic checkpointing didn't help: {with_checkpoints} bytes vs "
+        f"{without_checkpoints} bytes without it"
+    )
+
+
+def test_close_truncates_wal(mirror_dir):
+    pool = Pool(mirror_dir)
+    for i in range(50):
+        _add(pool, f"row-{i}".encode(), f"f{i}.rpm")
+    pool.close()
+
+    wal = mirror_dir / ".pool" / "mmw.db-wal"
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
+# ── read_only pools get the same tuned, dedicated reader as writable ones ────
+# See pool.py's `_read()`: verify/dry-run/publish/bundle all open
+# `Pool(read_only=True)`, and used to fall back to the bare, untuned `_conn`
+# under the same lock a writer would use — so `_PREPARE_WORKERS`-many
+# concurrent per-mirror reads (publish_panel._run_per_mirror) serialized on
+# one lock with a 2 MB default cache instead of running concurrently against
+# a 64 MB-cache, mmap'd reader, the way a writable pool's reads already did.
+
+def test_read_only_pool_with_existing_db_gets_a_tuned_dedicated_reader(mirror_dir):
+    Pool(mirror_dir).close()  # create the on-disk db first
+
+    ro = Pool(mirror_dir, read_only=True)
+    try:
+        assert ro._rconn is not None
+        assert ro._rconn is not ro._conn
+        cache_size = ro._rconn.execute("PRAGMA cache_size").fetchone()[0]
+        # A negative cache_size is in KB (SQLite convention) — the tuned
+        # 64 MB setting is -65536; the untuned default is -2000 (2 MB).
+        assert cache_size == -65536
+    finally:
+        ro.close()
+
+
+def test_read_only_pool_uses_the_dedicated_reader_not_the_write_lock(mirror_dir):
+    Pool(mirror_dir).close()
+
+    ro = Pool(mirror_dir, read_only=True)
+    try:
+        with ro._read() as conn:
+            assert conn is ro._rconn
+    finally:
+        ro.close()
+
+
+def test_read_only_pool_with_no_db_yet_falls_back_to_in_memory(mirror_dir):
+    """Nothing synced yet: there is no file to open a second connection on,
+    so this stays the in-memory fallback — unaffected by this fix."""
+    ro = Pool(mirror_dir, read_only=True)
+    try:
+        assert ro._rconn is None
+        with ro._read() as conn:
+            assert conn is ro._conn
+    finally:
+        ro.close()

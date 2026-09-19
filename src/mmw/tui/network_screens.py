@@ -546,11 +546,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
         self.query_one("#btn-back", Button).disabled = self._step_idx == 0
         self.call_after_refresh(self._focus_step)
 
-class EditNetworkScreen(
-    ModalScreen[
-        "tuple[list[config.NetworkSelect], bool, bool, bool, Path | None, Path | None, bool, bool] | None"
-    ]
-):
+class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
     """Edit the mirror list and settings for an existing network."""
 
     DEFAULT_CSS = """
@@ -786,5 +782,14 @@ class EditNetworkScreen(
         bundle_str = self.query_one("#inp-bundle-dir", Input).value.strip()
         root = Path(root_str) if root_str else None
         bundle_dir = Path(bundle_str) if bundle_str else None
-        self.dismiss((selects, prune, dist_upgrade, certs, root, bundle_dir,
-                      self._network.nginx, compress))
+        self.dismiss(config.NetworkConfig(
+            name=self._network.name,  # the editor does not rename
+            root=root,
+            bundle_dir=bundle_dir,
+            select=selects,
+            prune=prune,
+            dist_upgrade=dist_upgrade,
+            certs=certs,
+            nginx=self._network.nginx,  # no switch for this yet — next task
+            bundle_compress=compress,
+        ))

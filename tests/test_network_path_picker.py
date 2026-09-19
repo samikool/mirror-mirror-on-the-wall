@@ -296,8 +296,7 @@ def test_edit_screen_browse_root_saves_verbatim_no_name_appended(tmp_path):
 
     result = asyncio.run(scenario())
     assert result is not None
-    selects, prune, dist_upgrade, certs, root, bundle_dir, nginx, compress = result
-    assert root == tmp_path / "srv"   # verbatim — not tmp_path/"srv"/"lab"
+    assert result.root == tmp_path / "srv"   # verbatim — not tmp_path/"srv"/"lab"
 
 
 def test_edit_screen_round_trips_a_bundle_only_network(tmp_path):
@@ -345,7 +344,6 @@ def test_edit_screen_round_trips_a_bundle_only_network(tmp_path):
 
     result = asyncio.run(scenario())
     assert result is not None
-    selects, prune, dist_upgrade, certs, root, bundle_dir, nginx, compress = result
     # Round-trip check 2: Save carries the unchanged fields straight through.
-    assert root is None
-    assert bundle_dir == tmp_path / "out"
+    assert result.root is None
+    assert result.bundle_dir == tmp_path / "out"

@@ -196,5 +196,51 @@ def test_unchecking_a_repo_in_edit_hides_its_dimensions_but_save_still_omits_it(
 
     result = asyncio.run(scenario())
     assert result is not None
-    selects = result[0]
-    assert [s.source for s in selects] == ["https://a.example.com/repo"]
+    assert [s.source for s in result.select] == ["https://a.example.com/repo"]
+
+
+def test_edit_screen_dismisses_a_network_config_with_name_unchanged():
+    """EditNetworkScreen used to dismiss an 8-tuple of positional fields —
+    five of them bools, four positionally adjacent — so every new field grew
+    the tuple and every consumer had to be updated in lockstep, with nothing
+    but ordering to catch a mistake. It now dismisses a typed
+    `config.NetworkConfig`, matching `AddNetworkScreen`. The editor never
+    renames a network, so `name` must survive the round trip unchanged."""
+    net = config.NetworkConfig(
+        name="lab", root=None,
+        select=[config.NetworkSelect(source="https://a.example.com/repo")],
+    )
+
+    async def scenario():
+        app = _host_app(EditNetworkScreen(net, _mirrors()))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            app.screen.query_one("#btn-save", Button).press()
+            await _settle(pilot)
+        return app.result
+
+    result = asyncio.run(scenario())
+    assert isinstance(result, config.NetworkConfig)
+    assert result.name == "lab"
+
+
+def test_edit_persists_every_networkconfig_field_except_name():
+    """The edit path copies fields from the dismissed NetworkConfig onto the
+    live one by iterating the model, not a hand-written list.
+
+    A literal list there would reintroduce the positional 8-tuple's drift
+    hazard in a new shape: add a field to NetworkConfig, forget to add it to
+    the copy list, and the editor silently stops persisting it. That is
+    precisely how `bundle_compress` would have been missed. This test fails
+    the moment the two fall out of step.
+    """
+    import inspect
+
+    from mmw.tui import publish_panel
+
+    src = inspect.getsource(publish_panel.NetworkPanel.edit_network)
+    assert "config.NetworkConfig.model_fields" in src, (
+        "edit_network must derive the copied field list from the model"
+    )
+    # And the exclusion is deliberate and singular.
+    assert 'field != "name"' in src

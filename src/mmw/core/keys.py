@@ -84,10 +84,31 @@ def looks_armoured(data: bytes) -> bool:
     return _ARMOUR_HEADER.encode() in data[:200]
 
 
+def _armour_bytes(raw: bytes) -> str:
+    """Whichever encoding these bytes are in, return them armoured."""
+    return raw.decode("utf-8", errors="replace") if looks_armoured(raw) else enarmor(raw)
+
+
 def read_key(path: Path) -> str:
     """Read a key file in either encoding and return it armoured."""
-    raw = path.read_bytes()
-    return raw.decode("utf-8", errors="replace") if looks_armoured(raw) else enarmor(raw)
+    return _armour_bytes(path.read_bytes())
+
+
+def fetch_key(url: str, client: httpx.Client) -> str:
+    """Fetch a key from a URL in either encoding and return it armoured — the
+    add-time equivalent of `read_key()` for a URL instead of a local path.
+
+    Never assume the URL hands back armour: NVIDIA's own install docs (among
+    others) hand out a key and then pipe it through `gpg --dearmor`
+    themselves, because `signed-by=` wants the binary form, and a vendor is
+    just as likely to publish the binary form directly. mmw's `write_key()`
+    already emits both `.asc` and `.gpg` from one armoured value, so the only
+    work here is fetch-and-normalize — whichever form arrives, this returns
+    the same armoured text either way.
+    """
+    resp = client.get(url, timeout=15, follow_redirects=True)
+    resp.raise_for_status()
+    return _armour_bytes(resp.content)
 
 
 def find_keys(directory: Path) -> dict[str, Path]:

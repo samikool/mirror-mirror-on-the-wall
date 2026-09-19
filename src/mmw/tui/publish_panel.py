@@ -356,6 +356,7 @@ class NetworkPanel(Widget):
                 yield Button("Publish", id="btn-publish", variant="success")
                 yield Button("Dry Run", id="btn-dry-run", variant="default")
                 yield Button("Bundle", id="btn-bundle", variant="warning")
+                yield Button("Certs", id="btn-certs", variant="default")
 
     def _available(self) -> "list[config.MirrorConfig]":
         """Mirrors that actually exist — from the pool, not config expansion.
@@ -860,6 +861,7 @@ class NetworkPanel(Widget):
         except Exception as e:
             await self.app.push_screen_wait(CertsModal(net.name, hostnames, error=str(e)))
 
+    @on(Button.Pressed, "#btn-certs")
     @work(exit_on_error=False)
     async def action_certs(self):
         net = self._selected_network()

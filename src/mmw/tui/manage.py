@@ -294,6 +294,8 @@ class ManageApp(App):
         # Networks-tab only
         Binding("e", "edit_network", "Edit"),
         Binding("p", "publish_network", "Publish"),
+        Binding("r", "dry_run_network", "Dry Run"),
+        Binding("b", "bundle_network", "Bundle"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -841,6 +843,16 @@ class ManageApp(App):
         if panel:
             panel.do_publish()
 
+    def action_dry_run_network(self) -> None:
+        panel = self._network_panel()
+        if panel:
+            panel.do_dry_run()
+
+    def action_bundle_network(self) -> None:
+        panel = self._network_panel()
+        if panel:
+            panel.do_bundle()
+
     def _on_publish_tab(self) -> bool:
         return self.query_one(TabbedContent).active == "tab-networks"
 
@@ -859,7 +871,7 @@ class ManageApp(App):
             "launch_sync", "prune_pool", "wipe_pool", "toggle_selection", "select_all",
             "edit_source",
         }
-        publish_only = {"publish_network", "edit_network"}
+        publish_only = {"publish_network", "edit_network", "dry_run_network", "bundle_network"}
         if on_publish and action in manage_only:
             return False
         if not on_publish and action in publish_only:

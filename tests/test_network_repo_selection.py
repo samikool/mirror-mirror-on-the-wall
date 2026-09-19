@@ -10,9 +10,10 @@ means excluding one is a single click.
 import asyncio
 
 from textual.app import App, ComposeResult
-from textual.widgets import Button, SelectionList
+from textual.widgets import Button, Switch, SelectionList
 
 from mmw.core import config
+from mmw.tui.manage import ManageApp
 from mmw.tui.network_screens import (
     AddNetworkScreen,
     EditNetworkScreen,
@@ -222,6 +223,79 @@ def test_edit_screen_dismisses_a_network_config_with_name_unchanged():
     result = asyncio.run(scenario())
     assert isinstance(result, config.NetworkConfig)
     assert result.name == "lab"
+
+
+def test_nginx_switch_round_trips_through_save():
+    """`nginx` used to have no UI control at all — EditNetworkScreen._save
+    hardcoded it back from `self._network.nginx`, so a switch that toggled it
+    would have had no effect. Set it, save, and check the dismissed
+    NetworkConfig actually carries the new value."""
+    net = config.NetworkConfig(
+        name="lab", root=None,
+        select=[config.NetworkSelect(source="https://a.example.com/repo")],
+    )
+    assert net.nginx is True   # the model's own default
+
+    async def scenario():
+        app = _host_app(EditNetworkScreen(net, _mirrors()))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            switch = app.screen.query_one("#nginx-switch", Switch)
+            assert switch.value is True
+            switch.value = False
+            await _settle(pilot)
+            app.screen.query_one("#btn-save", Button).press()
+            await _settle(pilot)
+        return app.result
+
+    result = asyncio.run(scenario())
+    assert result is not None
+    assert result.nginx is False
+
+
+def test_dry_run_and_bundle_bindings_are_scoped_to_the_networks_tab(tmp_path):
+    """`r`/`b` (Dry Run / Bundle) must be refused on the Manage tab and allowed
+    on the Networks tab, exactly like the existing `p`/`e` (Publish/Edit)
+    bindings — a binding missing from `check_action`'s `publish_only` set
+    fires on both tabs."""
+    cfg_obj = config.Config(settings=config.Settings(mirror_dir=tmp_path / "mirror"))
+
+    async def scenario():
+        app = ManageApp(cfg_obj, tmp_path)
+        async with app.run_test() as pilot:
+            await _settle(pilot)
+            assert app.check_action("dry_run_network", ()) is False
+            assert app.check_action("bundle_network", ()) is False
+
+            app.action_publish_tab()
+            await _settle(pilot)
+            assert app.check_action("dry_run_network", ()) is True
+            assert app.check_action("bundle_network", ()) is True
+
+    asyncio.run(scenario())
+
+
+def test_certs_button_exists_and_is_wired(tmp_path):
+    """Certs had a keybinding (`c`) but no button — the exact inverse of Dry
+    Run/Bundle, which had buttons but no bindings. The button must exist on
+    the Networks tab and clicking it must reach `action_certs` (which warns
+    rather than crashing when no network is selected)."""
+    cfg_obj = config.Config(settings=config.Settings(mirror_dir=tmp_path / "mirror"))
+
+    async def scenario():
+        app = ManageApp(cfg_obj, tmp_path, initial_tab="tab-networks")
+        # The action bar scrolls (overflow-x: auto) and Certs is now its
+        # sixth button — a default 80x24 terminal clips it off-screen, which
+        # is a `pilot.click` OutOfBounds, not a real defect (test_tui_layout.py
+        # covers the geometry itself). A wider terminal keeps it in view.
+        async with app.run_test(size=(160, 40)) as pilot:
+            await _settle(pilot)
+            button = app.query_one("#btn-certs", Button)
+            assert button is not None
+            await pilot.click("#btn-certs")
+            await _settle(pilot)
+
+    asyncio.run(scenario())
 
 
 def test_edit_persists_every_networkconfig_field_except_name():

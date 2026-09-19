@@ -324,8 +324,8 @@ class ManageApp(App):
         """
         # `_by_source` holds **pool truth only**. Folding the config-expansion
         # fallback in here made `_unresolved` believe a repository had been
-        # listed, so an `arches = []` source rendered its invented `amd64` rows
-        # as if they were real.
+        # listed, so an `arches = []` source rendered fabricated rows as if
+        # they were real.
         pooled = pooled_mirrors(self._cfg, self._cfg.settings.mirror_dir)
         self._by_source = {}
         for m in pooled:
@@ -341,11 +341,10 @@ class ManageApp(App):
     def _unresolved(self, src: config.SourceConfig) -> bool:
         """True when this source's rows cannot be known without listing upstream.
 
-        `to_mirrors()` is a pure offline function: with `components = []` it
-        expands to **nothing**, and with `arches = []` it invents `amd64`. Both
-        are fine for a config that spells its dimensions out and useless for one
-        that says "all" — which is now the common case. Rather than render a
-        guess, say so, and let sync resolve it.
+        `to_mirrors()` is a pure offline function: with `components = []` or
+        `arches = []` it expands to **nothing** — both dimensions are open
+        questions a config can leave for "all", which is now the common case.
+        Rather than render a guess, say so, and let sync resolve it.
         """
         if self._by_source.get(src.identity):
             return False                      # the pool knows; that is the truth

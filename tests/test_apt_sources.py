@@ -339,6 +339,10 @@ def test_inline_key_survives_into_the_source_and_config(tmp_path):
     config.save(cfg, tmp_path)
     reloaded = config.load(tmp_path).sources[0]
     assert reloaded.gpg_key == src.gpg_key
+    # The PPA fixture declares no `Architectures:`, so arches = [] — unresolved,
+    # and to_mirrors() now correctly expands that to nothing (never invent an
+    # architecture). Give it one so the expansion under test has a unit to check.
+    reloaded.arches = ["amd64"]
     assert reloaded.to_mirrors()[0].gpg_key == src.gpg_key
 
 

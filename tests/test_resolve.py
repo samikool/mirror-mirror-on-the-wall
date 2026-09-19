@@ -212,8 +212,10 @@ def _seeded_pool(tmp_path, source, arches):
 
 
 def test_available_mirrors_reports_every_synced_arch(tmp_path):
-    """The gap this closes: config expansion lists only the arches spelled out,
-    so publish would silently skip every other arch that was actually synced."""
+    """The gap this closes: config expansion only lists arches the config
+    spells out — with none spelled out here it is empty, never an invented
+    guess (design-notes.md: never invent an architecture) — so publish must ask the
+    pool, which knows about every arch that was actually synced."""
     from mmw.core.config import Config, Settings
 
     cfg = Config(
@@ -223,7 +225,7 @@ def test_available_mirrors_reports_every_synced_arch(tmp_path):
     )
     _seeded_pool(tmp_path, cfg.sources[0].identity, ["amd64", "i386", "arm64"])
 
-    assert [m.name for m in cfg.mirrors] == ["example-archive-noble-main-amd64"]
+    assert [m.name for m in cfg.mirrors] == []
     assert sorted(m.arch for m in resolve.available_mirrors(cfg, tmp_path)) == [
         "amd64", "arm64", "i386",
     ]
@@ -257,13 +259,16 @@ def test_available_mirrors_drops_repositories_removed_from_the_config(tmp_path):
 
 
 def test_available_mirrors_falls_back_before_the_first_sync(tmp_path):
-    """An empty pool must not make the network editor look empty."""
+    """An empty pool must not make the network editor look empty — but only
+    when the config actually resolves to something. Arches are stated
+    explicitly here so `cfg.mirrors` has a real fallback to offer; an
+    open `arches = []` correctly falls back to nothing (never invent one)."""
     from mmw.core.config import Config, Settings
 
     cfg = Config(
         settings=Settings(mirror_dir=tmp_path / "never-synced"),
         sources=[SourceConfig(url="http://archive.example.com/ubuntu",
-                              suites=["noble"], components=["main"])],
+                              suites=["noble"], components=["main"], arches=["amd64"])],
     )
     assert [m.name for m in resolve.available_mirrors(cfg, tmp_path / "never-synced")] == [
         "example-archive-noble-main-amd64",

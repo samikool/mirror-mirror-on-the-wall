@@ -164,9 +164,9 @@ def pooled_mirrors(cfg, mirror_dir) -> list[MirrorConfig]:
 
     Separate from `available_mirrors` because "the pool knows this repository"
     and "here is a usable list" are different questions. The manage list needs
-    the first: config expansion invents an `amd64` for `arches = []` and
-    produces *nothing* for `components = []`, so it must be able to tell a real
-    answer from a placeholder.
+    the first: config expansion produces *nothing* for an open `arches = []` or
+    `components = []` — never invent an architecture — so it must be able to
+    tell a real answer from an unresolved one.
     """
     from mmw.core.pool import Pool
 

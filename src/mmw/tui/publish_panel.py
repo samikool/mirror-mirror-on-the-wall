@@ -409,7 +409,22 @@ class NetworkPanel(Widget):
     @work(exit_on_error=False)
     async def add_network(self):
         existing = {n.name for n in self._cfg.networks}
-        net = await self.app.push_screen_wait(AddNetworkScreen(self._available(), existing))
+        available = self._available()
+        if not available:
+            # Reachable before the first sync: a source that leaves `arches`
+            # open expands to no mirrors offline (never invent an
+            # architecture), and `available_mirrors()`'s config fallback has
+            # nothing to offer either. Opening the wizard here would walk the
+            # user to an empty checklist and refuse with "select at least one
+            # repository — nothing selected publishes nothing", which is true
+            # but reads as their mistake rather than as "there is nothing here
+            # yet". Say the actual reason instead.
+            self.app.notify(
+                "No mirrors to publish yet — sync at least one repository first.",
+                severity="warning",
+            )
+            return
+        net = await self.app.push_screen_wait(AddNetworkScreen(available, existing))
         if net is None:
             return
         if any(n.name == net.name for n in self._cfg.networks):

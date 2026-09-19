@@ -352,9 +352,16 @@ def test_a_reader_sees_a_write_that_just_committed(tmp_path):
 
 
 def test_reads_still_work_without_a_separate_reader(tmp_path):
-    """A read-only pool has no writer to contend with, and an in-memory pool has
-    no file to open a second connection on — both fall back to the shared
-    connection rather than failing."""
+    """An in-memory pool (nothing synced yet, `read_only=True` with no db file)
+    has no file to open a second connection on, so it falls back to the shared
+    connection rather than failing.
+
+    A `read_only=True` pool that DOES have a db file is the opposite case —
+    see `test_read_only_pool_gets_a_dedicated_reader_too` below: it gets the
+    same dedicated, tuned reader a writable pool does, precisely because it
+    has no writer of its own to justify skipping that (see pool.py's `_read()`
+    for the incident this documents: verify/bundle's concurrent per-mirror
+    reads used to serialize on one untuned connection instead)."""
     empty = Pool(tmp_path / "nothing", read_only=True)      # in-memory fallback
     try:
         assert empty._rconn is None
@@ -364,6 +371,8 @@ def test_reads_still_work_without_a_separate_reader(tmp_path):
     finally:
         empty.close()
 
+
+def test_read_only_pool_gets_a_dedicated_reader_too(tmp_path):
     w = Pool(tmp_path)
     try:
         src = tmp_path / "y.deb"
@@ -374,7 +383,10 @@ def test_reads_still_work_without_a_separate_reader(tmp_path):
 
     ro = Pool(tmp_path, read_only=True)
     try:
-        assert ro._rconn is None, "a read-only pool needs no second connection"
+        assert ro._rconn is not None, (
+            "a read-only pool with a db file gets the same tuned dedicated "
+            "reader a writable pool does — see pool.py's _read()"
+        )
         assert ro.contains(f"{9:064x}") is True
     finally:
         ro.close()

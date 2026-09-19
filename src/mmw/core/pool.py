@@ -128,10 +128,13 @@ class _DeferredWriter:
             self.fn = fn
             self.done = done
 
-    def __init__(self, pool: "Pool", batch: int = 500, interval: float = 0.5):
+    def __init__(self, pool: "Pool", batch: int = 500, interval: float = 0.5,
+                 checkpoint_interval: float = 5.0):
         self._pool = pool
         self._batch = batch
         self._interval = interval
+        self._checkpoint_interval = checkpoint_interval
+        self._last_checkpoint = time.monotonic()
         self._q: queue.Queue = queue.Queue()
         # Checksums queued but not yet committed. Reads consult this so a blob
         # that is already hardlinked on disk is never re-downloaded just because
@@ -196,9 +199,16 @@ class _DeferredWriter:
                 self._commit(pending)
                 pending = []
                 last = now
+            if now - self._last_checkpoint >= self._checkpoint_interval:
+                self._checkpoint("PASSIVE")
+                self._last_checkpoint = now
             if not pending and self._q.empty():
                 self._idle.set()
             if stopping:
+                # No more writes are coming on this pool: reclaim the WAL fully
+                # rather than leave whatever PASSIVE couldn't fold in sitting on
+                # disk between sync runs.
+                self._checkpoint("TRUNCATE")
                 self._idle.set()
                 return
 
@@ -219,6 +229,17 @@ class _DeferredWriter:
         finally:
             with self._pending_lock:
                 self._pending.difference_update(r[0] for r in rows)
+
+    def _checkpoint(self, mode: str) -> None:
+        """Fold the WAL back into the main file. Never lose the sync to this —
+        a failed checkpoint just leaves the WAL as it was, still correct, only
+        larger than it needs to be. See design-notes.md's WAL note: without this the
+        WAL never shrinks while any read or write keeps the pool busy."""
+        try:
+            with self._pool._lock:
+                self._pool._conn.execute(f"PRAGMA wal_checkpoint({mode})")
+        except Exception as e:
+            self._errors.append(f"wal_checkpoint({mode}): {e}")
 
     def flush(self, timeout: float = 60.0) -> list[str]:
         """Block until every queued row is committed. Returns any errors.
@@ -245,7 +266,8 @@ class _DeferredWriter:
 
 class Pool:
     def __init__(self, mirror_dir: Path, read_only: bool = False,
-                 defer_writes: bool | None = None):
+                 defer_writes: bool | None = None,
+                 checkpoint_interval: float = 5.0):
         """read_only: open without creating directories or touching the DB —
         for dry-run / verify paths that must not leave artifacts behind.
 
@@ -253,6 +275,10 @@ class Pool:
         committing inline (see `_DeferredWriter`). Defaults on for writable
         pools; set `MMW_DEFER_WRITES=0` to fall back to the old inline path
         without editing code.
+
+        checkpoint_interval: how often (seconds) the writer thread folds the
+        WAL back into the main file with a PASSIVE checkpoint. Exposed mainly
+        for tests; production code should rarely need to override it.
         """
         self.pool_dir = mirror_dir / ".pool"
         self._packages_dir = self.pool_dir / "packages"
@@ -295,10 +321,25 @@ class Pool:
         # means 32 separate page caches, which measured *slower* on point
         # lookups. Readers still serialize against each other, but they are
         # milliseconds, not seconds.
+        #
+        # This is not conditioned on `not read_only`. It used to be — the
+        # reasoning was "a read_only pool has no writer to contend with" —
+        # but that only justifies skipping the *lock contention* half of this;
+        # it says nothing about the *cache tuning* half. A read-only pool
+        # (verify, dry-run, publish, bundle) still runs `_PREPARE_WORKERS`-many
+        # concurrent reads (`publish_panel._run_per_mirror`) against `self._conn`
+        # with no `_tune_reads()` at all — a 2 MB default cache, no mmap — and
+        # every one of those concurrent reads serialized on `self._lock` since
+        # there was no separate reader to give them. Measured live on an 800 MB
+        # pool on a single spinning disk: 100% disk utilization, pure reads,
+        # while `_PREPARE_WORKERS=4` bought nothing because the connection
+        # behind it was shared and locked exactly like a writer's. A bundle
+        # that "locks up" during its pre-flight verify phase is this bug, not
+        # a hang — it is really running, just serialized and cold-cached.
         self._writer: "_DeferredWriter | None" = None
         self._rlock = threading.Lock()
         self._rconn: "sqlite3.Connection | None" = None
-        if not read_only and db_path.exists():
+        if db_path.exists():
             self._rconn = sqlite3.connect(
                 f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
             _tune_reads(self._rconn)
@@ -307,7 +348,7 @@ class Pool:
             if defer_writes is None:
                 defer_writes = os.environ.get("MMW_DEFER_WRITES", "1") != "0"
             if defer_writes:
-                self._writer = _DeferredWriter(self)
+                self._writer = _DeferredWriter(self, checkpoint_interval=checkpoint_interval)
             self._reap_stale_tmp()
 
         # Read-only opens of a pre-kind DB can't ALTER — degrade gracefully:
@@ -342,9 +383,13 @@ class Pool:
     def _read(self):
         """A connection for reading, never blocked by a write.
 
-        Falls back to the shared connection (under the write lock) when there is
-        no separate reader: a `read_only=True` pool has no writer to contend
-        with, and an in-memory pool has no file to open a second connection on.
+        Gets the dedicated, tuned reader (`_rconn`) whenever there's a DB file
+        to open a second connection on — read-only pools included, so verify/
+        dry-run/publish/bundle's concurrent per-mirror reads actually run
+        concurrently instead of serializing on the same lock a writer would
+        use. Falls back to the shared connection (under `self._lock`) only for
+        an in-memory pool (nothing synced yet — there is no file to open a
+        second connection on at all).
 
         NOT for whole-table aggregates — `stats()` and `mirror_stats()` take
         seconds and would hold the read lock for their whole duration, so they

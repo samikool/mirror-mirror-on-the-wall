@@ -88,6 +88,64 @@ def test_flat_repo_has_no_suite():
     assert entries[0].arches == ["arm64"]
 
 
+def test_arch_placeholder_is_recorded_not_guessed():
+    """`$(ARCH)` is apt's own runtime substitution — the machine running apt
+    fills it in from `dpkg --print-architecture`. mmw has no such machine, so
+    it must not silently guess amd64 (see design-notes.md: "never invent an
+    architecture") — it records the placeholder for a network-capable layer
+    to resolve, and leaves the URL visibly unresolved until then."""
+    entries = parse_apt_sources(
+        "deb https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /\n"
+    )
+    assert len(entries) == 1
+    assert entries[0].arch_placeholder == "$(ARCH)"
+    assert entries[0].url == "https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH)"
+    assert entries[0].arches == []
+
+
+def test_dollar_arch_without_parens_is_also_recorded():
+    entries = parse_apt_sources("deb https://example.com/deb/$ARCH /\n")
+    assert entries[0].arch_placeholder == "$ARCH"
+    assert entries[0].url == "https://example.com/deb/$ARCH"
+
+
+def test_no_placeholder_when_arch_is_concrete():
+    entries = parse_apt_sources("deb https://example.com/deb/amd64 /\n")
+    assert entries[0].arch_placeholder is None
+
+
+def test_expand_placeholder_entry_fans_out_one_entry_per_arch():
+    from mmw.core.apt_sources import expand_placeholder_entry
+
+    entry = parse_apt_sources(
+        "deb https://nvidia.example/deb/$(ARCH) /\n"
+    )[0]
+    expanded = expand_placeholder_entry(entry, ["amd64", "arm64"])
+    assert [e.url for e in expanded] == [
+        "https://nvidia.example/deb/amd64",
+        "https://nvidia.example/deb/arm64",
+    ]
+    assert [e.arches for e in expanded] == [["amd64"], ["arm64"]]
+    assert all(e.arch_placeholder is None for e in expanded)
+    # Everything else about the original entry survives the fan-out.
+    assert all(e.suite is None for e in expanded)
+
+
+def test_expand_placeholder_entry_with_no_archs_is_empty():
+    from mmw.core.apt_sources import expand_placeholder_entry
+
+    entry = parse_apt_sources("deb https://x.example/deb/$(ARCH) /\n")[0]
+    assert expand_placeholder_entry(entry, []) == []
+
+
+def test_detect_arch_placeholder_recognizes_both_tokens():
+    from mmw.core.apt_sources import detect_arch_placeholder
+
+    assert detect_arch_placeholder("https://x/deb/$(ARCH)") == "$(ARCH)"
+    assert detect_arch_placeholder("https://x/deb/$ARCH") == "$ARCH"
+    assert detect_arch_placeholder("https://x/deb/amd64") is None
+
+
 # ── entries → SourceConfig ────────────────────────────────────────────────────
 
 def test_grouping_one_source_per_url():
@@ -324,6 +382,65 @@ def test_a_suite_in_the_path_is_not_the_repository_name():
 
     url = "https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64"
     assert derive_name(url, suites=["noble", "noble-updates"]).endswith("baseos")
+
+
+# ── a flat repository's vendor arch spelling names it, never gets lost ──────
+
+def test_flat_repo_vendor_arch_is_excluded_from_the_tail_and_appended_instead():
+    """`developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64` is
+    an apt-flat repo whose arch is a vendor spelling (`x86_64`), not one of
+    KNOWN_ARCHES' Debian-native names — so without special handling it slips
+    through and wins as the name's tail, demoting `ubuntu2204` (what a user
+    actually wants to see) to a disambiguation-only fallback that only shows
+    up on a name collision. `provider="apt-flat"` fixes both: the vendor arch
+    is excluded from the tail search, and the *normalized* arch is appended
+    explicitly so the OS-version segment always wins the tail."""
+    from mmw.core.config import derive_name
+
+    url = "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64"
+    name = derive_name(url, provider="apt-flat")
+    assert name.endswith("ubuntu2204-amd64")
+    assert "x86_64" not in name
+
+
+def test_flat_repo_sbsa_normalizes_to_arm64_in_the_name():
+    from mmw.core.config import derive_name
+
+    url = "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa"
+    name = derive_name(url, provider="apt-flat")
+    assert name.endswith("ubuntu2404-arm64")
+    assert "sbsa" not in name
+
+
+def test_flat_repo_same_os_different_arch_never_collides():
+    """Excluding arch from the tail search must not make two different-arch
+    flat repos of the same OS release derive the SAME name — the arch
+    appended at the end is exactly what keeps them apart."""
+    from mmw.core.config import derive_name
+
+    taken: set[str] = set()
+    names = []
+    for url in [
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64",
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/arm64",
+    ]:
+        n = derive_name(url, taken, provider="apt-flat")
+        taken.add(n)
+        names.append(n)
+    assert names[0].endswith("ubuntu2404-amd64")
+    assert names[1].endswith("ubuntu2404-arm64")
+    assert names[0] != names[1]
+
+
+def test_non_flat_provider_keeps_the_old_arch_in_path_behaviour():
+    """A regular apt source's `to_mirrors()` already appends `-{arch}` per
+    sync unit, so appending it again at the SourceConfig.name level would be
+    redundant — this new behaviour is gated on provider="apt-flat" only."""
+    from mmw.core.config import derive_name
+
+    url = "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64"
+    name = derive_name(url)   # provider defaults to "apt"
+    assert name == "nvidia-developer-x86_64"
 
 
 def test_the_whole_dgx_bundle_gets_unique_readable_names():

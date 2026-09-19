@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from mmw.core import discover
-from mmw.core.apt_sources import AptEntry
+from mmw.core.apt_sources import AptEntry, expand_placeholder_entry
 from mmw.core.config import SourceConfig, derive_name, normalize_url
 
 # The three axes of an apt repository.
@@ -42,7 +42,8 @@ class RepositoryDraft:
     def __post_init__(self) -> None:
         self.url = self.url.rstrip("/")
         if not self.name:
-            self.name = derive_name(self.url, suites=self.chosen.get("suites") or None)
+            self.name = derive_name(self.url, suites=self.chosen.get("suites") or None,
+                                    provider=self.provider)
 
     # ── identity ─────────────────────────────────────────────────────────────
 
@@ -172,7 +173,8 @@ class RepositoryDraft:
 
     def to_source(self) -> SourceConfig:
         return SourceConfig(
-            name=self.name or derive_name(self.url, suites=self.stored("suites") or None),
+            name=self.name or derive_name(self.url, suites=self.stored("suites") or None,
+                                          provider=self.provider),
             provider=self.provider,
             url=self.url,
             suites=self.stored("suites"),
@@ -213,6 +215,32 @@ def _merge(found: list[str], stated: list[str]) -> list[str]:
     return found + [v for v in stated if v not in found]
 
 
+def resolve_placeholders(entries: list[AptEntry]) -> list[AptEntry]:
+    """Fan out any `$(ARCH)`-templated entry into one concrete entry per
+    architecture it actually serves. Blocking — run off the UI thread, same as
+    `probe()`.
+
+    This is deliberately separate from `drafts_from_entries` (which stays pure
+    and synchronous): a paste is parsed and shown on the UI thread, so nothing
+    that reaches into `discover` may live there. Call this first, off-thread,
+    and feed its result into `drafts_from_entries` — which then needs no
+    placeholder-specific case of its own, since every entry it sees already
+    names a real URL.
+
+    An entry that resolves to no architecture is dropped rather than surfaced
+    as a broken draft; the caller sees one fewer repository, not one that
+    can't be probed.
+    """
+    resolved: list[AptEntry] = []
+    for e in entries:
+        if not e.arch_placeholder:
+            resolved.append(e)
+            continue
+        found = discover.expand_arch_placeholder(e.url, e.arch_placeholder)
+        resolved.extend(expand_placeholder_entry(e, found))
+    return resolved
+
+
 def drafts_from_entries(entries: list[AptEntry]) -> list[RepositoryDraft]:
     """Group parsed apt entries into one draft per repository.
 
@@ -232,7 +260,8 @@ def drafts_from_entries(entries: list[AptEntry]) -> list[RepositoryDraft]:
             "components": list(dict.fromkeys(c for e in group for c in e.components)),
             "arches": list(dict.fromkeys(a for e in group for a in e.arches)),
         }
-        name = derive_name(url, taken, suites=stated["suites"] or None)
+        name = derive_name(url, taken, suites=stated["suites"] or None,
+                          provider="apt-flat" if flat else "apt")
         taken.add(name)
         draft = RepositoryDraft(
             url=url,

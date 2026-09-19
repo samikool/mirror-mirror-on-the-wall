@@ -185,9 +185,16 @@ def _listed_dirs(html: str) -> list[str]:
     Absolute hrefs are dropped: archive.kernel.org's index mixes real
     subdirectories with off-site links, and offering `kernel.org` as a
     directory would be nonsense.
+
+    Matches both quote styles: most autoindexes emit `href="..."`, but
+    developer.download.nvidia.com's emits `href='...'`. A double-quote-only
+    regex silently matches nothing there, so `candidates` came back empty at
+    every directory above a flat repository's actual root — a dead end
+    with no error, since an empty listing looks identical to "not a
+    repository" (`detect_repository`'s `candidates` field, above).
     """
     names = []
-    for href in re.findall(r'href="([^"]+)"', html):
+    for href in re.findall(r'''href=["']([^"']+)["']''', html):
         if not href.endswith("/") or "://" in href or href.startswith(("/", "?", "#", "..")):
             continue
         name = href.rstrip("/")
@@ -196,10 +203,47 @@ def _listed_dirs(html: str) -> list[str]:
     return names
 
 
+def probe_arch_placeholder(url_template: str, placeholder: str) -> list[tuple[str, DetectResult]]:
+    """Every (architecture, DetectResult) pair a `$(ARCH)`/`$ARCH` templated
+    URL actually resolves to.
+
+    apt fills this token in from the *local* machine's dpkg architecture at
+    update time — mmw has no such machine, and the repository's own root
+    typically has nothing at it to list (see `apt_sources._parse_one_line_body`
+    for why guessing one arch here silently drops the others). There is
+    usually no directory to crawl either (GitHub Pages and similar static
+    hosts serve no index), so this checks each known architecture directly,
+    reusing the same InRelease/dists probe every other repository goes
+    through — no new HTTP logic, just more of it.
+
+    Returns the full `DetectResult` per arch, not just the arch name, so a
+    caller that also needs the repository's shape (suites, provider — the
+    TUI's URL-probe path) never has to probe the same candidate twice.
+    """
+    found = []
+    for arch in sorted(KNOWN_ARCHES):
+        candidate = url_template.replace(placeholder, arch)
+        result = detect_repository(candidate)
+        if result.provider is not None:
+            found.append((arch, result))
+    return found
+
+
+def expand_arch_placeholder(url_template: str, placeholder: str) -> list[str]:
+    """Which architectures a `$(ARCH)`/`$ARCH` templated URL actually serves.
+
+    A thin wrapper over `probe_arch_placeholder` for callers (headless `mmw
+    add`, config-paste drafts) that only need the architecture names.
+    """
+    return [arch for arch, _ in probe_arch_placeholder(url_template, placeholder)]
+
+
 __all__ = [
     "KNOWN_ARCHES",
     "DetectResult",
     "detect_repository",
+    "expand_arch_placeholder",
+    "probe_arch_placeholder",
     "list_arches",
     "list_components",
     "list_repositories",

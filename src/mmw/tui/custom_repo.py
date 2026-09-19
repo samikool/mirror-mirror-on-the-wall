@@ -21,9 +21,11 @@ from textual.widgets import (
 )
 
 from mmw.commands.add import read_input
-from mmw.core import config, discover
-from mmw.core.apt_sources import parse_apt_sources
-from mmw.core.draft import DIMENSIONS, RepositoryDraft, drafts_from_entries, probe_all
+from mmw.core import config, discover, probers
+from mmw.core.apt_sources import AptEntry, detect_arch_placeholder, parse_apt_sources
+from mmw.core.draft import (
+    DIMENSIONS, RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders,
+)
 from mmw.tui.bulk_review import BulkReviewScreen
 from mmw.tui.path_pick import PathPickModal
 from mmw.tui.pick import PickModal
@@ -208,18 +210,57 @@ class StepCustom(WizardStep):
 
     def _probe(self, url: str) -> None:
         status = self.query_one("#detect-status", Label)
-        status.update("  [dim]Probing…[/]")
-        status.display = True
         self.query_one("#fields-container").display = False
         self.query_one("#bulk-row").display = False
         self._hide_browse()
         self._probe_gen += 1
+
+        placeholder = detect_arch_placeholder(url)
+        if placeholder:
+            # apt's own $(ARCH)/$ARCH substitution has no local machine to run
+            # on here (see core/apt_sources.py) — a bare URL typed into this
+            # field never goes through the config parser at all, so it needs
+            # its own check for the same token. Resolving it is apt-specific
+            # (probers.py deliberately doesn't generalize this), and can turn
+            # one URL into several repositories, so it bypasses the ordinary
+            # single-DetectResult dispatch entirely.
+            status.update("  [dim]Resolving $(ARCH)…[/]")
+            status.display = True
+            self._resolve_url_placeholder_worker(url, placeholder, self._probe_gen)
+            return
+
+        status.update("  [dim]Probing…[/]")
+        status.display = True
         self._detect_worker(url, self._probe_gen)
 
     @work(thread=True, exit_on_error=False)
     def _detect_worker(self, url: str, gen: int) -> None:
-        result = discover.detect_repository(url)
+        result = probers.probe_url(url)
         self.app.call_from_thread(self._on_detect, url, result, gen)
+
+    @work(thread=True, exit_on_error=False)
+    def _resolve_url_placeholder_worker(self, url: str, placeholder: str, gen: int) -> None:
+        drafts = []
+        for arch, result in discover.probe_arch_placeholder(url, placeholder):
+            draft = RepositoryDraft(url=url.replace(placeholder, arch), provider=result.provider)
+            if result.provider == "apt":
+                draft.set_dimension("suites", result.suites, chosen=[], enumerated=True)
+            drafts.append(draft)
+        self.app.call_from_thread(self._on_url_placeholder_resolved, drafts, gen)
+
+    def _on_url_placeholder_resolved(self, drafts: list[RepositoryDraft], gen: int) -> None:
+        if gen != self._probe_gen:
+            return                                  # a newer probe is in flight
+        if not drafts:
+            self._draft = None
+            self._bundle = []
+            status = self.query_one("#detect-status", Label)
+            status.update(
+                "  [red]✗ $(ARCH) resolved to no architecture — repository unreachable?[/]"
+            )
+            status.display = True
+            return
+        self._display_drafts(len(drafts), drafts)
 
     def _on_detect(self, url: str, result: "discover.DetectResult", gen: int) -> None:
         if gen != self._probe_gen:
@@ -292,10 +333,53 @@ class StepCustom(WizardStep):
             self.query_one("#bulk-row").display = False
             return
 
-        drafts = drafts_from_entries(entries)
+        self._probe_gen += 1
+        if any(e.arch_placeholder for e in entries):
+            # apt's own $(ARCH)/$ARCH substitution has no local machine to run
+            # on here (see core/apt_sources.py's arch_placeholder) — resolving
+            # it means probing each known architecture, which is network I/O
+            # and must not run on this (UI) thread.
+            status.update("  [dim]Resolving $(ARCH)…[/]")
+            status.display = True
+            self.query_one("#fields-container").display = False
+            self.query_one("#bulk-row").display = False
+            self._resolve_placeholder_worker(entries, self._probe_gen)
+            return
+
+        self._display_drafts(len(entries), drafts_from_entries(entries))
+
+    @work(thread=True, exit_on_error=False)
+    def _resolve_placeholder_worker(self, entries: list[AptEntry], gen: int) -> None:
+        resolved = resolve_placeholders(entries)
+        drafts = drafts_from_entries(resolved)
+        self.app.call_from_thread(self._on_placeholders_resolved, resolved, drafts, gen)
+
+    def _on_placeholders_resolved(
+        self, entries: list[AptEntry], drafts: list[RepositoryDraft], gen: int
+    ) -> None:
+        if gen != self._probe_gen:
+            return                                  # a newer paste is in flight
+        if not drafts:
+            self._draft = None
+            self._bundle = []
+            status = self.query_one("#detect-status", Label)
+            status.update(
+                "  [dim]$(ARCH) resolved to no architecture — repository unreachable?[/]"
+            )
+            status.display = True
+            self.query_one("#fields-container").display = False
+            self.query_one("#bulk-row").display = False
+            return
+        self._display_drafts(len(entries), drafts)
+
+    def _display_drafts(self, entry_count: int, drafts: list[RepositoryDraft]) -> None:
+        """Show what resolved to: one repository's fields, or the bulk review
+        pane for several. Shared by the ordinary paste path, the $(ARCH)
+        config-paste resolution, and the $(ARCH) URL-probe resolution, so none
+        of the three can drift apart from the others."""
+        status = self.query_one("#detect-status", Label)
         keyed = sum(1 for d in drafts if d.gpg_key)
         key_note = f"  [dim]+ {keyed} GPG key(s)[/]" if keyed else ""
-        self._probe_gen += 1
 
         if len(drafts) > 1:
             self._draft = None
@@ -303,7 +387,7 @@ class StepCustom(WizardStep):
             for dim, _ in _DIMENSIONS:
                 self.query_one(f"#{dim}-row").display = False
             status.update(
-                f"  [green]✓ {len(entries)} entries across {len(drafts)} repositories[/]"
+                f"  [green]✓ {entry_count} entries across {len(drafts)} repositories[/]"
                 f"{key_note}  [dim]probing…[/]"
             )
             status.display = True
@@ -472,7 +556,8 @@ class StepCustom(WizardStep):
         # A blank name falls back to the shared derivation, never a second one —
         # the TUI and `mmw add` must name the same repository the same way.
         draft.name = (self.query_one("#custom-name", Input).value.strip()
-                      or config.derive_name(url, suites=draft.stored("suites") or None))
+                      or config.derive_name(url, suites=draft.stored("suites") or None,
+                                            provider=draft.provider))
         if draft.provider == "apt" and not draft.chosen["suites"]:
             self.app.notify("Choose at least one suite.", severity="warning")
             return []

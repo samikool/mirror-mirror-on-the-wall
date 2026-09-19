@@ -8,7 +8,7 @@ import pytest
 
 from mmw.core import discover
 from mmw.core.apt_sources import parse_apt_sources
-from mmw.core.draft import RepositoryDraft, drafts_from_entries, probe_all
+from mmw.core.draft import RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders
 
 
 @pytest.fixture
@@ -185,3 +185,58 @@ def test_a_supplied_key_reaches_the_source():
     src = d.to_source()
 
     assert src.gpg_key and src.gpg_key_name == "foo.gpg"
+
+
+# ── $(ARCH) placeholder resolution ───────────────────────────────────────────
+# See core/apt_sources.py's arch_placeholder and design-notes.md's "never invent an
+# architecture" — apt's own $(ARCH) substitution has no local machine to run
+# on here, so this is resolved by probing each known architecture instead
+# (discover.expand_arch_placeholder, monkeypatched below rather than hitting
+# the network, matching this file's existing convention).
+
+def test_resolve_placeholders_expands_into_one_entry_per_arch(monkeypatch):
+    monkeypatch.setattr(discover, "expand_arch_placeholder",
+                         lambda url, token: ["amd64", "arm64"])
+
+    entries = parse_apt_sources("deb https://nvidia.example/deb/$(ARCH) /\n")
+    resolved = resolve_placeholders(entries)
+
+    assert [e.url for e in resolved] == [
+        "https://nvidia.example/deb/amd64",
+        "https://nvidia.example/deb/arm64",
+    ]
+    assert all(e.arch_placeholder is None for e in resolved)
+
+
+def test_resolve_placeholders_drops_entries_that_resolve_to_nothing(monkeypatch):
+    monkeypatch.setattr(discover, "expand_arch_placeholder", lambda url, token: [])
+
+    entries = parse_apt_sources("deb https://x.example/deb/$(ARCH) /\n")
+    assert resolve_placeholders(entries) == []
+
+
+def test_resolve_placeholders_leaves_ordinary_entries_untouched(monkeypatch):
+    monkeypatch.setattr(discover, "expand_arch_placeholder",
+                         lambda url, token: pytest.fail("should not be called"))
+
+    entries = parse_apt_sources("deb http://archive.ubuntu.com/ubuntu noble main\n")
+    assert resolve_placeholders(entries) == entries
+
+
+def test_placeholder_drafts_go_through_the_same_grouping_as_any_other(monkeypatch):
+    """The point of splitting resolution out is that `drafts_from_entries`
+    itself needs no special case — feeding it already-resolved entries is
+    indistinguishable from a config that always named concrete arch URLs."""
+    monkeypatch.setattr(discover, "expand_arch_placeholder",
+                         lambda url, token: ["amd64", "arm64", "ppc64el"])
+
+    entries = parse_apt_sources("deb https://nvidia.example/deb/$(ARCH) /\n")
+    drafts = drafts_from_entries(resolve_placeholders(entries))
+
+    assert len(drafts) == 3
+    assert {d.url for d in drafts} == {
+        "https://nvidia.example/deb/amd64",
+        "https://nvidia.example/deb/arm64",
+        "https://nvidia.example/deb/ppc64el",
+    }
+    assert all(d.provider == "apt-flat" for d in drafts)

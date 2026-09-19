@@ -185,6 +185,45 @@ class RepositoryDraft:
             gpg_key_name=self.gpg_key_name,
         )
 
+    @classmethod
+    def from_source(cls, source: SourceConfig) -> "RepositoryDraft":
+        """The mirror image of `to_source()` — an existing config entry, opened
+        for editing.
+
+        Every dimension is carried across **unenumerated**: `source.suites` /
+        `components` / `arches` are whatever is on disk, empty or not, and
+        `set_dimension` is deliberately not used here because it always stamps
+        `enumerated=False` anyway — the point worth stating is that nothing has
+        been listed yet, so `stored()` (see its docstring) hands back exactly
+        what went in, empty lists included. That is what makes a round trip
+        through `to_source()` with no probing in between reproduce the source
+        exactly: an explicit list survives as itself, and an empty ("all") list
+        survives as empty rather than being materialized into whatever the
+        repository happens to serve today. Only a later `probe()` may widen
+        `available` and flip a dimension to `enumerated=True` — the existing
+        "ticking everything collapses back to all" behaviour then applies,
+        unchanged and intentionally so (see design-notes.md's `from_source()` note).
+
+        `dist_upgrade` and `gpg_key_url` have no `RepositoryDraft` field and are
+        dropped here; a consumer that needs them must carry them separately.
+        """
+        draft = cls(
+            url=source.url,
+            provider=source.provider,
+            name=source.name,
+            gpg_key=source.gpg_key,
+            gpg_key_name=source.gpg_key_name,
+            include_sources=source.include_sources,
+        )
+        if source.gpg_key:
+            draft.key_source = "inline"
+        for dim in DIMENSIONS:
+            stored = list(getattr(source, dim))
+            draft.available[dim] = list(stored)
+            draft.chosen[dim] = list(stored)
+            draft.enumerated[dim] = False
+        return draft
+
 
 def probe_all(drafts: list[RepositoryDraft], max_workers: int = 8) -> None:
     """Probe a whole bundle at once.

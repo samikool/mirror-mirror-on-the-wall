@@ -183,6 +183,12 @@ def cmd_init(
 @app.command("manage")
 def cmd_manage(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Print mirror list to stdout, no TUI"),
+    profile: bool = typer.Option(
+        False, "--profile",
+        help="Sample every thread's stack and CPU use; write a report on exit. "
+             "In-process, so it needs no ptrace/root. Covers the whole session "
+             "(publish, bundle, sync-from-manage), not just one action.",
+    ),
 ):
     """Manage configured mirrors (add, remove)."""
     from mmw.tui.init_wizard import InitWizardApp
@@ -199,7 +205,10 @@ def cmd_manage(
             typer.echo(f"  {m.name}  ({m.provider})")
         return
 
-    result = _run_manage_sync_loop(cfg, cfg_dir)
+    with _profiling(profile) as prof:
+        result = _run_manage_sync_loop(cfg, cfg_dir)
+    if prof is not None:
+        typer.echo(f"Profile written to {prof}")
     if result == "reinit":
         _run_tui(InitWizardApp(cfg_dir))
 

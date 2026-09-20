@@ -81,7 +81,12 @@ class DryRunResultModal(ModalScreen[bool]):
         r = self._result
         fmt = _fmt_bytes
         table = self.query_one("#dry-run-table", DataTable)
-        table.add_columns("Mirror", "Files", "Total", "Published", "To Add (est.)")
+        # "To Add", not "To Add (est.)": the five headers plus a mirror name
+        # like ubuntu-archive-noble-updates-universe-amd64 run past the modal
+        # at 100 columns, and the last header is the one that gets clipped —
+        # to "To Add (es", which reads as a rendering fault. The estimate is
+        # already signalled by the ≈ on the totals line below the table.
+        table.add_columns("Mirror", "Files", "Total", "Published", "To Add")
         for mr in r.mirrors:
             if mr.errors:
                 table.add_row(mr.mirror_name, "—", "—", "—", f"✗ {mr.errors[0]}")

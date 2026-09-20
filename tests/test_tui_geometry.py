@@ -350,3 +350,61 @@ def test_networks_action_bar_buttons_all_fit(tmp_path):
             f"{visible} at {size[0]}x{size[1]} — the last ones scroll out of "
             f"sight. Shorten a label, or give the bar more width."
         )
+
+
+def test_manage_action_bar_buttons_all_fit(tmp_path):
+    """The Manage tab's bar, for the same reason as the Networks one.
+
+    Both were docked inside their detail panel and got only what the list
+    panel left over. This one wanted 47 columns in 40 at 80x24, leaving
+    `⚠ Re-init` scrolled out of sight — a destructive action you cannot see
+    is a worse outcome than a cramped one.
+    """
+    from pathlib import Path
+
+    from mmw.tui.manage import ManageApp
+
+    async def go(size):
+        a = ManageApp(_demo_config(tmp_path), Path("."), initial_tab="tab-manage")
+        async with a.run_test(size=size) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+            bar = a.screen.query_one("#action-bar")
+            return bar.size.width, bar.virtual_size.width
+
+    for size in SIZES:
+        visible, needed = asyncio.run(go(size))
+        assert needed <= visible, (
+            f"manage action buttons need {needed} columns but the bar shows "
+            f"{visible} at {size[0]}x{size[1]} — the last ones scroll out of sight."
+        )
+
+
+def test_network_detail_mirror_list_is_not_starved(tmp_path):
+    """NetworkDetail's mirror list renders whole rather than as a sliver.
+
+    `height: 1fr` inside a container that already scrolls resolves against the
+    *visible* height, so the fixed detail lines above it (Root, Prune,
+    Dist-upgrade, Certs, Publishes, the stats line, the Mirrors heading) took
+    every row: 1 row for 5 mirrors at 80x24. Third instance of that trap after
+    `#axis-scroll` and `#key-area`.
+    """
+    from pathlib import Path
+
+    from mmw.tui.manage import ManageApp
+    from mmw.tui.publish_panel import NetworkDetail
+
+    async def go(size):
+        a = ManageApp(_demo_config(tmp_path), Path("."), initial_tab="tab-networks")
+        async with a.run_test(size=size) as pilot:
+            for _ in range(25):
+                await pilot.pause()
+            ml = a.screen.query_one(NetworkDetail).query_one("#mirror-list")
+            return ml.size.height, ml.virtual_size.height
+
+    for size in SIZES:
+        got, wanted = asyncio.run(go(size))
+        assert got >= wanted, (
+            f"the mirror list shows {got} of {wanted} rows at "
+            f"{size[0]}x{size[1]} — it is starved, not scrolling."
+        )

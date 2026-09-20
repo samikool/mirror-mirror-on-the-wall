@@ -10,7 +10,7 @@ from pathlib import Path
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, ScrollableContainer
+from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView, Static
 
@@ -104,7 +104,14 @@ class NetworkDetail(Widget):
     NetworkDetail .mirror-entry  { color: $text; margin-left: 1; }
     NetworkDetail .mirror-unpub  { color: $text-muted; margin-left: 1; }
     NetworkDetail .empty-msg     { color: $text-muted; }
-    NetworkDetail ScrollableContainer { height: 1fr; margin-top: 1; }
+    /* `auto`, not `1fr` — the same trap `#axis-scroll` fell into. NetworkDetail
+       already scrolls (`overflow-y: auto` above), so a `1fr` child resolves
+       against the *visible* height and the fixed detail lines stacked above it
+       (Root, Prune, Dist-upgrade, Certs, Publishes, Published, the stats line
+       and the Mirrors heading) take all of it. Measured at 80x24: 1 row for 5
+       rows of mirrors. At `auto` the list renders whole and NetworkDetail's own
+       scrollbar does the work. */
+    NetworkDetail #mirror-list { height: auto; margin-top: 1; }
     """
 
     def __init__(self):
@@ -213,7 +220,9 @@ class NetworkDetail(Widget):
             if self._cfg else []
         )
         self.mount(Label(f"  Mirrors ({len(selected)})", classes="section-hdr"))
-        scroll = ScrollableContainer()
+        # A plain Vertical: NetworkDetail already scrolls, and nesting a second
+        # scroll region inside one that scrolls only makes the wheel ambiguous.
+        scroll = Vertical(id="mirror-list")
         self.mount(scroll)
         if not selected:
             scroll.mount(Label("  (none)", classes="empty-msg"))

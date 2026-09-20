@@ -387,12 +387,18 @@ class ManageApp(App):
                         yield ListView(*self._build_items(), id="manage-list")
                     with Vertical(id="detail-panel"):
                         yield MirrorDetail()
-                        with Horizontal(id="action-bar"):
-                            yield Button("Remove", id="btn-remove", variant="error")
-                            yield Button("Prune Pool", id="btn-prune-pool", variant="default")
-                            yield Button("Wipe Pool", id="btn-wipe-pool", variant="warning")
-                            yield Static(classes="spacer")
-                            yield Button("⚠ Re-init", id="btn-reinit", variant="warning")
+                # Outside `#manage-layout`, so the bar spans the tab's full
+                # width. Docked inside `#detail-panel` it got only what the
+                # list panel left over — 40 columns at an 80-column terminal
+                # for 47 columns of button — and `⚠ Re-init` sat scrolled off
+                # the right edge. Same shape as the Networks bar, same fix; the
+                # buttons were never the problem, a fixed-width sibling was.
+                with Horizontal(id="action-bar"):
+                    yield Button("Remove", id="btn-remove", variant="error")
+                    yield Button("Prune Pool", id="btn-prune-pool", variant="default")
+                    yield Button("Wipe Pool", id="btn-wipe-pool", variant="warning")
+                    yield Static(classes="spacer")
+                    yield Button("⚠ Re-init", id="btn-reinit", variant="warning")
             with TabPane("Networks", id="tab-networks"):
                 pass  # mounted lazily on first visit
         yield Footer()

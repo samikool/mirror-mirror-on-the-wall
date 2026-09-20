@@ -223,3 +223,66 @@ def test_transfer_progress_modal_log_is_usable():
     # was written for: #axis-scroll at 1 row and #key-area at 0.
     _assert_usable(lambda: PublishProgressModal("lab", 100), ["#pub-log"],
                    "PublishProgressModal", min_rows=3)
+
+
+def _demo_config(tmp_path):
+    from pathlib import Path
+    return config.Config(
+        settings=config.Settings(mirror_dir=Path(tmp_path) / "pool"),
+        sources=[
+            config.SourceConfig(url="https://archive.ubuntu.com/ubuntu", suites=["noble"],
+                                components=["main"], arches=["amd64"]),
+            config.SourceConfig(url="https://deb.debian.org/debian", suites=["bookworm"],
+                                components=["main"], arches=["amd64"]),
+        ],
+        networks=[config.NetworkConfig(name="lab", root=Path("/srv/lab"), select=[])],
+    )
+
+
+def _probe_app(app_factory, selectors, size):
+    out: dict[str, tuple[int, int]] = {}
+
+    async def go():
+        app = app_factory()
+        async with app.run_test(size=size) as pilot:
+            for _ in range(40):
+                await pilot.pause()
+            for sel in selectors:
+                try:
+                    w = app.screen.query_one(sel)
+                    out[sel] = (w.size.width, w.size.height)
+                except Exception:
+                    out[sel] = (-1, -1)
+
+    asyncio.run(go())
+    return out
+
+
+def test_manage_list_panel_is_usable_and_adapts(tmp_path):
+    """The source list was a fixed 36 columns at every terminal width — cramped
+    at 80 and still 36 at 160, while the detail pane beside it sat empty. It is
+    now proportional with a floor and a ceiling, so assert both ends: never
+    narrower than the floor, never wider than the detail pane it shares with.
+    """
+    from pathlib import Path
+
+    from mmw.tui.manage import ManageApp
+
+    def app():
+        return ManageApp(_demo_config(tmp_path), Path("."), initial_tab="tab-manage")
+
+    widths = {}
+    for size in SIZES:
+        got = _probe_app(app, ["#list-panel", "#manage-list"], size)
+        w, h = got["#list-panel"]
+        assert h >= MIN_USABLE_ROWS, f"manage list panel {h} rows at {size}"
+        # 35/63 rather than the CSS 36/64: the reported size is the content
+        # box and this panel carries a 1-column border-right.
+        assert w >= 35, f"manage list panel narrowed to {w} at {size}; floor is 35"
+        assert w <= 63, f"manage list panel grew to {w} at {size}; ceiling is 63"
+        widths[size] = w
+
+    # It must actually adapt, not merely stay within bounds at one size.
+    assert widths[(120, 40)] > widths[(80, 24)], (
+        f"list panel did not widen with the terminal: {widths}"
+    )

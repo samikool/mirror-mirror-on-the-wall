@@ -182,9 +182,27 @@ class ManageApp(App):
     }
 
     #list-panel {
-        width: 36;
+        /* Proportional, not a fixed 36. At 36 columns a row like
+           `  ▶ microsoft-packages-code  (4)  https://…` had about eight
+           columns left for the count and URL, so both were simply cut off
+           mid-word while the detail pane beside it sat mostly empty — and it
+           stayed 36 wide at 160 columns, where there was room to spare. The
+           floor keeps it usable at 80; the ceiling stops it swallowing the
+           detail pane on a very wide terminal. */
+        width: 40%;
+        min-width: 36;
+        max-width: 64;
         border-right: solid $primary-darken-2;
         background: $surface;
+    }
+
+    /* Any truncation that remains must read as deliberate. Without this a row
+       ends mid-word — `debian-deb  (all — resolved` — which looks like a bug
+       in the text rather than a narrow panel. */
+    #list-panel ListItem > Label {
+        width: 1fr;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     #list-panel ListView {
@@ -409,7 +427,15 @@ class ManageApp(App):
             count_str = "  [dim](all — resolved at sync)[/dim]"
         else:
             count_str = f"  [dim]({len(mirrors)})[/dim]"
-        return f" {check}{indicator} [bold]{src.name}[/bold]{count_str}  [dim]{src.url}[/dim]"
+        # The *path*, not the whole URL: the list groups by host and this row
+        # always sits under its own host heading, so repeating the scheme and
+        # hostname spent the row's width on something already on screen one
+        # line above — and pushed the part that actually distinguishes two
+        # repositories on one host (/debian vs /debian-security) off the end.
+        from urllib.parse import urlparse
+        path = (urlparse(src.url).path or "").rstrip("/")
+        where = f"  [dim]{path}[/dim]" if path else ""
+        return f" {check}{indicator} [bold]{src.name}[/bold]{count_str}{where}"
 
     def _source_selected(self, src: config.SourceConfig) -> bool:
         return src.identity in self._selected_sources

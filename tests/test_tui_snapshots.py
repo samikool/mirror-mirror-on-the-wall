@@ -115,3 +115,50 @@ def test_snapshot_bulk_review(snap_compare):
     drafts = [RepositoryDraft(url=f"https://repo{i}.example.com/ubuntu", provider="apt")
               for i in range(5)]
     assert snap_compare(_app(lambda: BulkReviewScreen(drafts)), terminal_size=SNAP_SIZE)
+
+
+def _demo_config(tmp_path):
+    """A config with the shapes that actually stress the manage list: two
+    repositories on different hosts, one with an open dimension (so it renders
+    as "all — resolved at sync"), and one flat repo with no suite structure."""
+    from pathlib import Path
+
+    return config.Config(
+        settings=config.Settings(mirror_dir=Path(tmp_path) / "pool"),
+        sources=[
+            config.SourceConfig(url="https://archive.ubuntu.com/ubuntu",
+                                suites=["noble", "noble-updates"],
+                                components=["main", "universe"], arches=["amd64"]),
+            config.SourceConfig(url="https://ports.ubuntu.com/ubuntu-ports",
+                                suites=["noble"], components=["main"], arches=["arm64"]),
+            config.SourceConfig(url="https://deb.debian.org/debian",
+                                suites=["bookworm"], components=["main"]),
+            config.SourceConfig(url="https://packages.microsoft.com/repos/code",
+                                provider="apt-flat"),
+        ],
+        networks=[
+            config.NetworkConfig(name="lab", root=Path("/srv/lab"), select=[]),
+            config.NetworkConfig(name="dgx", bundle_dir=Path("/media/usb"), select=[]),
+        ],
+    )
+
+
+def test_snapshot_manage_tab(snap_compare, tmp_path):
+    """The highest-traffic screen in the app, and the one where a fixed 36-column
+    list panel hard-cut every row mid-word."""
+    from pathlib import Path
+
+    from mmw.tui.manage import ManageApp
+
+    app = ManageApp(_demo_config(tmp_path), Path("."), initial_tab="tab-manage")
+    assert snap_compare(app, terminal_size=SNAP_SIZE)
+
+
+def test_snapshot_networks_tab(snap_compare, tmp_path):
+    """Seven action buttons and the r/b bindings — the surface completed last."""
+    from pathlib import Path
+
+    from mmw.tui.manage import ManageApp
+
+    app = ManageApp(_demo_config(tmp_path), Path("."), initial_tab="tab-networks")
+    assert snap_compare(app, terminal_size=SNAP_SIZE)

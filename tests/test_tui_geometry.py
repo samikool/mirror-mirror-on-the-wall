@@ -59,17 +59,42 @@ def _probe(factory, selectors, size):
     async def go():
         app = _host(factory)()
         async with app.run_test(size=size) as pilot:
-            for _ in range(30):
-                await pilot.pause()
-            for sel in selectors:
-                try:
-                    w = app.screen.query_one(sel)
-                    out[sel] = (w.size.width, w.size.height)
-                except Exception:
-                    out[sel] = (-1, -1)
+            await _settle(pilot, app, selectors, out)
 
     asyncio.run(go())
     return out
+
+
+async def _settle(pilot, app, selectors, out):
+    """Pause until the measured geometry stops changing, then read it.
+
+    Not a fixed pause count. A literal `range(30)` was the first version and
+    it dominated the runtime — 124s for this file, against 39s at `range(8)` —
+    while still being a guess that a slower screen could outrun. Settling on
+    the measurement itself is both faster (most screens are stable within two
+    or three frames) and safer than any number picked by hand: it waits
+    exactly as long as the screen actually needs.
+    """
+    def read():
+        got = {}
+        for sel in selectors:
+            try:
+                w = app.screen.query_one(sel)
+                got[sel] = (w.size.width, w.size.height)
+            except Exception:
+                got[sel] = (-1, -1)
+        return got
+
+    previous = None
+    stable = 0
+    for _ in range(40):                      # hard cap, never reached in practice
+        await pilot.pause()
+        current = read()
+        stable = stable + 1 if current == previous else 0
+        previous = current
+        if stable >= 2:                      # unchanged across two extra frames
+            break
+    out.update(previous or read())
 
 
 def _assert_usable(factory, selectors, label, min_rows=MIN_USABLE_ROWS):
@@ -245,14 +270,7 @@ def _probe_app(app_factory, selectors, size):
     async def go():
         app = app_factory()
         async with app.run_test(size=size) as pilot:
-            for _ in range(40):
-                await pilot.pause()
-            for sel in selectors:
-                try:
-                    w = app.screen.query_one(sel)
-                    out[sel] = (w.size.width, w.size.height)
-                except Exception:
-                    out[sel] = (-1, -1)
+            await _settle(pilot, app, selectors, out)
 
     asyncio.run(go())
     return out

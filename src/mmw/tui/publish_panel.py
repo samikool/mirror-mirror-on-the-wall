@@ -10,7 +10,7 @@ from pathlib import Path
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, ScrollableContainer
+from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView, Static
 
@@ -104,7 +104,14 @@ class NetworkDetail(Widget):
     NetworkDetail .mirror-entry  { color: $text; margin-left: 1; }
     NetworkDetail .mirror-unpub  { color: $text-muted; margin-left: 1; }
     NetworkDetail .empty-msg     { color: $text-muted; }
-    NetworkDetail ScrollableContainer { height: 1fr; margin-top: 1; }
+    /* `auto`, not `1fr` — the same trap `#axis-scroll` fell into. NetworkDetail
+       already scrolls (`overflow-y: auto` above), so a `1fr` child resolves
+       against the *visible* height and the fixed detail lines stacked above it
+       (Root, Prune, Dist-upgrade, Certs, Publishes, Published, the stats line
+       and the Mirrors heading) take all of it. Measured at 80x24: 1 row for 5
+       rows of mirrors. At `auto` the list renders whole and NetworkDetail's own
+       scrollbar does the work. */
+    NetworkDetail #mirror-list { height: auto; margin-top: 1; }
     """
 
     def __init__(self):
@@ -213,7 +220,9 @@ class NetworkDetail(Widget):
             if self._cfg else []
         )
         self.mount(Label(f"  Mirrors ({len(selected)})", classes="section-hdr"))
-        scroll = ScrollableContainer()
+        # A plain Vertical: NetworkDetail already scrolls, and nesting a second
+        # scroll region inside one that scrolls only makes the wheel ambiguous.
+        scroll = Vertical(id="mirror-list")
         self.mount(scroll)
         if not selected:
             scroll.mount(Label("  (none)", classes="empty-msg"))
@@ -293,12 +302,35 @@ class NetworkPanel(Widget):
     DEFAULT_CSS = """
     NetworkPanel {
         height: 1fr;
+        layout: vertical;
+    }
+    NetworkPanel #pub-split {
+        height: 1fr;
         layout: horizontal;
     }
     NetworkPanel #pub-list-panel {
-        width: 30;
+        /* Proportional, not a fixed 30 — and the action bar is why. This panel
+           shares the row with `#pub-detail-panel`, which the bar sits inside,
+           so 30 fixed columns here meant the bar got 46 at an 80-column
+           terminal while its seven buttons need 52. The buttons were not the
+           problem; a fixed-width sibling was. Measured across widths with this
+           rule: list 23/29/39 at 80/100/200 columns, bar 52/66/156 — fits
+           everywhere, and the list is no longer stuck at 30 on a wide screen.
+           A network list holds short names (`lab`, `dgx`), so it is the panel
+           that can afford to yield. */
+        width: 30%;
+        min-width: 20;
+        max-width: 40;
         border-right: solid $primary-darken-2;
         background: $surface;
+    }
+
+    /* Same reason as the manage list: a name that outgrows the panel must
+       ellipsise rather than end mid-word, which reads as broken text. */
+    NetworkPanel #pub-list-panel ListItem > Label {
+        width: 1fr;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     NetworkPanel #pub-list-panel .panel-title {
         background: $primary-darken-3;
@@ -324,9 +356,12 @@ class NetworkPanel(Widget):
         dock: bottom;
         overflow-x: auto;
     }
-    /* Default Button min-width is 16; six of them overflow the detail panel
-       on an 80- or 100-column terminal. Size to the label and scroll if the
-       row still cannot fit. */
+    /* Default Button min-width is 16; seven of them would overflow the detail
+       panel outright. Size to the label instead, and keep `overflow-x: auto`
+       above as a last resort — but note the bar is only *just* wide enough at
+       80 columns (52 of 52), so a longer label silently reintroduces the
+       scroll and a button nobody can see. `test_tui_geometry.py` asserts the
+       buttons fit the bar at every size for exactly that reason. */
     NetworkPanel #pub-action-bar Button {
         margin-right: 1;
         min-width: 0;
@@ -344,19 +379,27 @@ class NetworkPanel(Widget):
         self._cfg_dir = cfg_dir
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="pub-list-panel"):
-            yield Static("  Networks", classes="panel-title")
-            yield ListView(*self._build_items(), id="pub-list")
-        with Vertical(id="pub-detail-panel"):
-            yield NetworkDetail()
-            with Horizontal(id="pub-action-bar"):
-                yield Button("Add", id="btn-add-network", variant="primary")
-                yield Button("Edit", id="btn-edit-network", variant="default")
-                yield Button("Remove", id="btn-remove-network", variant="error")
-                yield Button("Publish", id="btn-publish", variant="success")
-                yield Button("Dry Run", id="btn-dry-run", variant="default")
-                yield Button("Bundle", id="btn-bundle", variant="warning")
-                yield Button("Certs", id="btn-certs", variant="default")
+        # The action bar is a sibling of the list/detail split, not a child of
+        # the detail panel, so it spans the panel's full width. Docked inside
+        # the detail panel it only ever got what the list panel left over — 52
+        # columns at an 80-column terminal for 59 columns of button, so Certs
+        # sat permanently scrolled off the right edge. Its verbs act on the
+        # selected network, not on the detail pane, so full width is also the
+        # honest place for it.
+        with Horizontal(id="pub-split"):
+            with Vertical(id="pub-list-panel"):
+                yield Static("  Networks", classes="panel-title")
+                yield ListView(*self._build_items(), id="pub-list")
+            with Vertical(id="pub-detail-panel"):
+                yield NetworkDetail()
+        with Horizontal(id="pub-action-bar"):
+            yield Button("Add", id="btn-add-network", variant="primary")
+            yield Button("Edit", id="btn-edit-network", variant="default")
+            yield Button("Remove", id="btn-remove-network", variant="error")
+            yield Button("Publish", id="btn-publish", variant="success")
+            yield Button("Dry Run", id="btn-dry-run", variant="default")
+            yield Button("Bundle", id="btn-bundle", variant="warning")
+            yield Button("Certs", id="btn-certs", variant="default")
 
     def _available(self) -> "list[config.MirrorConfig]":
         """Mirrors that actually exist — from the pool, not config expansion.

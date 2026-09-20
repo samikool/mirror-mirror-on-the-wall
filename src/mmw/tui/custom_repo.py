@@ -63,7 +63,12 @@ class StepCustom(WizardStep):
     StepCustom #load-row Button { width: auto; min-width: 18; }
     StepCustom #load-row .load-hint {
         width: 1fr;
-        height: 1;
+        /* height: auto — NOT a fixed height alongside a top padding.
+           Textual boxes are border-box, so the padding is subtracted from
+           the declared height: `height: 1` with `padding-top: 1` leaves
+           zero rows and the label renders nothing at all while still
+           reporting itself present, displayed and visible. */
+        height: auto;
         padding: 1 0 0 2;
         color: $text-muted;
         text-wrap: nowrap;
@@ -77,10 +82,15 @@ class StepCustom(WizardStep):
     StepCustom .dim-row { height: auto; margin-bottom: 0; }
     StepCustom .dim-row Button { min-width: 0; width: auto; }
     StepCustom .dim-summary {
+        /* height: auto — NOT a fixed height alongside a top padding. Textual
+           boxes are border-box, so the padding is subtracted from the declared
+           height: `height: 1` with `padding-top: 1` leaves zero rows, and the
+           label renders nothing while still reporting itself present,
+           displayed, visible and 58 columns wide. */
         padding: 1 0 0 2;
         color: $accent;
         width: 1fr;
-        height: 1;
+        height: auto;
         text-wrap: nowrap;
         text-overflow: ellipsis;
     }

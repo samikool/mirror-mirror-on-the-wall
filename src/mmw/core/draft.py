@@ -82,15 +82,43 @@ class RepositoryDraft:
         return list(chosen)
 
     def summary(self, dim: str) -> str:
-        """One-line description of a dimension's selection, for a summary row."""
-        chosen, available = self.chosen[dim], self.available[dim]
-        if not chosen:
-            return "none selected"
-        if available and len(chosen) == len(available):
-            return f"all ({len(available)})"
-        if len(chosen) <= 4:
-            return f"{', '.join(chosen)}  of {len(available)}"
-        return f"{', '.join(chosen[:4])}  +{len(chosen) - 4} of {len(available)}"
+        """One-line description of a dimension, for a summary row.
+
+        Derived from `stored()`, never from `chosen` directly, so the row
+        always describes **what would actually be written to the config**.
+        Reading `chosen` against `available` got this wrong in both
+        directions, and both were misleading in the dangerous direction:
+
+        - An *unprobed* draft has `available == chosen` (a pasted config or
+          `from_source()` seeds both from the same stated list), so the old
+          `len(chosen) == len(available)` test reported an explicit
+          `Suites: bookworm trixie` as **"all (2)"** — implying the
+          repository follows upstream when it is in fact pinned to two.
+          `stored()` already gets this right by requiring `enumerated`;
+          this now defers to it instead of re-deriving the rule and
+          disagreeing with it.
+        - A dimension that is genuinely open (`suites = []`, the documented
+          "empty means all") reported **"none selected"**, which reads as
+          "this mirrors nothing" — the exact opposite of the truth.
+        """
+        stored = self.stored(dim)
+        available = self.available[dim]
+        if not stored:
+            if self.enumerated[dim] and available and not self.chosen[dim]:
+                # Everything was actively unticked from a real listing.
+                # `stored()` is `[]`, which the config reads as "all", so say
+                # that plainly rather than let the row imply nothing is
+                # mirrored — the two states look identical in the data and
+                # only the user's intent distinguishes them.
+                return "none ticked — stored as all"
+            return "all — resolved at sync"
+        # "of N" only means something when N came from listing the repository.
+        # For an unprobed draft `available` is just a copy of the stated list,
+        # so quoting it would be circular.
+        suffix = f"  of {len(available)}" if self.enumerated[dim] else ""
+        if len(stored) <= 4:
+            return ", ".join(stored) + suffix
+        return f"{', '.join(stored[:4])}  +{len(stored) - 4}{suffix}"
 
     # ── probing ──────────────────────────────────────────────────────────────
 

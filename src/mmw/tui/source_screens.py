@@ -65,10 +65,17 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
     EditSourceScreen .dim-row { height: auto; margin-bottom: 0; }
     EditSourceScreen .dim-row Button { min-width: 0; width: auto; }
     EditSourceScreen .dim-summary {
+        /* `height: auto`, NOT `height: 1`. Textual boxes are border-box, so a
+           declared height includes padding — `height: 1` with `padding-top: 1`
+           left zero rows for content and the label rendered at height 0. It
+           was present, displayed and visible, 58 columns wide, and drew
+           nothing: opening this screen showed three "Choose…" buttons and no
+           indication of what the repository currently mirrors, which is the
+           one thing you open it to find out. */
         padding: 1 0 0 2;
         color: $accent;
         width: 1fr;
-        height: 1;
+        height: auto;
         text-wrap: nowrap;
         text-overflow: ellipsis;
     }

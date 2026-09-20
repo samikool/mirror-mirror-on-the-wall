@@ -60,7 +60,12 @@ class RepoRow(Vertical):
     RepoRow .dims Button { min-width: 0; width: auto; margin-right: 1; }
     RepoRow .dim-text {
         width: 1fr;
-        height: 1;
+        /* height: auto — NOT a fixed height alongside a top padding.
+           Textual boxes are border-box, so the padding is subtracted from
+           the declared height: `height: 1` with `padding-top: 1` leaves
+           zero rows and the label renders nothing at all while still
+           reporting itself present, displayed and visible. */
+        height: auto;
         padding: 1 0 0 1;
         color: $accent;
         text-wrap: nowrap;
@@ -96,14 +101,45 @@ class RepoRow(Vertical):
     def on_mount(self) -> None:
         self.refresh_summary()
 
+    def _dimension_text(self) -> str:
+        """The three dimensions, positionally, in the order of the buttons above.
+
+        Deliberately drops the dimension names. The three buttons directly
+        above this line are labelled Suites… / Components… / Architectures…,
+        so repeating those words here spent the row's width restating what is
+        already on screen one line up — the same duplication the manage list
+        had when it printed a full URL under its own host heading. Measured:
+        the named form ran to 108 columns for a repository with everything
+        open, against roughly 64 available at an 80-column terminal, so it
+        truncated in the *common* case rather than an edge one.
+
+        **All three slots are always rendered, even when a dimension is open.**
+        Positional labelling only works if the positions hold still; dropping
+        the open ones would silently shift `arm64` from third place to second
+        and make the reader count buttons to decode it.
+        """
+        d = self.draft
+        if all(not d.stored(dim) for dim in DIMENSIONS):
+            # Everything open. Saying it once beats saying it three times, and
+            # this is the ordinary state of a freshly pasted repository.
+            return "[dim]all — resolved at sync[/]"
+        parts = []
+        for dim in DIMENSIONS:
+            stored = d.stored(dim)
+            if not stored:
+                parts.append("[dim]all[/]")
+            elif len(stored) <= 3:
+                parts.append(_escape(", ".join(stored)))
+            else:
+                parts.append(_escape(f"{', '.join(stored[:2])} +{len(stored) - 2}"))
+        return "  ·  ".join(parts)
+
     def refresh_summary(self) -> None:
         d = self.draft
         if d.error:
             text = f"[red]✗ {_escape(d.error)}[/]"
         else:
-            text = "  ·  ".join(
-                f"[dim]{_DIM_TITLES[dim]}[/] {_escape(d.summary(dim))}" for dim in DIMENSIONS
-            )
+            text = self._dimension_text()
         state = d.key_state()
         if state == "have":
             text += f"  ·  [green]✓ key[/] [dim]({d.key_source or 'inline'})[/]"

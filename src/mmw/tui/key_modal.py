@@ -53,6 +53,10 @@ class KeyModal(ModalScreen):
         max-height: 92%;
         border: double $primary;
         background: $surface;
+        /* Scrolls, so the min-height floor on #key-area below can push content
+           past the bottom on a short terminal without any of it becoming
+           unreachable. */
+        overflow-y: auto;
     }
     KeyModal #key-title {
         height: 1;
@@ -76,7 +80,20 @@ class KeyModal(ModalScreen):
     KeyModal #url-row { height: 3; padding: 0 2; }
     KeyModal #url-row Input { width: 1fr; }
     KeyModal #url-row Button { width: auto; min-width: 8; margin-left: 1; }
-    KeyModal #key-area { height: 1fr; margin: 0 2; }
+    /* A fixed height, deliberately not `1fr`. This modal stacks ~18 rows of
+       fixed furniture — title, subtitle, three section labels, a 3-row
+       directory row, a 3-row URL row, a status line and the button bar —
+       so in an 84%-height modal on an 80x24 terminal (the POSIX default)
+       `1fr` resolved to **zero**: the paste box, the whole point of the
+       screen, rendered at no height at all and the modal looked like it had
+       simply lost its input. `min-height` does not rescue it either, because
+       Textual clamps a flexible child to the space actually available. A
+       fixed height plus the scrollable body above is what makes it
+       deterministic: 8 usable rows at every terminal size, with anything
+       that no longer fits reachable by scrolling. It does not grow on a tall
+       terminal, which is the right trade — you paste a key here, you do not
+       read one. */
+    KeyModal #key-area { height: 10; margin: 0 2; }
     KeyModal #key-status { height: 1; padding: 0 2; color: $text-muted; }
     KeyModal #key-bar {
         height: auto;

@@ -35,12 +35,22 @@ class DryRunResultModal(ModalScreen[bool]):
     }
     DryRunResultModal .modal-title { text-style: bold; color: $primary; margin-bottom: 1; }
     DryRunResultModal .error-row   { color: $error; }
-    DryRunResultModal .totals      { color: $primary; margin-top: 1; text-style: bold; }
+    /* `width: 1fr` so this wraps inside the dialog. At `auto` it sized to its
+       own text — 101 columns for a real network ('Total  76,831 files · 99.9
+       GB → 99.8 GB already published · ≈17.2 MB to add') — and that single
+       Label, not the table beside it, was what pushed the modal into
+       horizontal scroll. Worth stating because the table is the obvious
+       suspect and was the wrong one. */
+    DryRunResultModal .totals      { width: 1fr; color: $primary; margin-top: 1; text-style: bold; }
     DryRunResultModal .du-hdr      { color: $accent; text-style: bold; margin-top: 1; }
     DryRunResultModal .du-path     { color: $text; margin-left: 2; }
     DryRunResultModal .du-warn     { color: $warning; margin-left: 2; }
     DryRunResultModal .du-empty    { color: $text-muted; margin-left: 2; }
-    DryRunResultModal DataTable    { height: auto; max-height: 24; margin-bottom: 1; }
+    /* `width: 1fr` so the table fits the modal and scrolls inside itself
+       rather than sizing to its five columns and pushing the parent wider
+       than the dialog. A table that scrolls is fine; a dialog whose buttons
+       scroll away with it is not. */
+    DryRunResultModal DataTable    { width: 1fr; height: auto; max-height: 24; margin-bottom: 1; }
     DryRunResultModal Horizontal   { align: center middle; height: auto; margin-top: 1; }
     DryRunResultModal Button       { margin: 0 1; }
     """
@@ -81,7 +91,12 @@ class DryRunResultModal(ModalScreen[bool]):
         r = self._result
         fmt = _fmt_bytes
         table = self.query_one("#dry-run-table", DataTable)
-        table.add_columns("Mirror", "Files", "Total", "Published", "To Add (est.)")
+        # "To Add", not "To Add (est.)": the five headers plus a mirror name
+        # like ubuntu-archive-noble-updates-universe-amd64 run past the modal
+        # at 100 columns, and the last header is the one that gets clipped —
+        # to "To Add (es", which reads as a rendering fault. The estimate is
+        # already signalled by the ≈ on the totals line below the table.
+        table.add_columns("Mirror", "Files", "Total", "Published", "To Add")
         for mr in r.mirrors:
             if mr.errors:
                 table.add_row(mr.mirror_name, "—", "—", "—", f"✗ {mr.errors[0]}")

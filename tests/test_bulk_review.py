@@ -360,3 +360,47 @@ def test_the_key_modal_can_browse_too(tmp_path):
             assert app.screen.query_one("#key-found", OptionList).display is True
 
     _run(scenario)
+
+
+def test_row_summary_is_positional_and_fits_a_narrow_row():
+    """The per-row dimension line must fit an 80-column terminal in every state.
+
+    It previously named each dimension — "suites all — resolved at sync  ·
+    components all — …" — which ran to 108 columns against roughly 64
+    available, so it truncated in the *ordinary* state of a freshly pasted
+    repository, not an edge case. The three buttons directly above the line
+    are already labelled Suites…/Components…/Architectures…, so the names were
+    restating what was on screen one line up.
+    """
+    import re
+
+    from mmw.core.draft import DIMENSIONS, RepositoryDraft
+    from mmw.tui.bulk_review import RepoRow
+
+    def rendered(draft):
+        row = RepoRow.__new__(RepoRow)
+        row.draft = draft
+        return re.sub(r"\[/?[^\]]*\]", "", RepoRow._dimension_text(row))
+
+    # Everything open — said once, not three times.
+    d = RepositoryDraft(url="https://r.example.com/ubuntu")
+    assert rendered(d) == "all — resolved at sync"
+
+    # Narrowed on one axis only: the other two still render, so `arm64` never
+    # moves out of third place. Positional labelling needs fixed positions.
+    d2 = RepositoryDraft(url="https://r.example.com/ubuntu")
+    d2.set_dimension("suites", ["noble", "jammy"], chosen=["noble"], enumerated=True)
+    text = rendered(d2)
+    assert text.count("·") == len(DIMENSIONS) - 1, f"a slot went missing: {text!r}"
+    assert text.startswith("noble")
+    assert text.endswith("all")
+
+    # A long selection is abbreviated rather than allowed to run away.
+    d3 = RepositoryDraft(url="https://r.example.com/ubuntu")
+    d3.set_dimension("suites", [f"s{i}" for i in range(9)],
+                     chosen=[f"s{i}" for i in range(7)], enumerated=True)
+    assert "+5" in rendered(d3)
+
+    # 64 is what the row actually gets at an 80-column terminal.
+    for draft in (d, d2, d3):
+        assert len(rendered(draft)) <= 64, f"{rendered(draft)!r} is too wide"

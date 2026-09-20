@@ -24,3 +24,6 @@ mmw-profile-*.txt
 
 # Live machine-local config — per working directory, never shared
 mmw.toml
+
+# pytest-textual-snapshot report (regenerated on every snapshot run)
+snapshot_report.html

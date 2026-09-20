@@ -619,7 +619,18 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
     }
     EditNetworkScreen .axis-dim   { color: $text-muted; }
     EditNetworkScreen .axis-list  { height: auto; max-height: 8; margin-bottom: 0; }
-    EditNetworkScreen #axis-scroll { height: 1fr; }
+    /* `height: auto`, never `1fr`. This sits inside `#edit-container`, which
+       is itself `1fr` with `overflow-y: auto` — so a `1fr` here resolves
+       against the container's *visible* height rather than its content
+       height, and the fixed-height siblings (two path rows, the repo
+       checklist, five 3-row switch rows, ~30 rows in total) leave it
+       nothing. Measured: it rendered at **1 row** at both 80x24 and 80x40,
+       while each axis block wants 17 — the one region that is the whole
+       point of this screen was a single-row sliver at every realistic
+       terminal size, and no test caught it because a 1-row region is
+       technically still on screen. At `auto` the blocks render full height
+       and `#edit-container`'s existing scrollbar does the work. */
+    EditNetworkScreen #axis-scroll { height: auto; }
     EditNetworkScreen #repo-checklist { height: auto; max-height: 8; margin-bottom: 1; }
     EditNetworkScreen .axis-block { height: auto; }
     EditNetworkScreen .field-label { color: $text-muted; margin-bottom: 0; }
@@ -676,7 +687,11 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
                     id="repo-checklist",
                 )
                 yield Label("[dim]What this network publishes  ·  ctrl+a toggles a list[/]")
-                with ScrollableContainer(id="axis-scroll"):
+                # A plain Vertical, not a ScrollableContainer: `#edit-container`
+                # above already scrolls, and nesting a second scroll region
+                # inside it makes the wheel ambiguous for no benefit now that
+                # this sizes to its content.
+                with Vertical(id="axis-scroll"):
                     for axis in self._axes:
                         with Vertical(id=axis.block_id(), classes="axis-block"):
                             yield from axis.compose_widgets()

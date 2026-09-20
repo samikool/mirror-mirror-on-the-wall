@@ -44,6 +44,7 @@ module-name = "mmw"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-textual-snapshot>=1.0.0",
     "ruff>=0.15.14",
 ]
 

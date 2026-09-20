@@ -304,3 +304,49 @@ def test_manage_list_panel_is_usable_and_adapts(tmp_path):
     assert widths[(120, 40)] > widths[(80, 24)], (
         f"list panel did not widen with the terminal: {widths}"
     )
+
+
+def test_networks_action_bar_buttons_all_fit(tmp_path):
+    """Every action button must fit the bar, at every size.
+
+    The bar has `overflow-x: auto`, so an overflowing button is not an error —
+    it just scrolls off the right edge, present but invisible at the default
+    width. That is close to not existing: Certs was added precisely because a
+    verb with no button is undiscoverable, and scrolling it out of sight gives
+    back the same problem.
+
+    The margin here is thin by construction — 52 columns of button in a 52
+    column bar at 80x24 — so this is the test that catches a renamed label,
+    not a reviewer.
+    """
+    from pathlib import Path
+
+    from mmw.tui.manage import ManageApp
+
+    def app():
+        return ManageApp(_demo_config(tmp_path), Path("."), initial_tab="tab-networks")
+
+    async def go(size):
+        a = app()
+        async with a.run_test(size=size) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+            bar = a.screen.query_one("#pub-action-bar")
+            buttons = list(a.screen.query("#pub-action-bar Button"))
+            assert buttons, "the action bar has no buttons"
+            # `virtual_size`, NOT the sum of `size.width`. Summing the buttons
+            # was the first version of this assertion and it passed against a
+            # layout where Certs was visibly cut off: `size.width` excludes each
+            # button's `margin-right`, so seven buttons hid seven columns from
+            # the total. The container already knows how wide its content is —
+            # ask it, rather than re-deriving a number that can omit a box
+            # model detail.
+            return bar.size.width, bar.virtual_size.width, len(buttons)
+
+    for size in SIZES:
+        visible, needed, n = asyncio.run(go(size))
+        assert needed <= visible, (
+            f"{n} action buttons need {needed} columns but the bar shows "
+            f"{visible} at {size[0]}x{size[1]} — the last ones scroll out of "
+            f"sight. Shorten a label, or give the bar more width."
+        )

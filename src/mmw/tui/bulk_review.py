@@ -60,7 +60,12 @@ class RepoRow(Vertical):
     RepoRow .dims Button { min-width: 0; width: auto; margin-right: 1; }
     RepoRow .dim-text {
         width: 1fr;
-        height: 1;
+        /* height: auto — NOT a fixed height alongside a top padding.
+           Textual boxes are border-box, so the padding is subtracted from
+           the declared height: `height: 1` with `padding-top: 1` leaves
+           zero rows and the label renders nothing at all while still
+           reporting itself present, displayed and visible. */
+        height: auto;
         padding: 1 0 0 1;
         color: $accent;
         text-wrap: nowrap;

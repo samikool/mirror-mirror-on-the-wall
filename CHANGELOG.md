@@ -152,7 +152,7 @@ First public release. Prior history was not versioned.
   every network is not.
 - Errors go to stderr across every command.
 - Destructive TUI keys moved behind modifiers; `?` and `/` gained bindings.
-- `design-notes.md` moved to `docs/internals/design-notes.md`.
+- The architecture notes moved to `docs/internals/design-notes.md`.
 
 ### Removed
 

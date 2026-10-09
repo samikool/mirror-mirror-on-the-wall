@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import io
 import os
+import shutil
 import tarfile
 import time
 from dataclasses import replace
@@ -43,6 +44,53 @@ _ARCHIVE_REPORT_INTERVAL = 0.25  # seconds — matches the TUI's own EMA sample 
 # pool: 43% of blobs under 50 KB) and comfortably below where a single file's
 # own processing time could plausibly outlast the report interval.
 _ANNOUNCE_LARGE_FILE_BYTES = 50 * 1024 * 1024
+
+# Root-relative things a network destination holds that belong to no
+# `mirror_base` at all, and which `prune_stale_bases` must therefore never
+# treat as the leftovers of a dropped repository. `nginx/` and `keys/` get
+# their own reconcile pass instead (`finalize_group` with that prefix, driven
+# by `publish_network`/`bundle_network`); `changelogs.ubuntu.com/` belongs to
+# the dist-upgrade step; `.mmw/` is apply.py's staging area and `.mmw-state`
+# its ledger cursor — deleting either from a far side would be catastrophic.
+NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw"})
+
+# Where a `bundle_tls` network's certificate and key land on the far side:
+# under `.mmw/`, which no generated server block serves (each one's root is a
+# hostname directory). Fixed control members like `.mmw/apply.py`, not
+# manifest payload — so they ride every bundle, delta or full, and sit near
+# the front of the archive rather than in the tail a cut-short copy loses.
+TLS_DIR = ".mmw/tls"
+NON_BASE_FILES = frozenset({"UPGRADE.md", ".mmw-state", "apply.py"})
+
+# Where TreeSink stages content before renaming it onto a live-served path.
+# Never inside a `mirror_base`, so nginx can never serve it — the same
+# reasoning as apply.py's own `{root}/.mmw/tmp/`.
+_TMP_SUBDIR = (".mmw", "tmp")
+
+
+def _is_stale_base(rel_dir: str, live_bases: set[str], ancestors: set[str]) -> bool:
+    """True when `rel_dir` is a directory no live mirror_base needs.
+
+    Shared by both sinks so "which subtree belongs to a repository this
+    network no longer selects" has exactly one definition.
+    """
+    if rel_dir in live_bases or rel_dir in ancestors:
+        return False
+    return not any(rel_dir.startswith(b + "/") for b in live_bases)
+
+
+def base_ancestors(live_bases: set[str]) -> set[str]:
+    """Every partial path on the way down to a live base.
+
+    A `mirror_base` is multi-segment (`archive.ubuntu.com/ubuntu`), so the
+    host directory above it must be descended into rather than deleted.
+    """
+    out: set[str] = set()
+    for base in live_bases:
+        parts = base.split("/")
+        for i in range(1, len(parts)):
+            out.add("/".join(parts[:i]))
+    return out
 
 
 class _CountingWriter:
@@ -137,6 +185,18 @@ class Sink(Protocol):
         """
         ...
 
+    def prune_stale_bases(self, live_bases: set[str]) -> tuple[int, int]:
+        """Remove whole `mirror_base` subtrees no group produced this run.
+
+        `finalize_group` is scoped to one base, so a base that is no longer
+        produced by ANY group is reached by nothing: narrowing
+        `[[networks.select]]` left the entire `security.ubuntu.com/ubuntu/`
+        subtree served forever, stale `InRelease` and all, and no delta could
+        ever delete it either. Destructive, so callers only invoke it when
+        `prune` is on. `NON_BASE_DIRS`/`NON_BASE_FILES` are never touched.
+        """
+        ...
+
     def close(self) -> None:
         ...
 
@@ -152,13 +212,17 @@ class TreeSink:
         self.pruned_bytes = 0
         self.errors: list[str] = []
 
+    @property
+    def tmp_dir(self) -> Path:
+        return self.root.joinpath(*_TMP_SUBDIR)
+
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
         from mmw.core.publisher.links import hardlink_or_copy
         dst = self.root / rel
         try:
             if dst.exists() and dst.stat().st_ino == src.stat().st_ino:
                 return "skipped"
-            hardlink_or_copy(src, dst)
+            hardlink_or_copy(src, dst, tmp_dir=self.tmp_dir)
             return "linked"
         except OSError as e:
             self.errors.append(f"{rel}: {e}")
@@ -177,9 +241,11 @@ class TreeSink:
                 f"{rel}: unsubstituted {ROOT_PLACEHOLDER} would have been "
                 "written to a live-served destination"
             )
-        dst = self.root / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(data)
+        from mmw.core.publisher.links import atomic_write
+        # Staged-then-renamed like every other write into a live-served tree:
+        # a client fetching nginx/mirror.conf or UPGRADE.md mid-publish gets
+        # the old file or the new one, never a half-written one.
+        atomic_write(self.root / rel, data, tmp_dir=self.tmp_dir)
 
     def finalize_group(self, base: str, keep: set[str],
                        live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
@@ -198,10 +264,12 @@ class TreeSink:
         # os.walk (scandir) rather than rglob: kept files — the overwhelming
         # majority — cost no stat at all, and whole subtrees are skipped by
         # pruning dirnames instead of testing every file under them.
+        seen_dirs: list[Path] = []
         for dirpath, dirnames, filenames in os.walk(dst_root):
             if self._stop_event and self._stop_event.is_set():
                 break
             here = Path(dirpath)
+            seen_dirs.append(here)
             if "by-hash" in here.parts:
                 if filenames:
                     bh_dirs.add(here)
@@ -230,6 +298,7 @@ class TreeSink:
         bh_pruned = 0
         for bh_dir in bh_dirs:
             bh_pruned += _prune_by_hash_dir(bh_dir, live_checksums)
+        _rmdir_empty(seen_dirs, keep_root=dst_root)
         # Cumulative totals across every group a shared sink processes — handy
         # for a caller tracking overall progress — are kept separately from
         # the per-group return value the result accounting relies on.
@@ -241,8 +310,86 @@ class TreeSink:
             self._progress(base, f"prune-scan-done:{checked}:{group_pruned}")
         return group_pruned, group_pruned_bytes
 
+    def prune_stale_bases(self, live_bases: set[str]) -> tuple[int, int]:
+        """See the Sink protocol. Walks down from the root only as far as the
+        live bases' own ancestors, so a whole dropped repository costs one
+        `rmtree` and a healthy tree costs a handful of `scandir` calls."""
+        if not self.root.is_dir():
+            return 0, 0
+        ancestors = base_ancestors(live_bases)
+        removed = 0
+        removed_bytes = 0
+        stack = [""]
+        while stack:
+            rel_dir = stack.pop()
+            here = self.root / rel_dir if rel_dir else self.root
+            try:
+                entries = list(here.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                # A symlink is never something publish created, and following
+                # one out of the tree with rmtree is exactly the mistake a
+                # destructive sweep must not be capable of making.
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                rel = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
+                if not rel_dir and (entry.name in NON_BASE_DIRS
+                                    or entry.name in NON_BASE_FILES):
+                    continue
+                if rel in ancestors:
+                    stack.append(rel)
+                    continue
+                if not _is_stale_base(rel, live_bases, ancestors):
+                    continue
+                for f in entry.rglob("*"):
+                    try:
+                        if f.is_file() and not f.is_symlink():
+                            removed_bytes += f.stat().st_size
+                            removed += 1
+                    except OSError:
+                        pass
+                shutil.rmtree(entry, ignore_errors=True)
+                if self._progress:
+                    self._progress(rel, "pruned-base")
+        self.pruned += removed
+        self.pruned_bytes += removed_bytes
+        return removed, removed_bytes
+
     def close(self) -> None:
-        return
+        # Debris from a killed publish: not servable (nothing under
+        # `{root}/.mmw/` is inside any mirror_base, so no nginx site roots
+        # reach it), but it would accumulate forever otherwise. One listdir.
+        try:
+            for entry in self.tmp_dir.iterdir():
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+
+def _rmdir_empty(dirs: list[Path], keep_root: Path) -> int:
+    """Remove now-empty directories, deepest first.
+
+    The file sweep above deletes files and leaves their directories standing.
+    The generated nginx sets `autoindex on`, so over a few suite rotations a
+    client browsing the tree sees a skeleton of empty directories that
+    nothing ever cleans up. `rmdir` only ever succeeds on a genuinely empty
+    directory, so this can neither remove a kept file nor touch an excluded
+    subtree (which still has files in it).
+    """
+    removed = 0
+    for d in sorted(dirs, key=lambda p: len(p.parts), reverse=True):
+        if d == keep_root:
+            continue
+        try:
+            d.rmdir()
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _prune_by_hash_dir(bh_dir: Path, live_checksums: set[str]) -> int:
@@ -284,8 +431,12 @@ class BundleSink:
 
     def __init__(self, out_path: Path, header: ManifestHeader, prev: dict[str, str],
                 apply_script: bytes, level: int = 3, prune: bool = True,
-                full: bool = False, progress=None, compress: bool = True):
+                full: bool = False, progress=None, compress: bool = True,
+                tls_files: dict[str, bytes] | None = None):
         self.out_path = out_path
+        # name → bytes, written as `{TLS_DIR}/{name}`; a name ending `.key`
+        # goes in 0600. Empty unless the network opted in with bundle_tls.
+        self._tls_files = dict(tls_files or {})
         self.header = header
         self._prev = prev
         self._apply_script = apply_script
@@ -311,6 +462,10 @@ class BundleSink:
         self._full = full
 
         self.manifest_rows: list[tuple[str, str]] = []
+        # The header actually written into the tar, complete with
+        # `file_count`; set by close(). `bundle_network` writes THIS to the
+        # ledger so the ledger is a faithful record of what shipped.
+        self.written_header: ManifestHeader | None = None
         self._send: list[tuple[str, Path, int, str]] = []
         self._generated: dict[str, bytes] = {}
         self._seen: set[str] = set()
@@ -371,6 +526,18 @@ class BundleSink:
         pruning apt network, one bundle at a time, since by-hash exists
         precisely to protect a client mid-`apt update`.
 
+        **That fix was only ever applied to the flat case.** The `by-hash`
+        branch below used to `continue` *before* the `exclude` test, so the
+        outer group of a nested publish base evaluated the INNER group's
+        by-hash entries against the OUTER group's `live_checksums` — which
+        never contain them, by construction. The inner group then correctly
+        declined to delete them, but they were already on the list, and the
+        same bundle's own manifest still named them present: `apply.py`
+        deleted a file its manifest listed, so `--verify` failed on every
+        bundle of a nested-base network and by-hash eroded there exactly as
+        it had everywhere before. `exclude` is therefore tested FIRST, and it
+        applies to by-hash paths as much as to plain ones.
+
         A by-hash entry's filename IS its checksum, so its retention rule is
         exact and needs no directory listing: delete it only when that
         checksum is absent from `live_checksums`. This deliberately does NOT
@@ -388,13 +555,15 @@ class BundleSink:
         for rel in self._prev:
             if not rel.startswith(prefix):
                 continue
+            # BEFORE the by-hash branch — see the docstring. A nested base's
+            # paths are another group's business whatever shape they have.
+            if any(rel == x or rel.startswith(x + "/") for x in exclude):
+                continue
             if "by-hash" in rel.split("/"):
                 checksum = rel.rsplit("/", 1)[-1]
                 if checksum not in live_checksums:
                     self.deleted.append(rel)
                     added += 1
-                continue
-            if any(rel == x or rel.startswith(x + "/") for x in exclude):
                 continue
             if rel not in keep:
                 self.deleted.append(rel)
@@ -404,8 +573,88 @@ class BundleSink:
         # is always 0 for this sink; see the Sink protocol docstring.
         return added, 0
 
+    def prune_stale_bases(self, live_bases: set[str]) -> tuple[int, int]:
+        """See the Sink protocol. The bundle equivalent of `TreeSink`'s
+        subtree sweep: `finalize_group` only ever iterates `prev` under the
+        CURRENT group's prefix, so a path belonging to a base this run
+        produced no group for was matched by nothing at all."""
+        if not self._prune:
+            return 0, 0
+        ancestors = base_ancestors(live_bases)
+        added = 0
+        for rel in self._prev:
+            top = rel.split("/", 1)[0]
+            if top in NON_BASE_DIRS or rel in NON_BASE_FILES:
+                continue
+            if rel in self._seen:
+                # This run produced it, so whatever base it belongs to is
+                # live even if it isn't spelled in `live_bases` (changelogs
+                # and UPGRADE.md take this route on an older layout).
+                continue
+            rel_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
+            if not rel_dir:
+                continue
+            if _is_stale_base(rel_dir, live_bases, ancestors):
+                self.deleted.append(rel)
+                added += 1
+        return added, 0
+
     def close(self) -> None:
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
+        # ── Pre-flight: a row whose pool blob can't be streamed is dropped
+        # from the plan BEFORE the manifest that describes the plan is
+        # written. This used to happen inside the write loop instead, which
+        # made every such failure unrecoverable on the far side:
+        # `file_count` was computed up front from the unfiltered lists, the
+        # loop then `continue`d past the bad row, and the tarball STILL
+        # landed and the ledger manifest STILL advanced. The far side
+        # correctly refused (`written != declared` → EXIT_TOOLING, so
+        # `.mmw-state` never moved) while the producing side's ledger had
+        # moved — every subsequent delta then failed EXIT_OUT_OF_ORDER
+        # forever, and the skipped file sat in manifest N with a real
+        # checksum so no delta would ever resend it either. Recovery was a
+        # multi-TB `--full`.
+        #
+        # Dropping the row instead keeps every side consistent: the tar,
+        # `file_count` and the manifest all agree, the far side applies
+        # cleanly, and — because the manifest no longer claims the path —
+        # the NEXT ordinary delta bundle resends it on its own. The failure
+        # is still loud: it is in `self.errors`, which `bundle_network`
+        # folds into `BundleResult`, so `mmw bundle` exits 1.
+        send: list[tuple[str, Path, int, str]] = []
+        dropped: set[str] = set()
+        for rel, src, size, checksum in self._send:
+            # Verified BEFORE any tar write: TarFile.addfile() writes the
+            # entry's header (and whatever chunks it manages to read)
+            # straight to the compressed stream before a short read can
+            # raise — so catching that failure mid-loop would leave
+            # tarfile's offset bookkeeping out of sync with bytes already
+            # flushed, corrupting every entry after it. A pool blob is
+            # content-addressed and shouldn't change, but the size recorded
+            # at link() time must still be checked against the file on disk.
+            try:
+                actual_size = src.stat().st_size
+            except OSError as e:
+                self.errors.append(f"{rel}: {e}")
+                dropped.add(rel)
+                continue
+            if actual_size != size:
+                self.errors.append(
+                    f"{rel}: pool blob is {actual_size} bytes, "
+                    f"expected {size} — skipped rather than "
+                    "write a truncated tar entry")
+                dropped.add(rel)
+                continue
+            send.append((rel, src, size, checksum))
+        if dropped:
+            self.manifest_rows = [(r, c) for r, c in self.manifest_rows
+                                  if r not in dropped]
+            for rel, _src, size, _cs in self._send:
+                if rel in dropped:
+                    self.sent -= 1
+                    self.sent_bytes -= size
+            self._send = send
+
         # `_send`/`_generated` are final the instant link()/write() stop being
         # called, so exactly how many real files (never the fixed .mmw/
         # control members) THIS bundle's tar will contain is known before any
@@ -413,7 +662,12 @@ class BundleSink:
         # first, so it can tell "this bundle never meant to include that path"
         # (a delta bundle's normal, correct shape) apart from "this bundle's
         # tar got cut short" (see ManifestHeader.file_count's docstring).
-        header = replace(self.header, file_count=len(self._send) + len(self._generated))
+        header = replace(self.header, file_count=len(send) + len(self._generated))
+        # The ledger must record the header that actually shipped, not the
+        # one bundle_network constructed — `file_count` only exists on this
+        # one, so a ledger written from the original was not a faithful copy
+        # of what the far side received.
+        self.written_header = header
         # The manifest is written to a temp file first: it goes in as the
         # first tar member and tarfile needs its size up front.
         tmp_manifest = self.out_path.parent / (self.out_path.name + ".manifest.tmp")
@@ -467,12 +721,17 @@ class BundleSink:
                                        mode=0o755)
                         files_written += 1
                         raw_written += len(self._apply_script)
+                        for name, data in sorted(self._tls_files.items()):
+                            self._add_file(tar, f"{TLS_DIR}/{name}", data,
+                                           mode=0o600 if name.endswith(".key") else 0o644)
+                            files_written += 1
+                            raw_written += len(data)
                         for rel, data in self._generated.items():
                             self._add_file(tar, rel, data)
                             files_written += 1
                             raw_written += len(data)
                         by_checksum: dict[str, str] = {}
-                        for rel, src, size, checksum in self._send:
+                        for rel, src, size, checksum in send:
                             first = by_checksum.get(checksum) if checksum else None
                             if first is not None:
                                 ti = tarfile.TarInfo(rel)
@@ -487,36 +746,19 @@ class BundleSink:
                                 self._maybe_report_archive_progress(
                                     rel, files_written, raw_written, counting.written)
                                 continue
-                            # Verified BEFORE any tar write: TarFile.addfile()
-                            # writes the entry's header (and whatever chunks
-                            # it manages to read) straight to the compressed
-                            # stream before a short read can raise — so
-                            # catching that failure and continuing would
-                            # leave tarfile's offset bookkeeping out of sync
-                            # with bytes already flushed, corrupting every
-                            # entry after it. A pool blob is content-addressed
-                            # and shouldn't change, but the size recorded at
-                            # link() time must still be checked against the
-                            # file on disk before it is ever streamed.
-                            try:
-                                actual_size = src.stat().st_size
-                            except OSError as e:
-                                self.errors.append(f"{rel}: {e}")
-                                continue
-                            if actual_size != size:
-                                self.errors.append(
-                                    f"{rel}: pool blob is {actual_size} bytes, "
-                                    f"expected {size} — skipped rather than "
-                                    "write a truncated tar entry")
-                                continue
                             is_large = size >= _ANNOUNCE_LARGE_FILE_BYTES
                             if self._progress and is_large:
                                 self._progress(rel, f"archive-large-file:{size}")
-                            try:
-                                fh = open(src, "rb")
-                            except OSError as e:
-                                self.errors.append(f"{rel}: {e}")
-                                continue
+                            # Every pre-detectable failure was filtered out
+                            # above; a blob that vanishes between that stat
+                            # and this open did so DURING the write, with
+                            # the manifest already in the tar declaring it.
+                            # Skipping it here would ship a tar the far side
+                            # refuses forever, so this aborts instead: the
+                            # exception propagates, `tmp_out` is discarded by
+                            # the `finally` below, and `bundle_network` never
+                            # reaches the ledger write.
+                            fh = open(src, "rb")
                             ti = tarfile.TarInfo(rel)
                             ti.size = size
                             ti.mode = 0o644

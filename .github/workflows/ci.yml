@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite decompresses .zst fixtures and `apply.py` shells out to the
+      # `zstd` binary — it is a real runtime dependency of the far-side path,
+      # not just a test convenience.
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --python ${{ matrix.python-version }}
+
+      - name: Lint
+        run: uv run --python ${{ matrix.python-version }} ruff check src tests
+
+      # ~6 minutes; offline by design (stub clients, pre-supplied content).
+      - name: Test
+        run: uv run --python ${{ matrix.python-version }} pytest -q
+        timeout-minutes: 20
+
+      - name: Build
+        run: uv build --out-dir dist
+
+      - name: Upload artifacts
+        if: matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  install:
+    name: install wheel (py${{ matrix.python-version }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build
+        run: uv build --out-dir dist
+
+      # A bare venv with nothing but the wheel: catches a missing runtime
+      # dependency, a package the build backend dropped, and a console script
+      # that does not import.
+      - name: Install into a bare venv and smoke-test
+        run: |
+          uv venv --python ${{ matrix.python-version }} /tmp/bare
+          VIRTUAL_ENV=/tmp/bare uv pip install dist/*.whl
+          /tmp/bare/bin/mmw --help
+          # apply.py ships inside every bundle — if it is missing from the
+          # wheel, bundling produces an archive the far side cannot apply.
+          /tmp/bare/bin/python -c "from mmw.resources import apply_script_bytes; assert apply_script_bytes()"
+
+  apply-script-compat:
+    # `resources/apply.py` is the only part of mmw that runs on the far side of
+    # an airgap: no mmw install, no pip, sometimes Python 3.6 (RHEL 8). 3.8 is
+    # the oldest interpreter GitHub-hosted runners still provide, so this job
+    # catches 3.9+ syntax but NOT a 3.7/3.8-only construct. The residual gap
+    # (3.6, 3.7) is unguarded here — `tests/` enforces the stdlib-only import
+    # allowlist, and nothing in CI can exercise the real RHEL 8 interpreter.
+    name: apply.py compiles on the oldest available interpreter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: py_compile under Python 3.8
+        run: |
+          uv python install 3.8
+          uv run --python 3.8 --no-project python -m py_compile src/mmw/resources/apply.py

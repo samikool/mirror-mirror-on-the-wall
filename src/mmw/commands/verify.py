@@ -10,10 +10,10 @@ this, but before this module it was reachable only by driving
 `PreparePublishModal` in the TUI — undoable from cron. This check is
 read-only: it never downloads anything.
 """
-import sys
 from pathlib import Path
 
-from mmw.core import config, resolve
+from mmw.commands.common import eprint, interruptible, load_config_or_none
+from mmw.core import resolve
 from mmw.core.pool import Pool
 
 # Imported at module level, not inside _verify_all: tests monkeypatch this as
@@ -45,19 +45,22 @@ def _verify_all(cfg, mirror_dir: Path, network: str | None) -> list[VerifyResult
         pool.close()
 
 
+@interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None) -> int:
     """Verify pool completeness for one or all mirrors. Returns a process exit code."""
-    try:
-        cfg = config.load(cfg_dir)
-    except FileNotFoundError as e:
-        print(e)
+    cfg = load_config_or_none(cfg_dir)
+    if cfg is None:
         return 1
 
     if network and not any(n.name == network for n in cfg.networks):
-        print(f"Network '{network}' not found.", file=sys.stderr)
+        eprint(f"Network '{network}' not found.")
         return 1
 
-    results = _verify_all(cfg, cfg.settings.mirror_dir, network)
+    try:
+        results = _verify_all(cfg, cfg.settings.mirror_dir, network)
+    except OSError as e:
+        eprint(f"Cannot read the pool in {cfg.settings.mirror_dir}: {e.strerror or e}")
+        return 1
 
     if not results:
         print("No mirrors to verify.")
@@ -66,12 +69,12 @@ def run(cfg_dir: Path = Path("."), network: str | None = None) -> int:
     ok = True
     for r in results:
         if r.error:
-            print(f"  {r.mirror_name:<40} ERROR: {r.error}", file=sys.stderr)
+            eprint(f"  {r.mirror_name:<40} ERROR: {r.error}")
             ok = False
         elif r.complete:
             print(f"  {r.mirror_name:<40} complete · {r.total:,} files")
         else:
-            print(f"  {r.mirror_name:<40} {r.missing_count:,} of {r.total:,} missing", file=sys.stderr)
+            eprint(f"  {r.mirror_name:<40} {r.missing_count:,} of {r.total:,} missing")
             ok = False
 
     complete_count = sum(1 for r in results if r.complete)

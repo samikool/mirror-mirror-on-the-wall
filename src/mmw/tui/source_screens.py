@@ -23,7 +23,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, Static, Switch
+from textual.widgets import Input, Label, Select, Static, Switch, TextArea
 
 from mmw.core import config
 from mmw.core.draft import DIMENSIONS, RepositoryDraft
@@ -32,6 +32,26 @@ from mmw.tui.pick import PickModal
 from mmw.tui.widgets import Button
 
 _DIM_TITLES = {"suites": "suites", "components": "components", "arches": "architectures"}
+
+
+def format_overrides(overrides: "list[config.SuiteOverride]") -> str:
+    """`[[sources.suite_overrides]]` as the editor shows it: one
+    `suite: comp, comp` line per override."""
+    return "".join(f"{o.suite}: {', '.join(o.components)}\n" for o in overrides)
+
+
+def parse_overrides(text: str) -> "list[config.SuiteOverride]":
+    """The inverse of `format_overrides`. Raises ValueError naming the line."""
+    out: list[config.SuiteOverride] = []
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        suite, sep, comps = line.partition(":")
+        components = [c.strip() for c in comps.replace(" ", ",").split(",") if c.strip()]
+        if not sep or not suite.strip() or not components:
+            raise ValueError(f"suite override line {n} should read `suite: comp, comp`")
+        out.append(config.SuiteOverride(suite=suite.strip(), components=components))
+    return out
 
 
 class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
@@ -60,8 +80,12 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
     }
     EditSourceScreen #edit-source-container { height: 1fr; overflow-y: auto; padding: 1 2; }
     EditSourceScreen .field-label { color: $text-muted; margin-bottom: 0; }
-    EditSourceScreen #edit-source-url { color: $primary; margin-bottom: 1; }
+    EditSourceScreen #edit-source-url { margin-bottom: 1; }
     EditSourceScreen #edit-source-name { margin-bottom: 1; }
+    EditSourceScreen #edit-source-label { margin-bottom: 1; }
+    EditSourceScreen #edit-source-provider { margin-bottom: 1; width: 40; }
+    EditSourceScreen #edit-source-key-url { margin-bottom: 1; }
+    EditSourceScreen #edit-source-overrides { height: 5; margin-bottom: 1; }
     EditSourceScreen .dim-row { height: auto; margin-bottom: 0; }
     EditSourceScreen .dim-row Button { min-width: 0; width: auto; }
     EditSourceScreen .dim-summary {
@@ -102,20 +126,53 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
         dock: bottom;
     }
     EditSourceScreen #nav-bar Button { margin-left: 1; }
+    EditSourceScreen #save-status {
+        width: 1fr;
+        height: auto;
+        padding: 1 0 0 0;
+        color: $error;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, source: config.SourceConfig):
+    def __init__(self, source: config.SourceConfig,
+                 existing_names: "set[str] | None" = None,
+                 existing_urls: "set[str] | None" = None):
         super().__init__()
         self._source = source
+        # The other repositories' identities: changing this one's URL onto
+        # one of theirs would write two entries for one repository, which
+        # the loader refuses — the same lock-out `existing_names` prevents.
+        self._existing_urls = set(existing_urls or ())
+        self._existing_urls.discard(source.identity)
         self._draft = RepositoryDraft.from_source(source)
+        # The names of the *other* configured repositories, the same way
+        # `AddMirrorScreen(existing_urls=…)` is handed what is already there.
+        # Without it this screen could write a `mmw.toml` the loader then
+        # refuses: `Config._names_must_be_unique` only runs when a `Config` is
+        # *constructed*, and `manage.py` assigns `self._cfg.sources = [...]`
+        # with `validate_assignment` off, so a duplicate name sails past both
+        # the assignment and `config.save()` and only surfaces as a
+        # `ValidationError` on the *next* load — locking the user out of every
+        # command, with their inline GPG armour inside the file they now have
+        # to hand-edit.
+        self._existing_names = set(existing_names or ())
+        self._existing_names.discard(source.name)
         # `RepositoryDraft.to_source()` has no field for these — see its
         # docstring — so they are held here and stamped back onto the result
         # at save time. Dropping them would silently switch off dist-upgrade
         # support or a `gpg_key_url` fetch on every edit.
         self._dist_upgrade = source.dist_upgrade
         self._gpg_key_url = source.gpg_key_url
+        # `label` belongs in exactly the same category and was missed. It is
+        # the GPG key grouping directory (`keys/{label}/`), so letting
+        # `SourceConfig._fill_derived` re-derive it on a no-op save silently
+        # relocates every key on the next sync and changes the published
+        # `keys/` tree under the airgapped side.
+        self._label = source.label
         # Whether this repository arrived already mirroring *all* suites.
         # `suites = []` is the documented "empty means all" state and is what
         # `mmw add` writes whenever the suites are left open, so it is an
@@ -127,19 +184,31 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
         # suite), so it is carried through unconditionally rather than
         # dropped on every edit of a source that has one configured.
         self._suite_overrides = source.suite_overrides
+        # A stale probe must not clobber a selection the user has moved past —
+        # the same generation-token rule `custom_repo.py` already followed and
+        # every other worker-bearing screen did not.
+        self._probe_gen = 0
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(f"  Editing  [bold]{self._source.name}[/]", id="edit-source-title")
             with Vertical(id="edit-source-container"):
                 yield Label("Repository URL", classes="field-label")
-                # Not an Input: the URL *is* identity (SourceConfig.identity
-                # is normalize_url(url)) — changing it here would silently
-                # orphan every refs/mirrors row filed under the old identity.
-                # Delete-and-re-add is the honest route to a different URL.
-                yield Label(self._source.url, id="edit-source-url")
+                # Editable. The URL is identity, so a different one is a
+                # different repository: the old one's pool content becomes
+                # orphaned and `mmw prune` reclaims it, exactly as a
+                # delete-and-re-add would. Probe after changing it — the
+                # dimension choices below are the old repository's.
+                yield Input(self._source.url, id="edit-source-url")
                 yield Label("Name", classes="field-label")
                 yield Input(self._source.name, id="edit-source-name")
+                yield Label("Type", classes="field-label")
+                yield Select([("apt (dists/ hierarchy)", "apt"),
+                              ("apt-flat (Packages at the root)", "apt-flat")],
+                             value=self._source.provider, allow_blank=False,
+                             id="edit-source-provider")
+                yield Label("Key group (keys/{label}/)", classes="field-label")
+                yield Input(self._label, id="edit-source-label")
                 for dim in DIMENSIONS:
                     with Horizontal(id=f"{dim}-row", classes="dim-row"):
                         yield Button(f"Choose {_DIM_TITLES[dim]}…", id=f"btn-{dim}",
@@ -157,13 +226,29 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
                 with Horizontal(id="key-row"):
                     yield Button("Key…", id="btn-key", variant="default")
                     yield Label("", id="key-status")
+                yield Label("Key URL (optional; also served at its own path)",
+                            classes="field-label")
+                yield Input(self._source.gpg_key_url or "", id="edit-source-key-url",
+                            placeholder="https://vendor.example/repo.gpg")
+                yield Label("Per-suite components: one `suite: comp, comp` per line",
+                            classes="field-label")
+                yield TextArea(format_overrides(self._suite_overrides),
+                               id="edit-source-overrides")
             with Horizontal(id="nav-bar"):
+                # Inline, beside the buttons: a refusal to save has to be
+                # visible at the place the press happened, not only as a
+                # toast that has already faded by the time the user looks.
+                yield Label("", id="save-status")
                 yield Button("Cancel", id="btn-cancel-source", variant="default")
                 yield Button("Save", id="btn-save-source", variant="primary")
 
     def on_mount(self) -> None:
         self._refresh_summaries()
         self._refresh_key_status()
+        # Focusing the first field nudged the scroll region down a row once
+        # the form outgrew the screen, hiding the "Repository URL" label.
+        container = self.query_one("#edit-source-container")
+        self.call_after_refresh(container.scroll_home, animate=False)
 
     # ── dimension summaries ──────────────────────────────────────────────────
 
@@ -197,6 +282,20 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
         event.stop()
         self._choose_dimension("arches")
 
+    @on(Input.Changed, "#edit-source-url")
+    def _url_changed(self, event: Input.Changed) -> None:
+        url = event.value.strip().rstrip("/")
+        if not url or url == self._draft.url:
+            return
+        self._draft.url = url
+        self.query_one("#probe-status", Label).update(
+            "[yellow]URL changed — probe to refresh the choices[/]")
+
+    @on(Select.Changed, "#edit-source-provider")
+    def _provider_changed(self, event: Select.Changed) -> None:
+        if isinstance(event.value, str):
+            self._draft.provider = event.value
+
     # ── probing ──────────────────────────────────────────────────────────────
 
     @on(Button.Pressed, "#btn-probe")
@@ -205,16 +304,29 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
         btn = self.query_one("#btn-probe", Button)
         btn.disabled = True
         self.query_one("#probe-status", Label).update("[dim]Probing…[/]")
-        self._probe_worker()
+        self._probe_gen += 1
+        self._probe_worker(self._probe_gen)
 
     @work(thread=True, exit_on_error=False)
-    def _probe_worker(self) -> None:
+    def _probe_worker(self, gen: int) -> None:
         # Widens what is *offered* without moving what is already ticked —
         # the same rule every other probe entry point follows.
-        self._draft.probe()
-        self.app.call_from_thread(self._on_probed)
+        #
+        # The body is wrapped because `@work(exit_on_error=False)` *swallows*
+        # the exception: without this a raising probe never reaches
+        # `_on_probed`, so the button stays disabled and the status stays
+        # "Probing…" for the life of the modal, with only escape-and-reopen to
+        # recover. `key_modal._fetch_worker` is the template.
+        try:
+            self._draft.probe()
+        except Exception as e:
+            self.app.call_from_thread(self._on_probe_failed, e, gen)
+            return
+        self.app.call_from_thread(self._on_probed, gen)
 
-    def _on_probed(self) -> None:
+    def _on_probed(self, gen: int = 0) -> None:
+        if gen and gen != self._probe_gen:
+            return                                  # a newer probe is in flight
         self.query_one("#btn-probe", Button).disabled = False
         self._refresh_summaries()
         status = self.query_one("#probe-status", Label)
@@ -222,6 +334,15 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
             status.update(f"[red]✗ {_escape(self._draft.error)}[/]")
         else:
             status.update("[green]✓ probed[/]")
+
+    def _on_probe_failed(self, error: Exception, gen: int) -> None:
+        if gen != self._probe_gen:
+            return
+        self.query_one("#btn-probe", Button).disabled = False
+        self.query_one("#probe-status", Label).update(
+            f"[red]✗ could not probe: {_escape(str(error) or type(error).__name__)}[/]"
+            "  [dim]— check the URL and try again[/]"
+        )
 
     # ── key ──────────────────────────────────────────────────────────────────
 
@@ -279,17 +400,63 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
         if (self._draft.provider == "apt"
                 and not self._draft.chosen["suites"]
                 and not self._suites_started_empty):
-            self.notify(
+            self._refuse(
                 "Choose at least one suite, or cancel to keep this repository "
-                "mirroring the suites it already has.",
-                severity="warning",
+                "mirroring the suites it already has."
             )
             return
+        url = self.query_one("#edit-source-url", Input).value.strip().rstrip("/")
+        if not url.startswith(("http://", "https://")):
+            self._refuse("✗ the repository URL must start with http:// or https://")
+            self.query_one("#edit-source-url", Input).focus()
+            return
+        if config.normalize_url(url) in self._existing_urls:
+            self._refuse("✗ another repository already has that URL — edit that one instead.")
+            self.query_one("#edit-source-url", Input).focus()
+            return
+        key_url = self.query_one("#edit-source-key-url", Input).value.strip()
+        if key_url and not key_url.startswith(("http://", "https://")):
+            self._refuse("✗ the key URL must start with http:// or https://")
+            self.query_one("#edit-source-key-url", Input).focus()
+            return
+        try:
+            overrides = parse_overrides(self.query_one("#edit-source-overrides", TextArea).text)
+        except ValueError as e:
+            self._refuse(f"✗ {e}")
+            self.query_one("#edit-source-overrides", TextArea).focus()
+            return
+        self._draft.url = url
         name = self.query_one("#edit-source-name", Input).value.strip()
+        # The name is the one field on this screen that can produce a config
+        # the loader rejects, so it is checked here rather than discovered on
+        # the next `mmw` invocation.
+        if name in self._existing_names:
+            self._refuse(
+                f"✗ '{name}' is already the name of another repository — "
+                "pick a different one."
+            )
+            self.query_one("#edit-source-name", Input).focus()
+            return
         self._draft.name = name or self._draft.name
         self._draft.include_sources = self.query_one("#include-sources-switch", Switch).value
         source = self._draft.to_source()
         source.dist_upgrade = self.query_one("#du-switch", Switch).value
-        source.gpg_key_url = self._gpg_key_url
-        source.suite_overrides = self._suite_overrides
+        source.gpg_key_url = key_url or None
+        source.suite_overrides = overrides
+        # Blank means "derive it from the URL", the same as leaving it out of
+        # mmw.toml — re-validated so that derivation actually runs.
+        source.label = self.query_one("#edit-source-label", Input).value.strip()
+        try:
+            source = config.SourceConfig.model_validate(source.model_dump())
+        except Exception as e:
+            self._refuse(f"✗ {e}")
+            return
         self.dismiss(source)
+
+    def _refuse(self, message: str) -> None:
+        """Say no where the press happened, and say it again as a toast."""
+        try:
+            self.query_one("#save-status", Label).update(f"[red]{_escape(message)}[/]")
+        except Exception:
+            pass
+        self.notify(message, severity="warning")

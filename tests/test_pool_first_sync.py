@@ -56,7 +56,7 @@ def test_pooled_packages_classified_and_reconciled(pool, mirror_dir):
 
     events = []
     summary = _sync(pool, mirror_dir, [pkg],
-                    [MetadataFile(url="u", repo_path="InRelease", content=b"rel")],
+                    [MetadataFile(url="u", repo_path="InRelease", content=b"rel", is_release=True)],
                     progress=lambda n, r: events.append((n, r.status)))
 
     assert summary.pooled == 1 and summary.ok
@@ -72,7 +72,7 @@ def test_pooled_packages_classified_and_reconciled(pool, mirror_dir):
 
 def test_release_blob_pooled_with_computed_checksum(pool, mirror_dir):
     rel_content = b"release-bytes"
-    _sync(pool, mirror_dir, [], [MetadataFile(url="u", repo_path="InRelease", content=rel_content)])
+    _sync(pool, mirror_dir, [], [MetadataFile(url="u", repo_path="InRelease", content=rel_content, is_release=True)])
     p = pool.resolve("m1", "InRelease")
     assert p is not None and p.read_bytes() == rel_content
 
@@ -81,7 +81,7 @@ def test_verified_metadata_pooled_and_deduped(pool, mirror_dir):
     data = b"shared-suite-index"
     sha = hashlib.sha256(data).hexdigest()
     mf = MetadataFile(url="u", repo_path="dists/bw/InRelease.sub", content=data, expected_sha256=sha)
-    rel = MetadataFile(url="u2", repo_path="dists/bw/InRelease", content=b"rel")
+    rel = MetadataFile(url="u2", repo_path="dists/bw/InRelease", content=b"rel", is_release=True)
 
     s1 = _sync(pool, mirror_dir, [], [mf, rel])
     assert s1.metadata_ok
@@ -91,7 +91,7 @@ def test_verified_metadata_pooled_and_deduped(pool, mirror_dir):
     s2 = _run(download_mirror(
         packages=[], metadata=[MetadataFile(url="u", repo_path="dists/bw/InRelease.sub",
                                             expected_sha256=sha),
-                               MetadataFile(url="u2", repo_path="dists/bw/InRelease", content=b"rel")],
+                               MetadataFile(url="u2", repo_path="dists/bw/InRelease", content=b"rel", is_release=True)],
         pool=pool, mirror_name="m2", max_connections=2,
     ))
     assert s2.metadata_ok
@@ -116,7 +116,7 @@ def test_stop_blocks_reconcile(pool, mirror_dir):
     content = b"x"
     _seed(pool, content, "a.deb")
     summary = _sync(pool, mirror_dir, [_pkg("a.deb", content)],
-                    [MetadataFile(url="u", repo_path="InRelease", content=b"rel")],
+                    [MetadataFile(url="u", repo_path="InRelease", content=b"rel", is_release=True)],
                     stop_event=stop)
     assert summary.stopped and not summary.metadata_ok
     assert pool.mirror_files(["m1"]) == []  # nothing reconciled
@@ -133,7 +133,7 @@ def test_failed_download_still_wanted(pool, mirror_dir):
     """A package listed upstream but not obtainable stays in refs (desired state)."""
     pkg = _pkg("gone.deb", b"unreachable")  # http://x/ is unfetchable in tests
     summary = _sync(pool, mirror_dir, [pkg],
-                    [MetadataFile(url="u", repo_path="InRelease", content=b"rel")])
+                    [MetadataFile(url="u", repo_path="InRelease", content=b"rel", is_release=True)])
     assert summary.failed == 1
     assert summary.metadata_ok  # metadata fine; the mirror is just incomplete
     assert pool.missing_for("m1") == [("pool/gone.deb", pkg.checksum)]
@@ -142,7 +142,7 @@ def test_failed_download_still_wanted(pool, mirror_dir):
 def test_superseded_refs_dropped_on_next_sync(pool, mirror_dir):
     v1 = _seed(pool, b"v1", "p_1.deb")
     v2 = _seed(pool, b"v2", "p_2.deb")
-    rel = [MetadataFile(url="u", repo_path="InRelease", content=b"rel")]
+    rel = [MetadataFile(url="u", repo_path="InRelease", content=b"rel", is_release=True)]
 
     _sync(pool, mirror_dir, [_pkg("p_1.deb", b"v1")], rel)
     _sync(pool, mirror_dir, [_pkg("p_2.deb", b"v2")], rel)  # upstream replaced v1
@@ -178,6 +178,6 @@ def test_no_tree_artifacts_anywhere(pool, mirror_dir):
     content = b"bytes"
     _seed(pool, content, "a.deb")
     _sync(pool, mirror_dir, [_pkg("a.deb", content)],
-          [MetadataFile(url="u", repo_path="dists/bw/InRelease", content=b"rel")])
+          [MetadataFile(url="u", repo_path="dists/bw/InRelease", content=b"rel", is_release=True)])
     children = {p.name for p in mirror_dir.iterdir()}
     assert children == {".pool"}

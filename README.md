@@ -1,262 +1,336 @@
 # mirror-mirror-on-the-wall (mmw)
 
-APT repository mirror for airgapped networks — **apt** (`dists/` hierarchy) and
-**apt-flat** (`Packages` at the root) repositories in one tool.
+An APT repository mirror built for **airgapped networks**: `apt` (`dists/`
+hierarchy) and `apt-flat` (`Packages` at the root) repositories, mirrored
+*exactly*.
 
-mmw mirrors upstream repositories *exactly*: metadata is copied byte-for-byte so
-upstream GPG signatures stay valid, and files land on disk in the same URL
-hierarchy as upstream. Point DNS for `archive.ubuntu.com` (etc.) at your mirror
-server and clients work with **zero client-side configuration**.
+Metadata is copied byte-for-byte, so upstream GPG signatures stay valid. Files
+are published in the same URL hierarchy as upstream, so a client that resolves
+`archive.ubuntu.com` to your mirror works with **no client-side configuration
+at all** — see [How clients find the mirror](#how-clients-find-the-mirror).
+(The distro archives' keys ship with the OS; a third-party repository's key —
+NVIDIA, Docker, a PPA — still has to be installed on each client, exactly as it
+would online.)
+
+> **Status: 0.9.0 / beta.** Everything below is exercised by an offline test
+> suite and most of it has run against real upstreams. The one path that has
+> **not** been round-tripped on real hardware is bundling across a physical
+> airgap — see [CHANGELOG.md](CHANGELOG.md).
 
 ## Highlights
 
 - **Content-addressable pool with hardlink dedup** — a package shared by ten
-  suites/components is stored once. SQLite (WAL) index; safe concurrent
-  sync + publish.
+  suites, components or architectures is stored once. SQLite (WAL) index;
+  publish and verify read safely alongside a running sync.
 - **Consistency or nothing** — every index file is verified in memory and a
   mirror's new index becomes visible in one atomic transaction. A CDN caught
   mid-update, a stopped sync, a failed download: the previous consistent
-  snapshot stays in force — and you're told so.
-- **Exact upstream layout** — published trees are
-  `{root}/{hostname}/{path}`, matching upstream URLs byte-for-byte. DNS
-  spoofing is the whole client story.
-- **Publish networks** — hardlink mirrors into per-network trees for separate
-  airgapped enclaves, with stale-file pruning, apt `by-hash` link maintenance,
-  GPG key bundles, and optional Ubuntu `do-release-upgrade` support.
-- **Two frontends, one engine** — full Textual TUI (parallel sync cards,
-  publish pipeline, setup wizard) and cron-safe headless commands with
-  meaningful exit codes.
+  snapshot stays in force — and you are told so.
+- **Exact upstream layout** — published trees are `{root}/{hostname}/{path}`,
+  matching upstream URLs byte-for-byte. Nothing is rewritten, so nothing
+  invalidates a signature.
+- **Bundling across an airgap** — one `.tar.zst` per network carrying only what
+  changed, plus a stdlib-only applier that runs on Python 3.6.
+- **Two frontends, one engine** — a full Textual TUI and cron-safe headless
+  commands with meaningful exit codes.
 - **Defensive by default** — upstream-supplied paths are validated against
-  directory traversal; unknown config keys are hard errors; TLS key material
-  lives outside the published tree.
+  directory traversal, unknown config keys are hard errors, and TLS private
+  keys live outside every published tree.
+
+## Requirements
+
+- Linux, Python **3.11+**, and [uv](https://docs.astral.sh/uv/).
+- The `zstd` binary on `PATH` (used for compressed metadata and for bundles).
+- A filesystem supporting **hardlinks**, with the pool and your publish roots
+  ideally on the same one — otherwise publishing copies instead of linking.
+- Disk. A lot of it: read [Sizing](#sizing) before you start.
 
 ## Install
 
-Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
-
 ```bash
-git clone <repo> && cd mirror-mirror-on-the-wall
+git clone https://github.com/samikool/mirror-mirror-on-the-wall.git
+cd mirror-mirror-on-the-wall
 uv sync
 uv run mmw --help
 ```
 
+Or install the CLI on its own, without a checkout:
+
+```bash
+uv tool install git+https://github.com/samikool/mirror-mirror-on-the-wall.git
+mmw --help
+```
+
+Everything below uses `uv run mmw`; drop the `uv run` if you installed it as a
+tool.
+
 ## Quickstart
 
 ```bash
-uv run mmw init        # wizard: probe a repository URL → suites/components/arches → settings
-uv run mmw sync        # TUI: parallel download with live progress
-uv run mmw publish     # TUI: define a network, dry-run, publish
+mkdir -p ~/mirrors && cd ~/mirrors          # mmw.toml is read from the CWD
+uv run mmw init                             # wizard: probe a URL, pick suites/components/arches
+uv run mmw manage --quiet                   # check what that expanded to
+uv run mmw dry-run                          # what would download, without downloading
+uv run mmw sync                             # TUI, live progress (--quiet for cron)
+uv run mmw verify                           # does the pool hold everything the indexes want?
+uv run mmw publish --dry-run                # read-only estimate
+uv run mmw publish --quiet                  # hardlink into the network root
 ```
 
-Headless equivalents for cron:
+Already have the repositories written down? Skip the wizard:
 
 ```bash
-uv run mmw sync --quiet         # exit 1 on any package OR metadata failure
-uv run mmw dry-run              # what would download, without downloading
-uv run mmw publish --quiet      # publish all networks
-uv run mmw publish --dry-run    # read-only publish estimate
-uv run mmw prune                # reclaim packages no mirror's index wants
+uv run mmw add -f /etc/apt/sources.list.d --keys-dir ./keyrings-from-that-box
 ```
 
-## Commands
+Next: **[Getting started](docs/getting-started.md)** walks the same path end to
+end, from zero to a client running `apt update` against your mirror.
 
-| Command | What it does |
-|---------|--------------|
-| `mmw init` | Setup wizard (launches manage if `mmw.toml` exists; `--force` to redo) |
-| `mmw manage` | TUI: sources list, detail panel, multi-select sync, add/remove, publish tab |
-| `mmw sync` | TUI sync; `--quiet` headless; `--dry-run` check without downloading |
-| `mmw dry-run` | Alias for `mmw sync --quiet --dry-run` |
-| `mmw publish` | Publish TUI; `--quiet`/`--dry-run` headless; `-n NAME` for one network |
-| `mmw add` | Headless import of an apt config file (`-f`, stdin, or `--url`); `--dry-run` prints the TOML without writing |
-| `mmw prune` | Delete pool content no configured mirror's index references |
-| `mmw bundle` | Headless bundle to a `.tar.zst`; `-n NAME` for one network, `--full` to send everything, `--out` to override `bundle_dir` |
-| `mmw certs` | Generate/refresh TLS key + CSR for `certs = true` networks; `-n NAME` for one network |
-| `mmw verify` | Read-only: check the pool holds every blob its mirrors' refs want; `-n NAME` for one network |
+## Documentation
 
-## Configuration (`mmw.toml`)
+| Document | What it covers |
+|----------|----------------|
+| [Getting started](docs/getting-started.md) | Zero → first sync → first published tree → served → verified from a real client |
+| [Airgapped operation](docs/airgap.md) | Bundle, transfer, `apply.py`, nginx, DNS, GPG import on the far side, troubleshooting |
+| [Configuration](docs/configuration.md) | Every `mmw.toml` key and default, generated from the models |
+| [CLI reference](docs/cli.md) | Every command and flag, generated from the CLI |
 
-Lives in the working directory. Unknown keys are **rejected at load** — typos
-fail loudly instead of being silently ignored.
+## How clients find the mirror
 
-```toml
-[settings]
-mirror_dir = "/data/repos"     # where everything lands
-max_connections = 10           # global download concurrency
+This is the single most load-bearing design decision in the tool, so it is
+worth stating plainly.
 
-# A source is a repository URI. Everything else is optional: name and label
-# are derived from the URL when absent, and an empty (or missing) suites /
-# components / arches list means "all of them", resolved by listing the
-# repository at sync time.
-[[sources]]
-url = "https://deb.debian.org/debian"
-suites = ["bookworm", "bookworm-updates"]
-components = ["main", "contrib"]
-# arches omitted — mirror every architecture this host serves
-# include_sources = true            # also mirror deb-src
-# gpg_key_url = "https://…"         # fetched to keys/{label}/ during sync
-# [[sources.suite_overrides]]       # different components for one suite
-# suite = "bookworm-updates"
-# components = ["main"]
+A published tree is laid out as:
 
-# Publish/bundle target — root and bundle_dir are independent optional
-# destinations; a network may have either, both, or neither.
-[[networks]]
-name = "lab"
-root = "/srv/lab"
-# bundle_dir = "/media/usb"  # destination for the Networks tab's Bundle button
-prune = true           # remove destination files no longer in the mirror
-# dist_upgrade = true  # Ubuntu do-release-upgrade support
-# certs = true         # manage a TLS key + CSR for this network
-
-  # What this network publishes, by dimension — never by mirror name. No
-  # [[networks.select]] at all means every mirrored repository; an empty
-  # dimension inside one means all of that dimension.
-  [[networks.select]]
-  source = "https://deb.debian.org/debian"
-  suites = ["bookworm"]
-  arches = ["amd64"]
-  # components = []    # omitted = all mirrored components
+```
+{network.root}/
+  archive.ubuntu.com/ubuntu/dists/noble/...
+  archive.ubuntu.com/ubuntu/pool/main/...
+  ports.ubuntu.com/ubuntu-ports/dists/noble/...
 ```
 
-### Architectures
+That is the upstream URL with the protocol stripped, and **nothing else
+changed**. A repository on a non-standard port becomes `{host}_{port}/`, so two
+repositories on one host cannot collide on disk.
 
-`arches` is a list — every entry becomes its own sync unit, and the arch is part
-of the mirror name (`debian-bookworm-main-arm64`), so arches never collide in
-the pool. An empty (or omitted) `arches` means "every architecture this
-repository serves", discovered by listing it at sync time — the wizard reports
-what that expanded to before anything downloads.
+**Why not rewrite paths into one tree?** Because a `Release` file is signed,
+and it names the paths of every index beneath it. `apt` fetches
+`dists/noble/InRelease`, checks the signature, and then fetches exactly the
+paths that file lists, checking each one's hash. Rewrite a path and you have to
+re-sign — with a key the clients do not trust, in a facility where you probably
+cannot get one signed. Keep the layout identical and the upstream signature
+keeps verifying, unmodified, forever. That is the whole trick: **the mirror is
+byte-identical, so the only thing that has to change is which IP the hostname
+resolves to.**
 
-Ubuntu splits its archive by arch: `archive.ubuntu.com` serves amd64 and i386,
-while `ports.ubuntu.com` serves everything else (arm64, armhf, ppc64el,
-riscv64, s390x) — including their `-security` suites — as two entirely
-separate repositories. Add both as sources to mirror every architecture; each
-is identified by its own URI and publishes to its own hostname tree. Debian
-and Kali serve every arch from one host and stay a single source.
+### Point DNS at the mirror
 
-Providers: `apt` (`dists/` hierarchy) and `apt-flat` (`Packages` at the root,
-suite `/`) — nothing else exists. The wizard's **Probe URL** / **Paste config**
-flow can probe any repository URL, fetch a sources.list or deb822 `.sources`
-file by URL, or parse pasted deb822 / one-line sources.list text.
+One host, quick test — `/etc/hosts` on the client:
 
-There is no built-in distro catalog. A source is a repository URI (host +
-path); `mmw` detects the apt shape and lists what that repository actually
-publishes — pasting a repository URL is a first-class path, not a fallback.
+```
+10.0.0.5   archive.ubuntu.com
+10.0.0.5   security.ubuntu.com
+10.0.0.5   changelogs.ubuntu.com
+```
 
-## Serving an airgapped network
+Site-wide with dnsmasq (`/etc/dnsmasq.d/mirror.conf`):
 
-1. **Sync** on a connected machine — this fills the pool only.
-2. **Publish** to a network root: every selected mirror is materialized at
-   `{root}/{hostname}/{upstream_path}` as hardlinks — publishing costs
-   directory entries, not disk space. Transfer the network root (or the whole
-   `mirror_dir` + republish) to the airgapped side.
-3. **Serve** with any web server. One nginx block covers every hostname:
+```
+address=/archive.ubuntu.com/10.0.0.5
+address=/security.ubuntu.com/10.0.0.5
+address=/ports.ubuntu.com/10.0.0.5
+address=/changelogs.ubuntu.com/10.0.0.5
+```
 
-   ```nginx
-   server {
-       listen 80;
-       root /srv/lab/$host;
-       autoindex on;
-   }
-   ```
+Site-wide with BIND — a "response policy zone" is cleaner than faking whole
+zones, but the blunt version is one zone file per hostname:
 
-4. **DNS** — point the upstream hostnames (`archive.ubuntu.com`,
-   `security.ubuntu.com`, …) at the mirror server. Clients need no changes.
-5. **GPG keys** are collected to `{root}/keys/{label}/`, each with an
-   `IMPORT.md` walkthrough for first-time import.
+```
+zone "archive.ubuntu.com" { type master; file "/etc/bind/db.mirror"; };
+```
 
-Notes for airgapped apt clients: Ubuntu/Debian `Release` files carry a
-`Valid-Until` date; once stale, use
-`Acquire::Check-Valid-Until "false"` (documented in the generated `IMPORT.md`).
-With `dist_upgrade = true`, the publish step also serves
-`changelogs.ubuntu.com` meta-release files and writes an `UPGRADE.md` listing
-detected LTS upgrade paths — `do-release-upgrade` works fully offline.
+```
+; /etc/bind/db.mirror
+$TTL 300
+@   IN SOA  ns.lab. root.lab. ( 1 3600 600 86400 300 )
+@   IN NS   ns.lab.
+@   IN A    10.0.0.5
+*   IN A    10.0.0.5
+```
 
-TLS: networks with `certs = true` get a 4096-bit key + CSR generated under
-`{mirror_dir}/certs/{network}/` (never inside the served tree), with a
-`CERTS.md` walking through signing on your CA and the matching nginx config.
-Headless `mmw publish --quiet` generates certs for a `certs = true` network
-too, after a clean publish — the same thing the TUI's Publish button does, so
-a cron-driven publish no longer needs a human at the keyboard to get TLS
-material. `mmw certs` runs the same step standalone, for a first cert or a
-refresh without a full publish.
+**Which hostnames do you need?** Exactly the directories in your published
+tree — `ls {network.root}` answers it, and the generated
+`{network.root}/nginx/mirror.conf` lists them in a comment. With
+`dist_upgrade = true`, the generated `UPGRADE.md` lists them too, derived from
+that network's own mirrors rather than from a hardcoded list.
 
-## Bundling — moving a network across an airgap
+### If you cannot spoof DNS
 
-Transferring a network by copying its published tree by hand doesn't scale
-past the first sync, and a second transfer a month later has no way to carry
-only what changed. `bundle` is the alternative: it packages a network into
-**one `.tar.zst` file** containing exactly what `publish` would have written
-— packages, indexes, GPG keys, nginx config — plus a manifest and a small
-applier script, and each re-bundle carries only the files that changed since
-the last one.
+Rewrite `sources.list` on each client to point at the mirror's own hostname,
+keeping the upstream path:
 
-There are two doors onto the same pipeline. Headless, for cron:
+```
+deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] \
+    http://mirror.lab/archive.ubuntu.com/ubuntu noble main universe
+```
+
+This works — the signed `Release` covers paths *relative* to the suite
+directory, not the host — but "zero client-side configuration" no longer
+applies: every client needs editing, and every client needs re-editing if you
+ever move the mirror.
+
+## Serving it
+
+`publish` writes the web server configuration for you. By default
+(`nginx = true`) it produces one file, `{network.root}/nginx/mirror.conf`,
+with a server block per hostname. One line hooks it up:
 
 ```bash
-uv run mmw bundle                     # bundle every network with a bundle_dir
-uv run mmw bundle -n lab              # one network by name
-uv run mmw bundle -n lab --full       # send everything, not just the delta
-uv run mmw bundle -n lab --out /media/usb   # write here instead of bundle_dir
+sudo ln -s /srv/lab/nginx/mirror.conf /etc/nginx/conf.d/mmw.conf   # or sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-A network with neither `--out` nor a configured `bundle_dir` is skipped with a
-message explaining why, rather than aborting the whole run — the same
-"keep processing the rest" behaviour `mmw publish` already has for a network
-with no `root`.
+Each server block has the correct `server_name` (the real upstream hostname,
+not the port-mangled directory name), the correct `root`, and `autoindex on`.
+A `dist_upgrade` network also gets one for `changelogs.ubuntu.com`, and every
+host serves the network's signing keys at `/mmw-keys/{label}/` — while a key
+fetched from a URL (`gpg_key_url`) is also published at that URL's own path,
+so a vendor's `curl … | gpg --dearmor` instructions work unchanged. Set
+`nginx = false` on the network if you maintain your own configuration.
 
-Or from `mmw manage`'s **Networks** tab, TUI-first:
+### HTTPS
 
-1. Give the network a **Bundle directory** in the network editor (a second,
-   independent destination alongside its publish root — a network can have
-   either, both, or neither).
-2. Press **Bundle**. A progress modal reports files sent and any deletions,
-   and writes `{network}-{timestamp}.tar.zst` plus a plain `apply.py` copy
-   next to it in the bundle directory.
-3. Copy both files to your transfer media and carry them across the airgap.
-
-On the airgapped side, no `mmw` install is required — `apply.py` is a single
-stdlib-only Python 3 script (Python 3.6+, so it works on older RHEL too). It
-needs the `zstd` binary on `PATH` and nothing else:
+Sources that say `https://` — most vendor repositories, and Ubuntu's
+release-upgrade check — need the mirror to answer on 443 with a certificate
+the client trusts, which in an airgap means one signed by your own CA. With
+`certs = true` on the network:
 
 ```bash
-python3 apply.py lab-20260906T143000Z.tar.zst --root /srv/www
-# 20260901T090000Z -> 20260906T143000Z
-# 12,481 applied  3,902 removed
+uv run mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key
 ```
 
-Run it again with each new bundle as it arrives — `apply.py` refuses to apply
-one out of order (it tracks the last-applied bundle in `.mmw-state` at
-`--root`), so a skipped transfer is caught rather than silently leaving files
-missing. `--dry-run` reports what would change without touching disk;
-`--verify` hashes every file the bundle's manifest describes against what's
-on disk afterward, so you can confirm a transfer landed intact.
+signs a certificate for every hostname the network serves, and from the next
+`publish` on, `mirror.conf` listens on 443 as well as 80. The private key stays
+in `{mirror_dir}/certs/`, outside every served tree. For a bundled network,
+`bundle_tls = true` carries the certificate and key across — see
+[docs/airgap.md](docs/airgap.md#https).
 
-Every bundle carries its own nginx configuration (`nginx/mirror.conf` plus one
-file per hostname under `nginx/sites/`) — `apply.py` fills in the destination
-path automatically, so serving the result is:
+## Recommended operational order
+
+```
+sync  →  verify  →  publish   (or bundle)
+```
+
+`verify` is the step people skip. Publish and bundle enumerate `refs ⋈
+packages` — a package the index wants but the pool does not hold is simply
+absent from both, with no error. The result applies cleanly, `apply.py --verify`
+passes, and the gap only surfaces as a 404 during `apt install` on the far side
+of an airgap. `mmw verify` is the read-only check that catches it while you can
+still fix it. (`publish` and `bundle` run it themselves too, but running it
+separately tells you *before* you start a multi-hour transfer.)
+
+Every headless command exits non-zero on failure, so cron is the intended
+frontend:
+
+```cron
+# m  h  dom mon dow   command
+  15 2   *   *   *    cd /srv/mirrors && uv run mmw sync --quiet
+  30 5   *   *   *    cd /srv/mirrors && uv run mmw verify && uv run mmw publish --quiet
+   0 6   *   *   0    cd /srv/mirrors && uv run mmw bundle -n lab
+   0 4   1   *   *    cd /srv/mirrors && uv run mmw prune
+```
+
+Failures go to stderr and successes to stdout, so a cron job that mails only
+stderr tells you what broke and nothing else. See
+[the CLI reference](docs/cli.md#exit-codes) for what each code means.
+
+## Sizing
+
+**Read this before leaving `suites` blank.** An empty `suites`, `components` or
+`arches` list means *everything upstream serves*, not "a sensible default", and
+`archive.ubuntu.com` publishes **55 suites**. A wizard run with everything
+ticked is a multi-terabyte instruction.
+
+Order-of-magnitude figures only — they drift constantly, and these are
+**estimates**, not measurements. Check `mmw dry-run` for the real number before
+committing disk:
+
+| What | Rough size |
+|------|-----------|
+| Ubuntu noble `main`, amd64, release pocket only | ~100 GB |
+| Ubuntu noble `main` + `universe`, amd64, release pocket only | ~1 TB |
+| …plus `-updates` and `-security` for that suite | add roughly 30–60% over a release cycle, and it keeps growing |
+| …plus a second architecture | add roughly 60–90% (arch-independent packages dedup, arch-specific ones do not) |
+| `ports.ubuntu.com` — all five non-x86 architectures | several TB for the same suite/component selection |
+| Debian bookworm `main`, amd64 | ~150 GB |
+| A vendor repository (Microsoft, NVIDIA, a PPA) | usually 1–50 GB |
+
+Multipliers compound, and they compound *multiplicatively*: suites × components
+× architectures. Two suites of main+universe on two architectures is not twice
+a terabyte, it is closer to six.
+
+What actually helps:
+
+- **Name your suites.** One release and its `-updates`/`-security` is almost
+  always what you want, not all 55.
+- **Name your architectures.** `arches = ["amd64"]` instead of blank.
+- **Use `suite_overrides`** to take `main` only on `-updates` while taking
+  everything on the base suite.
+- **Leave `include_sources` off** unless you genuinely need `deb-src` — source
+  packages roughly double a suite.
+- **Run `mmw dry-run` first.** It reports what "all" expanded to and what it
+  would fetch, without downloading a byte.
+- **Deduplication is real but it is not magic.** The pool stores each unique
+  blob once across every suite, component, architecture and network, and
+  publishing costs directory entries rather than bytes. It does not make a
+  second architecture's binaries free.
+
+`mmw prune` reclaims pool content no configured mirror's index references any
+more — superseded package versions are not kept forever.
+
+## Moving a mirror to the airgapped side
+
+**Bundling is the supported route.** `mmw bundle` writes one `.tar.zst` per
+network containing exactly what `publish` would have written, plus a manifest
+and a stdlib-only `apply.py` that runs on the far side with no `mmw` install
+(Python 3.6+, `zstd` on `PATH`). Each re-bundle carries only what changed since
+the last one, and `apply.py` refuses to apply bundles out of order.
 
 ```bash
-# after apply.py has written into /srv/www:
-ln -s /srv/www/nginx/mirror.conf /etc/nginx/conf.d/mmw-mirror.conf
-nginx -t && systemctl reload nginx
+uv run mmw bundle -n lab                    # delta since the last bundle
+uv run mmw bundle -n lab --full             # send everything
+# ...carry lab-20260906T143000Z.tar.zst across...
+tar -xf lab-20260906T143000Z.tar.zst .mmw/apply.py   # every bundle carries its own applier
+python3 .mmw/apply.py lab-20260906T143000Z.tar.zst --root /srv/www
 ```
 
-Then point DNS for each mirrored hostname (`archive.ubuntu.com`,
-`security.ubuntu.com`, …) at the serving machine, same as a live publish.
-TLS certificates are **never** included in a bundle — `certs = true`
-networks keep their key and CSR outside the published tree on the connected
-side, and that boundary holds across the airgap too; provision TLS on the far
-side separately if you need it.
+Use `apply.py` rather than plain `tar -x`: it stages each file and renames it
+into place, refuses a truncated archive, and records which bundle the tree is
+at, so the next delta applies. An interrupted plain extraction leaves a
+partial tree and no record of where it stopped.
+
+Full walkthrough, including the far side's nginx, DNS, GPG import and a
+troubleshooting table: **[docs/airgap.md](docs/airgap.md)**.
+
+If you copy a published tree by hand instead, **use `rsync -aH --delete`**. A
+published tree is entirely hardlinks into the pool — the same package appears
+once per suite, component and network that wants it, all pointing at one inode.
+`cp -a`, or `rsync` without `-H`, expands every one of those into a separate
+full copy, which can multiply the transfer several times over and fill the
+destination. `-H` preserves the links; `--delete` gives you the same
+stale-file removal that `prune = true` gives a real publish.
 
 ## How the pool works
 
-Sync stores everything — packages *and* repo metadata — once, content-addressed:
+Sync stores everything — packages *and* repository metadata — once,
+content-addressed:
 
 ```
 {mirror_dir}/
   .pool/packages/{xx}/{sha256}-{name}   ← the only copies (packages + indexes)
   .pool/mmw.db                          ← SQLite: blobs + per-mirror desired state
   keys/                                 ← collected GPG keys
+  certs/                                ← TLS material, never inside a served tree
 
 {network.root}/                         ← built by publish, the only tree
   deb.debian.org/debian/pool/...        ← hardlinks into the pool
@@ -264,32 +338,52 @@ Sync stores everything — packages *and* repo metadata — once, content-addres
 ```
 
 Syncing records *what each mirror's index wants* (refs) and fills the pool with
-*what you have* (blobs); the index flip is one atomic transaction, so a sync
+*what you have* (blobs). The index flip is one atomic transaction, so a sync
 interrupted at any point leaves the previous consistent snapshot in force.
-Publishing materializes exactly the selected mirrors as hardlinks (packages
-first, release files last — safe for live-served destinations). Re-syncing an
-unchanged mirror is a metadata fetch plus a database diff: seconds, no
-downloads, no link storms. `mmw prune` deletes pool content no configured
-mirror's index references anymore — superseded versions are reclaimed
-automatically. Publish and bundle only ever see refs the pool can also fill
-(`refs ⋈ packages`), so a blob lost between sync and publish drops silently out
-of what gets served — no error, just a package that 404s during `apt install`
-on the far side of an airgap. `mmw verify` is the read-only check that catches
-this ahead of time.
+Publishing materializes exactly the selected mirrors as hardlinks — packages
+first, release files last, which is safe for a destination being served live.
+Re-syncing an unchanged mirror is a metadata fetch plus a database diff:
+seconds, no downloads.
+
+There is deliberately **no browsable mirror tree** under `mirror_dir`. Use
+`mmw manage` for statistics; trees exist only at publish destinations.
+
+## Architectures, briefly
+
+`arches` is a list, and each entry becomes its own sync unit with the
+architecture in the mirror name (`ubuntu-archive-noble-main-arm64`), so
+architectures can never collide in the pool. An empty list means "every
+architecture this host actually serves", discovered by listing the repository
+at sync time.
+
+Ubuntu splits its archive by architecture: `archive.ubuntu.com` serves amd64
+and i386, `ports.ubuntu.com` serves arm64, armhf, ppc64el, riscv64 and s390x.
+Both ship a *byte-identical* `InRelease` advertising all seven, which is why
+mmw lists `binary-*` directories rather than trusting that field. Add both
+hosts as sources to mirror everything; each is its own repository, identified
+by its own URI. Debian serves every architecture from one host and stays a
+single source.
 
 ## Development
 
 ```bash
-uv run pytest              # offline test suite, no network
+uv sync
+uv run pytest -n auto            # offline suite, no network, ~30s parallel (~6 min serial)
 uv run ruff check src tests
 ```
 
-`design-notes.md` documents the architecture in depth (sync engine, publish
-pipeline, metadata-ordering invariants, threading model). Note for anyone
-poking around: `mirror/` in a working copy may be a **live multi-terabyte
-mirror tree** — don't point recursive tools at the repo root (pytest and ruff
-are already scoped).
+Note for anyone poking around: `mirror/` in a working copy may be a **live
+multi-terabyte mirror tree**. Do not point recursive tools at the repo root
+(pytest and ruff are already scoped away from it).
+
+`src/mmw/resources/apply.py` runs on the far side of the airgap and must stay
+stdlib-only and Python 3.6 compatible; `tests/test_apply_script.py` and CI
+enforce it.
+
+[docs/internals/design-notes.md](docs/internals/design-notes.md) is the
+architecture journal — the reasoning behind the pool model, the threading
+design and the invariants the tests defend.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

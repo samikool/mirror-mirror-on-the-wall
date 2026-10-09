@@ -1,4 +1,12 @@
+import hashlib
+import lzma
+
+import pytest
+
+from mmw.core import config
 from mmw.providers.apt import (
+    AptFlatProvider,
+    AptProvider,
     _parse_packages,
     _parse_packages_flat,
     _parse_release_files,
@@ -86,3 +94,177 @@ def test_parse_sources():
     assert pkgs[0].repo_path == "pool/main/h/hello/hello_2.10-3.dsc"
     assert pkgs[0].size == 2000
     assert pkgs[1].filename == "hello_2.10.orig.tar.gz"
+
+
+# ── fetch_all: one snapshot, one fetch ───────────────────────────────────────
+
+
+_PKG_SHA = "cccc3333" * 8
+
+
+def _index_bytes() -> bytes:
+    text = (
+        "Package: hello\nVersion: 1.0\nArchitecture: amd64\nSize: 10\n"
+        "Filename: pool/main/h/hello/hello_1.0_amd64.deb\n"
+        f"SHA256: {_PKG_SHA}\n\n"
+    )
+    return lzma.compress(text.encode())
+
+
+class _Resp:
+    def __init__(self, status: int, content: bytes = b""):
+        self.status_code = status
+        self.content = content
+
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8", "replace")
+
+    @property
+    def is_success(self) -> bool:
+        return 200 <= self.status_code < 300
+
+
+class _Repo:
+    """An apt repository whose canonical Packages.xz has ALREADY moved on.
+
+    This is the CDN-republish race in its sharpest form: the Release we read
+    names index A, and the canonical URL is already serving index B. A provider
+    that enumerates packages from the canonical URL builds a package list for a
+    snapshot its own published index does not describe — so the index it
+    publishes (verified against the Release) lists packages that were never
+    enumerated, never downloaded, and therefore 404 for every client.
+    """
+
+    def __init__(self):
+        self.named = _index_bytes()                 # what the Release points at
+        self.moved_on = lzma.compress(
+            b"Package: newer\nVersion: 2.0\nArchitecture: amd64\nSize: 10\n"
+            b"Filename: pool/main/n/newer/newer_2.0_amd64.deb\n"
+            b"SHA256: " + (b"dddd4444" * 8) + b"\n\n"
+        )
+        self.sha = hashlib.sha256(self.named).hexdigest()
+        self.calls: list[str] = []
+
+    def release_text(self) -> str:
+        return (
+            "Origin: Test\nSuite: noble\nComponents: main\n"
+            "Architectures: amd64\nSHA256:\n"
+            f" {self.sha} {len(self.named)} main/binary-amd64/Packages.xz\n"
+        )
+
+    def get(self, url, **kw):
+        self.calls.append(url)
+        if url.endswith("/dists/noble/InRelease"):
+            return _Resp(200, self.release_text().encode())
+        if url.endswith("/dists/noble/Release") or url.endswith("/dists/noble/Release.gpg"):
+            return _Resp(404)
+        if f"/by-hash/SHA256/{self.sha}" in url:
+            return _Resp(200, self.named)
+        if url.endswith("main/binary-amd64/Packages.xz"):
+            return _Resp(200, self.moved_on)        # upstream has republished
+        return _Resp(404)
+
+
+def _mirror():
+    return config.MirrorConfig(
+        name="m", provider="apt", label="t", arch="amd64",
+        suite="noble", component="main",
+        source_url="https://example.test/ubuntu",
+    )
+
+
+def test_fetch_all_enumerates_the_index_the_release_names():
+    """Packages and metadata must come from ONE snapshot."""
+    repo = _Repo()
+    packages, metadata = AptProvider().fetch_all(_mirror(), repo)
+
+    assert [p.name for p in packages] == ["hello"], (
+        "enumerated the canonical URL's newer index instead of the one the "
+        "Release file actually names"
+    )
+    assert packages[0].checksum == _PKG_SHA
+
+
+def test_fetch_all_fetches_the_index_once_and_reuses_it():
+    """The largest file in a mirror's metadata was downloaded twice per sync:
+    once to enumerate packages, once to pool it."""
+    repo = _Repo()
+    _, metadata = AptProvider().fetch_all(_mirror(), repo)
+
+    index_fetches = [u for u in repo.calls if "Packages" in u or "by-hash" in u]
+    assert len(index_fetches) == 1, f"index fetched {len(index_fetches)}x: {index_fetches}"
+
+    pkg_meta = [m for m in metadata if m.repo_path.endswith("Packages.xz")]
+    assert len(pkg_meta) == 1
+    assert pkg_meta[0].content is not None, (
+        "the bytes were fetched and thrown away — the metadata phase will "
+        "fetch them all over again"
+    )
+    assert hashlib.sha256(pkg_meta[0].content).hexdigest() == pkg_meta[0].expected_sha256
+
+
+def test_fetch_all_still_reports_an_unreadable_release():
+    class _Dead:
+        def get(self, url, **kw):
+            return _Resp(503)
+
+    with pytest.raises(RuntimeError, match="no usable Release file"):
+        AptProvider().fetch_all(_mirror(), _Dead())
+
+
+# ── flat repositories: same contract ─────────────────────────────────────────
+
+
+_FLAT_TEXT = (
+    b"Package: cuda\nVersion: 12\nArchitecture: amd64\nSize: 10\n"
+    b"Filename: ./cuda_12_amd64.deb\nSHA256: " + (b"eeee5555" * 8) + b"\n\n"
+)
+
+
+class _FlatRepo:
+    """A flat repo that answers HEAD, like most do."""
+
+    def __init__(self, head_ok=True):
+        self.body = lzma.compress(_FLAT_TEXT)
+        self.head_ok = head_ok
+        self.gets: list[str] = []
+
+    def head(self, url, **kw):
+        if not self.head_ok:
+            return _Resp(405)
+        return _Resp(200) if url.endswith("Packages.xz") else _Resp(404)
+
+    def get(self, url, **kw):
+        self.gets.append(url)
+        return _Resp(200, self.body) if url.endswith("Packages.xz") else _Resp(404)
+
+
+def _flat_mirror():
+    return config.MirrorConfig(
+        name="f", provider="apt-flat", label="t", arch="amd64",
+        source_url="https://vendor.test/deb/amd64",
+    )
+
+
+def test_flat_fetch_all_reuses_the_index_it_fetched():
+    """The index is GET once by the provider and then handed on, rather than
+    fetched again by the metadata phase. The GET count here guards the
+    provider's own half; `content is not None` is what stops the second fetch
+    happening later in `download_mirror`."""
+    repo = _FlatRepo()
+    packages, metadata = AptFlatProvider().fetch_all(_flat_mirror(), repo)
+
+    assert [p.name for p in packages] == ["cuda"]
+    assert len(repo.gets) == 1, f"index fetched {len(repo.gets)}x: {repo.gets}"
+    idx = [m for m in metadata if m.repo_path == "Packages.xz"]
+    assert idx and idx[0].content is not None
+
+
+def test_flat_fetch_all_still_works_when_head_is_refused():
+    """Some CDNs answer 405 to HEAD. `fetch_metadata` HEADs while
+    `fetch_packages` GETs, so keying enumeration off the HEAD result alone
+    would turn a repository that works today into a hard failure."""
+    repo = _FlatRepo(head_ok=False)
+    packages, _ = AptFlatProvider().fetch_all(_flat_mirror(), repo)
+    assert [p.name for p in packages] == ["cuda"]

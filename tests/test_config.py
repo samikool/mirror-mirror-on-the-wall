@@ -184,3 +184,174 @@ def test_full_network_config_round_trip(tmp_path):
     assert got.certs is True
     assert got.nginx is False
     assert got.bundle_compress is False
+
+
+# ── merge must never narrow: empty means all on every dimension ──────────────
+
+def test_merge_never_narrows_open_suites_or_components():
+    """`_union` where `_union_or_all` belonged, on two dimensions out of three.
+
+    A repository mirroring *everything* (suites/components/arches all open)
+    merged with an import naming `jammy`/`main` came back as
+    `suites=['jammy'] components=['main']` — an import silently narrowed a
+    mirror from the whole archive to one suite of one component. Arches were
+    already right, which is what made it look fine.
+    """
+    existing = [config.SourceConfig(url="http://archive.ubuntu.com/ubuntu")]
+    incoming = [config.SourceConfig(
+        url="http://archive.ubuntu.com/ubuntu",
+        suites=["jammy"], components=["main"], arches=["amd64"],
+    )]
+    merged, added, changed = config.merge_sources(existing, incoming)
+    assert added == 0 and len(merged) == 1
+    assert merged[0].suites == [], "an import must never narrow 'all suites'"
+    assert merged[0].components == [], "nor 'all components'"
+    assert merged[0].arches == []
+
+
+def test_merge_the_other_way_round_is_also_open():
+    """The open side may be the incoming one — a bulk import of a whole
+    sources.list.d commonly leaves dimensions open."""
+    existing = [config.SourceConfig(
+        url="http://archive.ubuntu.com/ubuntu", suites=["jammy"], components=["main"])]
+    incoming = [config.SourceConfig(url="http://archive.ubuntu.com/ubuntu")]
+    merged, _, _ = config.merge_sources(existing, incoming)
+    assert merged[0].suites == [] and merged[0].components == []
+    assert merged[0].suite_overrides == []
+
+
+def test_merge_with_open_suites_still_unions_stated_components():
+    """"All suites" does not mean "all components" — only an empty component
+    list does. Two explicit component lists still union."""
+    existing = [config.SourceConfig(
+        url="http://archive.ubuntu.com/ubuntu", components=["main"])]
+    incoming = [config.SourceConfig(
+        url="http://archive.ubuntu.com/ubuntu", components=["universe"])]
+    merged, _, _ = config.merge_sources(existing, incoming)
+    assert merged[0].suites == []
+    assert merged[0].components == ["main", "universe"]
+
+
+def test_merge_keeps_per_suite_merging_when_both_sides_state_suites():
+    existing = [config.SourceConfig(
+        url="http://archive.ubuntu.com/ubuntu",
+        suites=["jammy"], components=["main"])]
+    incoming = [config.SourceConfig(
+        url="http://archive.ubuntu.com/ubuntu",
+        suites=["noble"], components=["main", "universe"])]
+    merged, _, _ = config.merge_sources(existing, incoming)
+    assert merged[0].suites == ["jammy", "noble"]
+    assert merged[0].components == ["main"]
+    assert [(o.suite, o.components) for o in merged[0].suite_overrides] == [
+        ("noble", ["main", "universe"])
+    ]
+
+
+def test_merge_carries_dist_upgrade_across():
+    existing = [config.SourceConfig(url="http://archive.ubuntu.com/ubuntu")]
+    incoming = [config.SourceConfig(
+        url="http://archive.ubuntu.com/ubuntu", dist_upgrade=True)]
+    merged, _, _ = config.merge_sources(existing, incoming)
+    assert merged[0].dist_upgrade is True
+
+
+def test_merge_refuses_a_provider_mismatch():
+    """One URI is one repository — it cannot be both flat and dists/-shaped."""
+    existing = [config.SourceConfig(url="http://x.example/repo", provider="apt")]
+    incoming = [config.SourceConfig(url="http://x.example/repo", provider="apt-flat")]
+    with pytest.raises(ValueError, match="apt-flat"):
+        config.merge_sources(existing, incoming)
+
+
+# ── save() must never write a file load() rejects ────────────────────────────
+
+def test_save_refuses_to_write_a_config_that_cannot_be_loaded(tmp_path):
+    """pydantic does not re-validate on assignment, so any in-place edit could
+    produce a file that saves fine and then locks the user out of every
+    command."""
+    cfg = _sample_config()
+    cfg.sources[1].name = cfg.sources[0].name      # duplicate source name
+    with pytest.raises(ValueError, match="unloadable"):
+        config.save(cfg, tmp_path)
+    assert not config.config_path(tmp_path).exists(), "nothing may reach disk"
+
+
+def test_save_refuses_duplicate_network_names(tmp_path):
+    cfg = _sample_config()
+    cfg.networks.append(cfg.networks[0].model_copy(deep=True))
+    with pytest.raises(ValueError, match="unloadable"):
+        config.save(cfg, tmp_path)
+
+
+def test_save_still_writes_a_legitimate_config(tmp_path):
+    cfg = _sample_config()
+    config.save(cfg, tmp_path)
+    assert config.load(tmp_path) == cfg
+
+
+# ── uniqueness: networks and repository identities too ───────────────────────
+
+def test_two_networks_of_one_name_are_rejected():
+    """They share `certs/{name}/` and one bundle ledger, and `mmw publish -n`
+    silently picks the first."""
+    with pytest.raises(Exception, match="duplicate network name"):
+        config.Config(
+            settings=config.Settings(mirror_dir=Path("/data")),
+            networks=[config.NetworkConfig(name="lab"), config.NetworkConfig(name="lab")],
+        )
+
+
+def test_two_sources_of_one_identity_are_rejected():
+    with pytest.raises(Exception, match="duplicate source URI"):
+        config.Config(
+            settings=config.Settings(mirror_dir=Path("/data")),
+            sources=[
+                config.SourceConfig(name="a", url="http://archive.ubuntu.com/ubuntu"),
+                config.SourceConfig(name="b", url="HTTP://Archive.Ubuntu.com/ubuntu/"),
+            ],
+        )
+
+
+# ── normalize_url folds default ports ────────────────────────────────────────
+
+def test_default_ports_are_not_an_identity():
+    n = config.normalize_url
+    assert n("http://host:80/debian") == n("http://host/debian")
+    assert n("https://host:443/") == n("https://host")
+    assert n("HTTP://Host:80/Debian/") == "http://host/Debian"
+
+
+def test_a_non_default_port_is_still_an_identity():
+    n = config.normalize_url
+    assert n("http://host:8080/debian") != n("http://host/debian")
+    assert n("http://host:443/debian") != n("https://host:443/debian")
+
+
+# ── provider is a closed vocabulary ──────────────────────────────────────────
+
+def test_a_misspelled_provider_is_a_load_error(tmp_path):
+    """`apt_flat` loaded clean, expanded to zero mirrors, and `mmw sync
+    --quiet` exited 0 having mirrored nothing."""
+    (tmp_path / "mmw.toml").write_text(
+        '[settings]\nmirror_dir = "/data"\n\n'
+        '[[sources]]\nurl = "http://x.example/repo"\nprovider = "apt_flat"\n'
+    )
+    with pytest.raises(Exception, match="provider"):
+        config.load(tmp_path)
+
+
+# ── a network name is a directory name ───────────────────────────────────────
+
+def test_a_network_name_cannot_escape_its_directory():
+    with pytest.raises(Exception, match="invalid network name"):
+        config.NetworkConfig(name="../../../tmp/pwn")
+
+
+def test_a_network_name_cannot_be_dot_dot():
+    with pytest.raises(Exception, match="invalid network name"):
+        config.NetworkConfig(name="..")
+
+
+def test_ordinary_network_names_still_validate():
+    for name in ("lab", "dgx-site", "lab_2", "site.one", "A1"):
+        assert config.NetworkConfig(name=name).name == name

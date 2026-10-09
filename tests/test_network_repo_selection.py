@@ -299,7 +299,7 @@ def test_certs_button_exists_and_is_wired(tmp_path):
     asyncio.run(scenario())
 
 
-def test_edit_persists_every_networkconfig_field_except_name():
+def test_edit_persists_every_networkconfig_field():
     """The edit path copies fields from the dismissed NetworkConfig onto the
     live one by iterating the model, not a hand-written list.
 
@@ -317,8 +317,10 @@ def test_edit_persists_every_networkconfig_field_except_name():
     assert "config.NetworkConfig.model_fields" in src, (
         "edit_network must derive the copied field list from the model"
     )
-    # And the exclusion is deliberate and singular.
-    assert 'field != "name"' in src
+    # Every field, the name included: renaming is an edit like any other
+    # (its certs and bundle ledger move with it — see rename_network_state).
+    assert 'field != "name"' not in src
+    assert "rename_network_state" in src
 
 
 def test_add_network_refuses_clearly_when_there_are_no_mirrors_yet():
@@ -355,3 +357,87 @@ def test_add_network_refuses_clearly_when_there_are_no_mirrors_yet():
     msg, severity = notes[0]
     assert "sync" in msg.lower()
     assert severity == "warning"
+
+
+# --- every NetworkConfig field is editable: name and bundle_tls -------------
+
+def _edit_network(net, actions, existing_names=None):
+    from textual.widgets import Button
+    holder = {}
+
+    async def scenario():
+        app = _host_app(EditNetworkScreen(net, _mirrors(), existing_names=existing_names))
+        async with app.run_test(size=(120, 50)) as pilot:
+            await _settle(pilot)
+            actions(app.screen)
+            await _settle(pilot)
+            app.screen.query_one("#btn-save", Button).press()
+            await _settle(pilot)
+        holder["result"] = app.result
+
+    _run(scenario)
+    return holder["result"]
+
+
+def test_network_can_be_renamed():
+    from textual.widgets import Input
+    net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
+    result = _edit_network(net, lambda s: setattr(
+        s.query_one("#inp-net-name", Input), "value", "oak"))
+    assert result.name == "oak"
+
+
+def test_rename_onto_another_network_is_refused():
+    from textual.widgets import Input
+    net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
+    result = _edit_network(net, lambda s: setattr(
+        s.query_one("#inp-net-name", Input), "value", "oak"), existing_names={"lab", "oak"})
+    assert result is None
+
+
+def test_rename_to_an_unsafe_name_is_refused():
+    from textual.widgets import Input
+    net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
+    assert _edit_network(net, lambda s: setattr(
+        s.query_one("#inp-net-name", Input), "value", "../x")) is None
+
+
+def test_bundle_tls_switch_is_saved():
+    from textual.widgets import Switch
+
+    def act(screen):
+        screen.query_one("#certs-switch", Switch).value = True
+        screen.query_one("#bundle-tls-switch", Switch).value = True
+    net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
+    result = _edit_network(net, act)
+    assert result.certs and result.bundle_tls
+
+
+def test_bundle_tls_without_certs_is_refused():
+    from textual.widgets import Switch
+
+    def act(screen):
+        screen.query_one("#certs-switch", Switch).value = False
+        screen.query_one("#bundle-tls-switch", Switch).value = True
+    net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
+    assert _edit_network(net, act) is None
+
+
+def test_rename_moves_certs_and_ledger(tmp_path):
+    for kind in ("certs", "bundles"):
+        (tmp_path / kind / "lab").mkdir(parents=True)
+        (tmp_path / kind / "lab" / "marker").write_text(kind)
+    assert config.rename_network_state(tmp_path, "lab", "oak") == []
+    assert (tmp_path / "certs" / "oak" / "marker").read_text() == "certs"
+    assert (tmp_path / "bundles" / "oak" / "marker").read_text() == "bundles"
+    assert not (tmp_path / "certs" / "lab").exists()
+
+
+def test_rename_never_overwrites_existing_state(tmp_path):
+    for name in ("lab", "oak"):
+        (tmp_path / "certs" / name).mkdir(parents=True)
+        (tmp_path / "certs" / name / "mirror.key").write_text(name)
+    problems = config.rename_network_state(tmp_path, "lab", "oak")
+    assert problems and "already exists" in problems[0]
+    assert (tmp_path / "certs" / "oak" / "mirror.key").read_text() == "oak"
+    assert (tmp_path / "certs" / "lab" / "mirror.key").read_text() == "lab"

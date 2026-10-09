@@ -1,9 +1,11 @@
 import os
+import re
 import tomllib
 import tomli_w
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 CONFIG_FILENAME = "mmw.toml"
 
@@ -19,6 +21,10 @@ class _StrictModel(BaseModel):
 # live mirror, where every package under .../ubuntu2404/sbsa is `_arm64.deb`.
 _ARCH_ALIASES = {"sbsa": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd_64": "amd64"}
 
+# A network name becomes a directory name (`certs/{name}/`, the bundle
+# ledger) and a Textual widget id, so it is a path segment, not free text.
+NETWORK_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+
 KNOWN_ARCHES = frozenset({
     "amd64", "arm64", "armhf", "armel", "ppc64el", "mipsel", "mips64el",
     "mips", "powerpc", "hppa", "m68k", "sh4", "x32", "i386", "riscv64",
@@ -27,18 +33,27 @@ KNOWN_ARCHES = frozenset({
 })
 
 
+# A port that equals its scheme's default is not a distinction — `:80` is what
+# `http://` already means. Two entries spelling one repository differently must
+# not become two identities, two sync units and two published trees.
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ftp": 21}
+
+
 def normalize_url(url: str) -> str:
     """Canonical form of a repository URI — the identity of a source.
 
-    Trailing slashes and case in the host are not distinctions, so
-    `HTTP://Archive.Ubuntu.com/ubuntu/` and `http://archive.ubuntu.com/ubuntu`
-    are the same repository.
+    Trailing slashes, case in the host and a default port are not
+    distinctions, so `HTTP://Archive.Ubuntu.com:80/ubuntu/` and
+    `http://archive.ubuntu.com/ubuntu` are the same repository. The *path* is
+    left exactly as written — a webserver may well serve `/Ubuntu` and
+    `/ubuntu` as different trees.
     """
     parsed = urlparse(url.strip())
     host = (parsed.hostname or "").lower()
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
     scheme = (parsed.scheme or "http").lower()
+    port = parsed.port
+    if port and port != _DEFAULT_PORTS.get(scheme):
+        host = f"{host}:{port}"
     path = parsed.path.rstrip("/")
     return f"{scheme}://{host}{path}"
 
@@ -161,9 +176,15 @@ def derive_name(url: str, taken: set[str] | None = None,
     return name
 
 
+Provider = Literal["apt", "apt-flat"]
+"""The providers that exist. A free string let `provider = "apt_flat"` —
+an underscore where the code wants a hyphen — load clean, expand to zero
+mirrors, and exit 0 having mirrored nothing."""
+
+
 class MirrorConfig(_StrictModel):
     name: str
-    provider: str       # "apt" or "apt-flat"
+    provider: Provider
     source_url: str     # this mirror's own URL (repository root for apt)
     source: str = ""    # normalized repository URI this mirror belongs to
     label: str = ""     # keys/{label}/ grouping only — never identity
@@ -200,7 +221,7 @@ class SourceConfig(_StrictModel):
     the file you hand-write (or paste) can be just a URL plus what you want.
     """
     url: str                          # repository URI (host + path) — the identity
-    provider: str = "apt"             # "apt" or "apt-flat"
+    provider: Provider = "apt"
     name: str = ""                    # derived from url when empty
     label: str = ""                   # derived from url when empty; keys/{label}/
     arches: list[str] = []            # one sync unit per arch
@@ -383,6 +404,31 @@ class NetworkConfig(_StrictModel):
     certs: bool = False       # manage TLS key/CSR for this network
     nginx: bool = True        # generate conf.d-style nginx site files
     bundle_compress: bool = True  # zstd-compress the bundle tarball
+    bundle_tls: bool = False  # carry the signed cert AND private key in bundles
+
+    @model_validator(mode="after")
+    def _bundle_tls_needs_certs(self):
+        """`bundle_tls` ships what `certs` manages; without `certs` there is
+        never a key or certificate to ship, and the bundle would refuse."""
+        if self.bundle_tls and not self.certs:
+            raise ValueError(
+                f"network {self.name!r}: bundle_tls = true requires certs = true"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _name_is_a_safe_path_segment(self):
+        """A network's name is interpolated straight into filesystem paths —
+        `{mirror_dir}/certs/{name}/`, the bundle ledger directory, a Textual
+        widget id. `name = "../../../tmp/pwn"` escaped every one of them, and a
+        name with a space or a slash breaks the widget id instead. One rule,
+        checked on the model, so every consumer gets it."""
+        if not NETWORK_NAME_RE.fullmatch(self.name or "") or self.name in (".", ".."):
+            raise ValueError(
+                f"invalid network name {self.name!r}: use only letters, digits, "
+                "'.', '_' and '-' — the name is used as a directory name"
+            )
+        return self
 
 
 class Config(_StrictModel):
@@ -401,12 +447,24 @@ class Config(_StrictModel):
 
     @model_validator(mode="after")
     def _names_must_be_unique(self):
-        """Two mirrors sharing a name share a `refs` mirror_name — the second
-        sync's reconcile would silently delete the first one's index.  Fail at
-        load time instead."""
+        """Two things sharing a name share the state filed under it. Fail at
+        load time rather than let one silently stand in for the other.
+
+        - **mirror**: two mirrors sharing a name share a `refs` mirror_name, so
+          the second sync's reconcile deletes the first one's index.
+        - **source**: the name is the handle every screen and message uses.
+        - **network**: two networks called `lab` share `certs/lab/` and one
+          bundle ledger, and `mmw publish -n lab` silently picks the first.
+        - **source URI**: identity is the URI, so two entries normalizing to one
+          identity are one repository written twice — synced twice, and
+          `merge_sources()` (which keys on identity) can only ever see one of
+          them, so an import quietly updates one and leaves the other stale.
+        """
         for label, names in (
-            ("source", [s.name for s in self.sources]),
-            ("mirror", [m.name for m in self.mirrors]),
+            ("source name", [s.name for s in self.sources]),
+            ("network name", [n.name for n in self.networks]),
+            ("mirror name", [m.name for m in self.mirrors]),
+            ("source URI", [s.identity for s in self.sources]),
         ):
             seen, dupes = set(), []
             for n in names:
@@ -414,7 +472,7 @@ class Config(_StrictModel):
                     dupes.append(n)
                 seen.add(n)
             if dupes:
-                raise ValueError(f"duplicate {label} name(s): {', '.join(sorted(dupes))}")
+                raise ValueError(f"duplicate {label}(s): {', '.join(sorted(dupes))}")
         return self
 
 
@@ -489,15 +547,41 @@ def merge_sources(
             added += 1
             continue
 
+        if target.provider != src.provider:
+            # Same URI, two shapes: one entry says `dists/` and the other says
+            # "this directory *is* the repository". Merging would pick one at
+            # random and mirror the wrong thing; they cannot both be kept
+            # either, because identity is the URI. Say so.
+            raise ValueError(
+                f"{src.identity} is configured as {target.provider!r} but the "
+                f"import says {src.provider!r} — one URI is one repository, so "
+                "these cannot both be right"
+            )
+
         before = target.model_dump()
 
         target.arches = _union_or_all(target.arches, src.arches)
         target.include_sources = target.include_sources or src.include_sources
+        target.dist_upgrade = target.dist_upgrade or src.dist_upgrade
         target.gpg_key_url = target.gpg_key_url or src.gpg_key_url
         target.gpg_key = target.gpg_key or src.gpg_key
         target.gpg_key_name = target.gpg_key_name or src.gpg_key_name
 
-        if target.suites or src.suites:
+        if not target.suites or not src.suites:
+            # **Empty means all, on suites too.** A plain `_union` here made an
+            # import naming `jammy` *narrow* a repository that was mirroring
+            # every suite — the exact failure `_union_or_all` exists to
+            # prevent, and it was doing it to two dimensions out of three.
+            #
+            # With the suites open there is no per-suite component map to
+            # build: `comps_by_suite` is seeded from `target.suites`, so an
+            # empty one loses the "all components" fact entirely. Components
+            # fall back to their source-level union (still empty-means-all),
+            # and per-suite overrides are meaningless without a suite list.
+            target.components = _union_or_all(target.components, src.components)
+            target.suites = []
+            target.suite_overrides = []
+        else:
             # Merge per suite so an existing suite never inherits components the
             # user picked for a different one.
             comps_by_suite = {
@@ -582,6 +666,31 @@ def source_to_dict(s: SourceConfig) -> dict:
     return d
 
 
+def rename_network_state(mirror_dir: Path, old: str, new: str) -> list[str]:
+    """Move what is filed under a network's name — its TLS key and cert
+    (`certs/{name}/`) and its bundle ledger (`bundles/{name}/`) — to the new
+    name. Without this a rename silently starts over: a fresh private key
+    that no signed cert matches, and a ledger with no history, so the next
+    bundle is a full one the far side refuses as out of order.
+
+    Never overwrites: a directory already at the new name is left alone and
+    reported. Returns one line per thing it could not do.
+    """
+    problems: list[str] = []
+    for kind in ("certs", "bundles"):
+        src, dst = mirror_dir / kind / old, mirror_dir / kind / new
+        if not src.exists():
+            continue
+        if dst.exists():
+            problems.append(f"{dst} already exists — {src} was left where it is")
+            continue
+        try:
+            src.rename(dst)
+        except OSError as e:
+            problems.append(f"could not move {src} to {dst}: {e}")
+    return problems
+
+
 def save(cfg: Config, directory: Path = Path(".")) -> Path:
     path = config_path(directory)
 
@@ -616,6 +725,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
             **({"bundle_compress": False} if not n.bundle_compress else {}),
+            **({"bundle_tls": True} if n.bundle_tls else {}),
         }
         for n in cfg.networks
     ]
@@ -630,6 +740,23 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
         **({"sources": sources_data} if sources_data else {}),
         **({"networks": networks_data} if networks_data else {}),
     }
+
+    # **Never write a file `load()` will reject.** pydantic does not
+    # re-validate on assignment (`validate_assignment` is off, deliberately —
+    # the TUI edits models in place), so any attribute the TUI or a command
+    # sets could produce a config that saves fine and then locks the user out
+    # of *every* command, with nothing but a ValidationError to explain it.
+    # The check is run against `data` — exactly the dict `load()` will hand to
+    # `Config.model_validate` — so it catches serialization bugs too, not just
+    # model-level ones (a `root` that round-tripped as the string "None" is
+    # precisely how this class of bug last showed up).
+    try:
+        Config.model_validate(data)
+    except ValidationError as e:
+        raise ValueError(
+            f"refusing to write an unloadable {CONFIG_FILENAME}: {e}"
+        ) from e
+
     with open(path, "wb") as f:
         tomli_w.dump(data, f)
     return path

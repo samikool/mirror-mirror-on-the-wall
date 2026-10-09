@@ -32,18 +32,39 @@ def test_unknown_network_returns_1(cfg_dir, monkeypatch):
     assert code == 1
 
 
-def test_network_with_no_bundle_dir_is_skipped_not_crashed(cfg_dir, monkeypatch, capsys):
+def test_network_with_no_bundle_dir_is_skipped_when_iterating_all(cfg_dir, monkeypatch, capsys):
+    """Iterating every network and meeting one with no bundle destination is
+    not a failure — a publish-only network in a `mmw bundle` run is a perfectly
+    normal config, and failing on it would make a nightly bundle exit 1 forever
+    while doing exactly the right thing. `mmw publish` applies the identical
+    rule to a network with no `root`; the two used to disagree, each claiming
+    parity with the other."""
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg(config.NetworkConfig(name="lab")))
     called = []
     monkeypatch.setattr(bundle_cmd, "bundle_network", lambda *a, **k: called.append(1))
 
     code = bundle_cmd.run(cfg_dir)
 
-    assert code == 1
+    assert code == 0
     assert not called
     out = capsys.readouterr().out
     assert "lab" in out
     assert "bundle_dir" in out or "--out" in out
+
+
+def test_naming_a_network_with_no_bundle_dir_is_an_error(cfg_dir, monkeypatch, capsys):
+    """Asking for one network by name and getting nothing done IS a failure:
+    you asked for something this network cannot do. The bare-iteration case
+    above is the one that must stay quiet."""
+    monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg(config.NetworkConfig(name="lab")))
+    called = []
+    monkeypatch.setattr(bundle_cmd, "bundle_network", lambda *a, **k: called.append(1))
+
+    code = bundle_cmd.run(cfg_dir, network="lab")
+
+    assert code == 1
+    assert not called
+    assert "lab" in capsys.readouterr().err
 
 
 def test_second_network_still_bundles_after_first_is_skipped(cfg_dir, monkeypatch, capsys):
@@ -66,7 +87,7 @@ def test_second_network_still_bundles_after_first_is_skipped(cfg_dir, monkeypatc
 
     code = bundle_cmd.run(cfg_dir)
 
-    assert code == 1  # lab-a's skip still fails the overall run
+    assert code == 0  # lab-a's skip is not a failure; lab-b still bundled
     assert calls == [("lab-b", False, True)]
     out = capsys.readouterr().out
     assert "lab-a" in out

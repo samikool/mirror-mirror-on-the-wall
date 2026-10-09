@@ -1,12 +1,58 @@
+import fcntl
 import hashlib
 import os
 import queue
+import re
 import shutil
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+
+# A blob's filesystem name is `{checksum[:2]}/{checksum}-{filename}`, so both
+# halves are path components. `filename` is already reduced to a basename by
+# every caller, but `checksum` is not always locally computed: a *package*
+# checksum is hashed from the bytes we just downloaded (safe), while a
+# *metadata* checksum is read verbatim out of the upstream Release SHA256
+# block, where only `int(size)` was ever validated. A Release line reading
+# `../../../../srv/lab/evil 9 main/binary-amd64/Packages` therefore chose the
+# write path: httpx normalises the dot segments in the by-hash URL, the
+# by-hash fetch deliberately skips the hash check ("content IS the hash"), and
+# `mkdir(parents=True)` + `os.link()` did the rest. Verified writing outside
+# `mirror_dir`. Anything that is not a plain hex digest is refused here, at
+# the store, rather than relying on every producer to be careful.
+_HEX_DIGEST_RE = re.compile(r"\A[0-9a-f]{32,128}\Z")
+
+
+def is_safe_checksum(checksum: str) -> bool:
+    """True when `checksum` is a lowercase hex digest of a plausible length.
+
+    md5/sha1/sha256/sha512 are 32/40/64/128 hex characters. Upper case is
+    rejected on purpose: `hashlib.hexdigest()` is lowercase, so a mixed-case
+    value did not come from us and normalising it would hide that.
+    """
+    return bool(_HEX_DIGEST_RE.match(checksum))
+
+
+def _validate_blob_name(checksum: str, filename: str) -> None:
+    if not is_safe_checksum(checksum):
+        raise ValueError(
+            f"refusing to pool a blob under a checksum that is not a hex digest: "
+            f"{checksum!r} — upstream metadata cannot choose a filesystem path"
+        )
+    if (
+        not filename
+        or "/" in filename
+        or "\\" in filename
+        or "\x00" in filename
+        or filename in (".", "..")
+        or Path(filename).name != filename
+    ):
+        raise ValueError(
+            f"refusing to pool a blob under a filename carrying a path: {filename!r}"
+        )
 
 
 SCHEMA = """
@@ -90,8 +136,168 @@ KIND_PKG = "pkg"          # package payload
 KIND_META = "meta"        # index files referenced by the release file
 KIND_RELEASE = "release"  # trust root (InRelease / Release(.gpg) / repomd.xml(.asc)) — publish places these LAST
 
+# Cross-process advisory lock. There was NO locking of any kind, so a cron
+# `mmw prune` overlapping a running sync deleted every blob the sync had
+# downloaded so far: refs are reconciled only at the END of a mirror, so for
+# the whole download phase (hours, multi-TB) every fresh blob is
+# `packages − refs` — exactly prune's definition of an orphan. The sync then
+# reconciled refs naming checksums whose files had just been unlinked,
+# producing refs-without-packages that publish silently omits and that surface
+# as a 404 during `apt install` on the far side of an airgap.
+#
+# A sync holds this SHARED for the duration of each mirror; prune and wipe take
+# it EXCLUSIVE and refuse rather than wait — a destructive operation should say
+# "something else is using the pool" instead of blocking a cron slot for hours.
+# flock is per open-file-description, so this also protects the TUI from
+# pruning while its own sync is running, which is the same mistake.
+_LOCK_FILE = "lock"
+
 # In-flight downloads land here before being linked into packages/.
 _TMP_DIR = "tmp"
+
+
+class PoolBusy(RuntimeError):
+    """Another process (or this one) holds the pool for a conflicting use."""
+
+
+def _lock_path(mirror_dir: Path) -> Path:
+    return mirror_dir / ".pool" / _LOCK_FILE
+
+
+# The sync's shared lock is process-wide and reference counted, not per-call.
+#
+# It was originally taken inside `download_mirror` as a context manager, which
+# was wrong in two ways at once and locked up a real 45-mirror sync:
+#
+#   * `download_mirror` is a coroutine. In the TUI it runs on the event loop
+#     (`sync.py:_sync_mirror` is an async worker), so `mkdir` + `open` +
+#     `flock` — three blocking filesystem calls — executed on the UI thread,
+#     once per mirror. A profile of that run put the MainThread at 21.8% of
+#     samples inside `shared_pool_lock`, top stack
+#     `shared_pool_lock <- download_mirror <- sync_mirror <- _sync_mirror`.
+#   * `flock(LOCK_SH)` has no `LOCK_NB`, so if anything did hold the exclusive
+#     lock every one of those calls waited on the kernel, on the event loop,
+#     forever.
+#
+# The fact being guarded — "a sync is running in this process" — is
+# process-level, so one lock is taken for the whole run and the other mirrors
+# hit a refcount. Acquisition still blocks (waiting for a prune to finish is
+# the correct behaviour), so it MUST be called from a worker thread; the
+# `acquire_sync_lock` docstring says so and `downloader` routes it through
+# `run_in_executor`.
+_SYNC_LOCK_MUTEX = threading.Lock()
+_sync_lock_fh = None
+_sync_lock_depth = 0
+
+
+def acquire_sync_lock(mirror_dir: Path) -> None:
+    """Take the shared pool lock for this process. **Blocking — never call
+    this from the event loop.**
+
+    Failing to take it is deliberately not fatal: a read-only filesystem or a
+    mount without flock support must not stop a sync that would otherwise
+    work. The protection is best-effort by design.
+    """
+    global _sync_lock_fh, _sync_lock_depth
+    with _SYNC_LOCK_MUTEX:
+        if _sync_lock_depth > 0:
+            _sync_lock_depth += 1
+            return
+        fh = None
+        try:
+            path = _lock_path(mirror_dir)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fh = open(path, "a+")
+            # Blocking on purpose: if a prune or wipe holds the pool, the right
+            # thing is to wait for it rather than race it. The mutex is held
+            # across this, so concurrent callers queue behind the first — which
+            # is fine, because while the pool is being pruned they have no
+            # useful work to do anyway.
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+        except OSError:
+            if fh is not None:
+                fh.close()
+            fh = None
+        _sync_lock_fh = fh
+        _sync_lock_depth = 1
+
+
+def release_sync_lock() -> None:
+    """Drop one reference; the lock is released when the last one goes."""
+    global _sync_lock_fh, _sync_lock_depth
+    with _SYNC_LOCK_MUTEX:
+        if _sync_lock_depth == 0:
+            return
+        _sync_lock_depth -= 1
+        if _sync_lock_depth == 0 and _sync_lock_fh is not None:
+            try:
+                fcntl.flock(_sync_lock_fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            finally:
+                _sync_lock_fh.close()
+                _sync_lock_fh = None
+
+
+@contextmanager
+def shared_pool_lock(mirror_dir: Path):
+    """Context-manager form of `acquire_sync_lock`. Blocking — same rule."""
+    acquire_sync_lock(mirror_dir)
+    try:
+        yield
+    finally:
+        release_sync_lock()
+
+
+def pool_is_busy(mirror_dir: Path) -> bool:
+    """True when a sync currently holds the pool.
+
+    A probe, not a reservation: it takes the exclusive lock and drops it again
+    immediately, so it answers "would a destructive operation be refused right
+    now?" without holding anything. Callers that need the guarantee must still
+    do the real work inside `exclusive_pool_lock` — this exists so a UI can
+    refuse *before* opening a progress modal rather than after.
+    """
+    try:
+        with exclusive_pool_lock(mirror_dir, "check the pool"):
+            return False
+    except PoolBusy:
+        return True
+
+
+@contextmanager
+def exclusive_pool_lock(mirror_dir: Path, what: str = "operation"):
+    """Take the pool exclusively for a destructive operation, or raise PoolBusy.
+
+    Non-blocking on purpose — see `_LOCK_FILE`.
+    """
+    path = _lock_path(mirror_dir)
+    fh = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(path, "a+")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if fh is not None:
+            fh.close()
+        raise PoolBusy(
+            f"refusing to {what}: the pool at {mirror_dir} is in use by a running "
+            f"sync. A prune during a sync deletes the blobs it has just "
+            f"downloaded, because their refs are not committed until the mirror "
+            f"finishes. Wait for the sync to end and try again."
+        )
+    except OSError:
+        if fh is not None:
+            fh.close()
+        fh = None          # no flock support — proceed unprotected, as above
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
 _TMP_MAX_AGE = 24 * 3600  # crash leftovers older than this are reaped at init
 
 
@@ -203,7 +409,16 @@ class _DeferredWriter:
                 self._checkpoint("PASSIVE")
                 self._last_checkpoint = now
             if not pending and self._q.empty():
-                self._idle.set()
+                # Under `_pending_lock`, re-checking the queue: a producer can
+                # run `_idle.clear()` + `put()` between the `empty()` test and
+                # the `set()`, which would let a `flush()` return with a row
+                # still queued. Harmless for today's callers (a reconcile runs
+                # *on* this thread, where FIFO order already guarantees its
+                # rows are committed) but load-bearing for any future caller
+                # that flushes for correctness rather than for freshness.
+                with self._pending_lock:
+                    if self._q.empty():
+                        self._idle.set()
             if stopping:
                 # No more writes are coming on this pool: reclaim the WAL fully
                 # rather than leave whatever PASSIVE couldn't fold in sitting on
@@ -225,6 +440,15 @@ class _DeferredWriter:
                 )
                 self._pool._conn.commit()
         except Exception as e:                      # never lose the sync to this
+            # Rollback explicitly: a failed `executemany` leaves the write
+            # transaction OPEN, and sqlite holds it against every other
+            # connection (and every other process) until the next successful
+            # commit. The rows are lost either way — that is reported through
+            # `_errors`, which the sync now reads — but the lock must not be.
+            try:
+                self._pool._conn.rollback()
+            except Exception:
+                pass
             self._errors.append(f"{len(rows)} package row(s): {e}")
         finally:
             with self._pending_lock:
@@ -468,7 +692,12 @@ class Pool:
         place, then removed) or raw bytes (written via .pool/tmp first).
         The pool inode never has nlink == 1 mid-operation, so a concurrent
         prune can't reap it; an existing entry for the checksum is reused.
+
+        Raises ValueError when `checksum` is not a hex digest or `filename`
+        carries a path — see `_validate_blob_name`. Both become path
+        components, and a metadata checksum is upstream-supplied.
         """
+        _validate_blob_name(checksum, filename)
         pool_dest = self._packages_dir / checksum[:2] / f"{checksum}-{filename}"
         pool_dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -507,6 +736,24 @@ class Pool:
     def flush_writes(self, timeout: float = 60.0) -> list[str]:
         """Commit anything queued. Returns error descriptions, never raises."""
         return self._writer.flush(timeout) if self._writer is not None else []
+
+    def take_write_errors(self) -> list[str]:
+        """Drain and return deferred-writer errors seen since the last call.
+
+        `_DeferredWriter._commit` catches everything so a bad batch cannot kill
+        the writer thread and strand the sync — but the resulting list had no
+        reader anywhere in the codebase, so ENOSPC, `database is locked` or a
+        corrupt DB silently dropped up to 500 package rows per failed batch.
+        The blobs stay on disk unreferenced, refs point at packages the
+        `refs ⋈ packages` join cannot find, publish ships a short tree, and
+        `mmw sync --quiet` exits 0. The sync drains this at the end of every
+        mirror and fails the mirror if anything is in it.
+        """
+        if self._writer is None:
+            return []
+        errs = list(self._writer._errors)
+        del self._writer._errors[:len(errs)]
+        return errs
 
     def submit_reconcile(self, mirror_name: str, entries: list[tuple[str, str, str]],
                          source: str, done) -> bool:
@@ -553,6 +800,22 @@ class Pool:
                 ],
             )
             self._conn.commit()
+
+    def has_index_refs(self, mirror_name: str) -> bool:
+        """Does this mirror currently have any index or release refs?
+
+        `reconcile_refs` replaces a mirror's refs with exactly what it is
+        handed, so committing a package-only set would delete the mirror's
+        whole index. The sync uses this to tell "first sync, nothing to lose"
+        apart from "we already had an index and the new metadata set is
+        empty" — only the second is destructive, and only it aborts the flip.
+        """
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM refs WHERE mirror_name = ? AND kind IN (?, ?) LIMIT 1",
+                (mirror_name, KIND_META, KIND_RELEASE),
+            ).fetchone()
+        return row is not None
 
     def mirror_files(
         self,
@@ -691,7 +954,18 @@ class Pool:
         return Path(row[0]) if row else None
 
     def missing_for(self, mirror_name: str) -> list[tuple[str, str]]:
-        """(repo_path, checksum) the mirror's index wants but the pool lacks."""
+        """(repo_path, checksum) the mirror's index wants but the pool lacks.
+
+        Flushes queued writes first. `_DeferredWriter` batches package rows
+        (500 rows / 0.5 s), and `contains`/`batch_contains` paper over that by
+        consulting the writer's pending set — this query cannot, because it is
+        a SQL anti-join against the `packages` table. Without the flush a blob
+        that is already hardlinked into place but whose row is still queued
+        reads as missing, so a verify run right after a sync reports a
+        perfectly complete mirror as incomplete and the publish gate refuses
+        it. Correctness read, not a hot path.
+        """
+        self.flush_writes()
         with self._read() as _c:
             rows = _c.execute(
                 "SELECT r.repo_path, r.checksum FROM refs r "
@@ -745,7 +1019,15 @@ class Pool:
         leaves a stale row (self-healing via the missing-file path), never an
         invisible orphan file. Published network trees hold their own
         hardlinks, so served data survives until republished with prune.
+
+        Raises `PoolBusy` when a sync holds the pool: until a mirror finishes,
+        everything it has downloaded is `packages − refs` and would be pruned
+        as an orphan.
         """
+        with exclusive_pool_lock(self.pool_dir.parent, "prune the pool"):
+            return self._prune_orphans_locked(configured_sources)
+
+    def _prune_orphans_locked(self, configured_sources: list[str]) -> tuple[int, int]:
         with self._lock:
             if configured_sources:
                 ph = ",".join("?" * len(configured_sources))
@@ -879,9 +1161,14 @@ class Pool:
 
 
 def wipe(mirror_dir: Path) -> None:
-    """Delete the entire pool directory."""
-    pool_dir = mirror_dir / ".pool"
-    shutil.rmtree(pool_dir, ignore_errors=True)
+    """Delete the entire pool directory.
+
+    Raises `PoolBusy` if a sync is running — deleting the pool underneath one
+    is the most destructive version of the prune-during-sync race.
+    """
+    with exclusive_pool_lock(mirror_dir, "wipe the pool"):
+        pool_dir = mirror_dir / ".pool"
+        shutil.rmtree(pool_dir, ignore_errors=True)
 
 
 def verify_checksum(path: Path, expected: str, algo: str) -> bool:

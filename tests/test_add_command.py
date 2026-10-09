@@ -28,11 +28,41 @@ def cfg_dir(tmp_path: Path) -> Path:
 
 
 def _run(cfg_dir: Path, text: str, **kw) -> tuple[int, list[str]]:
+    """(exit code, every line the command emitted on either stream).
+
+    `echo` carries the result, `echo_err` carries anything that means the
+    command failed — they used to be one parameter, so every failure went to
+    stdout and a cron job mailing only stderr got silence from the one run
+    that did nothing. Tests assert on the combined text because what matters
+    here is *that* the message was produced; `test_errors_go_to_stderr` below
+    is what pins down which stream it went to.
+    """
     src = cfg_dir / "in.sources"
     src.write_text(text)
     out: list[str] = []
-    code = add.run(file=src, cfg_dir=cfg_dir, echo=out.append, **kw)
+    code = add.run(file=src, cfg_dir=cfg_dir, echo=out.append,
+                   echo_err=out.append, **kw)
     return code, out
+
+
+def _run_split(cfg_dir: Path, text: str, **kw) -> tuple[int, list[str], list[str]]:
+    """As `_run`, but keeps the two streams apart."""
+    src = cfg_dir / "in.sources"
+    src.write_text(text)
+    out: list[str] = []
+    err: list[str] = []
+    code = add.run(file=src, cfg_dir=cfg_dir, echo=out.append,
+                   echo_err=err.append, **kw)
+    return code, out, err
+
+
+def test_errors_go_to_stderr_not_stdout(cfg_dir):
+    """A failure must reach stderr: cron mails stderr, and `mmw add` printing
+    "Could not read config" on stdout made a failed import look like output."""
+    code, out, err = _run_split(cfg_dir, "# nothing here\n")
+    assert code == 1
+    assert any("No mirrorable apt sources" in line for line in err)
+    assert not any("No mirrorable apt sources" in line for line in out)
 
 
 def test_import_writes_sources(cfg_dir):
@@ -93,7 +123,7 @@ def test_dry_run_writes_nothing(cfg_dir):
 def test_empty_input_is_an_error(cfg_dir):
     code, out = _run(cfg_dir, "# nothing here\n")
     assert code == 1
-    assert "No mirrorable apt sources" in out[0]
+    assert any("No mirrorable apt sources" in line for line in out)
 
 
 def test_disabled_only_file_is_an_error(cfg_dir):

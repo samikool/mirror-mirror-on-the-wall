@@ -16,7 +16,7 @@ from mmw.core.publisher import (
 
 
 def _mirror(url: str, **kw) -> config.MirrorConfig:
-    defaults = dict(name="m", provider="rpm", label="custom")
+    defaults = dict(name="m", provider="apt", label="custom")
     defaults.update(kw)
     return config.MirrorConfig(source_url=url, **defaults)
 

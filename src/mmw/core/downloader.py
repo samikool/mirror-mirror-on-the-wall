@@ -5,19 +5,24 @@ import functools
 import hashlib
 import os
 import posixpath
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
-
-if TYPE_CHECKING:
-    from mmw.core.keys import KeySyncResult
+from typing import Callable
 
 import httpx
 
-from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
+from mmw.core.pool import (
+    KIND_META,
+    KIND_PKG,
+    KIND_RELEASE,
+    Pool,
+    acquire_sync_lock,
+    release_sync_lock,
+)
 from mmw.providers.base import MetadataFile, PackageInfo
 
 
@@ -85,10 +90,22 @@ class MirrorSummary:
     # while packages were downloading.  Informational, not a failure.
     metadata_resnapshotted: bool = False
     key_errors: list[str] = field(default_factory=list)  # GPG key sync failures
+    # Deferred-writer failures (ENOSPC, `database is locked`, a corrupt DB).
+    # `_DeferredWriter._commit` swallows these so one bad batch cannot kill the
+    # writer thread mid-sync, and for a long time nothing read the list it put
+    # them in — so up to 500 package rows per failed batch vanished, refs
+    # pointed at packages the `refs ⋈ packages` join could not find, publish
+    # shipped a short tree, and the sync exited 0.
+    pool_write_errors: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return not self.failed and self.metadata_ok and not self.stopped
+        return (
+            not self.failed
+            and self.metadata_ok
+            and not self.stopped
+            and not self.pool_write_errors
+        )
 
 
 ProgressCallback = Callable[[str, DownloadResult], None]
@@ -120,28 +137,31 @@ def fetch_all_threaded(provider, mirror_config, status_callback=None) -> tuple[l
     return provider.fetch_all(mirror_config, _thread_client(), status_callback=status_callback)
 
 
-def sync_keys_threaded(distro_def, mirror_dir: Path) -> "KeySyncResult":
-    """Submit to an executor — calls keys.sync_keys with the thread-local client."""
-    from mmw.core.keys import sync_keys
-    return sync_keys(distro_def, mirror_dir, _thread_client())
-
-
-def sync_custom_key_threaded(mirror_name: str, key_url: str, mirror_dir: Path) -> "KeySyncResult":
-    """Submit to an executor — fetches a single GPG key URL with the thread-local client."""
-    from mmw.core.keys import sync_custom_key
-    return sync_custom_key(mirror_name, key_url, mirror_dir, _thread_client())
-
-
 _BY_HASH_RETRIES = 5
 _BY_HASH_BACKOFF  = 2  # seconds; doubles each retry: 2 4 8 16 32 → ~62 s total
+
+# Package downloads. Three attempts used to fire back to back with no delay at
+# all, so all three landed inside the same overloaded second — the moment least
+# likely to succeed — and a 404 for a package pulled from the archive mid-sync
+# cost three round trips to confirm what the first response already said.
+_PKG_RETRIES = 3
+_PKG_BACKOFF = 1.0     # seconds; doubles: 1, 2
+_STOP_POLL   = 0.25    # granularity at which a backoff notices a stop
+
+# Headroom kept free when deciding whether a sync can fit. Other things share
+# the filesystem (the SQLite WAL, another mirror syncing concurrently, the
+# operator's own files), so filling it to the last byte is never the goal.
+_DISK_MARGIN = 2 * 1024 * 1024 * 1024   # 2 GiB
 
 # Yield to the event loop this often while emitting bulk POOLED progress so a
 # huge mirror (100k+ pooled packages) doesn't freeze the TUI for seconds.
 _PROGRESS_YIELD = 2_000
 
 
-def _fetch_metadata_content(mf: MetadataFile) -> FetchResult:
+def _fetch_metadata_content(mf: MetadataFile, stop_event=None) -> FetchResult:
     """Fetch and verify a metadata file's bytes. Does not touch the pool."""
+    if stop_event is not None and stop_event.is_set():
+        return Fetch.FAILED, None, "stopped"
     if mf.content is not None:
         content = mf.content
         if mf.expected_sha256 and hashlib.sha256(content).hexdigest() != mf.expected_sha256:
@@ -149,7 +169,7 @@ def _fetch_metadata_content(mf: MetadataFile) -> FetchResult:
         return Fetch.OK, content, None
 
     if mf.fallback_url is not None:
-        return _fetch_by_hash(mf)
+        return _fetch_by_hash(mf, stop_event)
 
     client = _thread_client()
     try:
@@ -166,12 +186,23 @@ def _fetch_metadata_content(mf: MetadataFile) -> FetchResult:
     return Fetch.OK, content, None
 
 
-def _fetch_by_hash(mf: MetadataFile) -> FetchResult:
+def _fetch_by_hash(mf: MetadataFile, stop_event=None) -> FetchResult:
     """Fetch a verified index file, preferring the by-hash URL.
 
-    By-hash content IS the hash, so a 200 needs no sha256 check.  A by-hash 404
-    has two very different causes and the canonical URL tells them apart
-    immediately, so it is consulted *before* spending any backoff:
+    The by-hash response is hashed like any other.  It used to be taken on
+    trust — "content IS the hash" — but that is an assumption about the
+    *server*, and a content-addressed store exists precisely so we need not
+    make one.  The cost is one `hashlib.sha256` over bytes already in memory;
+    the risk it removes is permanent, because `_fetch_or_skip` short-circuits
+    on `expected_sha256 in pooled`, so a single bad response (hostile mirror,
+    misbehaving transparent proxy, a server that 200s a soft-error page) is
+    pooled *under the expected checksum*, never re-fetched by any later sync,
+    and deduplicated into every other mirror sharing that file.  A mismatch
+    now falls through to the canonical URL, which is exactly the path a
+    by-hash miss already takes.
+
+    A by-hash miss has two very different causes and the canonical URL tells
+    them apart immediately, so it is consulted *before* spending any backoff:
 
       * canonical 404 too  → the file is simply absent upstream (Ubuntu lists
         uncompressed Contents/Packages/dep11 variants it never publishes).
@@ -189,24 +220,46 @@ def _fetch_by_hash(mf: MetadataFile) -> FetchResult:
     last = "no attempt made"
 
     for attempt in range(_BY_HASH_RETRIES):
+        if stop_event is not None and stop_event.is_set():
+            return Fetch.FAILED, None, "stopped"
         try:
             resp = client.get(mf.url)
         except Exception as e:
             last = type(e).__name__
         else:
             if resp.is_success:
-                return Fetch.OK, resp.content, None  # content IS the hash
-            last = f"http {resp.status_code}"
-            # 403 and friends are a real answer, not a blip — stop asking.
-            if resp.status_code not in (404, 429) and resp.status_code < 500:
-                return Fetch.FAILED, None, last
+                content = resp.content
+                if (
+                    mf.expected_sha256
+                    and hashlib.sha256(content).hexdigest() != mf.expected_sha256
+                ):
+                    # The by-hash URL served something that is not what its own
+                    # path claims. Fall through to the canonical URL rather
+                    # than pooling it forever under the expected checksum.
+                    last = "by-hash content did not match its own checksum"
+                else:
+                    return Fetch.OK, content, None
+            else:
+                last = f"http {resp.status_code}"
+                # 403 and friends are a real answer, not a blip — stop asking.
+                if resp.status_code not in (404, 429) and resp.status_code < 500:
+                    return Fetch.FAILED, None, last
 
         # Ask the canonical URL what's going on before burning any backoff.
         outcome, content, reason = _fetch_canonical(mf, client, last)
         if outcome is not Fetch.FAILED:
             return outcome, content, reason
         if attempt < _BY_HASH_RETRIES - 1:
-            time.sleep(delay)
+            # `stop_event.wait(delay)` rather than `time.sleep(delay)`: this
+            # runs on one of `max_connections` executor threads and the total
+            # backoff is ~62 s per file, so an uninterruptible sleep held the
+            # sync TUI's `on_unmount` (which shuts the executor down with
+            # wait=True) for minutes after the user pressed quit.
+            if stop_event is not None:
+                if stop_event.wait(delay):
+                    return Fetch.FAILED, None, "stopped"
+            else:
+                time.sleep(delay)
             delay *= 2
 
     return Fetch.FAILED, None, f"by-hash {last}, canonical checksum mismatch"
@@ -235,7 +288,7 @@ def _meta_filename(repo_path: str) -> str:
     return name or "index"
 
 
-def _fetch_or_skip(mf: MetadataFile, pooled: "set[str]") -> FetchResult:
+def _fetch_or_skip(mf: MetadataFile, pooled: "set[str]", stop_event=None) -> FetchResult:
     """Skip the network when the verified blob is already pooled.
 
     Shared suite-level files (InRelease, Contents-*.gz) have the same checksum
@@ -251,16 +304,16 @@ def _fetch_or_skip(mf: MetadataFile, pooled: "set[str]") -> FetchResult:
     """
     if mf.expected_sha256 is not None and mf.expected_sha256 in pooled:
         return Fetch.ALREADY_DONE, None, None
-    return _fetch_metadata_content(mf)
+    return _fetch_metadata_content(mf, stop_event)
 
 
-def _fetch_and_pool(mf: MetadataFile, pool: Pool) -> tuple[str | None, str | None]:
+def _fetch_and_pool(mf: MetadataFile, pool: Pool, stop_event=None) -> tuple[str | None, str | None]:
     """Fetch an unverified metadata file (release file, .asc, …) and pool it.
 
     Returns (error, checksum): (None, sha) on success, (None, None) on upstream
     404, (message, None) on failure.
     """
-    outcome, content, reason = _fetch_metadata_content(mf)
+    outcome, content, reason = _fetch_metadata_content(mf, stop_event)
     if outcome is Fetch.FAILED:
         return f"{mf.repo_path}: fetch failed ({reason})", None
     if content is None:
@@ -273,24 +326,82 @@ def _fetch_and_pool(mf: MetadataFile, pool: Pool) -> tuple[str | None, str | Non
     return None, checksum
 
 
+class PermanentFetchError(Exception):
+    """An answer, not a blip — retrying it cannot help.
+
+    A 404 (package pulled from the archive mid-sync) or a 403 used to be
+    retried three times back to back, which is three round trips spent
+    confirming something the first response already settled.
+    """
+
+
+def _partial_path(pool: Pool, pkg: PackageInfo) -> Path:
+    """A resume file keyed by URL, stable across retries of one package.
+
+    Deterministic rather than per-thread because a retry may land on a
+    different executor thread and still needs to find what the previous
+    attempt already pulled down. Two different packages cannot collide (the
+    key is a digest of the URL) and one package is only ever downloaded by one
+    consumer coroutine at a time, so nothing races here. Abandoned partials
+    are swept by the pool's existing 24 h tmp reaper.
+    """
+    key = hashlib.sha256(pkg.url.encode()).hexdigest()[:16]
+    return pool._tmp_dir / f"{os.getpid()}-part-{key}-{pkg.filename}"
+
+
 def _download_sync(
     pkg: PackageInfo,
     pool: Pool,
     chunk_callback: ChunkCallback | None,
     start_callback: Callable[[], None] | None,
     stop_event: threading.Event | None = None,
+    resume: bool = False,
 ) -> DownloadResult:
-    """Stream pkg from network into the pool. Runs in executor thread."""
+    """Stream pkg from network into the pool. Runs in executor thread.
+
+    With `resume`, an interrupted attempt's bytes are kept and continued with a
+    `Range:` request instead of being thrown away. A 4 GB package that drops at
+    99% used to cost the full download again, three times, on a link that had
+    already proved flaky.
+
+    Resuming is safe because the checksum is verified over the *whole* file
+    before anything is pooled: if the server ignores the Range (answering 200),
+    we start over; if it serves the wrong bytes, the digest catches it and the
+    partial is discarded. No trust is placed in the range machinery itself.
+    """
     if start_callback:
         start_callback()
     client = _thread_client()
     h = hashlib.new(pkg.checksum_type)
-    bytes_written = 0
-    tmp = pool._tmp_dir / f"{os.getpid()}-{threading.get_ident()}-{pkg.filename}"
+    tmp = _partial_path(pool, pkg)
+
+    offset = 0
+    if resume and tmp.exists():
+        try:
+            with open(tmp, "rb") as f:
+                for block in iter(lambda: f.read(1 << 20), b""):
+                    h.update(block)
+                    offset += len(block)
+        except OSError:
+            offset = 0
+            h = hashlib.new(pkg.checksum_type)
+    if offset == 0:
+        tmp.unlink(missing_ok=True)
+
+    bytes_written = offset
+    headers = {"Range": f"bytes={offset}-"} if offset else None
     try:
-        with client.stream("GET", pkg.url) as resp:
+        with client.stream("GET", pkg.url, headers=headers) as resp:
+            if resp.status_code in (403, 404, 410):
+                raise PermanentFetchError(f"http {resp.status_code}")
+            if offset and resp.status_code != 206:
+                # Range ignored (or unsupported) — start clean rather than
+                # appending to bytes the server is about to resend.
+                h = hashlib.new(pkg.checksum_type)
+                bytes_written = 0
+                offset = 0
             resp.raise_for_status()
-            with open(tmp, "wb") as f:
+            with open(tmp, "ab" if offset else "wb") as f:
                 for chunk in resp.iter_bytes(65536):
                     if stop_event and stop_event.is_set():
                         raise InterruptedError("sync stopped")
@@ -301,16 +412,21 @@ def _download_sync(
                         chunk_callback(len(chunk))
         checksum = h.hexdigest()
         if pkg.checksum_known and checksum != pkg.checksum:
-            tmp.unlink(missing_ok=True)
+            tmp.unlink(missing_ok=True)   # a resumed partial may be the culprit
             return DownloadResult(status=Status.FAILED, path=tmp, error="checksum mismatch")
         pool_path = pool.add(tmp, checksum, pkg.checksum_type, pkg.filename, bytes_written)
         return DownloadResult(
             status=Status.DOWNLOADED, path=pool_path,
             bytes_transferred=bytes_written, checksum=checksum,
         )
-    except Exception as exc:
+    except (PermanentFetchError, InterruptedError):
         tmp.unlink(missing_ok=True)
-        raise exc
+        raise
+    except Exception:
+        # Deliberately NOT unlinked: whatever landed is what the next attempt
+        # resumes from. Only a clean finish, a permanent answer or a bad digest
+        # discards it; anything left behind is swept by the tmp reaper.
+        raise
 
 
 async def download_mirror(
@@ -342,6 +458,20 @@ async def download_mirror(
     _owns_executor = executor is None
     if _owns_executor:
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_connections)
+
+    # Held for this whole mirror so a concurrent `mmw prune` refuses instead of
+    # deleting the blobs being downloaded right now — their refs are not
+    # committed until the reconcile at the end, so until then every one of them
+    # looks exactly like an orphan.
+    #
+    # **On the executor, never here.** This coroutine runs on the event loop
+    # (in the TUI, `sync.py:_sync_mirror` is an async worker), and the lock
+    # does `mkdir` + `open` + `flock` — three blocking filesystem calls. Taking
+    # them inline froze a real 45-mirror sync solid: the profiler put the
+    # MainThread at 21.8% of samples inside `shared_pool_lock`, under
+    # `download_mirror <- sync_mirror <- _sync_mirror`. The lock itself is now
+    # process-wide and refcounted, so only the first mirror pays for it at all.
+    await loop.run_in_executor(executor, acquire_sync_lock, pool.pool_dir.parent)
 
     # Desired-state entries accumulated for the final reconcile.
     pkg_entries: list[tuple[str, str, str]] = []
@@ -404,12 +534,42 @@ async def download_mirror(
             phase_callback(f"Downloading {len(to_download):,} packages...")
 
         if not dry_run and to_download and not (stop_event and stop_event.is_set()):
+            # Refuse up front when the disk plainly cannot hold this.
+            #
+            # Filling the disk mid-sync used to surface as N thousand
+            # per-package OSErrors plus (until the writer's errors were given a
+            # reader) silently dropped database rows — a state indistinguishable
+            # from an upstream problem, on a mirror that is now half-populated.
+            # The sizes are already in hand from classification, so the check is
+            # free; it is a *guard*, not a guarantee, since other writers share
+            # the filesystem, hence the margin.
+            want = sum(p.size for p in to_download if p.size)
+            if want:
+                try:
+                    # On the executor: `statvfs` is microseconds on a local
+                    # disk and can block for seconds on a stale NFS mount —
+                    # and an NFS-mounted `mirror_dir` is the normal case for
+                    # this tool, not an exotic one. This coroutine runs on the
+                    # event loop in the TUI.
+                    free = await loop.run_in_executor(
+                        executor, lambda: shutil.disk_usage(pool.pool_dir).free)
+                except OSError:
+                    free = None
+                if free is not None and want + _DISK_MARGIN > free:
+                    summary.metadata_ok = False
+                    summary.metadata_errors.append(
+                        f"not enough free space: need ~{want:,} bytes plus a "
+                        f"{_DISK_MARGIN:,} byte margin, {free:,} free at "
+                        f"{pool.pool_dir} — nothing was downloaded"
+                    )
+                    to_download = []
             _sem = sem if sem is not None else asyncio.Semaphore(max_connections)
 
             async def _do_one(pkg: PackageInfo) -> None:
                 async with _sem:
                     result = DownloadResult(Status.FAILED, Path(pkg.filename), error="not attempted")
-                    for attempt in range(3):
+                    delay = _PKG_BACKOFF
+                    for attempt in range(_PKG_RETRIES):
                         if stop_event and stop_event.is_set():
                             summary.stopped = True
                             return  # teardown — not a download failure
@@ -417,18 +577,42 @@ async def download_mirror(
                             fn = functools.partial(
                                 _download_sync, pkg, pool,
                                 chunk_callback, start_callback if attempt == 0 else None,
-                                stop_event,
+                                stop_event, attempt > 0,     # resume after the first try
                             )
                             result = await loop.run_in_executor(executor, fn)
                         except InterruptedError:
                             summary.stopped = True
                             return  # stopped mid-stream — not a download failure
+                        except PermanentFetchError as exc:
+                            # A real answer (404/403/410): the package was
+                            # pulled from the archive mid-sync, or we are not
+                            # allowed to have it. Asking twice more just spends
+                            # round trips confirming it.
+                            result = DownloadResult(
+                                Status.FAILED, Path(pkg.filename), error=str(exc)
+                            )
+                            break
                         except Exception as exc:
                             result = DownloadResult(
                                 Status.FAILED, Path(pkg.filename), error=str(exc) or type(exc).__name__
                             )
                         if result.status != Status.FAILED:
                             break
+                        if attempt < _PKG_RETRIES - 1:
+                            # Back off before retrying. Three immediate attempts
+                            # put all of them inside the same overloaded second,
+                            # which is the moment least likely to succeed.
+                            # Slept in slices so a stop is noticed promptly
+                            # without parking an executor thread on an Event.
+                            slept = 0.0
+                            while slept < delay:
+                                if stop_event and stop_event.is_set():
+                                    summary.stopped = True
+                                    return
+                                step = min(_STOP_POLL, delay - slept)
+                                await asyncio.sleep(step)
+                                slept += step
+                            delay *= 2
 
                 match result.status:
                     case Status.DOWNLOADED:
@@ -486,6 +670,26 @@ async def download_mirror(
                 summary.stopped = True
                 summary.metadata_ok = False
                 summary.metadata_errors.append("sync stopped — index left unchanged")
+        elif not dry_run and not metadata and pool.has_index_refs(mirror_name):
+            # Phase 4 reconciles `pkg_entries + meta_entries` as the mirror's
+            # complete desired state, and `reconcile_refs` DELETEs the old set
+            # first — so committing an empty metadata half erases every index
+            # and release ref this mirror had, while `summary.ok` stays true,
+            # headless exits 0 and the TUI card goes green. The next
+            # `prune = true` publish then deletes `dists/` from a served tree.
+            #
+            # An empty list is reachable without an attacker: the provider
+            # reports per-file failures by omission, so a CDN 503 on both
+            # InRelease and Release, or a transport blip, yields nothing at
+            # all. (`providers/apt.py` now distinguishes those from a real
+            # 404 — this is the backstop for anything that still slips
+            # through.) Only the destructive case aborts: a first sync with no
+            # metadata has no index to lose and is left alone.
+            summary.metadata_ok = False
+            summary.metadata_errors.append(
+                "upstream returned no metadata files at all — index left unchanged "
+                "(committing this would have deleted the mirror's existing index)"
+            )
         elif not dry_run and metadata:
             unsafe = [mf.repo_path for mf in metadata if not is_safe_repo_path(mf.repo_path)]
             if unsafe:
@@ -509,9 +713,34 @@ async def download_mirror(
                 break
 
             meta_entries.clear()
-            release_files = [mf for mf in metadata if mf.content is not None and mf.expected_sha256 is None]
-            verified_files = [mf for mf in metadata if mf.expected_sha256 is not None]
-            other_files    = [mf for mf in metadata if mf.content is None and mf.expected_sha256 is None]
+            # `is_release` is declared by the provider rather than inferred
+            # from which other fields happen to be set. The old rule —
+            # "content is set and expected_sha256 is not" — silently depended
+            # on `AptProvider` pre-fetching its release files: `AptFlatProvider`
+            # only HEADs them, so every flat repository filed InRelease /
+            # Release / Release.gpg as KIND_META and lost the release-last
+            # publish ordering that keeps a live-served tree consistent.
+            def _is_release(mf: MetadataFile) -> bool:
+                # The flag, and only the flag. There used to be a fallback
+                # inference here — "content is set and expected_sha256 is not"
+                # — kept for providers written before `is_release` existed.
+                # Both providers set it now, and the inference is not merely
+                # redundant: the moment a provider hands over an index whose
+                # bytes it already fetched (which is exactly what `fetch_all`
+                # does to avoid downloading the largest index twice), a flat
+                # repository's `Packages.xz` matched it and was filed as a
+                # trust root — published LAST, alongside InRelease, so a client
+                # mid-`apt update` could see a release file whose indexes had
+                # not landed. Inferring a file's role from which other fields
+                # happen to be populated is what caused this twice; naming it
+                # is the fix both times.
+                return bool(getattr(mf, "is_release", False))
+
+            release_files = [mf for mf in metadata if _is_release(mf)]
+            verified_files = [mf for mf in metadata
+                              if mf.expected_sha256 is not None and not _is_release(mf)]
+            other_files    = [mf for mf in metadata
+                              if mf.expected_sha256 is None and not _is_release(mf)]
 
             # Fetch all verified files — pool-membership check first, network
             # only if absent. One batched lookup, off the event loop, instead of
@@ -521,7 +750,7 @@ async def download_mirror(
                 executor, pool.batch_contains, wanted
             ) if wanted else set()
             fetch_results: list[FetchResult | BaseException] = list(await asyncio.gather(
-                *[loop.run_in_executor(executor, _fetch_or_skip, mf, already_pooled)
+                *[loop.run_in_executor(executor, _fetch_or_skip, mf, already_pooled, stop_event)
                   for mf in verified_files],
                 return_exceptions=True,
             ))
@@ -565,7 +794,7 @@ async def download_mirror(
                 # A failure here is reported but doesn't abort the index — same
                 # availability the upstream offers without that file.
                 other_results = await asyncio.gather(
-                    *[loop.run_in_executor(executor, _fetch_and_pool, mf, pool) for mf in other_files],
+                    *[loop.run_in_executor(executor, _fetch_and_pool, mf, pool, stop_event) for mf in other_files],
                     return_exceptions=True,
                 )
                 for mf, r in zip(other_files, other_results):
@@ -581,7 +810,7 @@ async def download_mirror(
                 # Release files (the trust roots) — entries marked so publish
                 # places them last at the destination.
                 for mf in release_files:
-                    err, checksum = await loop.run_in_executor(executor, _fetch_and_pool, mf, pool)
+                    err, checksum = await loop.run_in_executor(executor, _fetch_and_pool, mf, pool, stop_event)
                     if err:
                         summary.metadata_ok = False
                         summary.metadata_errors.append(err)
@@ -640,5 +869,13 @@ async def download_mirror(
     finally:
         if _owns_executor:
             executor.shutdown(wait=False)
+        # Drained here rather than ignored: a dropped package row is the one
+        # failure mode that leaves the pool *looking* healthy while publish
+        # silently ships less than the index promises.
+        try:
+            summary.pool_write_errors.extend(pool.take_write_errors())
+        except Exception:
+            pass
+        release_sync_lock()
 
     return summary

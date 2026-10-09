@@ -46,7 +46,7 @@ def test_metadata_verify_failure_reported(tmp_path):
             url="http://x/Packages.gz", repo_path="Packages.gz",
             content=b"stale", expected_sha256="0" * 64,
         )
-        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"release")
+        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"release", is_release=True)
         summary = _run(download_mirror(
             packages=[], metadata=[bad, release],
             pool=pool, mirror_name="m", max_connections=2,
@@ -67,7 +67,7 @@ def test_metadata_written_when_all_verify(tmp_path):
     try:
         good = MetadataFile(url="http://x/Packages.gz", repo_path="Packages.gz",
                             content=data, expected_sha256=sha)
-        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"release")
+        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"release", is_release=True)
         summary = _run(download_mirror(
             packages=[], metadata=[good, release],
             pool=pool, mirror_name="m", max_connections=2,
@@ -86,7 +86,7 @@ def test_stop_event_blocks_metadata_commit(tmp_path):
     stop.set()
     pool = Pool(tmp_path / "mirror")
     try:
-        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"release")
+        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"release", is_release=True)
         summary = _run(download_mirror(
             packages=[], metadata=[release],
             pool=pool, mirror_name="m", max_connections=2,
@@ -131,16 +131,42 @@ class _FakeClient:
 
 
 def test_sync_custom_key_success(tmp_path):
+    """A fetched `gpg_key_url` goes through `write_key` like every other key.
+
+    It used to write the response bytes verbatim under the URL's last path
+    segment, which skipped all three of `write_key`'s guarantees: normalise to
+    armour, emit BOTH encodings (`gpg --import` wants armour, `signed-by=`
+    conventionally wants a binary keyring), and disambiguate the filename. The
+    last one mattered most — two repositories sharing a label whose key URLs
+    both ended `/gpgkey` collided on one path and the second was silently
+    skipped, so a mirror was published with someone else's key.
+    """
     from mmw.core.keys import sync_custom_key
     r = sync_custom_key("my-mirror", "https://x/repo.key", tmp_path, _FakeClient())
     assert r.ok
-    assert r.fetched == 1
-    assert (r.dest_dir / "repo.key").read_bytes() == b"key-bytes"
+    assert r.fetched == 2                      # .asc and .gpg, from one fetch
+    names = sorted(p.name for p in r.dest_dir.iterdir())
     assert (r.dest_dir / "IMPORT.md").exists()
+    stems = {p.stem for p in r.dest_dir.iterdir() if p.suffix in (".asc", ".gpg")}
+    assert len(stems) == 1, f"both encodings share one stem: {names}"
+    assert next(iter(stems)).startswith("repo"), names
+    assert {p.suffix for p in r.dest_dir.iterdir() if p.suffix in (".asc", ".gpg")} == {".asc", ".gpg"}
 
-    # second run: already present
+    # second run: already present, nothing refetched
     r2 = sync_custom_key("my-mirror", "https://x/repo.key", tmp_path, _FakeClient())
-    assert r2.skipped == 1 and r2.fetched == 0
+    assert r2.fetched == 0 and r2.skipped == 2
+
+
+def test_sync_custom_key_urls_with_the_same_basename_do_not_collide(tmp_path):
+    """The exact case the verbatim-filename path lost: two repositories under
+    one label whose key URLs both end in `/gpgkey`."""
+    from mmw.core.keys import sync_custom_key
+    a = sync_custom_key("lbl", "https://vendor-a.example/gpgkey", tmp_path, _FakeClient(content=b"AAA"))
+    b = sync_custom_key("lbl", "https://vendor-b.example/gpgkey", tmp_path, _FakeClient(content=b"BBB"))
+    assert a.ok and b.ok
+    assert b.fetched == 2, "the second key must not be skipped as already present"
+    keys = sorted(p.name for p in a.dest_dir.iterdir() if p.suffix == ".asc")
+    assert len(keys) == 2, f"both keys must survive: {keys}"
 
 
 def test_sync_custom_key_failure_reported(tmp_path):
@@ -226,12 +252,17 @@ def test_by_hash_retries_transient_5xx(monkeypatch):
     from mmw.core import downloader
 
     data = b"index-content"
+    # The digest must be the real one: a by-hash 200 is now hashed like any
+    # other response (a server's own claim about its content is not proof), so
+    # a placeholder checksum here would make this test exercise the mismatch
+    # path instead of the transient-retry path it is about.
+    digest = hashlib.sha256(data).hexdigest()
     client = _StubClient([_StubResp(503), _StubResp(429), _StubResp(200, data)])
     monkeypatch.setattr(downloader, "_thread_client", lambda: client)
     monkeypatch.setattr(downloader.time, "sleep", lambda _s: None)
 
-    mf = MetadataFile(url="http://x/by-hash/SHA256/abc", repo_path="Packages.gz",
-                      expected_sha256="abc", fallback_url="http://x/Packages.gz")
+    mf = MetadataFile(url=f"http://x/by-hash/SHA256/{digest}", repo_path="Packages.gz",
+                      expected_sha256=digest, fallback_url="http://x/Packages.gz")
     outcome, content, reason = downloader._fetch_by_hash(mf)
     assert outcome is Fetch.OK
     assert content == data
@@ -262,7 +293,7 @@ def test_metadata_abort_message_names_the_reason(tmp_path):
     try:
         bad = MetadataFile(url="http://x/Packages.gz", repo_path="Packages.gz",
                            content=b"stale", expected_sha256="0" * 64)
-        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"release")
+        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"release", is_release=True)
         summary = _run(download_mirror(
             packages=[], metadata=[bad, release],
             pool=pool, mirror_name="m", max_connections=2,
@@ -287,7 +318,7 @@ def test_stale_index_is_resnapshotted_not_failed(tmp_path):
         return [
             MetadataFile(url="http://x/Packages.gz", repo_path="Packages.gz",
                          content=fresh, expected_sha256=fresh_sha),
-            MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"new-release"),
+            MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"new-release", is_release=True),
         ]
 
     pool = Pool(tmp_path / "mirror")
@@ -295,7 +326,7 @@ def test_stale_index_is_resnapshotted_not_failed(tmp_path):
         # what we started the sync with — upstream has moved on since
         stale = MetadataFile(url="http://x/Packages.gz", repo_path="Packages.gz",
                              content=b"stale", expected_sha256="0" * 64)
-        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"old-release")
+        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"old-release", is_release=True)
         summary = _run(download_mirror(
             packages=[], metadata=[stale, release],
             pool=pool, mirror_name="m", max_connections=2,

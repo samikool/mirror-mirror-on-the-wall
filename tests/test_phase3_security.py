@@ -59,7 +59,7 @@ def test_malicious_metadata_path_blocks_commit(tmp_path):
     pool = Pool(tmp_path / "mirror")
     try:
         evil = MetadataFile(url="http://x/f", repo_path="../../evil-index", content=b"evil")
-        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"rel")
+        release = MetadataFile(url="http://x/InRelease", repo_path="InRelease", content=b"rel", is_release=True)
         summary = asyncio.run(download_mirror(
             packages=[], metadata=[evil, release],
             pool=pool, mirror_name="m", max_connections=2,

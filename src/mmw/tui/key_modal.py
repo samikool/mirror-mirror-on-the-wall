@@ -22,6 +22,7 @@ All three converge on the same box (`#key-area`) and the same validation, so
 `write_key` emitting both `.asc` and `.gpg` encodings at sync time works
 identically regardless of which door the key came in.
 """
+import asyncio
 from pathlib import Path
 
 from rich.markup import escape as _escape
@@ -213,10 +214,15 @@ class KeyModal(ModalScreen):
             status.update(f"  [dim]{len(found)} key(s) found[/]")
 
     @on(OptionList.OptionSelected, "#key-found")
-    def _load_selected(self, event) -> None:
+    async def _load_selected(self, event) -> None:
+        # `bulk_review._scan_worker` already reads keys on a thread ("Reading is
+        # I/O too — binary keyrings get armoured here") and this did it inline.
+        # One key is small, so it never looked like a freeze — until the
+        # directory is on a stale NFS mount, which is exactly where an
+        # airgapped operator's keyring copy tends to live.
         name = self._names[event.option_index]
         try:
-            armour = keys.read_key(self._found[name])
+            armour = await asyncio.to_thread(keys.read_key, self._found[name])
         except Exception as e:
             self.query_one("#key-status", Label).update(f"  [red]✗ {_escape(str(e))}[/]")
             return

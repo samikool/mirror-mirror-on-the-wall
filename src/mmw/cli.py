@@ -48,6 +48,58 @@ app = typer.Typer(
 )
 
 
+def _version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("mirror-mirror-on-the-wall")
+    except Exception:
+        return "unknown (not installed as a package)"
+
+
+# Where mmw.toml lives for this invocation. A module global rather than a
+# parameter threaded through ten commands: typer callbacks run before the
+# command body, so this is set by then, and the alternative is nine copies of
+# `Path(".")` — which is what was here, and is why `--config` could not exist.
+_CFG_DIR = Path(".")
+
+
+def _cfg_dir() -> Path:
+    return _CFG_DIR
+
+
+def _config_callback(value: "Path | None") -> "Path | None":
+    global _CFG_DIR
+    if value is not None:
+        _CFG_DIR = value
+    return value
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"mmw {_version()}")
+        raise typer.Exit(0)
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(
+        False, "--version", "-V", callback=_version_callback, is_eager=True,
+        help="Show the version and exit.",
+    ),
+    config_dir: Path = typer.Option(
+        None, "--config", "-c", callback=_config_callback, is_eager=True,
+        metavar="DIR",
+        help="Directory holding mmw.toml (default: the working directory).",
+    ),
+) -> None:
+    """Mirror Mirror on the Wall — universal package repository mirror.
+
+    `--version` matters more here than for most tools: the machine that hits a
+    bug is often on the far side of an airgap, with no `git log`, no network
+    and no way to tell which build produced the bundle it is holding.
+    """
+
+
 def _load_config_or_exit(cfg_dir: Path):
     """Load mmw.toml, exiting with a readable message on any failure."""
     try:
@@ -160,7 +212,7 @@ def cmd_init(
     """Setup wizard. Launches manage if config already exists."""
     from mmw.tui.init_wizard import InitWizardApp
 
-    cfg_dir = Path(".")
+    cfg_dir = _cfg_dir()
     cfg_path = config.config_path(cfg_dir)
 
     if cfg_path.exists() and not force:
@@ -193,7 +245,7 @@ def cmd_manage(
     """Manage configured mirrors (add, remove)."""
     from mmw.tui.init_wizard import InitWizardApp
 
-    cfg_dir = Path(".")
+    cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
     if quiet:
@@ -224,18 +276,32 @@ def cmd_sync(
     ),
 ):
     """Sync configured mirrors. Use --quiet for cron jobs."""
-    cfg_dir = Path(".")
+    cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
+    # `raise typer.Exit(run(...))`, not a bare `run()`: both return a process
+    # exit code and dropping it made `mmw sync --quiet` exit 0 no matter what
+    # happened — the exact silent-cron failure the exit codes exist for.
+    #
+    # Wrapped in `_profiling` too. Both quiet branches used to `return` before
+    # reaching it, so `--profile` was a silent no-op on precisely the run worth
+    # profiling: a headless multi-hour cron sync. (The profiler exists because
+    # ptrace is restricted on this machine, so there is no outside-in option.)
     if dry_run and quiet:
         from mmw.commands.dry_run import run
-        run()
-        return
+        with _profiling(profile) as prof:
+            code = run(cfg_dir)
+        if prof is not None:
+            typer.echo(f"Profile written to {prof}")
+        raise typer.Exit(code)
 
     if quiet:
         from mmw.commands.mirror import run
-        run()
-        return
+        with _profiling(profile) as prof:
+            code = run(cfg_dir)
+        if prof is not None:
+            typer.echo(f"Profile written to {prof}")
+        raise typer.Exit(code)
 
     # "all" dimensions need the network to resolve, and the sync TUI builds its
     # cards in compose() — so resolve before the app starts, echoing what a
@@ -259,7 +325,7 @@ def cmd_sync(
 def cmd_dry_run():
     """Show what would be downloaded without fetching anything."""
     from mmw.commands.dry_run import run
-    run()
+    raise typer.Exit(run(_cfg_dir()))
 
 
 @app.command("publish")
@@ -267,14 +333,20 @@ def cmd_publish(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Headless publish — no TUI"),
     network: str = typer.Option(None, "--network", "-n", help="Publish a specific network by name"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be linked without writing"),
+    allow_incomplete: bool = typer.Option(
+        False, "--allow-incomplete",
+        help="Publish even if the pool cannot serve everything the indexes promise "
+             "(you are still told what is missing).",
+    ),
 ):
     """Publish mirrors to network targets. Without --quiet opens the TUI."""
-    cfg_dir = Path(".")
+    cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
     if quiet or dry_run:
         from mmw.commands.publish import run
-        raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run))
+        raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run,
+                             allow_incomplete=allow_incomplete))
 
     from mmw.tui.init_wizard import InitWizardApp
 
@@ -326,30 +398,64 @@ def cmd_add(
 
 
 @app.command("prune")
-def cmd_prune():
+def cmd_prune(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would be removed without deleting anything"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt (implied when not a TTY)"),
+):
     """Remove orphaned pool packages not referenced by any mirror."""
     from mmw.commands.prune import run
-    run()
+    raise typer.Exit(run(_cfg_dir(), dry_run=dry_run, yes=yes))
 
 
 @app.command("certs")
 def cmd_certs(
     network: str = typer.Option(None, "--network", "-n", help="Generate certs for a specific network by name"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Report what would be generated without writing any key material.",
+    ),
+    ca: Path = typer.Option(
+        None, "--ca",
+        help="CA certificate to sign with (PEM). With --ca-key, writes mirror.crt; "
+             "the next publish/bundle then serves HTTPS.",
+    ),
+    ca_key: Path = typer.Option(
+        None, "--ca-key",
+        help="The CA's private key (PEM). Prompted for its passphrase if encrypted, "
+             "or set MMW_CA_PASSPHRASE.",
+    ),
+    days: int = typer.Option(730, "--days", min=1, help="Validity of the signed certificate."),
 ):
-    """Generate (or refresh) TLS key/CSR material for `certs = true` networks."""
+    """Generate (or refresh) TLS key/CSR material for `certs = true` networks,
+    and sign it with your CA.
+
+      mmw certs                                  # key + CSR, and check any signed cert
+      mmw certs -n lab --ca ca.crt --ca-key ca.key
+    """
     from mmw.commands.certs import run
-    raise typer.Exit(run(Path("."), network=network))
+    raise typer.Exit(run(_cfg_dir(), network=network, dry_run=dry_run,
+                         ca=ca, ca_key=ca_key, days=days))
 
 
 @app.command("bundle")
 def cmd_bundle(
     network: str = typer.Option(None, "--network", "-n", help="Bundle one network by name"),
     full: bool = typer.Option(False, "--full", help="Send the whole network, not just the delta"),
-    out: Path = typer.Option(None, "--out", help="Write here instead of the network's bundle_dir"),
+    out: Path = typer.Option(None, "--out", "-o",
+                             help="Write here instead of the network's bundle_dir"),
+    allow_incomplete: bool = typer.Option(
+        False, "--allow-incomplete",
+        help="Bundle even if the pool cannot serve everything the indexes promise. "
+             "The gap is invisible in the bundle and surfaces as a 404 during "
+             "`apt install` on the far side, so you are told exactly what is missing.",
+    ),
 ):
     """Write a network's mirrors to a transferable bundle."""
     from mmw.commands.bundle import run
-    raise typer.Exit(run(Path("."), network=network, full=full, out=out))
+    raise typer.Exit(run(_cfg_dir(), network=network, full=full, out=out,
+                         allow_incomplete=allow_incomplete))
 
 
 @app.command("verify")
@@ -358,4 +464,4 @@ def cmd_verify(
 ):
     """Check the pool holds every blob its mirrors' refs want (read-only)."""
     from mmw.commands.verify import run
-    raise typer.Exit(run(Path("."), network=network))
+    raise typer.Exit(run(_cfg_dir(), network=network))

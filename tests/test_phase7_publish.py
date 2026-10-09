@@ -203,9 +203,9 @@ def test_dry_run_network_without_root_returns_error(tmp_path, mirror_dir):
     assert not (mirror_dir / ".pool").exists()
 
 
-def test_publish_writes_nginx_site_files(tmp_path, pool, mirror_dir):
-    """A real publish generates nginx/mirror.conf + one site file per host, with
-    the network's own root substituted — no placeholder left behind."""
+def test_publish_writes_nginx_conf(tmp_path, pool, mirror_dir):
+    """A real publish generates one nginx/mirror.conf with a server block per
+    host, the network's own root substituted — no placeholder left behind."""
     _seed_flat(pool, "m", "https://example.com/repo/", "pkg.deb")
     net = config.NetworkConfig(name="n", root=tmp_path / "pub")
     cfg = config.Config(
@@ -218,12 +218,10 @@ def test_publish_writes_nginx_site_files(tmp_path, pool, mirror_dir):
     result = publish_network(net, cfg, mirror_dir)
     assert result.errors == []
 
-    site = net.root / "nginx" / "sites" / "example.com.conf"
-    assert site.exists()
-    content = site.read_text()
+    content = (net.root / "nginx" / "mirror.conf").read_text()
     assert f"root {net.root}/example.com;" in content
     assert "__MMW_ROOT__" not in content
-    assert (net.root / "nginx" / "mirror.conf").exists()
+    assert not (net.root / "nginx" / "sites").exists()
 
 
 def test_publish_nginx_false_writes_no_site_files(tmp_path, pool, mirror_dir):
@@ -355,3 +353,24 @@ def test_bundle_only_network_offers_nothing_to_delete(tmp_path):
     dirs, shared = exclusive_publish_dirs(net, {ports.name: ports}, {ports.name}, set())
     assert dirs == []
     assert shared == []
+
+
+def test_publish_removes_the_old_sites_directory(tmp_path, pool, mirror_dir):
+    """Trees published before the single-file layout still hold
+    `nginx/sites/*.conf`. Left there, a `sites-enabled/*` include that picked
+    up the folder keeps failing; a pruning publish must clear them out."""
+    _seed_flat(pool, "m", "https://example.com/repo/", "pkg.deb")
+    net = config.NetworkConfig(name="n", root=tmp_path / "pub")
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=mirror_dir),
+        sources=[config.SourceConfig(name="m", label="custom", provider="apt-flat",
+                                     url="https://example.com/repo/")],
+        networks=[net],
+    )
+    old = net.root / "nginx" / "sites" / "example.com.conf"
+    old.parent.mkdir(parents=True)
+    old.write_text("server {}\n")
+
+    assert publish_network(net, cfg, mirror_dir).errors == []
+    assert not old.exists()
+    assert not (net.root / "nginx" / "sites").exists()

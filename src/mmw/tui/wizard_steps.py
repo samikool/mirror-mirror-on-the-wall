@@ -1,6 +1,6 @@
 """Wizard step widgets shared by InitWizardApp and AddMirrorScreen.
 
-The distro catalog is gone (see repository-first-redesign.md), so the
+The distro catalog is gone (see docs/history/repository-first-redesign.md), so the
 version/arch/repo discovery steps that drove it went with it. What remains is
 the provider-agnostic chrome: settings, and the confirm screen that renders
 whatever sources the add flow produced.
@@ -20,6 +20,17 @@ class WizardStep(Static):
     pass
 
 
+def _unresolved(src: config.SourceConfig) -> bool:
+    """True when this source's mirror count cannot be known offline.
+
+    The same rule `manage.ManageApp._unresolved` applies to the list rows,
+    minus the pool half — nothing has been synced yet at Confirm time.
+    """
+    if not src.arches:
+        return True
+    return src.provider == "apt" and bool(src.suites) and not src.components
+
+
 class StepSettings(WizardStep):
     DEFAULT_CSS = """
     StepSettings { padding: 1 2; }
@@ -34,7 +45,10 @@ class StepSettings(WizardStep):
         self._max_connections = max_connections if max_connections is not None else (os.cpu_count() or 10)
 
     def compose(self) -> ComposeResult:
-        yield Label("[bold]Step 4 — Settings[/]")
+        # Not "Step 4": the catalog wizard that had four steps is gone, and
+        # `_INIT_STEPS` renders this as step 1 of 2. The step indicator above
+        # already says where we are.
+        yield Label("[bold]Settings[/]")
         yield Label("  [dim]Mirror storage directory[/]", classes="field-label")
         yield Input(placeholder="/data/repos", id="mirror-dir", value=self._mirror_dir)
         yield Label("  [dim]Max concurrent connections[/]", classes="field-label")
@@ -76,17 +90,35 @@ class StepConfirm(WizardStep):
         self._max_connections = max_connections
         self._has_apt = any(s.provider in ("apt", "apt-flat") for s in sources)
         self._total_mirrors = sum(len(s.to_mirrors()) for s in sources)
+        # `to_mirrors()` is pure and offline: with `components = []` or
+        # `arches = []` — the documented "empty means all", and the ordinary
+        # state of a freshly added repository — it expands to *nothing*. This
+        # is the last screen before the config is written, and it told a
+        # first-time user "(0 repos)" and printed a blank architecture, which
+        # reads as "this did not work". Same honesty fix already applied to
+        # `manage._unresolved()` and `MirrorDetail._dimension()`; it had never
+        # reached here.
+        self._unresolved = any(_unresolved(s) for s in sources)
+
+    @staticmethod
+    def _repo_count(total: int, unresolved: bool) -> str:
+        if unresolved:
+            return "all — resolved at sync"
+        return f"{total} repo{'s' if total != 1 else ''}"
 
     def compose(self) -> ComposeResult:
         yield Label("[bold]Confirm[/]")
         if self._mirror_dir is not None:
             yield Label(f"  Mirror directory: [cyan]{self._mirror_dir}[/]")
             yield Label(f"  Connections:      [cyan]{self._max_connections}[/]")
-        yield Label(f"  Sources to add:   [cyan]{len(self._sources)}[/]  ({self._total_mirrors} repos)")
+        yield Label(
+            f"  Sources to add:   [cyan]{len(self._sources)}[/]  "
+            f"([dim]{self._repo_count(self._total_mirrors, self._unresolved)}[/dim])"
+        )
         yield Label("")
         with ScrollableContainer():
             for s in self._sources:
-                arches = ", ".join(s.arches)
+                arches = ", ".join(s.arches) if s.arches else "all arches"
                 yield Label(
                     f"  [primary]●[/] {s.name}  [cyan]{arches}[/]  [dim]{s.url}[/dim]",
                     classes="mirror-entry",

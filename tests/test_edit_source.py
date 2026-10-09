@@ -1,5 +1,5 @@
 """Editing an already-configured repository — the only route to *narrowing*
-a selection through the TUI (see design-notes.md's `config.merge_sources()` note:
+a selection through the TUI (`config.merge_sources()`:
 merging is union-only by design, so re-adding can only ever widen).
 
 Driven headlessly with a Textual pilot; no network — the pickers are seeded

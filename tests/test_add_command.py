@@ -150,7 +150,7 @@ def test_label_and_arch_overrides(cfg_dir):
 
 # ── $(ARCH) placeholder resolution ───────────────────────────────────────────
 # apt fills $(ARCH) in from the local machine's dpkg architecture; mmw has no
-# such machine (see design-notes.md: "never invent an architecture" and
+# such machine ("never invent an architecture" and
 # core/apt_sources.py's arch_placeholder). --arch resolves it without network;
 # omitting --arch probes each known architecture via discover, monkeypatched
 # here since this module is deliberately network-free (see file docstring).

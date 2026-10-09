@@ -214,7 +214,7 @@ def _seeded_pool(tmp_path, source, arches):
 def test_available_mirrors_reports_every_synced_arch(tmp_path):
     """The gap this closes: config expansion only lists arches the config
     spells out — with none spelled out here it is empty, never an invented
-    guess (design-notes.md: never invent an architecture) — so publish must ask the
+    guess (never invent an architecture) — so publish must ask the
     pool, which knows about every arch that was actually synced."""
     from mmw.core.config import Config, Settings
 

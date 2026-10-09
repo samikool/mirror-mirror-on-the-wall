@@ -1,6 +1,6 @@
 """Wizard step widgets shared by InitWizardApp and AddMirrorScreen.
 
-The distro catalog is gone (see docs/history/repository-first-redesign.md), so the
+The distro catalog is gone, so the
 version/arch/repo discovery steps that drove it went with it. What remains is
 the provider-agnostic chrome: settings, and the confirm screen that renders
 whatever sources the add flow produced.

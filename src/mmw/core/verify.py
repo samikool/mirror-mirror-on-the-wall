@@ -157,7 +157,7 @@ def _verify_apt(mirror: MirrorConfig, pool: Pool) -> VerifyResult:
     # No `or "amd64"`. An arch-less `apt` mirror is a bug upstream of here, and
     # inventing one sent verify at `binary-amd64/Packages`, which does not
     # exist — reporting "has this mirror been synced?" for what is really a
-    # wrong assumption. design-notes.md's rule is "never invent an architecture";
+    # wrong assumption. The rule is "never invent an architecture";
     # this was the last place in core/ that still did.
     if not mirror.arch:
         result.error = (

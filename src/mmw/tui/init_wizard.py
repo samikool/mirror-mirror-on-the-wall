@@ -1,6 +1,6 @@
 """Setup wizard (InitWizardApp) and the shared add-repository flow.
 
-The distro catalog is gone (see docs/history/repository-first-redesign.md): a repository is
+The distro catalog is gone: a repository is
 identified by its URL, so AddMirrorScreen is now the repository step followed
 by confirm, with no version/arch/repo discovery chain in between.
 """

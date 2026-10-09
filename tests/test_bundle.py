@@ -271,7 +271,7 @@ def test_apply_refuses_out_of_order(seeded, tmp_path):
     assert b"expects" in proc.stderr or b"out of order" in proc.stderr
     # The message must recover the operator, not name a capability no
     # user-facing surface can invoke (`_execute_bundle` hardcodes
-    # `full=False` -- see design-notes.md's Bundling section).
+    # `full=False`).
     assert b"--full" not in proc.stderr
 
 

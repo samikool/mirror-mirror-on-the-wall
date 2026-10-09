@@ -380,10 +380,6 @@ multi-terabyte mirror tree**. Do not point recursive tools at the repo root
 stdlib-only and Python 3.6 compatible; `tests/test_apply_script.py` and CI
 enforce it.
 
-[docs/internals/design-notes.md](docs/internals/design-notes.md) is the
-architecture journal — the reasoning behind the pool model, the threading
-design and the invariants the tests defend.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -107,7 +107,7 @@ def _run_workload(mirror_dir, checkpoint_interval: float) -> int:
 def test_periodic_checkpoint_bounds_wal(tmp_path):
     """The writer thread's periodic PASSIVE checkpoint reclaims WAL frames for
     reuse mid-sync, instead of letting the WAL grow unboundedly the way a real
-    sync's did (140MB+, see design-notes.md's WAL note) — checked here by comparing
+    sync's did (140MB+) — checked here by comparing
     the same workload with checkpointing on vs. effectively off, since the
     packages table's random (sha256) primary key means WAL size per batch
     naturally grows with table size regardless of checkpointing, so a bare

@@ -1,7 +1,7 @@
 """Turning "all" into concrete suites, components and architectures.
 
 An empty `suites` / `components` / `arches` list on a source means *everything
-upstream serves* (see docs/history/repository-first-redesign.md). Resolving that needs the
+upstream serves*. Resolving that needs the
 network, so it cannot live in `SourceConfig.to_mirrors()`, which is a pure
 function used offline by publish, certs and the manage listing.
 

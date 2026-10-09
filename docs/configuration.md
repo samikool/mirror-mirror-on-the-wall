@@ -5,8 +5,7 @@ system-wide config, no `~/.config` lookup and no `--config` flag: the working
 directory *is* the selector, so two mirrors on one machine are two directories.
 
 > **Generated file — do not hand-edit.** The key tables below are built from the
-> pydantic models in `src/mmw/core/config.py`:
-> `uv run python docs/tools/gen_config_docs.py`
+> pydantic models in `src/mmw/core/config.py`.
 
 **Unknown keys are a hard error.** Every model is `extra="forbid"`, so a typo
 (`arch = ` instead of `arches = `) fails the load with a message instead of

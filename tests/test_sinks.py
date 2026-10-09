@@ -601,7 +601,7 @@ def test_write_upgrade_md_goes_to_sink_root(tmp_path):
 
     body = sink.written["UPGRADE.md"].decode()
     assert "ports.ubuntu.com" in body
-    assert "archive.ubuntu.com" not in body   # never hardcoded — design-notes.md
+    assert "archive.ubuntu.com" not in body   # never hardcoded
     assert "changelogs.ubuntu.com" in body    # always appended
 
 

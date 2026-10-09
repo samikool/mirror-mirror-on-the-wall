@@ -1,6 +1,6 @@
 """`do_bundle` must ask delta-or-full every time, and the choice must reach
-`bundle_network`'s `full` argument — this closes the gap design-notes.md already
-flagged: `_execute_bundle` used to hardcode `full=False`, so no user-facing
+`bundle_network`'s `full` argument — this closes a known
+gap: `_execute_bundle` used to hardcode `full=False`, so no user-facing
 surface could ever ask for a full re-bundle.
 
 Cancelling the modal is a third, distinct outcome from choosing "Delta" — it

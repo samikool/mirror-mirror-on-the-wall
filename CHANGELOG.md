@@ -152,9 +152,3 @@ First public release. Prior history was not versioned.
   every network is not.
 - Errors go to stderr across every command.
 - Destructive TUI keys moved behind modifiers; `?` and `/` gained bindings.
-- The architecture notes moved to `docs/internals/design-notes.md`.
-
-### Removed
-
-- `prune_old_mirrors.py`, an obsolete migration script that against a current
-  config proposed `rm -rf` on every top-level directory in `mirror_dir`.

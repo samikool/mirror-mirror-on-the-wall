@@ -753,6 +753,11 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
             self.query_one(SelectionList).focus()
         except Exception:
             pass
+        # Focusing the list can nudge the form down a row — on some Python
+        # versions and not others, which made the approved snapshot flaky —
+        # hiding the "Name" label. Open at the top, deterministically.
+        container = self.query_one("#edit-container")
+        self.call_after_refresh(container.scroll_home, animate=False)
 
     def _apply_repo_visibility(self) -> None:
         """Show only the dimension pickers for a currently-checked repo. A

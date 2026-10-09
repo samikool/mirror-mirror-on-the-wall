@@ -94,7 +94,7 @@ def read_manifest(path: Path) -> tuple[ManifestHeader, dict[str, str]]:
     `manifest_rows` + `BundleSink._send`/`_seen` cost another ~440 MB on top
     of it during a bundle, and `--full` no longer skips this load at all (it
     still needs `prev` to compute the delete set — see bundle.py). A
-    streaming refactor would fix this properly; deferred, see design-notes.md
+    streaming refactor would fix this properly; deferred
     "Next up". If it bites before then, the format is internal — swap JSONL
     for a SQLite manifest without changing any caller.
     """

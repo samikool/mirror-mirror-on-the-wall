@@ -267,7 +267,7 @@ class SourceConfig(_StrictModel):
         property is offline and pure, so for an apt source it cannot do that
         listing itself; it returns `[]` and leaves resolution to the sync path,
         exactly like an unresolved `components` list already does. Inventing an
-        arch here (the old `amd64` fallback) is what design-notes.md's "never invent
+        arch here (the old `amd64` fallback) is what the "never invent
         an architecture" rule forbids: a repository nobody has listed yet has no
         business being labelled as anything, least of all before the first sync
         — `to_mirrors()` yields no sync units and callers that display "what

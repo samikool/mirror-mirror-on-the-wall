@@ -91,7 +91,7 @@ def test_flat_repo_has_no_suite():
 def test_arch_placeholder_is_recorded_not_guessed():
     """`$(ARCH)` is apt's own runtime substitution — the machine running apt
     fills it in from `dpkg --print-architecture`. mmw has no such machine, so
-    it must not silently guess amd64 (see design-notes.md: "never invent an
+    it must not silently guess amd64 ("never invent an
     architecture") — it records the placeholder for a network-capable layer
     to resolve, and leaves the URL visibly unresolved until then."""
     entries = parse_apt_sources(

@@ -1,7 +1,7 @@
 """Probing an apt repository over HTTP.
 
 Everything here is keyed on a **repository URI** (host + path), never on a
-distro catalog — see `docs/history/repository-first-redesign.md`. Nothing in this module
+distro catalog. Nothing in this module
 holds state between calls: what a repository publishes is re-read every time it
 is asked for, so a suite or architecture appearing upstream simply shows up.
 """

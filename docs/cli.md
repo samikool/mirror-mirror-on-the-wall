@@ -2,8 +2,7 @@
 
 Every command and option, generated from the typer app itself.
 
-> **Generated file — do not hand-edit.** Regenerate after any CLI change:
-> `uv run python docs/tools/gen_cli_docs.py`
+> **Generated file — do not hand-edit.**
 >
 > Run any command with `--help` for the same information in the terminal.
 

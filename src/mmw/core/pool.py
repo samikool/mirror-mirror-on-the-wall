@@ -457,7 +457,7 @@ class _DeferredWriter:
     def _checkpoint(self, mode: str) -> None:
         """Fold the WAL back into the main file. Never lose the sync to this —
         a failed checkpoint just leaves the WAL as it was, still correct, only
-        larger than it needs to be. See design-notes.md's WAL note: without this the
+        larger than it needs to be. Without this the
         WAL never shrinks while any read or write keeps the pool busy."""
         try:
             with self._pool._lock:

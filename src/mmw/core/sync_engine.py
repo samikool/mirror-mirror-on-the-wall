@@ -75,7 +75,7 @@ class KeySyncCoordinator:
     """Fetches each repository's declared GPG key once.
 
     There is no distro catalog to scrape well-known key locations from any more
-    (see docs/history/repository-first-redesign.md); a key is mirrored when the source
+    ; a key is mirrored when the source
     declares `gpg_key_url`. Sources sharing a key URL fetch it once.
     """
 

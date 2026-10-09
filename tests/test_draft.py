@@ -191,7 +191,7 @@ def test_a_supplied_key_reaches_the_source():
 # ── editing an existing source (`from_source`) ──────────────────────────────
 # `from_source()` is `to_source()`'s mirror image: opening an existing config
 # entry for editing must reproduce it exactly if the user probes nothing and
-# changes nothing. See design-notes.md's "empty means all" rule — the case that
+# changes nothing. The "empty means all" rule — the case that
 # matters is the empty one, not the explicit one.
 
 def test_an_explicit_selection_round_trips_unchanged():
@@ -268,7 +268,7 @@ def test_probing_after_from_source_widens_available_without_moving_chosen(stub):
 
 
 # ── $(ARCH) placeholder resolution ───────────────────────────────────────────
-# See core/apt_sources.py's arch_placeholder and design-notes.md's "never invent an
+# See core/apt_sources.py's arch_placeholder and the "never invent an
 # architecture" — apt's own $(ARCH) substitution has no local machine to run
 # on here, so this is resolved by probing each known architecture instead
 # (discover.expand_arch_placeholder, monkeypatched below rather than hitting

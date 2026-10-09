@@ -4,7 +4,7 @@ The Networks tab has full CRUD; the Manage tab only ever had Add and Delete.
 That is a real gap, not a cosmetic one: `config.merge_sources()` is
 union-only by design (`_union_or_all()` returns `[]` when either side is
 empty, deliberately, so importing one explicit arch can never *narrow* a
-repository mirroring all of them — see design-notes.md). Re-running the add flow on
+repository mirroring all of them). Re-running the add flow on
 top of an existing source can therefore only ever widen it. Narrowing a
 selection — dropping an arch, dropping a suite, restricting components — had
 no route through the TUI at all; only delete-then-re-add or hand-editing

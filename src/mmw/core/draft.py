@@ -230,7 +230,7 @@ class RepositoryDraft:
         repository happens to serve today. Only a later `probe()` may widen
         `available` and flip a dimension to `enumerated=True` — the existing
         "ticking everything collapses back to all" behaviour then applies,
-        unchanged and intentionally so (see design-notes.md's `from_source()` note).
+        unchanged and intentionally so.
 
         `dist_upgrade` and `gpg_key_url` have no `RepositoryDraft` field and are
         dropped here; a consumer that needs them must carry them separately.

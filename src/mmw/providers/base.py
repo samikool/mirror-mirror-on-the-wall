@@ -24,6 +24,15 @@ class MetadataFile:
     content: bytes | None = None  # pre-fetched content; skips the GET in _fetch_one_metadata
     expected_sha256: str | None = None  # if set, content is verified before writing
     fallback_url: str | None = None     # canonical URL to try if url (by-hash) is exhausted
+    # Explicit ref kind. The sync used to infer this from the shape of the
+    # other fields — "content is set and expected_sha256 is not" meant a
+    # release file — which happened to be true for `AptProvider` (it pre-fetches
+    # InRelease/Release/Release.gpg) and false for `AptFlatProvider` (which
+    # only HEADs them, so `content` is None). Flat repositories therefore filed
+    # their trust roots as KIND_META, and publish orders pkg -> meta -> release
+    # specifically so a client mid-`apt update` never sees a release file whose
+    # indexes are not there yet. Naming the kind removes the inference.
+    is_release: bool = False
 
 
 class BaseProvider(ABC):

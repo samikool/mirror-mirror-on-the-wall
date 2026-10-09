@@ -1,5 +1,7 @@
 """Ubuntu dist-upgrade support: meta-release publishing, upgrade-path detection,
 and the generated UPGRADE.md."""
+from pathlib import Path  # noqa: F401  (used in a quoted annotation)
+
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import KIND_META, Pool
 from mmw.core.resolve import network_mirrors
@@ -32,14 +34,25 @@ def parse_meta_release_lts(pool: Pool) -> list[tuple[str, str]]:
     return releases
 
 
-def dist_upgrade_info(network: NetworkConfig, cfg: Config, pool: Pool) -> tuple[list[tuple[str, str]], list[str]]:
+def dist_upgrade_info(network: NetworkConfig, cfg: Config, pool: Pool,
+                      mirror_dir: "Path | None" = None) -> tuple[list[tuple[str, str]], list[str]]:
     """Return (upgrade_paths, warnings) for dist-upgrade validation.
 
     Only considers suites actually selected in this network.
     upgrade_paths: consecutive LTS pairs both present as base suites.
     warnings: base suites missing their -updates counterpart.
+
+    `mirror_dir` is the pool this call should resolve against. Every caller
+    (`publish_network`, `bundle_network`, `dry_run_network`) was handed one
+    explicitly and this function ignored all of them, reaching for
+    `cfg.settings.mirror_dir` instead — so a publish pointed at any other
+    pool silently derived its upgrade paths from the configured one. Kept
+    optional, defaulting to the old behaviour, so nothing that doesn't pass
+    it changes.
     """
-    mirror_map = {m.name: m for m in network_mirrors(network, cfg, cfg.settings.mirror_dir)}
+    if mirror_dir is None:
+        mirror_dir = cfg.settings.mirror_dir
+    mirror_map = {m.name: m for m in network_mirrors(network, cfg, mirror_dir)}
     selected_names = list(mirror_map)
 
     upgrade_suites: set[str] = set()
@@ -70,7 +83,15 @@ def dist_upgrade_info(network: NetworkConfig, cfg: Config, pool: Pool) -> tuple[
 
 
 def publish_changelogs(sink, pool: Pool, result: NetworkPublishResult) -> None:
-    """Publish pooled meta-release blobs to `changelogs.ubuntu.com/` on the sink."""
+    """Publish pooled meta-release blobs to `changelogs.ubuntu.com/` on the sink.
+
+    A real checksum is computed rather than passing `""`: `verify_tree` in
+    `apply.py` skips every empty-checksum entry, so these files (and GPG
+    keys, see `links.publish_keys`) were the only things `--verify` could not
+    actually check.
+    """
+    from mmw.core.publisher.links import file_checksum
+
     for name in ("meta-release", "meta-release-lts"):
         src = pool.find_blob(f"changelogs.ubuntu.com/{name}")
         if src is None or not src.exists():
@@ -79,7 +100,8 @@ def publish_changelogs(sink, pool: Pool, result: NetworkPublishResult) -> None:
             )
             continue
         before = len(sink.errors)
-        status = sink.link(src, f"changelogs.ubuntu.com/{name}", src.stat().st_size, "", KIND_META)
+        status = sink.link(src, f"changelogs.ubuntu.com/{name}", src.stat().st_size,
+                           file_checksum(src), KIND_META)
         if status == "error":
             added = sink.errors[before:]
             result.dist_upgrade_warnings.append(

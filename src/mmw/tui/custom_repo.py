@@ -37,6 +37,10 @@ _URL_PLACEHOLDER = "https://packages.microsoft.com/repos/code"
 # The three axes of an apt repository. One row, one modal, one code path each —
 # they differ only in how they are discovered.
 _DIM_TITLES = {"suites": "suites", "components": "components", "arches": "architectures"}
+# A paste is typed or pasted character by character; wait for it to settle
+# before spending network round trips on it.
+_PASTE_DEBOUNCE = 0.5
+
 _DIMENSIONS = [(d, _DIM_TITLES[d]) for d in DIMENSIONS]
 
 _MODE_HINTS = [
@@ -150,10 +154,22 @@ class StepCustom(WizardStep):
 
     def on_mount(self) -> None:
         self._probe_gen = 0
+        # Pending debounce for the paste box — see `_paste_changed`.
+        self._paste_timer = None
+        # True while the bundle is still being probed: the review pane reads
+        # the drafts, and `probe_all` mutates them from several threads, so
+        # opening it early showed stale dimensions and could hand back a draft
+        # caught mid-`set_dimension`.
+        self._bulk_probing = False
         # The one repository these pickers edit. A paste naming several holds
         # them in `_bundle` instead and hands them to the review pane.
         self._draft: RepositoryDraft | None = None
         self._bundle: list[RepositoryDraft] = []
+        # True once a paste has named several repositories, so `get_sources()`
+        # can tell "the bundle was emptied in the review pane" apart from
+        # "nothing was ever pasted" — two states that produced the same
+        # unhelpful refusal.
+        self._had_bundle = False
         self.query_one("#paste-area").display = False
         self.query_one("#load-row").display = False
         self.query_one("#detect-status").display = False
@@ -175,11 +191,19 @@ class StepCustom(WizardStep):
         self.query_one("#mode-hint", Label).update(_MODE_HINTS[event.index])
         if not is_paste:
             self.query_one("#custom-url", Input).value = ""
+            # Clear the box too. `_reset()` dropped the *draft* but left the
+            # pasted text sitting on screen, so switching away and back showed
+            # a config, no Review button, and "Probe a URL or paste a config
+            # first." from Next — with the config demonstrably right there.
+            # Assigning "" fires TextArea.Changed, which lands in `_reset()`
+            # through the ordinary path.
+            self.query_one("#paste-area", TextArea).text = ""
         self._reset()
 
     def _reset(self) -> None:
         self._draft = None
         self._bundle = []
+        self._had_bundle = False
         self.query_one("#detect-status").display = False
         self.query_one("#fields-container").display = False
         self.query_one("#bulk-row").display = False
@@ -243,20 +267,60 @@ class StepCustom(WizardStep):
         status.display = True
         self._detect_worker(url, self._probe_gen)
 
+
+    def _bulk_probe_done(self) -> None:
+        self._bulk_probing = False
+        try:
+            btn = self.query_one("#btn-bulk", Button)
+            btn.disabled = False
+            btn.label = "Review repositories…"
+        except Exception:
+            pass
+
+    def _worker_failed(self, where: str, exc: BaseException) -> None:
+        """Put a failed probe back on screen instead of leaving a dead spinner.
+
+        `@work(thread=True, exit_on_error=False)` logs the exception and drops
+        it, so the `call_from_thread` that re-enables the control never ran: a
+        DNS failure or an httpx error the discover layer does not catch left
+        "Probing…" on screen forever with the button disabled, recoverable only
+        by escaping the screen. `key_modal._fetch_worker` was the only worker
+        that already handled this; this is that shape, shared.
+        """
+        name = type(exc).__name__
+        detail = str(exc).strip() or name
+        status = self.query_one("#detect-status", Label)
+        status.update(f"  [red]✗ {where} failed:[/] {detail}")
+        status.display = True
+        self._set_busy(False)
+        self._bulk_probe_done()
+
+    def _set_busy(self, busy: bool) -> None:
+        try:
+            self.query_one("#btn-detect", Button).disabled = busy
+        except Exception:
+            pass
+
     @work(thread=True, exit_on_error=False)
     def _detect_worker(self, url: str, gen: int) -> None:
-        result = probers.probe_url(url)
-        self.app.call_from_thread(self._on_detect, url, result, gen)
+        try:
+            result = probers.probe_url(url)
+            self.app.call_from_thread(self._on_detect, url, result, gen)
+        except Exception as exc:
+            self.app.call_from_thread(self._worker_failed, "probe", exc)
 
     @work(thread=True, exit_on_error=False)
     def _resolve_url_placeholder_worker(self, url: str, placeholder: str, gen: int) -> None:
-        drafts = []
-        for arch, result in discover.probe_arch_placeholder(url, placeholder):
-            draft = RepositoryDraft(url=url.replace(placeholder, arch), provider=result.provider)
-            if result.provider == "apt":
-                draft.set_dimension("suites", result.suites, chosen=[], enumerated=True)
-            drafts.append(draft)
-        self.app.call_from_thread(self._on_url_placeholder_resolved, drafts, gen)
+        try:
+            drafts = []
+            for arch, result in discover.probe_arch_placeholder(url, placeholder):
+                draft = RepositoryDraft(url=url.replace(placeholder, arch), provider=result.provider)
+                if result.provider == "apt":
+                    draft.set_dimension("suites", result.suites, chosen=[], enumerated=True)
+                drafts.append(draft)
+            self.app.call_from_thread(self._on_url_placeholder_resolved, drafts, gen)
+        except Exception as exc:
+            self.app.call_from_thread(self._worker_failed, "architecture probe", exc)
 
     def _on_url_placeholder_resolved(self, drafts: list[RepositoryDraft], gen: int) -> None:
         if gen != self._probe_gen:
@@ -327,7 +391,29 @@ class StepCustom(WizardStep):
 
     @on(TextArea.Changed, "#paste-area")
     def _paste_changed(self, event: "TextArea.Changed") -> None:
-        text = event.text_area.text.strip()
+        """Debounced: `TextArea.Changed` fires once per character.
+
+        Every change that parses re-entered `_display_drafts`, which starts
+        probe workers — several HTTP round trips each — and the generation
+        token only suppressed the stale *UI update*, never the I/O already in
+        flight. Measured: typing one 48-character `deb …` line produced ten
+        calls into `discover.list_suites` against the same host; a
+        twelve-repository paste multiplies that by twelve and looks like a
+        scrape from the other end.
+        """
+        if self._paste_timer is not None:
+            self._paste_timer.stop()
+        text = event.text_area.text
+        self._paste_timer = self.set_timer(
+            _PASTE_DEBOUNCE, lambda: self._paste_settled(text)
+        )
+
+    def _paste_settled(self, text: str) -> None:
+        self._paste_timer = None
+        self._apply_paste(text)
+
+    def _apply_paste(self, raw: str) -> None:
+        text = raw.strip()
         status = self.query_one("#detect-status", Label)
         if not text:
             self._reset()
@@ -360,9 +446,12 @@ class StepCustom(WizardStep):
 
     @work(thread=True, exit_on_error=False)
     def _resolve_placeholder_worker(self, entries: list[AptEntry], gen: int) -> None:
-        resolved = resolve_placeholders(entries)
-        drafts = drafts_from_entries(resolved)
-        self.app.call_from_thread(self._on_placeholders_resolved, resolved, drafts, gen)
+        try:
+            resolved = resolve_placeholders(entries)
+            drafts = drafts_from_entries(resolved)
+            self.app.call_from_thread(self._on_placeholders_resolved, resolved, drafts, gen)
+        except Exception as exc:
+            self.app.call_from_thread(self._worker_failed, "architecture probe", exc)
 
     def _on_placeholders_resolved(
         self, entries: list[AptEntry], drafts: list[RepositoryDraft], gen: int
@@ -403,7 +492,7 @@ class StepCustom(WizardStep):
             status.display = True
             self.query_one("#fields-container").display = False
             self.query_one("#bulk-row").display = True
-            self._bulk_probe_worker(drafts, self._probe_gen)
+            self._start_bulk_probe(drafts, self._probe_gen)
             return
 
         draft = drafts[0]
@@ -424,14 +513,38 @@ class StepCustom(WizardStep):
         *from*, so the pickers can offer the rest without changing what is
         selected — exactly what the URL path does, one step later.
         """
-        draft.probe()
-        self.app.call_from_thread(self._on_enriched, draft, gen)
+        try:
+            draft.probe()
+            self.app.call_from_thread(self._on_enriched, draft, gen)
+        except Exception as exc:
+            self.app.call_from_thread(self._worker_failed, "probe", exc)
 
     def _on_enriched(self, draft: RepositoryDraft, gen: int) -> None:
         if gen == self._probe_gen and draft is self._draft:
             self._refresh_dimensions()
 
     # ── a paste naming several repositories ──────────────────────────────────
+
+    def _start_bulk_probe(self, drafts: list[RepositoryDraft], gen: int) -> None:
+        """Disable Review until the probe finishes, then start it.
+
+        `_display_drafts` used to show the Review button and start this worker
+        in the same breath. `probe_all` mutates every draft from eight threads,
+        and `RepositoryDraft.set_dimension` writes `available` then `chosen`
+        non-atomically — so a pane opened mid-probe rendered pre-probe
+        dimensions that never refreshed, and pressing Done could read a draft
+        between those two writes and store an explicit narrow list where the
+        draft meant "all", quietly pinning the repository to whatever it
+        happened to hold at that instant.
+        """
+        self._bulk_probing = True
+        try:
+            btn = self.query_one("#btn-bulk", Button)
+            btn.disabled = True
+            btn.label = "Probing repositories…"
+        except Exception:
+            pass
+        self._bulk_probe_worker(drafts, gen)
 
     @work(thread=True, exit_on_error=False)
     def _bulk_probe_worker(self, drafts: list[RepositoryDraft], gen: int) -> None:
@@ -440,10 +553,20 @@ class StepCustom(WizardStep):
         A DGX sources tree names a dozen; probing them one after another would
         take a dozen round-trip stacks before the pane could open.
         """
-        probe_all(drafts)
-        self.app.call_from_thread(self._on_bulk_probed, drafts, gen)
+        try:
+            probe_all(drafts)
+            self.app.call_from_thread(self._on_bulk_probed, drafts, gen)
+        except Exception as exc:
+            self.app.call_from_thread(self._worker_failed, "probe", exc)
 
     def _on_bulk_probed(self, drafts: list[RepositoryDraft], gen: int) -> None:
+        self._bulk_probing = False
+        try:
+            btn = self.query_one("#btn-bulk", Button)
+            btn.disabled = False
+            btn.label = "Review repositories…"
+        except Exception:
+            pass
         if gen != self._probe_gen or drafts is not self._bundle:
             return
         ok = sum(1 for d in drafts if not d.error)
@@ -455,6 +578,8 @@ class StepCustom(WizardStep):
     @on(Button.Pressed, "#btn-bulk")
     def _bulk_pressed(self, event: "Button.Pressed") -> None:
         event.stop()
+        if self._bulk_probing:
+            return                                  # drafts are still being written
         self._open_review()
 
     @work
@@ -539,8 +664,11 @@ class StepCustom(WizardStep):
     @work(thread=True, exit_on_error=False)
     def _suite_dimensions_worker(self, draft: RepositoryDraft, suite: str, gen: int) -> None:
         """Components and architectures follow from a chosen suite."""
-        draft.probe_suite(suite)
-        self.app.call_from_thread(self._on_suite_dimensions, draft, gen)
+        try:
+            draft.probe_suite(suite)
+            self.app.call_from_thread(self._on_suite_dimensions, draft, gen)
+        except Exception as exc:
+            self.app.call_from_thread(self._worker_failed, "suite probe", exc)
 
     def _on_suite_dimensions(self, draft: RepositoryDraft, gen: int) -> None:
         if gen == self._probe_gen and draft is self._draft:

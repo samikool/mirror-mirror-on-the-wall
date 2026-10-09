@@ -679,17 +679,51 @@ class SyncApp(App):
     def on_mount(self):
         if self._dry_run:
             self.sub_title = "sync (dry-run)"
-        mirror_dir = self._cfg.settings.mirror_dir
-        mirror_dir.mkdir(parents=True, exist_ok=True)
-        self._pool = Pool(mirror_dir)
+        # Everything here is allocation, not I/O: the executor creates its
+        # threads lazily, the semaphore is an object, and KeySyncCoordinator
+        # just holds a path and a lock.
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=self._cfg.settings.max_connections
         )
         # Shared across all download_mirror calls: at most max_connections
         # package downloads in flight globally, competed for fairly.
         self._sem = asyncio.Semaphore(self._cfg.settings.max_connections)
-        self._keys_coord = KeySyncCoordinator(mirror_dir)
+        self._keys_coord = KeySyncCoordinator(self._cfg.settings.mirror_dir)
         self.set_interval(1 / 60, self._tick)
+        # Opening the pool is disk work — a mkdir, a SQLite connect, the schema
+        # script, and `_reap_stale_tmp()` walking `.pool/tmp/` — and `on_mount`
+        # runs on the event loop, so the app painted nothing until it finished.
+        # On a spinning disk with a large tmp directory that is a visible stall
+        # before the first frame. Deferred to a thread: `_tick` already
+        # tolerates `self._pool` being None, and no mirror can start before the
+        # pool exists anyway.
+        self._open_pool_and_start()
+
+    @work(exit_on_error=False)
+    async def _open_pool_and_start(self) -> None:
+        mirror_dir = self._cfg.settings.mirror_dir
+
+        def _open() -> Pool:
+            mirror_dir.mkdir(parents=True, exist_ok=True)
+            return Pool(mirror_dir)
+
+        try:
+            pool = await asyncio.to_thread(_open)
+        except Exception as e:
+            # Previously this raised straight out of `on_mount` and killed the
+            # app with a traceback. An unwritable mirror_dir (an NFS mount that
+            # is not up, the wrong uid) is the most ordinary misconfiguration
+            # there is, and it deserves a sentence.
+            self.notify(f"Could not open the pool at {mirror_dir}: {e}",
+                        severity="error", timeout=20)
+            return
+        if self._stop_event.is_set():
+            # Unmounted while the pool was opening — nothing will ever use it,
+            # and `on_unmount` has already captured a None and moved on, so
+            # closing it here is the only thing that will.
+            await asyncio.to_thread(pool.close)
+            return
+        self._pool = pool
         for mirror in self._mirrors:
             self._sync_mirror(mirror)
 

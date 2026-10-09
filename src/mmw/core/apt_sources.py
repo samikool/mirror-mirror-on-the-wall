@@ -18,7 +18,7 @@ several lines regroup by URL back into a single source.
 import re
 from dataclasses import dataclass, field, replace
 
-from mmw.core.config import SourceConfig, SuiteOverride, derive_name
+from mmw.core.config import SourceConfig, SuiteOverride, derive_name, normalize_url
 
 
 @dataclass
@@ -67,19 +67,79 @@ def expand_placeholder_entry(entry: AptEntry, archs: list[str]) -> list[AptEntry
     ]
 
 
-def parse_apt_sources(text: str) -> list[AptEntry]:
-    """Parse either apt format into every entry it declares.
+# A deb822 field header: an unindented `Name:` at the start of a line. Matched
+# against the line, never the blob — `# see Types: below` in a comment is not a
+# field, and a one-line `deb http://…` is not one either (the text before its
+# first colon carries a space, so it cannot be a field name).
+_FIELD_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]*\s*:")
 
-    deb822 is detected by its `Types:`/`URIs:` field header; anything else is
-    read as classic one-line `deb` records.
+
+def parse_apt_sources(text: str) -> list[AptEntry]:
+    """Parse either apt format — or both at once — into every entry declared.
+
+    **One input commonly holds both.** `mmw add -f /etc/apt/sources.list.d/`
+    is the documented headline workflow and that directory is exactly where a
+    deb822 `ubuntu.sources` sits beside a one-line `docker.list`: the format
+    is per *file*, and joining them gives a blob that is neither. Picking one
+    parser for the whole blob — by substring-testing for `types:` anywhere in
+    it, comments included — silently dropped every `deb ` line in a directory
+    that contained any `.sources` file at all, and exited 0.
+
+    So the blob is split into records first and each is given to the parser
+    that fits it.
     """
     text = _unescape(text)
     if not text:
         return []
-    lowered = text.lower()
-    if "types:" in lowered or "uris:" in lowered:
-        return _parse_deb822(text)
-    return _parse_one_line(text)
+    deb822_text, one_line_text = _split_formats(text)
+    entries: list[AptEntry] = []
+    if deb822_text.strip():
+        entries.extend(_parse_deb822(deb822_text))
+    if one_line_text.strip():
+        entries.extend(_parse_one_line(one_line_text))
+    return entries
+
+
+def _split_formats(text: str) -> tuple[str, str]:
+    """Separate a mixed blob into (deb822 text, one-line text).
+
+    deb822 lines are kept together in one string — blank-line separators and
+    all — rather than split into per-stanza blocks, so `_parse_deb822` can
+    still pair a `Types: deb-src` record with the `Types: deb` record it
+    accompanies.
+    """
+    lines_822: list[str] = []
+    one_liners: list[str] = []
+    in_822 = False
+
+    def end_record() -> None:
+        nonlocal in_822
+        if in_822:
+            lines_822.append("")      # blank line: ends the deb822 record
+            in_822 = False
+
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            end_record()
+            continue
+        if in_822 and raw[:1] in (" ", "\t"):
+            lines_822.append(raw)     # continuation (an inline Signed-By: block)
+            continue
+        if stripped.startswith("#"):
+            (lines_822 if in_822 else one_liners).append(raw)
+            continue
+        if stripped.split(None, 1)[0].lower() in ("deb", "deb-src"):
+            end_record()
+            one_liners.append(raw)
+            continue
+        if _FIELD_RE.match(stripped):
+            in_822 = True
+            lines_822.append(raw)
+            continue
+        (lines_822 if in_822 else one_liners).append(raw)
+
+    return "\n".join(lines_822), "\n".join(one_liners)
 
 
 def entries_to_sources(
@@ -94,13 +154,23 @@ def entries_to_sources(
     components differ from the first becomes a SuiteOverride, matching what
     the wizard's build_source_configs() emits.
     """
+    # **Grouped by identity, not by the raw string.** `config.merge_sources()`
+    # and `Config`'s uniqueness check both key on `normalize_url`, so grouping
+    # on the literal URL here previewed two sources where `save()` would write
+    # one — contradicting the "a preview always matches what gets written"
+    # rule `source_to_dict()` exists to keep. The first spelling seen wins as
+    # the URL actually written.
     grouped: dict[str, list[AptEntry]] = {}
+    urls: dict[str, str] = {}
     for e in entries:
-        grouped.setdefault(e.url, []).append(e)
+        key = normalize_url(e.url)
+        urls.setdefault(key, e.url)
+        grouped.setdefault(key, []).append(e)
 
     taken: set[str] = set()
     sources: list[SourceConfig] = []
-    for url, group in grouped.items():
+    for key, group in grouped.items():
+        url = urls[key]
         flat = group[0].suite is None
         arches = _union(*(e.arches for e in group))
         if not arches and default_arch:
@@ -142,8 +212,19 @@ def _parse_deb822(text: str) -> list[AptEntry]:
     """Stanzas are separated by blank lines — parsing the file as one block
     lets a later stanza overwrite an earlier one, which silently drops repos."""
     entries: list[AptEntry] = []
+    src_keys: set[tuple[str, str | None]] = set()
     for stanza in _stanzas(text):
-        entries.extend(_parse_stanza(stanza))
+        got, keys = _parse_stanza(stanza)
+        entries.extend(got)
+        src_keys |= keys
+
+    # A `Types: deb-src` record is not its own mirror — it turns on sources for
+    # the binary record it accompanies, exactly as a `deb-src` *line* does.
+    # Only the one-line door paired them, so the same repository imported from
+    # a .sources file silently lost `include_sources`.
+    for e in entries:
+        if (e.url, e.suite) in src_keys:
+            e.include_sources = True
     return entries
 
 
@@ -215,19 +296,29 @@ def _parse_deb822_fields(stanza: str) -> dict[str, str]:
     return fields
 
 
-def _parse_stanza(stanza: str) -> list[AptEntry]:
+def _parse_stanza(stanza: str) -> tuple[list[AptEntry], set[tuple[str, str | None]]]:
+    """One record → (binary entries, the (url, suite) keys a `deb-src` record
+    names). A deb-src-only record contributes no mirror, only keys."""
     fields = _parse_deb822_fields(stanza)
+    none: tuple[list[AptEntry], set[tuple[str, str | None]]] = ([], set())
 
     if fields.get("enabled", "").lower() in ("no", "false"):
-        return []          # source switched off on the source machine
+        return none        # source switched off on the source machine
     types = fields.get("types", "").split()
-    if "deb" not in types:
-        return []          # deb-src-only stanza: nothing to mirror as binaries
     uris = [u for u in fields.get("uris", "").split() if _is_mirrorable(u)]
     if not uris:
-        return []
+        return none
 
     suites = fields.get("suites", "").split()
+    if "deb" not in types:
+        # deb-src-only stanza: nothing to mirror as binaries, but it still says
+        # "this repository's sources are wanted".
+        if "deb-src" not in types:
+            return none
+        return [], {
+            _flat_target(u.rstrip("/"), suite)
+            for u in uris for suite in (suites or [None])
+        }
     components = fields.get("components", "").split()
     arches = _split_list(fields.get("architectures", ""))
     include_sources = "deb-src" in types
@@ -236,29 +327,29 @@ def _parse_stanza(stanza: str) -> list[AptEntry]:
     # already on the machine) or the armoured key inline, which is what
     # Launchpad PPAs ship. Inline key material is worth keeping: on an airgapped
     # network the key URL is exactly what cannot be reached.
-    signed_by = fields.get("signed-by", "").strip()
-    inline = "BEGIN PGP PUBLIC KEY BLOCK" in signed_by
-    gpg_key = signed_by if inline else None
-    # A keyring *path* names a file on the source machine. We cannot read it,
-    # but remembering the basename lets the user point at a directory later and
-    # have it matched up (`/usr/share/keyrings/cuda_debian_prod.gpg`).
-    gpg_key_name = None
-    if not inline and signed_by and "\n" not in signed_by:
-        gpg_key_name = signed_by.rsplit("/", 1)[-1].strip() or None
+    gpg_key, gpg_key_name = _signed_by(fields.get("signed-by", ""))
 
     entries = []
     for uri in uris:
+        # apt fills `$(ARCH)`/`$ARCH` in from the *local machine's* dpkg
+        # architecture. deb822 is Ubuntu 24.04+'s default format, and this door
+        # never checked for the token at all — so the literal `$(ARCH)` was
+        # written into mmw.toml and every index request 404'd. Same call, same
+        # result as the one-line door.
+        placeholder = detect_arch_placeholder(uri)
         for suite in suites or [None]:
+            url, dist = _flat_target(uri.rstrip("/"), suite)
             entries.append(AptEntry(
-                url=uri.rstrip("/"),
-                suite=None if suite in (None, "/") else suite,
+                url=url,
+                suite=dist,
                 components=list(components),
                 arches=list(arches),
                 include_sources=include_sources,
                 gpg_key=gpg_key,
                 gpg_key_name=gpg_key_name,
+                arch_placeholder=placeholder,
             ))
-    return entries
+    return entries, set()
 
 
 # ── classic one-line ──────────────────────────────────────────────────────────
@@ -268,8 +359,12 @@ def _parse_one_line(text: str) -> list[AptEntry]:
     src_keys: set[tuple[str, str | None]] = set()
 
     for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+        # apt strips from `#` to end-of-line *anywhere*, not only at the start.
+        # Without this, `… jammy main restricted # added by me` mirrored four
+        # extra "components" — `dists/jammy/#/`, `dists/jammy/added/` and so on
+        # — one aborted sync unit each.
+        line = line.split("#", 1)[0].strip()
+        if not line:
             continue
         kind, _, rest = line.partition(" ")
         if kind not in ("deb", "deb-src"):
@@ -292,13 +387,30 @@ def _parse_one_line(text: str) -> list[AptEntry]:
 
 def _parse_one_line_body(rest: str) -> AptEntry | None:
     arches: list[str] = []
+    gpg_key: str | None = None
+    gpg_key_name: str | None = None
     if rest.startswith("["):
         end = rest.find("]")
         if end == -1:
             return None
-        for opt in rest[1:end].split():
+        options = rest[1:end]
+        for opt in options.split():
             if opt.startswith("arch="):
                 arches = _split_list(opt[5:])
+        # The same handle the deb822 door records. Docker and Kubernetes still
+        # publish one-liners, and `gpg_key_name` is what `mmw add --keys-dir`,
+        # the review pane's directory scan and KeyModal all match a supplied
+        # keyring on — so dropping it made the whole supply-the-key-later
+        # workflow unreachable for every one-line config.
+        marker = options.find("signed-by=")
+        if marker != -1:
+            value = options[marker + len("signed-by="):]
+            # Options are whitespace-separated, so a value is one token — unless
+            # it is armour, which carries spaces of its own and can only be the
+            # last thing in the block.
+            if not value.lstrip().startswith("-----BEGIN PGP"):
+                value = value.split()[0] if value.split() else ""
+            gpg_key, gpg_key_name = _signed_by(value)
         rest = rest[end + 1:].strip()
     # apt fills $(ARCH)/$ARCH in from the *local machine's* dpkg architecture
     # at update time — mmw has no such machine, so guessing one here (this
@@ -310,14 +422,55 @@ def _parse_one_line_body(rest: str) -> AptEntry | None:
     parts = rest.split()
     if len(parts) < 2 or not _is_mirrorable(parts[0]):
         return None
-    suite = parts[1]
+    url, dist = _flat_target(parts[0].rstrip("/"), parts[1])
     return AptEntry(
-        url=parts[0].rstrip("/"),
-        suite=None if suite == "/" else suite,
-        components=parts[2:],
+        url=url,
+        suite=dist,
+        components=parts[2:] if dist is not None else [],
         arches=arches,
+        gpg_key=gpg_key,
+        gpg_key_name=gpg_key_name,
         arch_placeholder=placeholder,
     )
+
+
+def _signed_by(value: str) -> tuple[str | None, str | None]:
+    """A `Signed-By:` / `signed-by=` value → (inline armour, keyring basename).
+
+    Either the armoured key itself — what Launchpad PPAs ship, and worth
+    keeping, because on an airgapped network the key URL is exactly what
+    cannot be reached — or a path to a keyring on the machine the config came
+    from. That file is the one thing a config cannot carry, so the basename is
+    remembered as the handle that lets it be supplied later.
+    """
+    value = value.strip()
+    if not value:
+        return None, None
+    if "BEGIN PGP PUBLIC KEY BLOCK" in value:
+        return value, None
+    if "\n" in value:
+        return None, None
+    name = value.split(",")[0].rsplit("/", 1)[-1].strip()
+    return None, name or None
+
+
+def _flat_target(url: str, distribution: str | None) -> tuple[str, str | None]:
+    """Apply apt's exact-path rule: **any** distribution ending in `/` names a
+    flat repository, not a suite under `dists/`.
+
+    Only a bare `/` used to be recognised, so `deb http://v.example/repo ./`
+    — the spelling in most vendor install docs — became a suite literally
+    called `./` and every index request went to `dists/.//`. A non-root form
+    like `stable/` names a path *relative to the URL*, so it folds into the
+    URL rather than being dropped.
+    """
+    if distribution is None or not distribution.endswith("/"):
+        return url, distribution
+    rel = distribution.rstrip("/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    rel = "" if rel == "." else rel.strip("/")
+    return (f"{url}/{rel}" if rel else url), None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

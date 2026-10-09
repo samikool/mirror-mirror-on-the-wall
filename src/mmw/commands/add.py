@@ -9,6 +9,7 @@ from pathlib import Path
 
 import tomli_w
 
+from mmw.commands.common import eprint
 from mmw.core import config, discover, keys
 from mmw.core.apt_sources import AptEntry, entries_to_sources, expand_placeholder_entry, parse_apt_sources
 
@@ -32,6 +33,18 @@ def read_input(files: "list[Path] | Path | None", url: str | None) -> str:
 
     paths = [files] if isinstance(files, Path) else list(files or [])
     if not paths or (len(paths) == 1 and str(paths[0]) == "-"):
+        # An interactive terminal with no `-f` and no `--url` is not a request
+        # to read a config off the keyboard: `sys.stdin.read()` simply blocked
+        # forever with no prompt, which reads as a hang. An explicit `-f -`
+        # still means stdin, TTY or not.
+        if sys.stdin.isatty() and not (len(paths) == 1 and str(paths[0]) == "-"):
+            raise ValueError(
+                "nothing to read. Pass -f FILE (or a directory of them), "
+                "--url URL, or pipe a config in:\n"
+                "  mmw add -f /etc/apt/sources.list.d\n"
+                "  cat ubuntu.sources | mmw add\n"
+                "  mmw add -f -            # read stdin explicitly"
+            )
         return sys.stdin.read()
 
     expanded: list[Path] = []
@@ -76,7 +89,8 @@ def attach_keys(sources: list[config.SourceConfig], keys_dir: Path) -> tuple[int
     return matched, missing
 
 
-def _resolve_arch_placeholders(entries: list[AptEntry], arch: str, echo) -> list[AptEntry] | None:
+def _resolve_arch_placeholders(entries: list[AptEntry], arch: str, echo,
+                               echo_err=None) -> list[AptEntry] | None:
     """Fan out a `$(ARCH)`-templated entry into one concrete entry per
     architecture it actually serves.
 
@@ -121,17 +135,26 @@ def run(
     dry_run: bool = False,
     cfg_dir: Path = Path("."),
     echo=print,
+    echo_err=None,
 ) -> int:
-    """Import sources into mmw.toml. Returns a process exit code."""
+    """Import sources into mmw.toml. Returns a process exit code.
+
+    `echo` carries the result (the TOML preview, the per-source lines);
+    `echo_err` carries everything that means the command failed. They were one
+    parameter, so every failure here went to **stdout** — a cron job mailing
+    only stderr got silence from the one run that did nothing.
+    """
+    if echo_err is None:
+        echo_err = eprint
     try:
         text = read_input(file, url)
     except Exception as e:
-        echo(f"Could not read config: {e}")
+        echo_err(f"Could not read config: {e}")
         return 1
 
     entries = parse_apt_sources(text)
     if not entries:
-        echo(
+        echo_err(
             "No mirrorable apt sources found.\n"
             "Expected a sources.list or deb822 .sources file. Note that "
             "`Enabled: no` stanzas, deb-src-only entries, and non-http "
@@ -139,7 +162,7 @@ def run(
         )
         return 1
 
-    entries = _resolve_arch_placeholders(entries, arch, echo)
+    entries = _resolve_arch_placeholders(entries, arch, echo, echo_err)
     if entries is None:
         return 1
 

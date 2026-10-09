@@ -1,9 +1,11 @@
 import asyncio
 import concurrent.futures
 import time
+from pathlib import Path
 
 import typer
 
+from mmw.commands.common import eprint, interruptible, load_config_or_none
 from mmw.core import config
 from mmw.core.downloader import DownloadResult, MirrorSummary, Status
 from mmw.core.format import fmt_size as _fmt_size
@@ -45,17 +47,47 @@ def resolve_and_report(cfg: config.Config, echo=typer.echo):
     return mirrors, errors
 
 
-async def _mirror_all(cfg: config.Config):
+async def _mirror_all(cfg: config.Config) -> int:
+    """Sync every resolved mirror. Returns a process exit code."""
     mirror_dir = cfg.settings.mirror_dir
-    mirror_dir.mkdir(parents=True, exist_ok=True)
 
     summaries: list[MirrorSummary] = []
+    # Mirrors whose sync raised. Counted, never merely printed: an exception
+    # appends no summary, so before this a run where EVERY mirror raised had
+    # `total_failed == 0`, `metadata_failed == []` and `resolve_errors == []`
+    # at the gate and exited 0 — a nightly cron that downloaded nothing
+    # reporting success, the exact mode this project documents itself against.
+    mirror_errors: list[str] = []
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=cfg.settings.max_connections)
+    try:
+        return await _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
+    finally:
+        # In a `finally`, not after the loop: an exception (or a Ctrl-C) on the
+        # way out used to leave the executor's workers running, which is how a
+        # stopped sync produced "Exception ignored on threading shutdown".
+        executor.shutdown(wait=False)
+
+
+async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor) -> int:
+    try:
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # The single most likely real-world misconfiguration (NFS not mounted,
+        # wrong uid). It already exited 1; it did so via a 121-line traceback.
+        eprint(f"Cannot use mirror_dir {mirror_dir}: {e.strerror or e}")
+        return 1
+
     keys_coord = KeySyncCoordinator(mirror_dir)
 
     mirrors, resolve_errors = resolve_and_report(cfg)
 
-    with Pool(mirror_dir) as pool:
+    try:
+        pool_cm = Pool(mirror_dir)
+    except OSError as e:
+        eprint(f"Cannot open the pool in {mirror_dir}: {e.strerror or e}")
+        return 1
+
+    with pool_cm as pool:
         for mirror in mirrors:
             typer.echo(f"\nMirroring {mirror.name} ...")
             typer.echo("  fetching metadata...")
@@ -76,6 +108,7 @@ async def _mirror_all(cfg: config.Config):
                 )
             except Exception as e:
                 typer.echo(f"  ERROR: {e}", err=True)
+                mirror_errors.append(f"{mirror.name}: {e}")
                 continue
             summaries.append(summary)
 
@@ -94,8 +127,6 @@ async def _mirror_all(cfg: config.Config):
                 typer.echo("  ⚠ metadata NOT updated — mirror serves the previous index", err=True)
             for err in summary.key_errors:
                 typer.echo(f"  ⚠ GPG key: {err}", err=True)
-
-    executor.shutdown(wait=False)
 
     if keys_coord.results:
         typer.echo("\nGPG keys:")
@@ -138,18 +169,24 @@ async def _mirror_all(cfg: config.Config):
             "nothing was synced for them.",
             err=True,
         )
-    if total_failed or metadata_failed or resolve_errors:
+    if mirror_errors:
+        typer.echo(
+            f"\n  {len(mirror_errors)} mirror(s) failed outright: "
+            + ", ".join(mirror_errors),
+            err=True,
+        )
+    if total_failed or metadata_failed or resolve_errors or mirror_errors:
         if total_failed:
             typer.echo(f"\n  {total_failed} package failure(s). See output above.", err=True)
-        raise typer.Exit(1)
+        return 1
+    return 0
 
 
-def run():
-    """Sync configured mirrors to local storage."""
-    try:
-        cfg = config.load()
-    except FileNotFoundError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+@interruptible
+def run(cfg_dir: Path = Path(".")) -> int:
+    """Sync configured mirrors to local storage. Returns a process exit code."""
+    cfg = load_config_or_none(cfg_dir)
+    if cfg is None:
+        return 1
 
-    asyncio.run(_mirror_all(cfg))
+    return asyncio.run(_mirror_all(cfg))

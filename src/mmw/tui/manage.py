@@ -1,6 +1,5 @@
 """Manage TUI: mirror list + detail panel and the top-level ManageApp."""
 import asyncio
-import re
 from pathlib import Path
 
 from textual import on, work
@@ -10,6 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import (
     Footer,
     Header,
+    Input,
     Label,
     ListItem,
     ListView,
@@ -23,10 +23,11 @@ from mmw.core import config, pool as pool_mod
 from mmw.core.format import fmt_size as _fmt_bytes
 from mmw.core.resolve import available_mirrors, pooled_mirrors
 from mmw.tui.init_wizard import AddMirrorScreen
-from mmw.tui.modals import ConfirmModal
+from mmw.tui.modals import ConfirmModal, DeleteProgressModal, HelpModal
 from mmw.tui.publish_panel import NetworkPanel
+from mmw.tui.settings_screen import SettingsScreen
 from mmw.tui.source_screens import EditSourceScreen
-from mmw.tui.widgets import Button
+from mmw.tui.widgets import Button, safe_id
 
 
 # ── Detail panel ──────────────────────────────────────────────────────────────
@@ -131,7 +132,14 @@ class MirrorDetail(Static):
 
 
 def _safe_id(name: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+    """Injective — see `widgets.safe_id`.
+
+    A plain `re.sub` here was many-to-one: a source called `a.b` and one
+    called `a-b` both produced `source-a-b`, and Textual answers that with
+    `MountError: Tried to insert 2 widgets with the same ID` — the whole list
+    fails to build, for a config the loader accepted.
+    """
+    return safe_id(name)
 
 
 # ── Add-network wizard ────────────────────────────────────────────────────────
@@ -154,6 +162,29 @@ def _safe_id(name: str) -> str:
 
 # ── Network panel ─────────────────────────────────────────────────────────────
 
+
+
+_MANAGE_HELP = """\
+[b]Manage tab[/b] — the repositories mmw mirrors
+  [accent]a[/]           add a repository (probe a URL, or paste an apt config)
+  [accent]e[/]           edit the highlighted repository — the only route that can
+              [i]narrow[/i] a selection; adding can only ever widen it
+  [accent]d[/]           remove the highlighted or ticked repositories
+  [accent]space[/]       tick / untick  ·  [accent]ctrl+a[/] tick everything
+  [accent]s[/]           sync the ticked repositories (or all of them if none are)
+  [accent]/[/]           find a repository by name or URL  ·  escape clears
+  [accent]p[/]           prune the pool (drop packages no index references)
+  [accent]ctrl+w[/]      wipe the pool — deletes every downloaded byte
+  [accent]ctrl+r[/]      re-initialize (deletes mmw.toml)
+
+[b]Networks tab[/b] — what gets published, and where
+  [accent]a[/] / [accent]e[/] / [accent]d[/]   add / edit / remove a network
+  [accent]p[/]           publish  ·  [accent]r[/] dry run  ·  [accent]b[/] bundle  ·  [accent]c[/] certs
+
+[b]Anywhere[/b]
+  [accent],[/]           settings — pool directory and parallel downloads
+  [accent]1[/] / [accent]2[/]       switch tabs   ·   [accent]?[/] this help   ·   [accent]q[/] quit
+"""
 
 
 # ── Main app ──────────────────────────────────────────────────────────────────
@@ -208,6 +239,15 @@ class ManageApp(App):
     #list-panel ListView {
         height: 1fr;
     }
+
+    /* Hidden until `/` is pressed, so it costs nothing on the default view. */
+    #manage-filter {
+        height: 3;
+        border: solid $accent;
+        display: none;
+    }
+
+    #manage-filter.showing { display: block; }
 
     #list-panel .panel-title {
         background: $primary-darken-3;
@@ -307,13 +347,30 @@ class ManageApp(App):
         Binding("shift+space", "toggle_selection", show=False),
         Binding("ctrl+a", "select_all", "Select All"),
         Binding("s", "launch_sync", "Sync"),
-        Binding("p", "prune_pool", "Prune Pool"),
-        Binding("w", "wipe_pool", "Wipe Pool"),
+        # Hidden from the footer, not from the app: both pool verbs have a
+        # visible button in the action bar two rows below, and with them shown
+        # the footer overflowed at 100 columns — cutting off `/ Find` and
+        # `? Help` entirely. Help being the one binding you cannot discover any
+        # other way, that is the worst possible thing to truncate. Footer space
+        # goes to actions with no other affordance.
+        Binding("p", "prune_pool", "Prune Pool", show=False),
+        # Wipe Pool deletes every downloaded byte, and it used to be a bare
+        # `w` in the footer one key away from `q`, while `⚠ Re-init` — strictly
+        # less destructive — had a button and no key at all. Modified key for
+        # the destructive one, a key for the one that lacked it: the same
+        # asymmetry, and the same fix, as the Certs button.
+        Binding("ctrl+w", "wipe_pool", "Wipe Pool", show=False),
+        Binding("ctrl+r", "reinit", "Re-init", show=False),
+        Binding("slash", "filter_sources", "Find", show=True),
+        # Not in the footer: at 100 columns it pushed `? Help` and `q Quit`
+        # off the end. Listed in the help screen instead.
+        Binding("comma", "edit_settings", "Settings", show=False),
         # Networks-tab only
         Binding("e", "edit_network", "Edit"),
         Binding("p", "publish_network", "Publish"),
         Binding("r", "dry_run_network", "Dry Run"),
         Binding("b", "bundle_network", "Bundle"),
+        Binding("question_mark", "help", "Help"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -331,6 +388,12 @@ class ManageApp(App):
         self._initial_tab = initial_tab
         self._by_source: dict[str, list[config.MirrorConfig]] = {}
         self._available: list[config.MirrorConfig] = []
+        # Type-to-find. The manage list has no jump navigation (unlike
+        # `PickModal`'s `JumpSelectionList`), and every bare letter here is an
+        # action binding — so pressing `d` to look for `debian` in a 92-mirror
+        # list opened the delete confirmation instead. `/` opens a filter box
+        # rather than stealing another letter.
+        self._filter: str = ""
         self._refresh_available()
 
     def _refresh_available(self) -> None:
@@ -384,6 +447,8 @@ class ManageApp(App):
                 with Horizontal(id="manage-layout"):
                     with Vertical(id="list-panel"):
                         yield Static("  Sources", classes="panel-title", id="panel-title")
+                        yield Input(placeholder="filter repositories — esc to clear",
+                                    id="manage-filter")
                         yield ListView(*self._build_items(), id="manage-list")
                     with Vertical(id="detail-panel"):
                         yield MirrorDetail()
@@ -453,8 +518,17 @@ class ManageApp(App):
 
     def _sorted_sources(self) -> list[config.SourceConfig]:
         """Grouped by host, then by name — one host commonly serves several
-        repositories (packages.microsoft.com/repos/code and /repos/edge)."""
-        return sorted(self._cfg.sources, key=lambda s: (self._host_of(s), s.name.lower()))
+        repositories (packages.microsoft.com/repos/code and /repos/edge).
+
+        Narrowed by the `/` filter when one is active: matched against the
+        name and the URL, so both "debian" and "/repos/edge" find their row.
+        """
+        sources = self._cfg.sources
+        if self._filter:
+            needle = self._filter.lower()
+            sources = [s for s in sources
+                       if needle in s.name.lower() or needle in s.url.lower()]
+        return sorted(sources, key=lambda s: (self._host_of(s), s.name.lower()))
 
     def _build_items(self) -> list[ListItem]:
         items = []
@@ -719,31 +793,108 @@ class ManageApp(App):
         confirmed = await self.push_screen_wait(ConfirmModal(title, msg))
         if confirmed:
             remove_names = {s.name for s in targets}
+            # Subtract, never clear. Clearing meant removing one of five ticked
+            # repositories dropped the other four silently, so the next `s`
+            # synced *everything* — an empty selection means "all".
+            gone_mirrors = {m.name for s in targets for m in self._mirrors_of(s)}
+            gone_identities = {s.identity for s in targets}
             self._cfg.sources = [s for s in self._cfg.sources if s.name not in remove_names]
-            self._selection.clear()
-            self._selected_sources.clear()
+            self._selection -= gone_mirrors
+            self._selected_sources -= gone_identities
             self._save()
-            self._refresh_available()
+            # Off the loop: `pooled_mirrors` is a pool query, measured at
+            # 3290 ms against the live pool on its first call. See
+            # `_refresh_available`'s own note.
+            await asyncio.to_thread(self._refresh_available)
             await self._refresh_list()
             self._update_panel_title()
             self.query_one(MirrorDetail).show(None)
 
+    async def _pool_scale(self) -> str:
+        """"320,431 packages · 1.2 TB", or "" when the pool can't be read.
+
+        Worth the query: the wipe confirmation is the most destructive button
+        in the app and "delete the pool" is an abstraction. Off the loop, of
+        course — `stats()` is a full table scan.
+        """
+        def _read() -> "tuple[int, int] | None":
+            try:
+                pool = pool_mod.Pool(self._cfg.settings.mirror_dir, read_only=True)
+            except Exception:
+                return None
+            try:
+                st = pool.stats()
+                return int(st.get("packages", 0)), int(st.get("total_size", 0))
+            except Exception:
+                return None
+            finally:
+                try:
+                    pool.close()
+                except Exception:
+                    pass
+
+        got = await asyncio.to_thread(_read)
+        if not got or not got[0]:
+            return ""
+        return f"[bold]{got[0]:,}[/bold] packages · [bold]{_fmt_bytes(got[1])}[/bold]\n"
+
     @on(Button.Pressed, "#btn-wipe-pool")
     @work(exit_on_error=False)
     async def action_wipe_pool(self):
-        pool_dir = self._cfg.settings.mirror_dir / ".pool"
+        mirror_dir = self._cfg.settings.mirror_dir
+        pool_dir = mirror_dir / ".pool"
+        scale = await self._pool_scale()
+        # The old wording said "Existing mirror files are kept." Under the
+        # pool-first layout there are no mirror files: `mirror_dir` holds only
+        # `.pool/`, `keys/` and `certs/`, so the most destructive button in the
+        # app was reassuring the user that data survives when in fact every
+        # downloaded byte is about to go. Say what actually goes, and what
+        # actually stays.
         confirmed = await self.push_screen_wait(
             ConfirmModal(
                 "⚠  Wipe Package Pool",
                 f"Delete [bold]{pool_dir}[/bold]?\n"
-                "All pooled packages and the deduplication index will be removed.\n"
-                "Existing mirror files are kept. Next sync will re-download everything.\n"
+                f"{scale}"
+                "This is every package and metadata file mmw has downloaded — "
+                "the pool IS the storage, there is no mirror tree beside it. "
+                "The next sync re-downloads all of it.\n"
+                "Kept: your config, keys/ and certs/, and any already-published "
+                "network tree (its files are separate hardlinks).\n"
                 "Are you sure?",
             )
         )
-        if confirmed:
-            pool_mod.wipe(self._cfg.settings.mirror_dir)
-            self.notify("Pool wiped. Next sync will rebuild it.", severity="warning")
+        if not confirmed:
+            return
+        # `shutil.rmtree` over ~320k blobs on a single spinning disk, run
+        # straight from this coroutine, froze the UI with no spinner, no
+        # progress and no cancel — indistinguishable from a hang, so the user
+        # kills it mid-rmtree. `action_prune_pool` directly below already knew
+        # better. DeleteProgressModal does the walk on a thread and counts.
+        # Refused up front if a sync holds the pool — `@work(exit_on_error=False)`
+        # swallows the exception, so an unhandled PoolBusy here would look like
+        # the button simply doing nothing.
+        if await asyncio.to_thread(pool_mod.pool_is_busy, mirror_dir):
+            self.notify(
+                "A sync is using the pool — wiping it now would delete the files "
+                "that sync is still writing. Stop the sync first.",
+                severity="error", timeout=15,
+            )
+            return
+        await self.push_screen_wait(DeleteProgressModal("Wiping pool", [pool_dir]))
+        # Whatever the modal could not remove (a stale lock file, say) still
+        # has to go, and this is cheap once the tree is already empty.
+        try:
+            await asyncio.to_thread(pool_mod.wipe, mirror_dir)
+        except pool_mod.PoolBusy as e:
+            self.notify(str(e), severity="error", timeout=15)
+            return
+        # `_by_source` is pool truth, so wiping it makes every mirror count on
+        # screen a lie until the list is rebuilt — the same rule the config
+        # mutations already follow, applied to the other thing that owns it.
+        await asyncio.to_thread(self._refresh_available)
+        await self._refresh_list()
+        self._update_panel_title()
+        self.notify("Pool wiped. Next sync will rebuild it.", severity="warning")
 
     @on(Button.Pressed, "#btn-prune-pool")
     @work(exit_on_error=False)
@@ -760,14 +911,29 @@ class ManageApp(App):
             mirror_dir = self._cfg.settings.mirror_dir
             from mmw.core.pool import Pool
             configured = [s.identity for s in self._cfg.sources]
-            pool = Pool(mirror_dir)
+            # Constructing a Pool is itself disk work — mkdirs, a SQLite
+            # connect, the schema script, and a sweep of `.pool/tmp/` — so it
+            # belongs on a thread just as much as the prune does.
+            pool = await asyncio.to_thread(Pool, mirror_dir)
             try:
                 removed, freed = await asyncio.to_thread(pool.prune_orphans, configured)
+            except pool_mod.PoolBusy as e:
+                # A sync is running: everything it has downloaded so far is
+                # `packages − refs` until its reconcile lands, so pruning now
+                # would delete the sync's own work.
+                self.notify(str(e), severity="error", timeout=15)
+                return
             finally:
-                pool.close()
+                await asyncio.to_thread(pool.close)
             if removed == 0:
                 self.notify("Pool is clean — no orphaned packages found.")
             else:
+                # Same rule as a config mutation: `_by_source` is pool truth,
+                # so a prune that removed rows leaves every count on screen
+                # stale until the list is rebuilt.
+                await asyncio.to_thread(self._refresh_available)
+                await self._refresh_list()
+                self._update_panel_title()
                 self.notify(
                     f"Removed {removed:,} orphaned package(s), freed {_fmt_bytes(freed)}.",
                     severity="warning",
@@ -785,7 +951,7 @@ class ManageApp(App):
             )
         )
         if confirmed:
-            config.delete(self._cfg_dir)
+            await asyncio.to_thread(config.delete, self._cfg_dir)
             self.exit(result="reinit")
 
     @work(exit_on_error=False)
@@ -815,8 +981,10 @@ class ManageApp(App):
         self._save()
         # Without this the list — and `action_launch_sync`'s gate — keep the
         # answer computed at startup, so adding to an empty config still
-        # reported "no mirrors configured".
-        self._refresh_available()
+        # reported "no mirrors configured". On a thread, because it queries
+        # the pool (3290 ms on the first call against the live one) and this
+        # coroutine runs on the event loop.
+        await asyncio.to_thread(self._refresh_available)
         await self._refresh_list()
         parts = []
         if added:
@@ -826,13 +994,31 @@ class ManageApp(App):
         self.notify(f"Sources: {', '.join(parts)}.")
 
     @work(exit_on_error=False)
+    async def action_edit_settings(self):
+        edited = await self.push_screen_wait(SettingsScreen(self._cfg.settings))
+        if edited is None:
+            return
+        moved = edited.mirror_dir != self._cfg.settings.mirror_dir
+        self._cfg.settings = edited
+        self._save()
+        # The pool may now be a different directory: recount what it holds.
+        await asyncio.to_thread(self._refresh_available)
+        await self._refresh_list()
+        self.notify("Settings saved." + (
+            f" Pool directory is now {edited.mirror_dir} — nothing was moved."
+            if moved else ""))
+
+    @work(exit_on_error=False)
     async def action_edit_source(self):
         src = self._selected_source()
         if src is None:
             self.notify("Highlight a repository (or one of its mirrors) to edit.",
                         severity="warning")
             return
-        edited = await self.push_screen_wait(EditSourceScreen(src))
+        edited = await self.push_screen_wait(EditSourceScreen(
+            src, existing_names={s.name for s in self._cfg.sources},
+            existing_urls={s.identity for s in self._cfg.sources},
+        ))
         if edited is None:
             return
         # Replace by identity, never merge: `config.merge_sources()` is
@@ -843,8 +1029,8 @@ class ManageApp(App):
         ]
         self._save()
         # Without this the list — and `action_launch_sync`'s gate — keep the
-        # answer computed before the edit.
-        self._refresh_available()
+        # answer computed before the edit. On a thread: it queries the pool.
+        await asyncio.to_thread(self._refresh_available)
         await self._refresh_list()
         self.notify(f"Updated {edited.name}.")
 
@@ -863,6 +1049,41 @@ class ManageApp(App):
                    for m in self._mirrors_of(s)}
         self.exit(result=("sync", (sorted(self._selected_sources),
                                    sorted(self._selection - covered))))
+
+    # ── type-to-find ─────────────────────────────────────────────────────────
+
+    def action_filter_sources(self) -> None:
+        box = self.query_one("#manage-filter", Input)
+        box.add_class("showing")
+        box.focus()
+
+    @on(Input.Changed, "#manage-filter")
+    @work(exit_on_error=False)
+    async def _filter_changed(self, event: Input.Changed) -> None:
+        self._filter = event.value.strip()
+        await self._refresh_list()
+
+    def _close_filter(self) -> None:
+        box = self.query_one("#manage-filter", Input)
+        box.value = ""
+        box.remove_class("showing")
+        self._filter = ""
+        try:
+            self.query_one("#manage-list", ListView).focus()
+        except Exception:
+            pass
+
+    @on(Input.Submitted, "#manage-filter")
+    def _filter_submitted(self) -> None:
+        # Enter keeps the filter but hands the keyboard back to the list, so
+        # the very next key is navigation rather than more typing.
+        try:
+            self.query_one("#manage-list", ListView).focus()
+        except Exception:
+            pass
+
+    def action_help(self) -> None:
+        self.push_screen(HelpModal("mmw manage", _MANAGE_HELP))
 
     def action_edit_network(self) -> None:
         panel = self._network_panel()
@@ -900,7 +1121,7 @@ class ManageApp(App):
             return True
         manage_only = {
             "launch_sync", "prune_pool", "wipe_pool", "toggle_selection", "select_all",
-            "edit_source",
+            "edit_source", "filter_sources",
         }
         publish_only = {"publish_network", "edit_network", "dry_run_network", "bundle_network"}
         if on_publish and action in manage_only:
@@ -910,6 +1131,13 @@ class ManageApp(App):
         return True
 
     def on_key(self, event) -> None:
+        if (event.key == "escape" and isinstance(self.focused, Input)
+                and self.focused.id == "manage-filter"):
+            self._close_filter()
+            event.prevent_default()
+            event.stop()
+            return
+
         if event.key == "down" and isinstance(self.focused, Tabs):
             active = self.query_one(TabbedContent).active
             try:

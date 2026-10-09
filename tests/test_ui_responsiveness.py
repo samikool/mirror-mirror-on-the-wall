@@ -405,8 +405,16 @@ def test_every_pool_write_takes_the_write_lock_and_every_read_does_not(tmp_path)
         if fn.name in ("__init__", "_read"):
             continue
         dumped = ast.dump(fn)
+        # The docstring is prose, not SQL. Joining every string constant in the
+        # function meant a method whose docstring merely *explained* that
+        # committing an empty set would "delete the mirror's whole index" was
+        # classified as a writer and failed this assertion — a false positive
+        # that punishes explaining yourself. Only real statements are scanned.
+        body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
         sql = " ".join(
-            s.value for s in ast.walk(fn)
+            s.value
+            for stmt in body
+            for s in ast.walk(stmt)
             if isinstance(s, ast.Constant) and isinstance(s.value, str)
         ).upper()
         if not any(k in sql for k in ("SELECT", "INSERT", "DELETE", "UPDATE")):
@@ -757,7 +765,7 @@ def test_downloads_do_not_allocate_a_task_per_package(tmp_path, monkeypatch):
     n_pkgs = 400
     calls = [0]
 
-    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev):
+    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False):
         calls[0] += 1
         return dl.DownloadResult(dl.Status.DOWNLOADED, Path(pkg.filename),
                                  bytes_transferred=10, checksum=pkg.checksum)
@@ -802,7 +810,7 @@ def test_the_consumer_pool_is_capped_by_max_connections(tmp_path, monkeypatch):
     live = [0]
     peak = [0]
 
-    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev):
+    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False):
         live[0] += 1
         peak[0] = max(peak[0], live[0])
         time.sleep(0.002)
@@ -854,7 +862,7 @@ def test_a_stop_event_drains_the_consumers(tmp_path, monkeypatch):
     stop = threading.Event()
     seen = [0]
 
-    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev):
+    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False):
         seen[0] += 1
         if seen[0] == 10:
             stop.set()
@@ -876,3 +884,215 @@ def test_a_stop_event_drains_the_consumers(tmp_path, monkeypatch):
     summary = asyncio.run(scenario())
     assert summary.stopped is True
     assert seen[0] < 500, "kept downloading after the stop event"
+
+
+def test_the_sync_lock_is_never_taken_on_the_event_loop(tmp_path, monkeypatch):
+    """A sync must stay responsive while something else holds the pool.
+
+    `download_mirror` is a coroutine — in the TUI it runs on the event loop as
+    an async Textual worker — and the shared pool lock does `mkdir` + `open` +
+    `flock`. Taking those inline froze a real 45-mirror sync solid: a profile
+    of that run put the MainThread at 21.8% of samples inside
+    `shared_pool_lock`, under `download_mirror <- sync_mirror <- _sync_mirror`,
+    with `flock(LOCK_SH)` waiting on the kernel and the UI painting nothing.
+
+    Here the exclusive lock is genuinely held for a moment, which is the worst
+    case: acquisition really does have to wait. The loop must keep ticking
+    throughout, because the wait belongs on a worker thread.
+    """
+    import fcntl
+
+    import mmw.core.downloader as dl
+    from mmw.core.pool import _lock_path, release_sync_lock
+
+    monkeypatch.setattr(
+        dl, "_download_sync",
+        lambda pkg, pool, chunk_cb, start_cb, stop_ev, resume=False: dl.DownloadResult(
+            dl.Status.DOWNLOADED, Path(pkg.filename), bytes_transferred=10,
+            checksum=pkg.checksum,
+        ),
+    )
+
+    pool = Pool(tmp_path)
+    lock_path = _lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    blocker = open(lock_path, "a+")
+    fcntl.flock(blocker.fileno(), fcntl.LOCK_EX)
+
+    ticks = [0]
+
+    async def heartbeat():
+        # What the UI's 60 Hz repaint is, stripped to its essentials.
+        while True:
+            ticks[0] += 1
+            await asyncio.sleep(0.005)
+
+    # Released from a TIMER THREAD, not from the coroutine. If the lock is ever
+    # taken on the loop again, the loop is frozen and could not run its own
+    # release — the test would hang the whole suite instead of failing. This
+    # way the bug reports itself as a tick count of ~0.
+    released = threading.Timer(0.3, lambda: fcntl.flock(blocker.fileno(), fcntl.LOCK_UN))
+
+    async def scenario():
+        beat = asyncio.ensure_future(heartbeat())
+        released.start()
+        sync = asyncio.ensure_future(dl.download_mirror(
+            mirror_name="m", packages=_pkgs(3), metadata=[], pool=pool,
+            max_connections=4, source="https://x/y",
+        ))
+        await asyncio.sleep(0.3)          # the lock is held for all of this
+        held = ticks[0]
+        await sync
+        beat.cancel()
+        return held
+
+    try:
+        held = asyncio.run(scenario())
+    finally:
+        released.cancel()
+        blocker.close()
+        release_sync_lock()
+        pool.close()
+
+    # ~60 ticks are due in 0.3s; anything in double figures proves the loop was
+    # never parked in the kernel. Before the fix this was 0 and stayed 0.
+    assert held > 10, f"event loop only ticked {held}x while the pool was locked"
+
+
+def test_sync_app_opens_its_pool_off_the_mount_path(tmp_path):
+    """`on_mount` runs on the event loop, so opening the pool there stalled the
+    first frame: a mkdir, a SQLite connect, the schema script and a sweep of
+    `.pool/tmp/`. It is deferred to a thread now, which means the app must
+    still end up with a usable pool — and must not fall over when it has none
+    yet.
+
+    Mounted with `mirrors=[]` on purpose: SyncApp starts real HTTP for every
+    mirror it is given, which is why it is absent from the layout suites.
+    """
+    from mmw.core import config
+    from mmw.tui.sync import SyncApp
+
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=tmp_path / "m", max_connections=2),
+        sources=[])
+
+    async def scenario():
+        app = SyncApp(cfg, mirrors=[])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # The tick runs at 60 Hz from the moment of mount and must survive
+            # `self._pool` still being None.
+            deadline = time.monotonic() + 5.0
+            while app._pool is None and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+            return app._pool is not None
+
+    assert asyncio.run(scenario()), "the pool was never opened"
+    assert (tmp_path / "m" / ".pool").is_dir(), "pool directory was not created"
+
+
+# Calls that hit the disk (or the kernel) and must never run on the event loop.
+_BLOCKING_CALLS = {
+    "mkdir", "iterdir", "rglob", "glob", "read_bytes", "write_bytes",
+    "read_text", "write_text", "unlink", "rmtree", "disk_usage", "flock",
+    "walk", "copy2",
+}
+_BLOCKING_NAMES = {"Pool", "open", "input"}
+_BLOCKING_ATTRS = {
+    "save", "load", "delete", "wipe", "prune_orphans", "read_key", "find_keys",
+    "fetch_key", "probe", "probe_all", "probe_suite", "stats", "mirror_stats",
+    "latest_manifest_path", "acquire_sync_lock", "exclusive_pool_lock",
+    "shared_pool_lock", "pool_is_busy", "reconcile_refs", "flush_writes",
+}
+# Handed to a worker — the whole point.
+_OFFLOADERS = {"to_thread", "run_in_executor", "call_from_thread"}
+
+
+def _runs_on_the_loop(fn) -> bool:
+    """True for a function Textual invokes on the event loop.
+
+    `@work(thread=True)` is the escape hatch; everything else — an `async def`,
+    an `@on(...)` handler, `on_mount`, an action, a watcher, the tick — runs on
+    the loop.
+    """
+    import ast
+
+    for d in fn.decorator_list:
+        if (isinstance(d, ast.Call) and getattr(d.func, "id", "") == "work"
+                and any(k.arg == "thread" and getattr(k.value, "value", False) is True
+                        for k in d.keywords)):
+            return False
+    if isinstance(fn, ast.AsyncFunctionDef):
+        return True
+    return (fn.name.startswith(("on_", "action_", "watch_", "compose", "_tick"))
+            or any(isinstance(d, ast.Call) and getattr(d.func, "id", "") == "on"
+                   for d in fn.decorator_list))
+
+
+def _direct_calls(fn):
+    """Calls in `fn`'s own body, not inside a nested def or lambda — those are
+    what get passed to `to_thread` and run somewhere else."""
+    import ast
+
+    out = []
+
+    def walk(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(child, ast.Call):
+                out.append(child)
+            walk(child)
+
+    walk(fn)
+    return out
+
+
+def test_no_tui_handler_does_blocking_io_on_the_event_loop():
+    """The rule this project keeps relearning, as a guard rather than a habit.
+
+    It has now been broken three separate ways: a pool `stats()` scan inside
+    the 60 Hz tick (9-14 s of frozen UI), `flock` taken per mirror inside
+    `download_mirror` (a sync that locked up outright), and `Pool()` itself
+    built in `SyncApp.on_mount`. Each was found by a human noticing a freeze;
+    this finds the next one at import time.
+
+    If something here is genuinely cheap enough to stay on the loop, add it to
+    `_ALLOWED` with the reason — do not widen the call sets.
+    """
+    import ast
+    import pathlib
+
+    _ALLOWED: set[tuple[str, str, str]] = set()
+
+    offenders = []
+    # `core/downloader.py`'s `download_mirror` and `core/sync_engine.py`'s
+    # `sync_mirror` are coroutines the TUI awaits directly on the event loop —
+    # which is where the worst instance of this actually happened (a per-mirror
+    # `flock` that locked a 45-mirror sync solid). A guard that only watched
+    # `tui/` would have missed it entirely.
+    scanned = sorted(pathlib.Path("src/mmw/tui").glob("*.py")) + [
+        pathlib.Path("src/mmw/core/downloader.py"),
+        pathlib.Path("src/mmw/core/sync_engine.py"),
+    ]
+    for path in scanned:
+        tree = ast.parse(path.read_text())
+        for fn in [n for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            if not _runs_on_the_loop(fn):
+                continue
+            for call in _direct_calls(fn):
+                f = call.func
+                name = getattr(f, "attr", None) or getattr(f, "id", None)
+                if name in _OFFLOADERS or name is None:
+                    continue
+                if name in _BLOCKING_CALLS or name in _BLOCKING_NAMES or name in _BLOCKING_ATTRS:
+                    key = (path.name, fn.name, name)
+                    if key not in _ALLOWED:
+                        offenders.append(f"{path.name}:{call.lineno} {fn.name}() -> {name}()")
+
+    assert not offenders, (
+        "blocking I/O on the Textual event loop:\n  " + "\n  ".join(offenders)
+        + "\n\nHand it to a thread (`await asyncio.to_thread(...)`, or "
+          "`@work(thread=True)`), or add it to _ALLOWED with a reason."
+    )

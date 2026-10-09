@@ -18,7 +18,7 @@ SCRIPT = Path(__file__).parent.parent / "src" / "mmw" / "resources" / "apply.py"
 
 _STDLIB = {
     "argparse", "hashlib", "io", "json", "os", "posixpath", "shutil",
-    "subprocess", "sys", "tarfile", "tempfile",
+    "subprocess", "sys", "tarfile", "tempfile", "threading",
 }
 
 
@@ -34,17 +34,40 @@ def test_apply_script_imports_only_stdlib():
     assert imported <= _STDLIB, f"non-stdlib imports: {imported - _STDLIB}"
 
 
+# Constructs that parse cleanly on a modern interpreter and fail on 3.6. This
+# is the riskiest compatibility claim in the project — it fails on somebody
+# else's machine, months later, with no mmw installed to debug it — and the
+# original check covered only three of them.
+_POST_36_CALLS = {
+    "removeprefix": "str.removeprefix is 3.9+",
+    "removesuffix": "str.removesuffix is 3.9+",
+    "cached_property": "functools.cached_property is 3.8+",
+}
+
+
 def test_apply_script_avoids_post_36_syntax():
-    """RHEL 8 ships Python 3.6. Walrus, match and X | Y annotations all break it."""
+    """RHEL 8 ships Python 3.6, and `apply.py` runs there with no mmw beside it."""
     src = SCRIPT.read_text()
     tree = ast.parse(src)
     for node in ast.walk(tree):
         assert not isinstance(node, ast.NamedExpr), "walrus operator is 3.8+"
+        assert not isinstance(node, ast.AnnAssign), "variable annotations are 3.6+, but avoided here"
+        if isinstance(node, ast.FunctionDef):
+            assert not node.args.posonlyargs, "positional-only params are 3.8+"
+        if isinstance(node, ast.Attribute) and node.attr in _POST_36_CALLS:
+            raise AssertionError(_POST_36_CALLS[node.attr])
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-            # A `|` in an annotation context is PEP 604 (3.10+).
+            # `dict | dict` is 3.9+; a `|` in an annotation context is PEP 604
+            # (3.10+). Neither is distinguishable from a plain bitwise-or by
+            # AST alone, so this stays a heuristic — the CI job that compiles
+            # this file under an old interpreter is the real check.
             assert not isinstance(node.left, ast.Name) or node.left.id[0].islower(), \
                 "PEP 604 union annotation is 3.10+"
     assert "match " not in src.replace("rematch ", "")
+    # f-strings at all: 3.6 has them, but the project's own rule is to avoid
+    # them here, and a bare `f"..."` is the easiest thing to add by reflex.
+    assert not any(isinstance(n, ast.JoinedStr) for n in ast.walk(tree)), \
+        "f-strings are avoided in apply.py by convention"
 
 
 def test_apply_script_compiles():
@@ -632,3 +655,55 @@ def test_open_stream_reads_a_real_compressed_bundle_via_zstd(tmp_path):
 
     assert rc == 0
     assert (dest / payload_name).read_bytes() == content
+
+
+def test_a_delete_list_cannot_escape_the_root(tmp_path):
+    """Path safety was tested for every *extraction* entry and for hardlink
+    targets, but never for the delete list — and a hostile bundle that can
+    unlink arbitrary files on the far side is the same class of bug as one
+    that can write them. It was in fact guarded; it just failed silently,
+    which is indistinguishable from not being guarded at all."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+    outsider = tmp_path / "precious.conf"
+    outsider.write_text("do not delete me")
+
+    bundle_bytes = _fake_bundle_bytes_multi(
+        [("archive.ubuntu.com/ubuntu/dists/noble/InRelease", b"rel")],
+        deletes=["../precious.conf"],
+        file_count=1,
+    )
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    assert rc == ns["EXIT_UNSAFE"], f"expected EXIT_UNSAFE, got {rc}"
+    assert outsider.exists(), "a delete list escaped --root"
+    assert outsider.read_text() == "do not delete me"
+
+
+def test_deleting_the_last_file_prunes_the_empty_directory(tmp_path):
+    """The generated nginx sets `autoindex on`, so a retired suite that leaves
+    its directory skeleton behind is browsable forever and accumulates with
+    every rotation."""
+    ns = _load_module()
+    dest = tmp_path / "far-side"
+    stale = dest / "archive.ubuntu.com/ubuntu/dists/oldsuite/main"
+    stale.mkdir(parents=True)
+    (stale / "Packages").write_text("old")
+
+    bundle_bytes = _fake_bundle_bytes_multi(
+        [("archive.ubuntu.com/ubuntu/dists/noble/InRelease", b"rel")],
+        deletes=["archive.ubuntu.com/ubuntu/dists/oldsuite/main/Packages"],
+        file_count=1,
+    )
+    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+
+    rc = ns["apply"]("ignored", str(dest))
+
+    assert rc == 0, rc
+    assert not stale.exists(), "empty directory left behind after its last file went"
+    assert not stale.parent.exists(), "and its now-empty parent too"
+    # ...but never above the root, and never the tree that is still in use.
+    assert (dest / "archive.ubuntu.com/ubuntu/dists/noble/InRelease").exists()
+    assert dest.exists()

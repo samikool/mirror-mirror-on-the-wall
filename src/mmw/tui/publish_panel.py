@@ -3,7 +3,6 @@
 A network is a noun — a named downselect of the mirror — and publish and
 bundle are two verbs over it, sharing one list and one detail panel."""
 import asyncio
-import re
 import shutil
 from pathlib import Path
 
@@ -26,7 +25,7 @@ from mmw.tui.publish_modals import (
     BundleModeModal, BundleProgressModal, CertsModal, DryRunResultModal, PreparePublishModal,
     PublishProgressModal,
 )
-from mmw.tui.widgets import Button
+from mmw.tui.widgets import Button, safe_id
 
 
 # Verify and dry-run are per-mirror, read-only, and independent. Run a few at a
@@ -119,6 +118,15 @@ class NetworkDetail(Widget):
         self._network: config.NetworkConfig | None = None
         self._cfg: config.Config | None = None
         self._stats: tuple | None = None   # (total_files, total_bytes, last_mod, per_mirror)
+        # Newest ledger entry's mtime, resolved off-thread. `latest_manifest_path`
+        # does `iterdir()` over every manifest this network has ever produced and
+        # then `stat()`s one — small, but it was running inside `show()`, i.e. on
+        # the event loop, on every highlight change in the network list.
+        self._bundle_mtime: float | None = None
+        self._bundle_loaded = False
+        # A newer `show()` must win: the worker below outlives the selection
+        # that started it.
+        self._detail_gen = 0
 
     def compose(self) -> ComposeResult:
         yield Label("No network selected.", classes="empty-msg")
@@ -127,7 +135,13 @@ class NetworkDetail(Widget):
         self._network = network
         self._cfg = cfg
         self._stats = None
+        self._bundle_mtime = None
+        self._bundle_loaded = False
+        self._detail_gen += 1
         self._rebuild()
+        if network is not None and network.bundle_dir is not None and cfg is not None:
+            self._load_bundle_age(self._detail_gen,
+                                  cfg.settings.mirror_dir, network.name)
         # A bundle-only network (no `root`) has no published tree to stat —
         # `publish_base()` raises ValueError for exactly this case, so the
         # background scan is skipped rather than crashing a worker thread.
@@ -167,13 +181,13 @@ class NetworkDetail(Widget):
         # ever been pointed at one — a bundle-only network (no `root`) still
         # needs to show *something* other than "publish disabled".
         if n.bundle_dir is not None:
-            from mmw.core.publisher.manifest import latest_manifest_path
-
             self.mount(Label(f"  Bundle to     {n.bundle_dir}", classes="detail-meta"))
-            manifest_path = None
-            if self._cfg is not None:
-                manifest_path = latest_manifest_path(self._cfg.settings.mirror_dir, n.name)
-            when = self._fmt_age(manifest_path.stat().st_mtime) if manifest_path else "never bundled"
+            if not self._bundle_loaded:
+                when = "…"
+            elif self._bundle_mtime is None:
+                when = "never bundled"
+            else:
+                when = self._fmt_age(self._bundle_mtime)
             self.mount(Label(f"  Last bundle   {when}", classes="detail-meta"))
 
         # What this network selects. Without this the only visible thing is the
@@ -291,6 +305,34 @@ class NetworkDetail(Widget):
                 last_mod = mtime
 
         self.call_from_thread(self._on_stats_loaded, total_files, total_bytes, last_mod, per_mirror)
+
+    @work(thread=True, exit_on_error=False)
+    def _load_bundle_age(self, gen: int, mirror_dir: "Path", name: str) -> None:
+        """When this network was last bundled, resolved off the event loop.
+
+        The directory and name are passed in rather than read off `self`: the
+        worker outlives the selection that started it, so reading `self._network`
+        here would stat whichever network happens to be highlighted by then. The
+        `gen` check stops a stale answer being *displayed*; this stops the wrong
+        one being *looked up*.
+        """
+        from mmw.core.publisher.manifest import latest_manifest_path
+
+        mtime = None
+        try:
+            path = latest_manifest_path(mirror_dir, name)
+            if path is not None:
+                mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+        self.call_from_thread(self._on_bundle_age, gen, mtime)
+
+    def _on_bundle_age(self, gen: int, mtime: float | None) -> None:
+        if gen != self._detail_gen:
+            return                              # a newer selection is on screen
+        self._bundle_mtime = mtime
+        self._bundle_loaded = True
+        self._rebuild()
 
     def _on_stats_loaded(self, total_files: int, total_bytes: int, last_mod: float | None, per_mirror: list) -> None:
         if self._network is None:
@@ -413,7 +455,12 @@ class NetworkPanel(Widget):
 
     @staticmethod
     def _net_id(name: str) -> str:
-        return "net-" + re.sub(r"[^a-zA-Z0-9_-]", "-", name)
+        # Injective — see `widgets.safe_id`. The plain substitution this used
+        # to be mapped `a.b` and `a-b` onto the same `net-a-b`, and Textual
+        # answers a duplicate ID with `MountError: Tried to insert 2 widgets
+        # with the same ID`: the Networks tab simply refuses to mount and
+        # `mmw publish` crashes on launch, for a config the loader accepted.
+        return safe_id(name, prefix="net-")
 
     def _build_items(self) -> list[ListItem]:
         return [ListItem(Label(f"  {n.name}"), id=self._net_id(n.name)) for n in self._cfg.networks]
@@ -491,7 +538,8 @@ class NetworkPanel(Widget):
         old_mirrors = {m.name for m in network_mirrors(net, self._cfg, mirror_dir)}
 
         result = await self.app.push_screen_wait(
-            EditNetworkScreen(net, available)
+            EditNetworkScreen(net, available,
+                              existing_names={n.name for n in self._cfg.networks})
         )
         if result is None:
             return
@@ -500,15 +548,18 @@ class NetworkPanel(Widget):
         # field names here would be the positional 8-tuple's drift hazard in a
         # new shape: add a field to NetworkConfig, forget this line, and the
         # editor silently stops persisting it — which is exactly how
-        # `bundle_compress` would have been missed. `name` is excluded because
-        # the editor does not rename, and it is the key this network is found
-        # by everywhere else.
+        # `bundle_compress` would have been missed.
+        old_name = net.name
         for field in config.NetworkConfig.model_fields:
-            if field != "name":
-                setattr(net, field, getattr(result, field))
+            setattr(net, field, getattr(result, field))
+        if net.name != old_name:
+            for problem in config.rename_network_state(mirror_dir, old_name, net.name):
+                self.app.notify(problem, severity="warning", timeout=12)
         new_set = {m.name for m in network_mirrors(net, self._cfg, mirror_dir)}
         removed_names = old_mirrors - new_set
         self._save()
+        if net.name != old_name:
+            await self._refresh_list(select_name=net.name)
         self.query_one(NetworkDetail).show(net, self._cfg)
 
         if removed_names:
@@ -556,7 +607,11 @@ class NetworkPanel(Widget):
         ledger = ledger_dir(self._cfg.settings.mirror_dir, net.name)
         if ledger.exists():
             try:
-                shutil.rmtree(ledger)
+                # A ledger is one JSONL manifest per bundle ever produced, so
+                # on a long-lived network this is not the two files it looks
+                # like — and rmtree on the event loop freezes the UI for as
+                # long as it takes.
+                await asyncio.to_thread(shutil.rmtree, ledger)
             except OSError as e:
                 self.app.notify(f"Could not remove bundle history for '{net.name}': {e}",
                                 severity="warning")
@@ -603,7 +658,9 @@ class NetworkPanel(Widget):
         dry_result = None
 
         try:
-            with Pool(mirror_dir, read_only=True) as pool:
+            pool = await asyncio.to_thread(
+                lambda: Pool(mirror_dir, read_only=True))
+            with pool:
                 # ── Phase 1: verify ───────────────────────────────────────
                 if include_verify:
                     modal.set_phase("Verifying mirrors", len(selected_mirrors))

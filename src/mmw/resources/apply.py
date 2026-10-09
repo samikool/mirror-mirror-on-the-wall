@@ -25,12 +25,18 @@ import os
 import posixpath
 import shutil
 import subprocess
+import threading
 import sys
 import tarfile
 
 STATE_FILE = ".mmw-state"
+MMW_DIR = ".mmw"
 MANIFEST_MEMBER = ".mmw/manifest.jsonl.zst"
 DELETE_MEMBER = ".mmw/delete.list"
+# A `bundle_tls` network's certificate and private key. Installed under
+# {root}/.mmw/tls/ — never a served path — and referenced from there by the
+# bundle's own nginx/mirror.conf.
+TLS_PREFIX = ".mmw/tls/"
 ROOT_PLACEHOLDER = "__MMW_ROOT__"
 
 # Exit codes. Not load-bearing for any caller today, but a script that always
@@ -155,32 +161,99 @@ def read_manifest_bytes(blob):
     JSON lines that are merely incomplete. The caller wraps this call; it
     does not catch its own errors.
     """
+    header = None
+    files = {}
+    for lineno, line in enumerate(_manifest_lines(blob)):
+        if lineno == 0:
+            header = json.loads(line)
+            # Require the header to carry the fields the script relies on, not
+            # just valid JSON. A partially-truncated manifest might have a
+            # header line but lack required fields.
+            for field in ("network", "created", "previous", "full"):
+                if field not in header:
+                    raise KeyError(field)
+            continue
+        row = json.loads(line)
+        files[row["p"]] = row["c"]
+    if header is None:
+        raise json.JSONDecodeError("empty manifest", "", 0)
+    return header, files
+
+
+def _manifest_lines(blob):
+    """Yield the manifest's non-empty lines, decoded, one at a time.
+
+    `manifest.py`'s own docstring says the format is JSONL "so the far side
+    can stream it rather than hold millions of entries in memory" — and then
+    this function did `communicate()` (the whole decompressed output), then
+    `.decode().splitlines()` (a second full copy plus a list of every line),
+    before building the dict. At two million files that is roughly a gigabyte
+    of peak RSS in a Python process on a far side nobody here can debug.
+
+    Feeding the blob to zstd's stdin while reading its stdout needs a writer
+    thread to avoid deadlocking on a full pipe, and this script is stdlib-only
+    and must run on Python 3.6 — so it writes the blob to zstd via a thread and
+    reads lines off stdout as they appear.
+    """
     proc = subprocess.Popen(["zstd", "-dc"], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE)
-    out, _ = proc.communicate(blob)
+
+    def _feed():
+        try:
+            proc.stdin.write(blob)
+        except (OSError, ValueError):
+            pass                      # zstd died; the return code below says so
+        finally:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+    writer = threading.Thread(target=_feed)
+    writer.daemon = True
+    writer.start()
+    try:
+        for raw in proc.stdout:
+            line = raw.decode("utf-8").strip()
+            if line:
+                yield line
+    finally:
+        proc.stdout.close()
+        proc.wait()
+        writer.join()
     if proc.returncode != 0:
-        # zstd exited 1 on both truncated frames and garbage. A return-code
-        # check is necessary and sufficient to detect both.
+        # zstd exits 1 on both truncated frames and garbage, and a truncation
+        # landing on a line boundary produces a shorter but perfectly
+        # well-formed JSONL file — every line parses, so only the return code
+        # can catch it. Raised after the loop so the reason is not masked by a
+        # JSON error from a half-written final line.
         raise json.JSONDecodeError(
-            "zstd decompression failed (exit %d)" % proc.returncode,
-            "", 0)
-    lines = out.decode("utf-8").splitlines()
-    if not lines:
-        raise json.JSONDecodeError("empty manifest", "", 0)
-    header = json.loads(lines[0])
-    # Require the header to carry the fields the script relies on, not just
-    # valid JSON. A partially-truncated manifest might have a header line but
-    # lack required fields.
-    required_fields = ["network", "created", "previous", "full"]
-    for field in required_fields:
-        if field not in header:
-            raise KeyError(field)
-    files = {}
-    for line in lines[1:]:
-        if line:
-            row = json.loads(line)
-            files[row["p"]] = row["c"]
-    return header, files
+            "zstd decompression failed (exit %d)" % proc.returncode, "", 0)
+
+
+
+def _prune_empty_parents(root, start):
+    """Remove directories left empty by a deletion, upward to `root`.
+
+    A retired suite or component otherwise leaves its whole directory skeleton
+    behind, and the generated nginx config sets `autoindex on` — so clients
+    browse a tree of empty directories that accumulates with every suite
+    rotation and never goes away. Stops at `root`, stops at the first
+    non-empty directory, and never touches `.mmw/`.
+    """
+    root = os.path.abspath(root)
+    current = os.path.abspath(start)
+    while current.startswith(root + os.sep) and current != root:
+        base = os.path.basename(current)
+        if base == MMW_DIR or base.startswith("."):
+            return
+        try:
+            if os.listdir(current):
+                return
+            os.rmdir(current)
+        except OSError:
+            return
+        current = os.path.dirname(current)
 
 
 def read_state(root):
@@ -291,11 +364,38 @@ def _sweep_tmp(root):
             pass
 
 
+def _install_tls(root, name, src):
+    """Write one TLS file to {root}/.mmw/tls/{name}, staged and renamed.
+
+    The private key is created 0600 from its first byte — never written
+    0644 and tightened afterwards — and the directory is 0700, so the key is
+    not readable by anyone but the applying user (and root, i.e. nginx's
+    master process) at any moment.
+    """
+    d = os.path.join(root, ".mmw", "tls")
+    if os.path.islink(d):
+        raise OSError("%s is a symlink; refusing to write a private key through it" % d)
+    if not os.path.isdir(d):
+        os.makedirs(d)
+    os.chmod(d, 0o700)
+    mode = 0o600 if name.endswith(".key") else 0o644
+    dest = os.path.join(d, name)
+    tmp = dest + ".tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, "wb") as out:
+        shutil.copyfileobj(src, out)
+    os.chmod(tmp, mode)
+    os.rename(tmp, dest)
+
+
 def apply(bundle, root, dry_run=False, verify=False):
     header = None
     manifest = {}
     deletes = []
     written = 0
+    tls_installed = []
     # Name of whatever this apply is working on when something goes wrong —
     # threaded through the try/except below purely so a corrupt-tar or
     # filesystem error names *what* failed, not just that something did.
@@ -373,6 +473,15 @@ def apply(bundle, root, dry_run=False, verify=False):
                 sys.stderr.write("bundle is malformed: no manifest before payload\n")
                 return EXIT_UNSAFE
 
+            if name.startswith(TLS_PREFIX):
+                tls_name = name[len(TLS_PREFIX):]
+                if not member.isreg() or not tls_name or "/" in tls_name:
+                    sys.stderr.write("refusing unexpected TLS entry: %r\n" % (name,))
+                    return EXIT_UNSAFE
+                if not dry_run:
+                    _install_tls(root, tls_name, tar.extractfile(member))
+                tls_installed.append(tls_name)
+                continue
             if name.startswith(".mmw/"):
                 continue
             if member.isdir():
@@ -466,7 +575,14 @@ def apply(bundle, root, dry_run=False, verify=False):
         removed = 0
         for rel in deletes:
             if not is_safe_path(rel):
-                continue
+                # Refused, not skipped. Every *extraction* entry that fails
+                # this check aborts with EXIT_UNSAFE; the delete list quietly
+                # ignored its failures, so a bundle trying to unlink something
+                # outside --root was indistinguishable from a clean one. It is
+                # harmless only because the check is here — which is exactly
+                # the thing worth saying out loud.
+                sys.stderr.write("unsafe path in delete list: %r\n" % (rel,))
+                return EXIT_UNSAFE
             target = os.path.join(root, rel)
             if dry_run:
                 removed += 1
@@ -476,8 +592,13 @@ def apply(bundle, root, dry_run=False, verify=False):
                 removed += 1
             except OSError:
                 pass
+            else:
+                _prune_empty_parents(root, os.path.dirname(target))
 
         sys.stdout.write("%d applied  %d removed\n" % (written, removed))
+        if tls_installed:
+            sys.stdout.write("TLS: %s -> %s\n" % (
+                ", ".join(sorted(tls_installed)), os.path.join(root, ".mmw", "tls")))
 
         if not dry_run:
             for rel in manifest:
@@ -565,11 +686,22 @@ def verify_tree(root, manifest):
     """
     missing = []
     wrong = []
+    skipped = 0
+    checked = 0
     root_bytes = root.encode()
     placeholder_bytes = ROOT_PLACEHOLDER.encode()
     for rel, want in manifest.items():
         if not want:
+            # Nothing to check this against. Keys and the changelog blobs used
+            # to land here, which meant --verify could not detect a missing or
+            # corrupted *key* — the one artefact that makes every package
+            # beside it verifiable. They now carry a real checksum, so this
+            # branch should be empty; it is counted rather than hidden so that
+            # if anything ever lands here again, the summary says so instead of
+            # quietly inflating the "verified" total.
+            skipped += 1
             continue
+        checked += 1
         path = os.path.join(root, rel)
         if not os.path.exists(path):
             missing.append(rel)
@@ -598,7 +730,8 @@ def verify_tree(root, manifest):
         for rel in (missing + wrong)[:20]:
             sys.stderr.write("  %s\n" % rel)
         return EXIT_VERIFY_FAILED
-    sys.stdout.write("verified %d files OK\n" % len(manifest))
+    note = "" if not skipped else "  (%d entries carried no checksum)" % skipped
+    sys.stdout.write("verified %d files OK%s\n" % (checked, note))
     return 0
 
 

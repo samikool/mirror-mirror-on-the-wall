@@ -9,7 +9,7 @@ probe a repository.
 import asyncio
 
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Input, Label, SelectionList, Switch
+from textual.widgets import Button, Input, SelectionList, Switch
 
 from mmw.core import config
 from mmw.tui.source_screens import EditSourceScreen
@@ -136,18 +136,79 @@ def test_narrowing_arches_is_preserved_through_save():
     assert result.arches == ["arm64"]
 
 
-def test_url_widget_is_not_an_input():
+def _edit(src, actions, existing_names=None, existing_urls=None):
+    """Open the editor on `src`, run `actions(app)` (sync, on the screen's
+    widgets), press Save, and return what it dismissed with."""
     async def scenario():
-        app = _host_app(EditSourceScreen(_source()))
-        async with app.run_test(size=(100, 40)) as pilot:
+        app = _host_app(EditSourceScreen(src, existing_names=existing_names,
+                                         existing_urls=existing_urls))
+        async with app.run_test(size=(100, 50)) as pilot:
             await _settle(pilot)
-            widget = app.screen.query_one("#edit-source-url")
-            assert not isinstance(widget, Input)
-            assert isinstance(widget, Label)
-            return widget.render()
+            actions(app.screen)
+            await _settle(pilot)
+            app.screen.query_one("#btn-save-source", Button).press()
+            await _settle(pilot)
+        return app.result
+    return _run_and_get(scenario)
 
-    text = _run_and_get(scenario)
-    assert "example.com" in str(text)
+
+def test_url_is_editable():
+    """Every mmw.toml setting is reachable from the TUI — the URL included.
+    A different URL is a different repository: the old one's pool content
+    becomes orphaned and `mmw prune` reclaims it, like a delete-and-re-add."""
+    def act(screen):
+        screen.query_one("#edit-source-url", Input).value = "https://mirror.example.org/debian/"
+    result = _edit(_source(), act)
+    assert result is not None
+    assert result.url == "https://mirror.example.org/debian"
+
+
+def test_url_of_another_repository_is_refused():
+    def act(screen):
+        screen.query_one("#edit-source-url", Input).value = "https://other.example.com/debian"
+    assert _edit(_source(), act,
+                 existing_urls={config.normalize_url("https://other.example.com/debian")}) is None
+
+
+def test_label_provider_and_key_url_are_editable():
+    def act(screen):
+        from textual.widgets import Select
+        screen.query_one("#edit-source-label", Input).value = "vendor"
+        screen.query_one("#edit-source-provider", Select).value = "apt-flat"
+        screen.query_one("#edit-source-key-url", Input).value = "https://example.com/key.asc"
+    result = _edit(_source(), act)
+    assert result.label == "vendor"
+    assert result.provider == "apt-flat"
+    assert result.gpg_key_url == "https://example.com/key.asc"
+
+
+def test_clearing_the_key_url_removes_it():
+    def act(screen):
+        screen.query_one("#edit-source-key-url", Input).value = "  "
+    assert _edit(_source(gpg_key_url="https://example.com/key.asc"), act).gpg_key_url is None
+
+
+def test_suite_overrides_are_editable():
+    def act(screen):
+        from textual.widgets import TextArea
+        screen.query_one("#edit-source-overrides", TextArea).text = (
+            "bookworm: main\ntrixie: main, contrib\n")
+    result = _edit(_source(), act)
+    assert [(o.suite, o.components) for o in result.suite_overrides] == [
+        ("bookworm", ["main"]), ("trixie", ["main", "contrib"])]
+
+
+def test_existing_suite_overrides_are_shown_and_survive():
+    src = _source(suite_overrides=[config.SuiteOverride(suite="trixie", components=["main"])])
+    result = _edit(src, lambda screen: None)
+    assert [(o.suite, o.components) for o in result.suite_overrides] == [("trixie", ["main"])]
+
+
+def test_a_malformed_override_line_is_refused():
+    def act(screen):
+        from textual.widgets import TextArea
+        screen.query_one("#edit-source-overrides", TextArea).text = "just-a-suite\n"
+    assert _edit(_source(), act) is None
 
 
 def test_clearing_stated_suites_to_zero_is_refused():

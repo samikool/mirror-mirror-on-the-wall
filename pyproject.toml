@@ -1,27 +1,31 @@
 [project]
 name = "mirror-mirror-on-the-wall"
-version = "1.0.0"
+version = "0.9.0"
 description = "APT repository mirror for airgapped networks — exact upstream mirroring, GPG signatures preserved, content-addressable pool"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Sam Morgan", email = "sam.morgan44@gmail.com" }
 ]
 keywords = ["mirror", "apt", "debian", "ubuntu", "repository", "airgap"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: System :: Systems Administration",
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "h2>=4.3.0",
     "httpx>=0.28.1",
-    "pydantic>=2.13.4",
-    "textual>=8.2.7",
+    "pydantic>=2.13.4,<3",
+    "textual>=8.2.7,<9",
     "tomli-w>=1.2.0",
     "typer>=0.25.1",
     "cryptography>=44.0.0",
@@ -29,7 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/sam-morgan/mirror-mirror-on-the-wall"
+Homepage = "https://github.com/samikool/mirror-mirror-on-the-wall"
+Repository = "https://github.com/samikool/mirror-mirror-on-the-wall"
+Issues = "https://github.com/samikool/mirror-mirror-on-the-wall/issues"
 
 [project.scripts]
 mmw = "mmw.cli:app"
@@ -40,11 +46,16 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "mmw"
+# A downstream packager needs to be able to run the suite against the sdist,
+# and to resolve the exact dependency set the project was tested with.
+source-include = ["tests/**", "uv.lock", "LICENSE"]
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-cov>=6.0.0",
     "pytest-textual-snapshot>=1.0.0",
+    "pytest-xdist>=3.6.0",
     "ruff>=0.15.14",
 ]
 

@@ -187,14 +187,14 @@ def test_changed_ref_is_carried_and_manifest_stays_complete(seeded, tmp_path):
 
     from mmw.core.publisher.manifest import read_manifest
     _, files = read_manifest(second.manifest_path)
-    # The manifest lists the network's whole state (7 rows: pkg, meta
-    # canonical + by-hash, release canonical + by-hash, and the two
-    # unchanged-since-last-bundle nginx files) — but the tar only carries
-    # what's new since the last bundle (5: the 2 changed payload files plus
-    # the 3 `.mmw/` control files), since the 2 nginx files are identical to
-    # what the far side already has from the first bundle and are never
-    # re-sent. +2 is exactly that gap, not a coincidence.
-    assert len(files) == len(_tree(applied)) + 2   # whole tree, not the delta
+    # The manifest lists the network's whole state (6 rows: pkg, meta
+    # canonical + by-hash, release canonical + by-hash, and the one
+    # unchanged-since-last-bundle nginx/mirror.conf) — but the tar only
+    # carries what's new since the last bundle (5: the 2 changed payload
+    # files plus the 3 `.mmw/` control files), since mirror.conf is identical
+    # to what the far side already has from the first bundle and is never
+    # re-sent. +1 is exactly that gap, not a coincidence.
+    assert len(files) == len(_tree(applied)) + 1   # whole tree, not the delta
 
 
 def test_full_ignores_the_ledger(seeded, tmp_path):
@@ -248,7 +248,7 @@ def test_apply_reproduces_the_published_tree(seeded, tmp_path):
     assert (dest / ".mmw-state").read_text().strip() == result.created
 
     # The nginx root is a placeholder in the tarball and real once applied.
-    conf = (dest / "nginx" / "sites" / "archive.ubuntu.com.conf").read_text()
+    conf = (dest / "nginx" / "mirror.conf").read_text()
     assert "__MMW_ROOT__" not in conf
     assert f"root {dest}/archive.ubuntu.com;" in conf
 
@@ -450,3 +450,162 @@ def test_bundle_matches_publish_across_two_rounds(seeded, tmp_path):
     # The dropped package must actually be gone from both trees.
     assert not any("hello_1.0_amd64.deb" in k for k in other_published)
     assert not any("hello_1.0_amd64.deb" in k for k in other_applied)
+
+
+# --- TLS: publish serves it, bundle_tls carries it --------------------------
+
+def _sign_lab_cert(tmp_path: Path, mirror_dir: Path, hostnames: list[str]) -> Path:
+    """A throwaway CA signs a `lab` network key — EC, so it is fast."""
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    from mmw.core import certs
+
+    def pem_key(k):
+        return k.private_bytes(serialization.Encoding.PEM,
+                               serialization.PrivateFormat.PKCS8,
+                               serialization.NoEncryption())
+
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Lab CA")])
+    now = datetime.now(timezone.utc)
+    ca = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+          .public_key(ca_key.public_key()).serial_number(1)
+          .not_valid_before(now - timedelta(days=1))
+          .not_valid_after(now + timedelta(days=365))
+          .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+          .sign(ca_key, hashes.SHA256()))
+    (tmp_path / "ca.crt").write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    (tmp_path / "ca.key").write_bytes(pem_key(ca_key))
+
+    out = mirror_dir / "certs" / "lab"
+    out.mkdir(parents=True)
+    key = ec.generate_private_key(ec.SECP256R1())
+    (out / "mirror.key").write_bytes(pem_key(key))
+    csr = (x509.CertificateSigningRequestBuilder()
+           .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0])]))
+           .add_extension(x509.SubjectAlternativeName(
+               [x509.DNSName(h) for h in hostnames]), critical=False)
+           .sign(key, hashes.SHA256()))
+    (out / "mirror.csr").write_bytes(csr.public_bytes(serialization.Encoding.PEM))
+    return certs.sign_csr(out / "mirror.csr", tmp_path / "ca.crt", tmp_path / "ca.key")
+
+
+def test_publish_serves_https_once_signed(seeded, tmp_path):
+    mirror_dir, cfg = seeded
+    crt = _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
+    root = tmp_path / "published"
+    publish_network(config.NetworkConfig(name="lab", root=root, certs=True), cfg, mirror_dir)
+    conf = (root / "nginx" / "mirror.conf").read_text()
+    assert "listen 443 ssl;" in conf
+    assert f"ssl_certificate {crt};" in conf
+    assert f"ssl_certificate_key {crt.parent / 'mirror.key'};" in conf
+    # The key is referenced where it lives — never copied into the served tree.
+    assert not any(p.name == "mirror.key" for p in root.rglob("*"))
+
+
+def test_publish_without_a_signed_cert_stays_http(seeded, tmp_path):
+    mirror_dir, cfg = seeded
+    root = tmp_path / "published"
+    publish_network(config.NetworkConfig(name="lab", root=root, certs=True), cfg, mirror_dir)
+    assert "443" not in (root / "nginx" / "mirror.conf").read_text()
+
+
+def test_publish_never_wires_a_mismatched_pair(seeded, tmp_path):
+    """nginx refuses to start on a cert/key mismatch — the whole server, not
+    one site. Keep serving HTTP rather than take everything down."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    mirror_dir, cfg = seeded
+    crt = _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
+    (crt.parent / "mirror.key").write_bytes(
+        ec.generate_private_key(ec.SECP256R1()).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()))
+    root = tmp_path / "published"
+    publish_network(config.NetworkConfig(name="lab", root=root, certs=True), cfg, mirror_dir)
+    assert "443" not in (root / "nginx" / "mirror.conf").read_text()
+
+
+def test_dist_upgrade_network_serves_changelogs(seeded, tmp_path):
+    mirror_dir, cfg = seeded
+    root = tmp_path / "published"
+    publish_network(config.NetworkConfig(name="lab", root=root, dist_upgrade=True),
+                    cfg, mirror_dir)
+    conf = (root / "nginx" / "mirror.conf").read_text()
+    assert "server_name changelogs.ubuntu.com;" in conf
+    assert f"root {root}/changelogs.ubuntu.com;" in conf
+
+
+def test_bundle_tls_without_a_signed_cert_refuses_up_front(seeded, tmp_path):
+    mirror_dir, cfg = seeded
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out",
+                               certs=True, bundle_tls=True)
+    with pytest.raises(ValueError, match="no usable signed certificate"):
+        bundle_network(net, cfg, mirror_dir)
+    assert not (tmp_path / "out").exists() or not list((tmp_path / "out").glob("*.tar*"))
+
+
+def test_bundle_tls_round_trip(seeded, tmp_path):
+    """Signed here, carried in the bundle, installed 0600 on the far side,
+    and named by the far side's own nginx config with the real root."""
+    import os
+    import stat
+    mirror_dir, cfg = seeded
+    crt = _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out",
+                               certs=True, bundle_tls=True)
+    result = bundle_network(net, cfg, mirror_dir)
+    assert not result.errors
+
+    dest = tmp_path / "far-side"
+    proc = subprocess.run(
+        [sys.executable, str(tmp_path / "out" / "apply.py"),
+         str(result.out_path), "--root", str(dest), "--verify"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "TLS: mirror.crt, mirror.key" in proc.stdout
+
+    tls = dest / ".mmw" / "tls"
+    assert (tls / "mirror.crt").read_bytes() == crt.read_bytes()
+    assert (tls / "mirror.key").read_bytes() == (crt.parent / "mirror.key").read_bytes()
+    assert stat.S_IMODE(os.stat(tls / "mirror.key").st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(tls).st_mode) == 0o700
+
+    conf = (dest / "nginx" / "mirror.conf").read_text()
+    assert f"ssl_certificate {tls}/mirror.crt;" in conf
+    assert f"ssl_certificate_key {tls}/mirror.key;" in conf
+    assert "__MMW_ROOT__" not in conf
+
+
+def test_bundle_tls_rides_every_delta(seeded, tmp_path):
+    """A delta that changes nothing still carries the TLS files — a re-signed
+    certificate must reach the far side without a --full bundle."""
+    mirror_dir, cfg = seeded
+    _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out",
+                               certs=True, bundle_tls=True)
+    bundle_network(net, cfg, mirror_dir)
+    second = bundle_network(net, cfg, mirror_dir)
+    assert second.sent == 0
+    applied = tmp_path / "second"
+    _extract(second.out_path, applied)
+    assert (applied / ".mmw" / "tls" / "mirror.key").exists()
+
+
+def test_certs_without_bundle_tls_bundles_http_only(seeded, tmp_path):
+    """A signed cert exists here, but the far side was not sent one — its
+    nginx must not point at files that are not there."""
+    mirror_dir, cfg = seeded
+    _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=True)
+    result = bundle_network(net, cfg, mirror_dir)
+    applied = tmp_path / "applied"
+    _extract(result.out_path, applied)
+    assert "443" not in (applied / "nginx" / "mirror.conf").read_text()
+    assert not (applied / ".mmw" / "tls").exists()

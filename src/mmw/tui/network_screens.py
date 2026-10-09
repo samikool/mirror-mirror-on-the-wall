@@ -198,14 +198,15 @@ class _StepNetworkConfirm(Widget):
     _StepNetworkConfirm Label { margin-bottom: 1; }
     _StepNetworkConfirm .mirror-entry { color: $primary; }
     _StepNetworkConfirm #du-row, _StepNetworkConfirm #certs-row, _StepNetworkConfirm #nginx-row,
-    _StepNetworkConfirm #compress-row {
+    _StepNetworkConfirm #compress-row, _StepNetworkConfirm #bundle-tls-row {
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: left middle;
         border-top: solid $primary-darken-2;
         margin-top: 1;
     }
     _StepNetworkConfirm #du-row Label, _StepNetworkConfirm #certs-row Label,
-    _StepNetworkConfirm #nginx-row Label, _StepNetworkConfirm #compress-row Label { margin: 0 0 0 1; }
+    _StepNetworkConfirm #nginx-row Label, _StepNetworkConfirm #compress-row Label,
+    _StepNetworkConfirm #bundle-tls-row Label { margin: 0 0 0 1; }
     """
 
     def __init__(
@@ -248,11 +249,14 @@ class _StepNetworkConfirm(Widget):
             yield Label("Manage TLS certs for this network (generate key + CSR)")
         with Horizontal(id="nginx-row"):
             yield Switch(value=True, id="nginx-switch")
-            yield Label("Generate nginx site files (conf.d style; one file per host under nginx/sites/)")
+            yield Label("Generate nginx config (one nginx/mirror.conf, a server block per host)")
         if self._bundle_dir is not None:
             with Horizontal(id="compress-row"):
                 yield Switch(value=True, id="compress-switch")
                 yield Label("Compress bundle tarballs (zstd; off writes a plain .tar)")
+            with Horizontal(id="bundle-tls-row"):
+                yield Switch(value=False, id="bundle-tls-switch")
+                yield Label("Carry cert + key in bundles (needs TLS certs)")
 
     def get_dist_upgrade(self) -> bool:
         try:
@@ -277,6 +281,12 @@ class _StepNetworkConfirm(Widget):
             return self.query_one("#compress-switch", Switch).value
         except Exception:
             return True   # matches NetworkConfig.bundle_compress's own default
+
+    def get_bundle_tls(self) -> bool:
+        try:
+            return self.query_one("#bundle-tls-switch", Switch).value
+        except Exception:
+            return False  # matches NetworkConfig.bundle_tls's own default
 
 @dataclass
 class _Axis:
@@ -516,6 +526,10 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
 
         elif self._step_idx == 3:
             confirm = container.query_one(_StepNetworkConfirm)
+            if confirm.get_bundle_tls() and not confirm.get_certs():
+                self.notify("Carrying the cert in bundles needs TLS certs turned on too.",
+                            severity="warning")
+                return
             self.dismiss(
                 config.NetworkConfig(
                     name=self._name,
@@ -526,6 +540,7 @@ class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
                     certs=confirm.get_certs(),
                     nginx=confirm.get_nginx(),
                     bundle_compress=confirm.get_compress(),
+                    bundle_tls=confirm.get_bundle_tls(),
                 )
             )
             return
@@ -582,14 +597,15 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
     EditNetworkScreen Label { margin-bottom: 1; }
     EditNetworkScreen SelectionList { height: 1fr; }
     EditNetworkScreen #prune-row, EditNetworkScreen #du-row, EditNetworkScreen #certs-row,
-    EditNetworkScreen #nginx-row, EditNetworkScreen #compress-row {
+    EditNetworkScreen #nginx-row, EditNetworkScreen #compress-row, EditNetworkScreen #bundle-tls-row {
         height: auto;
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: left middle;
         border-top: solid $primary-darken-2;
     }
     EditNetworkScreen #prune-row Label, EditNetworkScreen #du-row Label, EditNetworkScreen #certs-row Label,
-    EditNetworkScreen #nginx-row Label, EditNetworkScreen #compress-row Label {
+    EditNetworkScreen #nginx-row Label, EditNetworkScreen #compress-row Label,
+    EditNetworkScreen #bundle-tls-row Label {
         margin: 0 0 0 1;
         color: $text;
     }
@@ -598,7 +614,8 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
        column got so thin the row grew to 60+ rows. Take the remaining width and
        truncate — a hint is expendable, the layout is not. */
     EditNetworkScreen #prune-row .prune-hint, EditNetworkScreen #du-row .du-hint, EditNetworkScreen #certs-row .certs-hint,
-    EditNetworkScreen #nginx-row .nginx-hint, EditNetworkScreen #compress-row .compress-hint {
+    EditNetworkScreen #nginx-row .nginx-hint, EditNetworkScreen #compress-row .compress-hint,
+    EditNetworkScreen #bundle-tls-row .tls-hint {
         color: $text-muted;
         margin: 0 0 0 2;
         width: 1fr;
@@ -650,9 +667,13 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, network: config.NetworkConfig, all_mirrors: list[config.MirrorConfig]):
+    def __init__(self, network: config.NetworkConfig, all_mirrors: list[config.MirrorConfig],
+                 existing_names: "set[str] | None" = None):
         super().__init__()
         self._network = network
+        # The other networks' names: a rename onto one of them would write a
+        # config the loader refuses (`_names_must_be_unique`).
+        self._existing_names = set(existing_names or ()) - {network.name}
         self._all_mirrors = all_mirrors
         self._axes = build_axes(all_mirrors, network.select)
         # No `select` at all means "every mirrored repository" (see mmw.toml
@@ -667,6 +688,8 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
         with Vertical():
             yield Static(f"  Editing  [bold]{self._network.name}[/]", id="edit-title")
             with Vertical(id="edit-container"):
+                yield Label("Name", classes="field-label")
+                yield Input(self._network.name, id="inp-net-name")
                 yield Label("Publish root (optional)", classes="field-label")
                 with Horizontal(id="root-row"):
                     yield Input(str(self._network.root) if self._network.root else "", id="inp-root")
@@ -707,10 +730,15 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
                     yield Switch(value=self._network.certs, id="certs-switch")
                     yield Label("Manage TLS certs for this network")
                     yield Label("(generate key + CSR covering all mirror hostnames)", classes="certs-hint")
+                with Horizontal(id="bundle-tls-row"):
+                    yield Switch(value=self._network.bundle_tls, id="bundle-tls-switch")
+                    yield Label("Carry cert + key in bundles")
+                    yield Label("(puts the private key on the media; needs certs + a signed cert)",
+                                classes="tls-hint")
                 with Horizontal(id="nginx-row"):
                     yield Switch(value=self._network.nginx, id="nginx-switch")
                     yield Label("Generate nginx site files")
-                    yield Label("(conf.d style; one file per host under nginx/sites/)", classes="nginx-hint")
+                    yield Label("(one nginx/mirror.conf, a server block per host)", classes="nginx-hint")
                 with Horizontal(id="compress-row"):
                     yield Switch(value=self._network.bundle_compress, id="compress-switch")
                     yield Label("Compress bundle tarballs")
@@ -804,23 +832,43 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
                 severity="warning",
             )
             return
+        name = self.query_one("#inp-net-name", Input).value.strip()
+        if not config.NETWORK_NAME_RE.fullmatch(name) or name in (".", ".."):
+            self.notify("Network name: letters, digits, '.', '_' and '-' only — it is "
+                        "used as a directory name.", severity="warning")
+            self.query_one("#inp-net-name", Input).focus()
+            return
+        if name in self._existing_names:
+            self.notify(f"A network called '{name}' already exists.", severity="warning")
+            self.query_one("#inp-net-name", Input).focus()
+            return
         prune = self.query_one("#prune-switch", Switch).value
         dist_upgrade = self.query_one("#du-switch", Switch).value
         certs = self.query_one("#certs-switch", Switch).value
+        bundle_tls = self.query_one("#bundle-tls-switch", Switch).value
+        if bundle_tls and not certs:
+            self.notify("Carrying the cert in bundles needs TLS certs turned on too.",
+                        severity="warning")
+            return
         nginx = self.query_one("#nginx-switch", Switch).value
         compress = self.query_one("#compress-switch", Switch).value
         root_str = self.query_one("#inp-root", Input).value.strip()
         bundle_str = self.query_one("#inp-bundle-dir", Input).value.strip()
         root = Path(root_str) if root_str else None
         bundle_dir = Path(bundle_str) if bundle_str else None
-        self.dismiss(config.NetworkConfig(
-            name=self._network.name,  # the editor does not rename
-            root=root,
-            bundle_dir=bundle_dir,
-            select=selects,
-            prune=prune,
-            dist_upgrade=dist_upgrade,
-            certs=certs,
-            nginx=nginx,
-            bundle_compress=compress,
-        ))
+        # Built from the network being edited, not from scratch, so a field
+        # this screen does not show yet survives an edit unchanged.
+        # model_validate re-runs the validators model_copy(update=) skips.
+        self.dismiss(config.NetworkConfig.model_validate({
+            **self._network.model_dump(),
+            "name": name,
+            "root": root,
+            "bundle_dir": bundle_dir,
+            "select": selects,
+            "prune": prune,
+            "dist_upgrade": dist_upgrade,
+            "certs": certs,
+            "nginx": nginx,
+            "bundle_compress": compress,
+            "bundle_tls": bundle_tls,
+        }))

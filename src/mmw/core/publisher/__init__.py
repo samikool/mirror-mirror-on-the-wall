@@ -24,6 +24,11 @@ from mmw.core.publisher.links import (
     is_package_file,
     publish_group,
     publish_keys,
+    publish_upstream_keys,
+    reconcile_extra_prefix,
+    upstream_key_files,
+    upstream_key_hosts,
+    upstream_key_live_dirs,
 )
 from mmw.core.resolve import network_mirrors
 from mmw.core.publisher.results import BundleResult, MirrorPublishResult, NetworkPublishResult
@@ -103,6 +108,10 @@ def publish_network(
     # A mirror whose publish base nests inside another's (custom repos at
     # host/repo and host/repo/sub) must never be pruned by the outer group.
     all_bases = set(groups)
+    published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
+    # Known before any group runs: a key inside a repository's directory must
+    # be in that group's `keep`, not pruned and relinked every publish.
+    key_files = upstream_key_files(mirror_dir, published_mirrors)
 
     sink = TreeSink(network.root, progress=progress, stop_event=stop_event)
     try:
@@ -118,6 +127,7 @@ def publish_network(
                     mirrors, sink, pool,
                     progress=progress, stop_event=stop_event,
                     prune=network.prune, prune_exclude=nested,
+                    keep_extra=set(key_files),
                 ))
 
             if network.dist_upgrade and not (stop_event and stop_event.is_set()):
@@ -132,18 +142,46 @@ def publish_network(
             # Must run before sink.close(): BundleSink (Task 6) finalizes the
             # whole archive there, so anything written after close is dropped.
             if not (stop_event and stop_event.is_set()):
-                published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
-
+                nginx_rels: set[str] = set()
                 if network.nginx:
+                    from mmw.core.certs import CHANGELOGS_HOST, servable_paths
                     from mmw.core.publisher.nginx import nginx_files
-                    for rel, data in nginx_files(published_mirrors, str(network.root)).items():
+                    # Served straight from cert_dir: a publish destination is
+                    # on this machine, and the key never enters a served tree.
+                    tls_paths = servable_paths(network, cfg)
+                    tls = (str(tls_paths[0]), str(tls_paths[1])) if tls_paths else None
+                    extra = upstream_key_hosts(key_files)
+                    if network.dist_upgrade:
+                        extra.append(CHANGELOGS_HOST)
+                    for rel, data in nginx_files(published_mirrors, str(network.root),
+                                                 tls=tls, extra_hosts=extra).items():
                         sink.write(rel, data)
+                        nginx_rels.add(rel)
 
-                key_errors = publish_keys(sink, mirror_dir, published_mirrors)
+                # `publish_keys` returns (errors, published_rels). Assigning the
+                # tuple to `key_errors` and extending a result's error list with
+                # it produced `[[], set()]` — two bogus "errors" on every clean
+                # publish, which is how this was caught.
+                key_errors, key_rels = publish_keys(sink, mirror_dir, published_mirrors)
+                key_errors += publish_upstream_keys(sink, key_files)
                 if key_errors:
                     r = MirrorPublishResult(mirror_name="keys")
                     r.errors.extend(key_errors)
                     result.mirrors.append(r)
+
+                # The same three reconciliations `bundle_network` performs, for
+                # the same reason: `nginx/` and `keys/` live outside every
+                # mirror_base, and a `mirror_base` that no group produced any
+                # more is never walked at all — so dropping a repository from a
+                # network left its whole stale subtree, its nginx site file and
+                # its keys being served indefinitely, with `prune = true` giving
+                # no warning. Publish and bundle must agree here or the two
+                # halves of the pair drift apart again.
+                if network.prune:
+                    reconcile_extra_prefix(sink, "nginx", nginx_rels)
+                    reconcile_extra_prefix(sink, "keys", key_rels)
+                    sink.prune_stale_bases(
+                        all_bases | upstream_key_live_dirs(key_files, all_bases))
     finally:
         sink.close()
 

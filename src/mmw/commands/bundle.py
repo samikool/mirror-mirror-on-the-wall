@@ -3,14 +3,13 @@ the Networks tab's Bundle button drives.
 
 Bundling is the one publish-shaped workflow that most wants a cron job: an
 airgapped site's operator wants a scheduled `.tar.zst` drop, not a TUI they
-have to sit in front of. This module is a thin frontend over
-`bundle_network` — same shape as `commands/prune.py` and the headless half of
-`mmw publish` in `cli.py`.
+have to sit in front of. This module is a thin frontend over `bundle_network`
+— and deliberately the same shape, check for check, as `commands/publish.py`:
+the two verbs' only real difference is the sink.
 """
-import sys
 from pathlib import Path
 
-from mmw.core import config
+from mmw.commands.common import eprint, interruptible, load_config_or_none, preflight_ok
 from mmw.core.format import fmt_size as _fmt_size
 
 # Imported at module level, not inside run(): tests monkeypatch this as a
@@ -20,37 +19,53 @@ from mmw.core.format import fmt_size as _fmt_size
 from mmw.core.publisher.bundle import bundle_network
 
 
+@interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None,
-        full: bool = False, out: Path | None = None) -> int:
+        full: bool = False, out: Path | None = None,
+        allow_incomplete: bool = False) -> int:
     """Bundle one or all configured networks. Returns a process exit code."""
-    try:
-        cfg = config.load(cfg_dir)
-    except FileNotFoundError as e:
-        print(e)
+    cfg = load_config_or_none(cfg_dir)
+    if cfg is None:
         return 1
 
     networks = cfg.networks
     if not networks:
-        print("No networks configured. Use `mmw manage` to add one.")
+        eprint("No networks configured. Use `mmw manage` to add one.")
         return 1
 
     if network:
         networks = [n for n in networks if n.name == network]
         if not networks:
-            print(f"Network '{network}' not found.", file=sys.stderr)
+            eprint(f"Network '{network}' not found.")
             return 1
 
     mirror_dir = cfg.settings.mirror_dir
     ok = True
     for net in networks:
-        # A bundle-only destination is `out` (this run) or `net.bundle_dir`
-        # (the config). Neither set is not a crash — same as `mmw publish`
-        # skipping a network with no `root` — because a multi-network cron
-        # run must keep bundling the networks that ARE configured rather than
-        # aborting the whole invocation over one that isn't.
+        # A bundle destination is `out` (this run) or `net.bundle_dir` (the
+        # config). Naming the network with `-n` and finding neither is an
+        # error — you asked for something this network cannot do. Meeting it
+        # while iterating every network is not: a publish-only network in a
+        # bundle run is a normal config, and a multi-network cron run must
+        # keep bundling the ones that ARE configured. `mmw publish` applies
+        # the identical rule to `root`; the two used to disagree, each
+        # claiming parity with the other.
         if out is None and net.bundle_dir is None:
+            msg = (f"Network '{net.name}' has no bundle destination set "
+                   f"(set bundle_dir in mmw.toml or pass --out)")
+            if network:
+                eprint(msg)
+                return 1
             print(f"Skipping network: {net.name} — no bundle destination set "
                   f"(set bundle_dir in mmw.toml or pass --out)")
+            continue
+
+        # The same completeness gate `do_bundle` runs in the TUI, which the
+        # headless door never had: a ref whose blob the pool lacks is
+        # invisible to `pool.mirror_files()`, so it lands in neither the tar
+        # nor the manifest, `apply.py --verify` passes, and the gap surfaces
+        # as a 404 during `apt install` on the far side of an airgap.
+        if not preflight_ok("bundle", net, cfg, mirror_dir, allow_incomplete):
             ok = False
             continue
 
@@ -58,12 +73,19 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             result = bundle_network(net, cfg, mirror_dir, out_path=out, full=full,
                                      compress=net.bundle_compress)
         except Exception as e:
-            print(f"Network '{net.name}' failed: {e}", file=sys.stderr)
+            eprint(f"Network '{net.name}' failed: {e}")
             ok = False
             continue
 
         print(f"{net.name}  →  {result.out_path}")
         print(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
+        # The checksum sidecar, when the pipeline produces one. `getattr`
+        # rather than an attribute access: `BundleResult` gained this field
+        # after this command existed, and a bundle written by an older
+        # pipeline has no sidecar to name.
+        sha_path = getattr(result, "checksum_path", None)
+        if sha_path:
+            print(f"  sha256  {sha_path}")
         # Reported, never dropped: the TUI surfaces these on the Bundle
         # result notification, and a dist-upgrade warning that is visible to
         # someone watching a modal but silent in cron is exactly the kind of
@@ -71,10 +93,10 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         # not failures, so they do not set `ok` — `mmw publish` treats the
         # same list the same way.
         for w in result.dist_upgrade_warnings:
-            print(f"    ⚠ {w}", file=sys.stderr)
+            eprint(f"    ⚠ {w}")
         if result.errors:
             ok = False
             for e in result.errors:
-                print(f"    ✗ {e}", file=sys.stderr)
+                eprint(f"    ✗ {e}")
 
     return 0 if ok else 1

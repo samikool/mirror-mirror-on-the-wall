@@ -9,6 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Editor state — one person's theme is not project configuration
+.vscode/
+.idea/
+
 # Live mirror storage (multi-TB) — never track
 mirror/
 

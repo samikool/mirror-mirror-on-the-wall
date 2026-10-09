@@ -23,7 +23,13 @@ from mmw.core.downloader import (
     fetch_metadata_threaded,
     fetch_packages_threaded,
 )
-from mmw.core.keys import KeySyncResult, sync_custom_key, write_key
+from mmw.core.keys import (
+    KeySyncResult,
+    fetch_key_bytes,
+    store_upstream_key,
+    sync_custom_key,
+    write_key,
+)
 from mmw.core.pool import Pool
 from mmw.providers import get_provider
 
@@ -69,7 +75,7 @@ class KeySyncCoordinator:
     """Fetches each repository's declared GPG key once.
 
     There is no distro catalog to scrape well-known key locations from any more
-    (see repository-first-redesign.md); a key is mirrored when the source
+    (see docs/history/repository-first-redesign.md); a key is mirrored when the source
     declares `gpg_key_url`. Sources sharing a key URL fetch it once.
     """
 
@@ -97,7 +103,8 @@ class KeySyncCoordinator:
         # column. A label directory is one place, and `label` *is* in the pool.
         group = mirror.label or _key_group(mirror)
         stem = getattr(mirror, "gpg_key_name", None) or _key_group(mirror)
-        claim = f"{group}/{stem}" if inline else f"{group}/url:{mirror.gpg_key_url}"
+        url = mirror.gpg_key_url
+        claim = f"{group}/{stem}" if inline else f"{group}/url:{url}"
         with self._lock:
             if claim in self._claimed:
                 return []
@@ -105,10 +112,16 @@ class KeySyncCoordinator:
         try:
             if inline:
                 result = write_key(group, inline, self._mirror_dir, stem)
+                # Both declared: the inline key fills keys/, and the URL is
+                # still fetched — only for its byte-for-byte upstream copy.
+                if url and result.ok:
+                    try:
+                        raw = fetch_key_bytes(url, _thread_client())
+                        store_upstream_key(group, url, raw, self._mirror_dir)
+                    except Exception as e:
+                        result.failed.append(f"{stem} (upstream copy from {url}): {e}")
             else:
-                result = sync_custom_key(
-                    group, mirror.gpg_key_url, self._mirror_dir, _thread_client()
-                )
+                result = sync_custom_key(group, url, self._mirror_dir, _thread_client())
             with self._lock:
                 self.results[claim] = result
             return list(result.failed)

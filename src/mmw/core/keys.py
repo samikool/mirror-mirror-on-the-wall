@@ -1,4 +1,6 @@
 import base64
+import hashlib
+import posixpath
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -6,6 +8,13 @@ from pathlib import Path
 import httpx
 
 KEYS_DIR = "keys"
+
+# Key URLs that name nothing: two repositories sharing a `label` would
+# otherwise collide on one filename in one directory.
+_GENERIC_KEY_NAMES = frozenset({
+    "gpgkey", "key", "keys", "gpg", "asc", "pub", "pubkey", "public",
+    "publickey", "release", "signing-key", "repo",
+})
 
 
 @dataclass
@@ -71,13 +80,65 @@ def enarmor(raw: bytes) -> str:
 
 
 def dearmor(armour: str) -> bytes:
-    """ASCII armour → the binary key it encodes."""
-    payload = [
-        line.strip() for line in armour.splitlines()
-        if line.strip() and not line.startswith("-----") and not line.startswith("=")
-        and ":" not in line
-    ]
-    return base64.b64decode("".join(payload))
+    """ASCII armour → the binary key it encodes. Raises `ValueError` if it is
+    not one.
+
+    **This is the only place anything checks that a "key" is a key.** The old
+    version skipped every line it did not recognise and decoded the rest with
+    `validate=False`, which silently discards non-base64 characters — so
+    `write_key("mirror", "this is definitely not a key at all")` reported
+    success and wrote both a `.asc` and a `.gpg`. On the far side of an airgap
+    that surfaces as an opaque `gpg --import` failure against a file nothing
+    can refetch. Header, footer, strict base64 and (when present) the CRC-24
+    are all checked here instead.
+
+    Lossless in both directions: `dearmor(enarmor(x)) == x`.
+    """
+    lines = armour.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.strip() == _ARMOUR_HEADER), None)
+    end = next((i for i, ln in enumerate(lines)
+                if i > (start if start is not None else -1)
+                and ln.strip() == _ARMOUR_FOOTER), None)
+    if start is None or end is None:
+        raise ValueError("not an OpenPGP public key block (no BEGIN/END armour)")
+
+    body = lines[start + 1:end]
+    i = 0
+    # Optional armour headers ("Version: GnuPG v1"), ended by a blank line.
+    while i < len(body) and body[i].strip() and ":" in body[i]:
+        i += 1
+    while i < len(body) and not body[i].strip():
+        i += 1
+
+    payload: list[str] = []
+    checksum: str | None = None
+    for raw in body[i:]:
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("="):
+            checksum = line[1:]
+            break
+        payload.append(line)
+    if not payload:
+        raise ValueError("armoured key has no base64 payload")
+
+    try:
+        decoded = base64.b64decode("".join(payload), validate=True)
+    except Exception as e:
+        raise ValueError(f"armoured key is not valid base64: {e}") from e
+
+    # The checksum line is required by RFC 4880 and optional in RFC 9580, so a
+    # key without one is accepted — but one *with* one that disagrees is
+    # corrupt, and saying so here is the last chance before it travels.
+    if checksum is not None:
+        try:
+            expected = int.from_bytes(base64.b64decode(checksum, validate=True), "big")
+        except Exception as e:
+            raise ValueError(f"armour checksum is not valid base64: {e}") from e
+        if expected != _crc24(decoded):
+            raise ValueError("armour CRC-24 checksum mismatch — the key is corrupt")
+    return decoded
 
 
 def looks_armoured(data: bytes) -> bool:
@@ -94,6 +155,67 @@ def read_key(path: Path) -> str:
     return _armour_bytes(path.read_bytes())
 
 
+UPSTREAM_DIR = "upstream"
+
+
+def upstream_key_rel(url: str) -> str | None:
+    """Where a key fetched from `url` is published: `{host}/{path}`, exactly
+    as upstream serves it — so a vendor's own install instructions (`curl
+    https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor …`)
+    work unchanged against the mirror once DNS points there.
+
+    The host is mangled for a non-standard port exactly as
+    `MirrorConfig.mirror_base` mangles it, so a key on its repository's own
+    host:port lands in that repository's directory. None when the URL has no
+    1-to-1 path to give it: no file name, a query string, or a path that
+    would escape the tree.
+    """
+    from urllib.parse import urlparse
+
+    from mmw.core.downloader import is_safe_repo_path
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    if parsed.query or parsed.fragment:
+        return None
+    path = parsed.path.lstrip("/")
+    if not path or path.endswith("/"):
+        return None
+    host = parsed.hostname
+    if parsed.port:
+        host = f"{host}_{parsed.port}"
+    rel = f"{host}/{path}"
+    if not is_safe_repo_path(rel) or posixpath.normpath(rel) != rel:
+        return None
+    return rel
+
+
+def store_upstream_key(group: str, url: str, raw: bytes, mirror_dir: Path) -> Path | None:
+    """Keep the exact bytes fetched from `url` at
+    `keys/{group}/upstream/{host}/{path}`, for publish to place at
+    `{host}/{path}`. Grouped by label like every other key: a directory's
+    presence is the fact publish reads, since the pool records no keys."""
+    rel = upstream_key_rel(url)
+    if rel is None:
+        return None
+    dest = mirror_dir / KEYS_DIR / group / UPSTREAM_DIR / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() and dest.read_bytes() == raw:
+        return dest
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_bytes(raw)
+    tmp.replace(dest)
+    return dest
+
+
+def fetch_key_bytes(url: str, client: httpx.Client) -> bytes:
+    """The key exactly as the server sent it."""
+    resp = client.get(url, timeout=15, follow_redirects=True)
+    resp.raise_for_status()
+    return resp.content
+
+
 def fetch_key(url: str, client: httpx.Client) -> str:
     """Fetch a key from a URL in either encoding and return it armoured — the
     add-time equivalent of `read_key()` for a URL instead of a local path.
@@ -106,9 +228,7 @@ def fetch_key(url: str, client: httpx.Client) -> str:
     work here is fetch-and-normalize — whichever form arrives, this returns
     the same armoured text either way.
     """
-    resp = client.get(url, timeout=15, follow_redirects=True)
-    resp.raise_for_status()
-    return _armour_bytes(resp.content)
+    return _armour_bytes(fetch_key_bytes(url, client))
 
 
 def find_keys(directory: Path) -> dict[str, Path]:
@@ -125,16 +245,6 @@ def find_keys(directory: Path) -> dict[str, Path]:
     except OSError:
         pass
     return found
-
-
-def _fetch_key_to(dest: Path, url: str, client: httpx.Client) -> None:
-    """Fetch a key via tmp+rename so an interrupted write never leaves a
-    half-written file that the exists() check would treat as done."""
-    resp = client.get(url, timeout=15)
-    resp.raise_for_status()
-    tmp = dest.with_suffix(dest.suffix + ".tmp")
-    tmp.write_bytes(resp.content)
-    tmp.replace(dest)
 
 
 def write_key(mirror_name: str, armour: str, mirror_dir: Path,
@@ -181,22 +291,57 @@ def write_key(mirror_name: str, armour: str, mirror_dir: Path,
     return result
 
 
-def sync_custom_key(mirror_name: str, key_url: str, mirror_dir: Path, client: httpx.Client) -> KeySyncResult:
-    """Fetch a single GPG key URL into mirror_dir/keys/{mirror_name}/."""
-    dest_dir = mirror_dir / KEYS_DIR / mirror_name
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    result = KeySyncResult(dest_dir=dest_dir)
-    filename = key_url.rstrip("/").split("/")[-1] or "gpgkey"
-    dest = dest_dir / filename
-    if dest.exists():
-        result.skipped += 1
-    else:
+def _stem_for(key_url: str) -> str:
+    """A filename stem for a fetched key, distinct per URL.
+
+    The last path segment is what a vendor's own docs name, so it reads right
+    — `nvidia-spark-repo.gpg`, `3bf863cc.pub`. But plenty of repositories end
+    their key URL in a generic word, and two repositories sharing a `label`
+    then land in one directory under one stem: the second used to be reported
+    as "already present" and silently never fetched. A generic tail gets a
+    short digest of the URL appended, which is ugly and unambiguous; a
+    rotation of the *same* URL keeps the same stem and correctly overwrites.
+    """
+    tail = key_url.rstrip("/").rsplit("/", 1)[-1] or "gpgkey"
+    stem = tail.rsplit(".", 1)[0] or tail
+    if stem.lower() in _GENERIC_KEY_NAMES:
+        digest = hashlib.sha256(key_url.encode()).hexdigest()[:8]
+        return f"{stem}-{digest}"
+    return stem
+
+
+def sync_custom_key(mirror_name: str, key_url: str, mirror_dir: Path,
+                    client: httpx.Client, stem: str | None = None) -> KeySyncResult:
+    """Fetch a single GPG key URL into `mirror_dir/keys/{mirror_name}/`.
+
+    Exactly `write_key(fetch_key(...))` — the URL door and the config door
+    produce the same files. This used to write the fetched bytes verbatim
+    under the URL's last path segment, which meant a key fetched by URL got
+    none of the guarantees a key that came with the config gets: no
+    normalization to armour, only one encoding instead of both `.asc` and
+    `.gpg`, and no validation that the bytes are a key at all. It also
+    returned "skipped" whenever the destination existed, so a rotated upstream
+    key was never refetched.
+    """
+    stem = stem or _stem_for(key_url)
+    try:
+        raw = fetch_key_bytes(key_url, client)
+        armour = _armour_bytes(raw)
+    except Exception as e:
+        dest_dir = mirror_dir / KEYS_DIR / mirror_name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        result = KeySyncResult(dest_dir=dest_dir)
+        result.failed.append(f"{stem}: {e}")
+        readme = dest_dir / "IMPORT.md"
+        if not readme.exists():
+            readme.write_text(_IMPORT_README)
+        return result
+    result = write_key(mirror_name, armour, mirror_dir, stem)
+    if result.ok:
+        # Kept only alongside a key write_key accepted, so a failed fetch
+        # never leaves an upstream copy with no keys/ entry beside it.
         try:
-            _fetch_key_to(dest, key_url, client)
-            result.fetched += 1
-        except Exception as e:
-            result.failed.append(f"{filename}: {e}")
-    readme = dest_dir / "IMPORT.md"
-    if not readme.exists():
-        readme.write_text(_IMPORT_README)
+            store_upstream_key(mirror_name, key_url, raw, mirror_dir)
+        except OSError as e:
+            result.failed.append(f"{stem} (upstream copy): {e}")
     return result

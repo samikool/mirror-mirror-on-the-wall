@@ -14,7 +14,7 @@ runner = CliRunner()
 
 def _write_publishable_setup(root: Path) -> Path:
     """Config + synced pool (refs + blobs) + network, all under root. Returns dst base."""
-    from mmw.core.pool import KIND_PKG, KIND_RELEASE, Pool
+    from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 
     mirror_dir = root / "mirror"
     cfg = config.Config(
@@ -30,11 +30,20 @@ def _write_publishable_setup(root: Path) -> Path:
     with Pool(mirror_dir) as pool:
         pkg = hashlib.sha256(b"deb-bytes").hexdigest()
         pool.add(b"deb-bytes", pkg, "sha256", "bash.deb", 9)
-        rel = hashlib.sha256(b"<repomd/>").hexdigest()
-        pool.add(b"<repomd/>", rel, "sha256", "repomd.xml", 9)
+        # A real apt-flat mirror has a `Packages` index at its root listing the
+        # packages it serves, and the completeness gate parses exactly that.
+        # This fixture used to seed `repodata/repomd.xml` instead — an rpm-era
+        # leftover that no apt-flat repository has — so the mirror it described
+        # could never have been published by a real sync either.
+        index = f"Package: bash\nFilename: pool/bash.deb\nSHA256: {pkg}\nSize: 9\n\n".encode()
+        idx = hashlib.sha256(index).hexdigest()
+        pool.add(index, idx, "sha256", "Packages", len(index))
+        rel = hashlib.sha256(b"Suite: stable\n").hexdigest()
+        pool.add(b"Suite: stable\n", rel, "sha256", "InRelease", 14)
         pool.reconcile_refs("custom-repo", [
-            (pkg, "Packages/bash.deb", KIND_PKG),
-            (rel, "repodata/repomd.xml", KIND_RELEASE),
+            (pkg, "pool/bash.deb", KIND_PKG),
+            (idx, "Packages", KIND_META),
+            (rel, "InRelease", KIND_RELEASE),
         ])
     return root / "pub" / "example.com" / "repo"
 
@@ -45,8 +54,8 @@ def test_publish_quiet_links_files(tmp_path, monkeypatch):
     from mmw.cli import app
     result = runner.invoke(app, ["publish", "--quiet"])
     assert result.exit_code == 0, result.output
-    assert (dst / "Packages" / "bash.deb").exists()
-    assert (dst / "repodata" / "repomd.xml").exists()
+    assert (dst / "pool" / "bash.deb").exists()
+    assert (dst / "InRelease").exists()
 
 
 def test_publish_dry_run_writes_nothing(tmp_path, monkeypatch):

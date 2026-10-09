@@ -1,9 +1,11 @@
 import asyncio
 import concurrent.futures
 import time
+from pathlib import Path
 
 import typer
 
+from mmw.commands.common import eprint, interruptible, load_config_or_none
 from mmw.core import config
 from mmw.core.format import fmt_size as _fmt_size
 from mmw.core.pool import Pool
@@ -32,10 +34,25 @@ def _rule(char: str = "─") -> str:
     return char * W
 
 
-async def _check_all(cfg: config.Config):
+async def _check_all(cfg: config.Config) -> int:
+    """Report what a sync would fetch. Returns a process exit code."""
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=cfg.settings.max_connections)
+    try:
+        return await _check_all_inner(cfg, executor)
+    finally:
+        # `finally`, so an exception or a Ctrl-C can't strand the workers.
+        executor.shutdown(wait=False)
+
+
+async def _check_all_inner(cfg: config.Config, executor) -> int:
     mirror_dir = cfg.settings.mirror_dir
     loop = asyncio.get_running_loop()
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=cfg.settings.max_connections)
+
+    # Counted, not merely printed. Before this only `resolve_errors` reached
+    # the exit gate, so a run where every metadata fetch failed printed
+    # "ERROR fetching metadata" per mirror, then a confident
+    # `0 packages / 0.0 B` total, and exited 0.
+    mirror_errors: list[str] = []
 
     grand_pkgs = grand_size = grand_fetch_n = grand_fetch_size = grand_pool_n = grand_pool_size = 0
 
@@ -46,7 +63,13 @@ async def _check_all(cfg: config.Config):
     typer.echo(f"  mirror dir : {mirror_dir}")
     typer.echo(_rule("═"))
 
-    with Pool(mirror_dir, read_only=True) as pool:
+    try:
+        pool_cm = Pool(mirror_dir, read_only=True)
+    except OSError as e:
+        eprint(f"Cannot open the pool in {mirror_dir}: {e.strerror or e}")
+        return 1
+
+    with pool_cm as pool:
         for mirror in mirrors:
             typer.echo()
             typer.echo(f"  ▶  {mirror.name}  [{mirror.provider}]")
@@ -56,6 +79,7 @@ async def _check_all(cfg: config.Config):
                 provider = get_provider(mirror.provider)
             except ValueError as e:
                 typer.echo(f"  ERROR: {e}", err=True)
+                mirror_errors.append(f"{mirror.name}: {e}")
                 continue
 
             typer.echo("  fetching metadata...")
@@ -66,6 +90,7 @@ async def _check_all(cfg: config.Config):
                 )
             except Exception as e:
                 typer.echo(f"  ERROR fetching metadata: {e}", err=True)
+                mirror_errors.append(f"{mirror.name}: {e}")
                 continue
             typer.echo(f"  {len(packages):,} packages  ({time.monotonic() - t0:.1f}s)")
 
@@ -127,19 +152,22 @@ async def _check_all(cfg: config.Config):
         typer.echo(_rule("═"))
         typer.echo()
 
-    executor.shutdown(wait=False)
-    # A repository that could not be listed contributed no mirrors — a dry-run
-    # that silently checked nothing must not look like success.
-    if resolve_errors:
-        raise typer.Exit(1)
+    # A repository that could not be listed contributed no mirrors, and a
+    # mirror whose index could not be read was checked against nothing — a
+    # dry-run that silently checked nothing must not look like success.
+    if mirror_errors:
+        eprint(f"\n  {len(mirror_errors)} mirror(s) could not be checked: "
+               + ", ".join(mirror_errors))
+    if resolve_errors or mirror_errors:
+        return 1
+    return 0
 
 
-def run():
+@interruptible
+def run(cfg_dir: Path = Path(".")) -> int:
     """Show what would be downloaded without fetching anything."""
-    try:
-        cfg = config.load()
-    except FileNotFoundError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+    cfg = load_config_or_none(cfg_dir)
+    if cfg is None:
+        return 1
 
-    asyncio.run(_check_all(cfg))
+    return asyncio.run(_check_all(cfg))

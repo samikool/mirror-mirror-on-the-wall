@@ -776,3 +776,46 @@ def test_cancelling_the_file_browser_leaves_the_paste_box_alone(monkeypatch):
             assert "a.example.com" in step.query_one("#paste-area", TextArea).text
 
     _run(scenario)
+
+
+def test_typing_a_config_probes_once_not_once_per_character(monkeypatch):
+    """The paste box debounces.
+
+    `TextArea.Changed` fires per character, and every change that parsed used
+    to re-enter the probe workers — measured at ten calls into
+    `discover.list_suites` for a single 48-character `deb …` line, multiplied
+    by however many repositories the paste names. The generation token only
+    ever suppressed the stale UI update; the HTTP was already in flight.
+    """
+    import asyncio
+
+    from mmw.tui import custom_repo as cr
+
+    _stub(monkeypatch)
+    # The suite-wide conftest collapses the debounce to keep other tests fast;
+    # this is the one test that needs the real thing.
+    monkeypatch.setattr(cr, "_PASTE_DEBOUNCE", 0.3, raising=True)
+    applied: list[str] = []
+    monkeypatch.setattr(cr.StepCustom, "_apply_paste",
+                        lambda self, text: applied.append(text))
+
+    async def go():
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            step = app.screen.query_one(cr.StepCustom)
+            area = step.query_one("#paste-area")
+            # No pause between keystrokes: that is what typing looks like, and
+            # pumping the loop after each one would let every timer fire.
+            for ch in "deb http://x/y noble main":
+                area.text = area.text + ch
+            await pilot.pause()
+            await asyncio.sleep(0.6)
+            await pilot.pause()
+
+    asyncio.run(go())
+    assert applied, "the debounce never fired at all"
+    assert len(applied) <= 2, (
+        f"{len(applied)} probe rounds for one typed line — the debounce is not "
+        "coalescing keystrokes"
+    )

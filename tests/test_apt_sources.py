@@ -519,3 +519,180 @@ def test_an_indented_types_inside_an_armour_block_is_not_a_new_stanza():
     assert len(entries) == 1
     assert entries[0].url == "http://a.example.com/ubuntu"
     assert "BEGIN PGP PUBLIC KEY BLOCK" in entries[0].gpg_key
+
+
+# ── one input, both formats ──────────────────────────────────────────────────
+
+MIXED = """\
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu
+Suites: noble
+Components: main
+
+# docker.list — a one-line file in the same directory
+deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable
+deb https://nvidia.example/repo ./
+"""
+
+
+def test_a_directory_of_both_formats_imports_all_of_it():
+    """`mmw add -f /etc/apt/sources.list.d/` is the headline workflow, and that
+    directory is exactly where a deb822 `.sources` sits beside a one-line
+    `.list`. Picking one parser for the whole blob dropped every `deb ` line
+    the moment any `.sources` file was present — silently, exit 0."""
+    urls = {e.url for e in parse_apt_sources(MIXED)}
+    assert urls == {
+        "http://archive.ubuntu.com/ubuntu",
+        "https://download.docker.com/linux/ubuntu",
+        "https://nvidia.example/repo",
+    }
+
+
+def test_the_word_types_in_a_comment_is_not_a_deb822_field():
+    """The old detector substring-tested the whole blob, comments included."""
+    entries = parse_apt_sources(
+        "# converted from Types: deb / URIs: … by hand\n"
+        "deb http://archive.ubuntu.com/ubuntu noble main\n"
+    )
+    assert [e.url for e in entries] == ["http://archive.ubuntu.com/ubuntu"]
+    assert entries[0].suite == "noble"
+
+
+def test_a_one_line_record_after_a_deb822_stanza_ends_it():
+    entries = parse_apt_sources(
+        "Types: deb\nURIs: http://a.example/repo\nSuites: noble\nComponents: main\n"
+        "deb http://b.example/repo jammy main\n"
+    )
+    assert sorted(e.url for e in entries) == [
+        "http://a.example/repo", "http://b.example/repo"
+    ]
+
+
+# ── any trailing-slash distribution is a flat repository ─────────────────────
+
+def test_dot_slash_is_a_flat_repository():
+    """`./` is the spelling in most vendor install docs; only a bare `/` was
+    handled, so it became a suite literally called `./`."""
+    e = parse_apt_sources("deb http://v.example/repo ./\n")[0]
+    assert e.suite is None
+    assert e.url == "http://v.example/repo"
+    assert entries_to_sources([e])[0].provider == "apt-flat"
+
+
+def test_a_named_exact_path_folds_into_the_url():
+    e = parse_apt_sources("deb http://v.example/repo stable/\n")[0]
+    assert e.suite is None
+    assert e.url == "http://v.example/repo/stable"
+    assert entries_to_sources([e])[0].provider == "apt-flat"
+
+
+def test_a_bare_slash_is_still_flat():
+    e = parse_apt_sources("deb http://v.example/repo /\n")[0]
+    assert e.suite is None and e.url == "http://v.example/repo"
+
+
+def test_a_suite_without_a_slash_is_still_a_suite():
+    e = parse_apt_sources("deb http://v.example/repo stable main\n")[0]
+    assert e.suite == "stable" and e.components == ["main"]
+
+
+def test_deb822_exact_path_suites_are_flat_too():
+    e = parse_apt_sources(
+        "Types: deb\nURIs: http://v.example/repo\nSuites: ./\n"
+    )[0]
+    assert e.suite is None and e.url == "http://v.example/repo"
+
+
+# ── $(ARCH) reaches the deb822 door too ──────────────────────────────────────
+
+def test_deb822_records_the_arch_placeholder():
+    """deb822 is Ubuntu 24.04+'s default format and this door never checked,
+    so the literal `$(ARCH)` was written into mmw.toml and every sync 404'd."""
+    e = parse_apt_sources(
+        "Types: deb\nURIs: https://x.example/deb/$(ARCH)\nSuites: /\n"
+    )[0]
+    assert e.arch_placeholder == "$(ARCH)"
+    assert "$(ARCH)" in e.url
+
+
+def test_both_doors_agree_on_the_same_repository():
+    one_line = parse_apt_sources("deb https://x.example/deb/$(ARCH) stable main\n")[0]
+    deb822 = parse_apt_sources(
+        "Types: deb\nURIs: https://x.example/deb/$(ARCH)\n"
+        "Suites: stable\nComponents: main\n"
+    )[0]
+    assert one_line == deb822
+
+
+# ── a trailing comment is not a component ────────────────────────────────────
+
+def test_a_trailing_comment_is_stripped():
+    """Four extra "components" meant four mirrors pointing at `dists/jammy/#/`."""
+    e = parse_apt_sources(
+        "deb http://archive.ubuntu.com/ubuntu jammy main restricted # added by me\n"
+    )[0]
+    assert e.components == ["main", "restricted"]
+
+
+def test_a_comment_cannot_empty_a_line_into_a_parse_error():
+    assert parse_apt_sources("   # just a comment\n") == []
+
+
+# ── signed-by= in a one-line options block ───────────────────────────────────
+
+def test_one_line_signed_by_path_is_remembered_by_basename():
+    """The handle `mmw add --keys-dir`, the review pane's scan and KeyModal all
+    match on — dropped for every one-line config, which is the format Docker
+    and Kubernetes still publish."""
+    e = parse_apt_sources(
+        "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] "
+        "https://download.docker.com/linux/ubuntu noble stable\n"
+    )[0]
+    assert e.gpg_key_name == "docker.gpg"
+    assert e.arches == ["amd64"]
+    assert entries_to_sources([e])[0].gpg_key_name == "docker.gpg"
+
+
+def test_one_line_inline_signed_by_armour_is_kept_as_key_material():
+    armour = "-----BEGIN PGP PUBLIC KEY BLOCK-----mQINBGXf-----END PGP PUBLIC KEY BLOCK-----"
+    e = parse_apt_sources(
+        f"deb [signed-by={armour}] https://x.example/repo noble main\n"
+    )[0]
+    assert e.gpg_key == armour and e.gpg_key_name is None
+
+
+# ── a separate deb-src stanza turns on include_sources ───────────────────────
+
+def test_a_separate_deb_src_stanza_sets_include_sources():
+    """The one-line parser pairs these; deb822 dropped the pairing entirely."""
+    entries = parse_apt_sources(
+        "Types: deb\nURIs: http://archive.ubuntu.com/ubuntu\n"
+        "Suites: noble\nComponents: main\n"
+        "\n"
+        "Types: deb-src\nURIs: http://archive.ubuntu.com/ubuntu\n"
+        "Suites: noble\nComponents: main\n"
+    )
+    assert len(entries) == 1
+    assert entries[0].include_sources is True
+
+
+def test_a_deb_src_stanza_for_another_suite_does_not_leak():
+    entries = parse_apt_sources(
+        "Types: deb\nURIs: http://a.example/repo\nSuites: noble\nComponents: main\n"
+        "\n"
+        "Types: deb-src\nURIs: http://a.example/repo\nSuites: jammy\nComponents: main\n"
+    )
+    assert [e.include_sources for e in entries] == [False]
+
+
+# ── grouping keys on identity, so a preview matches what is written ──────────
+
+def test_two_spellings_of_one_repository_preview_as_one_source():
+    """`save()` writes one (identity is the URI), so `--dry-run` must preview
+    one too."""
+    sources = entries_to_sources(parse_apt_sources(
+        "deb http://Archive.Ubuntu.com/ubuntu/ noble main\n"
+        "deb http://archive.ubuntu.com:80/ubuntu jammy universe\n"
+    ))
+    assert len(sources) == 1
+    assert sorted(sources[0].suites) == ["jammy", "noble"]

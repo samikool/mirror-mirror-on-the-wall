@@ -1,6 +1,6 @@
 """Multi-arch: config expansion, name uniqueness, merging, and publish grouping.
 
-Repository-first (see repository-first-redesign.md): sources are keyed on their
+Repository-first (see docs/history/repository-first-redesign.md): sources are keyed on their
 URI, there is no distro catalog, and architectures are learned by listing
 `binary-*` directories.
 """

@@ -1,7 +1,7 @@
 """Turning "all" into concrete suites, components and architectures.
 
 An empty `suites` / `components` / `arches` list on a source means *everything
-upstream serves* (see repository-first-redesign.md). Resolving that needs the
+upstream serves* (see docs/history/repository-first-redesign.md). Resolving that needs the
 network, so it cannot live in `SourceConfig.to_mirrors()`, which is a pure
 function used offline by publish, certs and the manage listing.
 
@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from mmw.core import discover
-from mmw.core.config import MirrorConfig, SourceConfig, arch_from_url
+from mmw.core.config import MirrorConfig, SourceConfig, SuiteOverride, arch_from_url
 
 
 @dataclass
@@ -71,55 +71,158 @@ def resolve_source(
         resolved.suites = found
         notes.append(f"{src.name}: all suites → {len(found)} ({_preview(found)})")
 
-    if not resolved.components:
-        say(f"{src.name}: listing components…")
-        components: list[str] = []
-        for suite in resolved.suites:
-            for c in discover.list_components(src.url, suite):
-                if c not in components:
-                    components.append(c)
-        via = "listing"
-        if not components:
-            # No directory listing at all — read the Release file instead.
-            components, _ = discover.release_dimensions(src.url, resolved.suites[0])
-            via = "Release file"
-        if not components:
-            errors.append(f"{src.name}: no components found under any suite")
-            return ResolvedSource(resolved, [], notes, errors)
-        resolved.components = components
-        notes.append(f"{src.name}: all components → {_preview(components)} [{via}]")
+    # **Resolve per suite, never as a union.** The old code unioned the
+    # components of every suite, then unioned the arches of whichever suite
+    # answered first, then let `to_mirrors()` take the cross product of the
+    # three flat lists. For a vendor repository whose suites differ — one
+    # carrying `common`, another `contrib`; one built for arm64, another for
+    # amd64 — that invents suite×component×arch combinations that do not exist
+    # upstream. Each invented mirror 404s its index, aborts, and makes
+    # `mmw sync --quiet` exit 1 on a repository that is perfectly healthy.
+    override_map = {o.suite: list(o.components) for o in resolved.suite_overrides}
+    stated_suites = bool(src.suites)
+    comps_by_suite: dict[str, list[str]] = {}
+    arches_by_suite: dict[str, list[str]] = {}
+    comps_via: dict[str, str] = {}
+    arches_via: dict[str, str] = {}
+    components_resolved = False
+    arches_resolved = False
+    dropped: list[str] = []
 
-    if not resolved.arches:
-        say(f"{src.name}: listing architectures…")
-        arches: list[str] = []
-        # The arch set does not vary between components of a suite, so the first
-        # component that answers settles it.
-        for suite in resolved.suites:
-            for comp in resolved.components:
-                found = discover.list_arches(src.url, suite, comp)
-                if found:
-                    arches = found
+    for suite in list(resolved.suites):
+        # `SuiteOverride(components=[])` used to mean "mirror nothing": the
+        # override replaced the source-level list, and resolution only ever
+        # looked at the source-level list, so an empty override was never
+        # filled in and never reported. The user asked for a suite, mmw wrote
+        # it down, mirrored nothing and exited 0.
+        comps = override_map.get(suite, resolved.components)
+        if not comps:
+            components_resolved = True
+            say(f"{src.name}: listing components in {suite}…")
+            comps = discover.list_components(src.url, suite)
+            via = "listing"
+            if not comps:
+                # No directory listing at all — read the Release file instead.
+                comps, _ = discover.release_dimensions(src.url, suite)
+                via = "Release file"
+            comps_via[suite] = via
+        if not comps:
+            if stated_suites:
+                errors.append(f"{src.name}: no components found under suite {suite}")
+            dropped.append(suite)
+            continue
+
+        arches = resolved.arches
+        if not arches:
+            arches_resolved = True
+            say(f"{src.name}: listing architectures in {suite}…")
+            # The arch set does not vary between components of a suite, so the
+            # first component that answers settles it.
+            for comp in comps:
+                arches = discover.list_arches(src.url, suite, comp)
+                if arches:
                     break
-            if arches:
-                break
-        via = "listing"
+            via = "listing"
+            if not arches:
+                # Only reached when listing produced NOTHING: where a listing
+                # exists it is authoritative, because Ubuntu's archive and
+                # ports hosts both advertise every architecture while each
+                # serves a subset.
+                _, arches = discover.release_dimensions(src.url, suite)
+                via = "Release file"
+            arches_via[suite] = via
         if not arches:
-            # Nothing listable — fall back to the Release file's Architectures.
-            # Only reached when listing produced NOTHING: where a listing exists
-            # it is authoritative, because Ubuntu's archive and ports hosts both
-            # advertise every architecture while each serves a subset.
-            _, arches = discover.release_dimensions(src.url, resolved.suites[0])
-            via = "Release file"
-        if not arches:
-            errors.append(
-                f"{src.name}: no binary-* directories listed and no Architectures "
-                f"in {src.url}/dists/{resolved.suites[0]}/Release"
-            )
-            return ResolvedSource(resolved, [], notes, errors)
-        resolved.arches = arches
-        notes.append(f"{src.name}: all arches → {_preview(arches)} [{via}]")
+            if stated_suites:
+                errors.append(
+                    f"{src.name}: no binary-* directories listed and no Architectures "
+                    f"in {src.url}/dists/{suite}/Release"
+                )
+            dropped.append(suite)
+            continue
 
-    return ResolvedSource(resolved, resolved.to_mirrors(), notes, errors)
+        comps_by_suite[suite] = comps
+        arches_by_suite[suite] = arches
+
+    if not comps_by_suite:
+        if not errors:
+            errors.append(f"{src.name}: no components found under any suite")
+        return ResolvedSource(resolved, [], notes, errors)
+    if errors:
+        # A suite the *user named* that resolves to nothing is a failure, not a
+        # subset — reporting it is the whole point of resolving out loud.
+        return ResolvedSource(resolved, [], notes, errors)
+    if dropped:
+        notes.append(
+            f"{src.name}: {len(dropped)} discovered suite(s) list nothing, skipped "
+            f"({_preview(dropped)})"
+        )
+
+    resolved.suites = [s for s in resolved.suites if s in comps_by_suite]
+
+    if components_resolved:
+        # Expressed the only way `SourceConfig` can express it: a source-level
+        # list plus a `SuiteOverride` for each suite that differs.
+        first = resolved.suites[0]
+        resolved.components = comps_by_suite[first]
+        resolved.suite_overrides = [
+            SuiteOverride(suite=s, components=comps_by_suite[s])
+            for s in resolved.suites[1:]
+            if comps_by_suite[s] != resolved.components
+        ]
+        notes.extend(_dimension_notes(
+            src.name, "components", comps_by_suite, comps_via, resolved.suites))
+
+    if arches_resolved:
+        # `SourceConfig` has no per-suite arch field, so the flat copy carries
+        # the union while `mirrors` below is built per suite — the mirrors are
+        # what a sync uses, and they contain no invented combination.
+        union: list[str] = []
+        for suite in resolved.suites:
+            for a in arches_by_suite[suite]:
+                if a not in union:
+                    union.append(a)
+        resolved.arches = union
+        notes.extend(_dimension_notes(
+            src.name, "arches", arches_by_suite, arches_via, resolved.suites))
+
+    mirrors: list[MirrorConfig] = []
+    for suite in resolved.suites:
+        per = resolved.model_copy(deep=True)
+        per.suites = [suite]
+        per.components = comps_by_suite[suite]
+        per.arches = arches_by_suite[suite]
+        per.suite_overrides = []
+        mirrors.extend(per.to_mirrors())
+
+    return ResolvedSource(resolved, mirrors, notes, errors)
+
+
+def _dimension_notes(
+    name: str,
+    dimension: str,
+    by_suite: dict[str, list[str]],
+    via: dict[str, str],
+    suites: list[str],
+) -> list[str]:
+    """What "all" expanded to — one line when every suite agrees, one line per
+    distinct answer when they do not. A repository with 55 suites must not
+    print 55 identical lines, and one whose suites genuinely differ must not
+    hide it behind a union."""
+    first = by_suite[suites[0]]
+    source = via.get(suites[0], "listing")
+    if all(by_suite[s] == first for s in suites):
+        return [f"{name}: all {dimension} → {_preview(first)} [{source}]"]
+    lines = [f"{name}: all {dimension} → {_preview(first)} [{source}] ({suites[0]})"]
+    seen = {tuple(first)}
+    for s in suites[1:]:
+        if tuple(by_suite[s]) in seen:
+            continue
+        seen.add(tuple(by_suite[s]))
+        lines.append(
+            f"{name}: {s} {dimension} → {_preview(by_suite[s])} "
+            f"[{via.get(s, 'listing')}]"
+        )
+    return lines
 
 
 def resolve_sources(

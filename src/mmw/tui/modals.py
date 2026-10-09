@@ -51,6 +51,70 @@ class InfoModal(ModalScreen):
     def action_dismiss_modal(self) -> None:
         self.dismiss()
 
+class HelpModal(ModalScreen[None]):
+    """What the keys do.
+
+    There was no help anywhere in the app: multi-select, the `/` filter, the
+    difference between prune and wipe and the fact that editing is the only
+    route that can *narrow* a repository were all things you had to be told.
+    The footer shows a handful of bindings and hides the rest.
+    """
+
+    DEFAULT_CSS = """
+    HelpModal { align: center middle; }
+    HelpModal > Vertical {
+        width: 82;
+        max-width: 96%;
+        height: 80%;
+        max-height: 92%;
+        border: double $primary;
+        background: $surface;
+    }
+    HelpModal #help-title {
+        height: 1;
+        background: $primary-darken-3;
+        padding: 0 2;
+        color: $text;
+        text-style: bold;
+    }
+    HelpModal #help-body { height: 1fr; padding: 1 2; }
+    HelpModal #help-bar {
+        height: auto;
+        align: right middle;
+        padding: 0 2;
+        background: $surface;
+        border-top: solid $primary-darken-2;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss_modal", "Close"),
+        Binding("question_mark", "dismiss_modal", "Close", show=False),
+    ]
+
+    def __init__(self, title: str, body: str):
+        super().__init__()
+        self._title = title
+        self._body = body
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import VerticalScroll
+
+        with Vertical():
+            yield Label(f"  {self._title} — keys", id="help-title")
+            with VerticalScroll(id="help-body"):
+                yield Label(self._body)
+            with Horizontal(id="help-bar"):
+                yield Button("Close", id="btn-help-close", variant="primary")
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-help-close")
+    def _close_help(self) -> None:
+        self.dismiss(None)
+
+
 class ConfirmModal(ModalScreen[bool]):
     DEFAULT_CSS = """
     ConfirmModal {

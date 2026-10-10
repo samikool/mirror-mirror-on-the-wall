@@ -266,7 +266,7 @@ def publish_group(
     """Publish all mirrors sharing one mirror_base through a Sink.
 
     `keep_extra` names destination paths published by another step (upstream
-    keys — see `upstream_key_files`) that this group's prune must not remove
+    files — see `upstream_files`) that this group's prune must not remove
     even though they sit under its base and are not in its index.
 
     Order: packages → index files (+by-hash) → release files → finalize. A
@@ -351,19 +351,20 @@ def _key_groups(mirrors: list[MirrorConfig]) -> set[str]:
     return groups
 
 
-def upstream_key_files(mirror_dir: Path, mirrors: list[MirrorConfig]) -> dict[str, Path]:
-    """`{host}/{path}` → the stored copy, for every key these mirrors fetched
-    from a URL (`keys/{group}/upstream/`, written by `keys.store_upstream_key`).
+def upstream_files(mirror_dir: Path, mirrors: list[MirrorConfig]) -> dict[str, Path]:
+    """`{host}/{path}` → the stored copy, for every file these mirrors'
+    repositories fetched from a URL — a key URL or an `extra_files` entry
+    (`upstream/{repository}/`, written during sync by `core/upstream.py`).
 
-    Computed BEFORE any group is published, because a key can sit inside a
+    Computed BEFORE any group is published, because a file can sit inside a
     repository's own directory (NVIDIA's `…/x86_64/3bf863cc.pub`) without
     being in its index — that group's prune has to be told to keep it, or a
     TreeSink deletes it every publish and a BundleSink tells the far side to.
     """
-    from mmw.core.keys import UPSTREAM_DIR
+    from mmw.core import upstream
     found: dict[str, Path] = {}
-    for group in sorted(_key_groups(mirrors)):
-        base = mirror_dir / "keys" / group / UPSTREAM_DIR
+    for group in sorted({upstream.repository_group(m) for m in mirrors}):
+        base = upstream.group_dir(mirror_dir, group)
         if not base.is_dir():
             continue
         for f in sorted(base.rglob("*")):
@@ -372,25 +373,41 @@ def upstream_key_files(mirror_dir: Path, mirrors: list[MirrorConfig]) -> dict[st
     return found
 
 
-def upstream_key_hosts(files: dict[str, Path]) -> list[str]:
-    """Top-level directories (hosts) the upstream keys live under — each
+def upstream_file_hosts(files: dict[str, Path]) -> list[str]:
+    """Top-level directories (hosts) the upstream files live under — each
     needs a server block, and a name on the certificate."""
     return sorted({rel.split("/", 1)[0] for rel in files})
 
 
-def upstream_key_live_dirs(files: dict[str, Path], bases: set[str]) -> set[str]:
-    """Directories `prune_stale_bases` must treat as live for keys on a host
-    no repository is mirrored from — otherwise the sweep that runs after
-    publishing removes them again. A key on a repository's own host needs
-    nothing: that host is already an ancestor of a live base, and adding
-    its directory here would shield real stale repositories beside it."""
-    hosts = {b.split("/", 1)[0] for b in bases}
-    return {posixpath.dirname(rel) or rel for rel in files
-            if rel.split("/", 1)[0] not in hosts}
+def upstream_file_live_dirs(files: dict[str, Path], bases: set[str]) -> set[str]:
+    """Directories `prune_stale_bases` must treat as live so it does not
+    remove upstream files right after they are published.
+
+    A file's own directory is added unless it is already safe: inside a live
+    base, or itself a parent of one (the sweep descends parents and only ever
+    removes directories, never a file sitting in one). Everything else needs
+    it — a host no repository uses (`keys.example.com/…`), and a directory
+    beside a repository on its own host (Microsoft's
+    `packages.microsoft.com/keys/microsoft.asc`, next to `repos/code`), which
+    the sweep otherwise reads as a dropped repository. Only that exact
+    directory is added: marking a *parent* of a base live would shield real
+    stale repositories beside it.
+    """
+    from mmw.core.publisher.sinks import base_ancestors
+    ancestors = base_ancestors(bases)
+    live: set[str] = set()
+    for rel in files:
+        d = posixpath.dirname(rel)
+        if not d or d in bases or d in ancestors:
+            continue
+        if any(d.startswith(b + "/") for b in bases):
+            continue
+        live.add(d)
+    return live
 
 
-def publish_upstream_keys(sink, files: dict[str, Path]) -> list[str]:
-    """Link each upstream key copy to its own `{host}/{path}`. Errors are
+def publish_upstream_files(sink, files: dict[str, Path]) -> list[str]:
+    """Link each upstream copy to its own `{host}/{path}`. Errors are
     returned, exactly as loud as `publish_keys`'s."""
     errors: list[str] = []
     for rel, src in files.items():
@@ -477,8 +494,8 @@ __all__ = [
     "is_package_file",
     "publish_group",
     "publish_keys",
-    "publish_upstream_keys",
-    "upstream_key_files",
-    "upstream_key_hosts",
-    "upstream_key_live_dirs",
+    "publish_upstream_files",
+    "upstream_file_hosts",
+    "upstream_file_live_dirs",
+    "upstream_files",
 ]

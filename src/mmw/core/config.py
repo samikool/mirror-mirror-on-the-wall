@@ -195,6 +195,7 @@ class MirrorConfig(_StrictModel):
     gpg_key_url: str | None = None  # optional: fetched to keys/{name}/ during sync
     gpg_key: str | None = None      # armoured key, written to keys/ without a fetch
     gpg_key_name: str | None = None # filename stem for the emitted key files
+    extra_files: list[str] = []     # upstream URLs mirrored at their own path
     dist_upgrade: bool = False      # also mirror changelogs.ubuntu.com meta-release
 
     @property
@@ -232,7 +233,21 @@ class SourceConfig(_StrictModel):
     gpg_key_url: str | None = None
     gpg_key: str | None = None        # armoured key material
     gpg_key_name: str | None = None   # filename stem for the emitted key files
+    extra_files: list[str] = []       # upstream URLs mirrored at their own path
     dist_upgrade: bool = False        # mirror changelogs.ubuntu.com meta-release too
+
+    @model_validator(mode="after")
+    def _upstream_urls_have_a_path(self):
+        """A key URL and every extra file are published at their own path,
+        so each needs one: refused at load, not discovered at sync."""
+        from mmw.core.upstream import upstream_rel
+        for url in ([self.gpg_key_url] if self.gpg_key_url else []) + self.extra_files:
+            if upstream_rel(url) is None:
+                raise ValueError(
+                    f"{url!r} cannot be mirrored at its own path — it needs to be an "
+                    "http(s) URL naming a file, with no query string"
+                )
+        return self
 
     @model_validator(mode="after")
     def _fill_derived(self):
@@ -308,6 +323,7 @@ class SourceConfig(_StrictModel):
                 source_url=self.url,
                 arch=arches[0],
                 gpg_key_url=self.gpg_key_url,
+                extra_files=self.extra_files,
                 gpg_key=self.gpg_key,
                 gpg_key_name=self.gpg_key_name,
                 include_sources=self.include_sources,
@@ -325,6 +341,7 @@ class SourceConfig(_StrictModel):
                     source_url=self.url,
                     arch=arch,
                     gpg_key_url=self.gpg_key_url,
+                    extra_files=self.extra_files,
                     gpg_key=self.gpg_key,
                     gpg_key_name=self.gpg_key_name,
                     include_sources=self.include_sources,
@@ -346,6 +363,7 @@ class SourceConfig(_StrictModel):
                             suite=suite,
                             component=comp,
                             gpg_key_url=self.gpg_key_url,
+                            extra_files=self.extra_files,
                             gpg_key=self.gpg_key,
                             gpg_key_name=self.gpg_key_name,
                             include_sources=self.include_sources,
@@ -564,6 +582,7 @@ def merge_sources(
         target.include_sources = target.include_sources or src.include_sources
         target.dist_upgrade = target.dist_upgrade or src.dist_upgrade
         target.gpg_key_url = target.gpg_key_url or src.gpg_key_url
+        target.extra_files = list(dict.fromkeys(target.extra_files + src.extra_files))
         target.gpg_key = target.gpg_key or src.gpg_key
         target.gpg_key_name = target.gpg_key_name or src.gpg_key_name
 
@@ -661,6 +680,8 @@ def source_to_dict(s: SourceConfig) -> dict:
         d["gpg_key"] = s.gpg_key
     if s.gpg_key_name:
         d["gpg_key_name"] = s.gpg_key_name
+    if s.extra_files:
+        d["extra_files"] = s.extra_files
     if s.dist_upgrade:
         d["dist_upgrade"] = True
     return d

@@ -44,9 +44,9 @@ def collect_hostnames(network: NetworkConfig, cfg: Config) -> list[str]:
     # Keys published at their upstream path are served from their own host,
     # which need not be any mirror's (nvidia.github.io/libnvidia-container/
     # gpgkey sits outside the repository it signs).
-    from mmw.core.publisher.links import upstream_key_files, upstream_key_hosts
-    key_files = upstream_key_files(cfg.settings.mirror_dir, list(mirror_map.values()))
-    for dir_name in upstream_key_hosts(key_files):
+    from mmw.core.publisher.links import upstream_files, upstream_file_hosts
+    upstream_paths = upstream_files(cfg.settings.mirror_dir, list(mirror_map.values()))
+    for dir_name in upstream_file_hosts(upstream_paths):
         host = _real_host(dir_name)
         if host not in seen:
             seen.add(host)

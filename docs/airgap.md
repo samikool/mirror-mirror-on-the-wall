@@ -183,13 +183,9 @@ encodings are shipped:
 Clients get them from the mirror itself, two ways:
 
 - **At the vendor's own URL.** A key the source fetched from a URL
-  (`gpg_key_url`) is published at that exact path, so the vendor's install
-  instructions work unchanged once DNS points at the mirror:
-
-  ```bash
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-  ```
+  (`gpg_key_url`) is published at that exact path, and so is anything else the
+  vendor's instructions fetch, listed in `extra_files` — see
+  [Vendor install instructions](#vendor-install-instructions) below.
 
 - **From `/mmw-keys/` on any mirrored host** — every key, both encodings, by
   label. Useful for a key that came inline from a `Signed-By:` block and has
@@ -207,6 +203,56 @@ is third-party repositories — NVIDIA, Docker, PPAs — whose keys need this st
 An airgapped client with no trusted key is the most common first failure. It
 shows up in `apt update` as `NO_PUBKEY <key id>`; match the ID with
 `gpg --show-keys {root}/keys/*/*.asc`.
+
+### Vendor install instructions
+
+A vendor's setup steps fetch files from the vendor's own servers: a key, a
+ready-made sources file. Name each such URL on the repository and the mirror
+serves it byte-for-byte at the same path, so the steps run unchanged on the
+airgapped side — given DNS for the vendor's host, and [HTTPS](#https) for an
+`https://` URL.
+
+**NVIDIA Container Toolkit**:
+
+```toml
+[[sources]]
+url = "https://nvidia.github.io/libnvidia-container/stable/deb/amd64"
+provider = "apt-flat"
+gpg_key_url = "https://nvidia.github.io/libnvidia-container/gpgkey"
+extra_files = ["https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list"]
+```
+
+after which NVIDIA's own commands just work:
+
+```bash
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+  && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+```
+
+(The `.list` says `stable/deb/$(ARCH)`; apt fills in the client's
+architecture, so mirror each architecture your clients use.)
+
+**VS Code** — the key lives beside the repository, not in it:
+
+```toml
+[[sources]]
+url = "https://packages.microsoft.com/repos/code"
+suites = ["stable"]
+components = ["main"]
+gpg_key_url = "https://packages.microsoft.com/keys/microsoft.asc"
+```
+
+after which Microsoft's `wget -qO- https://packages.microsoft.com/keys/microsoft.asc
+| sudo gpg --dearmor -o /usr/share/keyrings/microsoft.gpg` and their
+`vscode.sources` file work as written.
+
+A URL works for this when it names a file and has no query string; a fetch
+that fails keeps the last good copy, and removing a URL removes its copy on
+the next sync. Both fields are in the repository editor in the TUI.
 
 ### HTTPS
 

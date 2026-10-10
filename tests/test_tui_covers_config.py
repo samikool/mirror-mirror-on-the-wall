@@ -31,6 +31,7 @@ EDITORS = {
     ("SourceConfig", "gpg_key_url"): ("source_screens.py", "edit-source-key-url"),
     ("SourceConfig", "gpg_key"): ("source_screens.py", "btn-key"),
     ("SourceConfig", "gpg_key_name"): ("source_screens.py", "btn-key"),
+    ("SourceConfig", "extra_files"): ("source_screens.py", "edit-source-extra-files"),
     ("SourceConfig", "dist_upgrade"): ("source_screens.py", "du-switch"),
 
     ("SuiteOverride", "suite"): ("source_screens.py", "edit-source-overrides"),

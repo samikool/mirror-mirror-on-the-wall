@@ -24,11 +24,11 @@ from mmw.core.publisher.dist_upgrade import (
 from mmw.core.publisher.links import (
     publish_group,
     publish_keys,
-    publish_upstream_keys,
+    publish_upstream_files,
     reconcile_extra_prefix,
-    upstream_key_files,
-    upstream_key_hosts,
-    upstream_key_live_dirs,
+    upstream_files,
+    upstream_file_hosts,
+    upstream_file_live_dirs,
 )
 from mmw.core.publisher.manifest import (
     MANIFEST_SUFFIX,
@@ -226,7 +226,7 @@ def bundle_network(
     # Same as publish_network: known before any group runs, so a key inside a
     # repository's directory is in that group's keep and never lands on the
     # far side's delete list.
-    key_files = upstream_key_files(
+    upstream_paths = upstream_files(
         mirror_dir, [mirror_map[n] for n in selected_names if n in mirror_map])
 
     with Pool(mirror_dir, read_only=True) as pool:
@@ -241,7 +241,7 @@ def bundle_network(
                 mirrors, sink, pool,
                 progress=progress, stop_event=stop_event,
                 prune=network.prune, prune_exclude=nested,
-                keep_extra=set(key_files),
+                keep_extra=set(upstream_paths),
             ))
 
         published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
@@ -269,7 +269,7 @@ def bundle_network(
                 tls = ((f"{ROOT_PLACEHOLDER}/{TLS_DIR}/mirror.crt",
                         f"{ROOT_PLACEHOLDER}/{TLS_DIR}/mirror.key")
                        if tls_files else None)
-                extra = upstream_key_hosts(key_files)
+                extra = upstream_file_hosts(upstream_paths)
                 if network.dist_upgrade:
                     extra.append(CHANGELOGS_HOST)
                 for rel, data in nginx_files(published_mirrors, ROOT_PLACEHOLDER,
@@ -278,7 +278,7 @@ def bundle_network(
                     nginx_rels.add(rel)
 
             key_errors, key_rels = publish_keys(sink, mirror_dir, published_mirrors)
-            key_errors += publish_upstream_keys(sink, key_files)
+            key_errors += publish_upstream_files(sink, upstream_paths)
             result.own_errors.extend(key_errors)
 
             # `nginx/` and `keys/` live outside every mirror_base, so no
@@ -293,7 +293,7 @@ def bundle_network(
                 reconcile_extra_prefix(sink, "nginx", nginx_rels)
                 reconcile_extra_prefix(sink, "keys", key_rels)
                 sink.prune_stale_bases(
-                    all_bases | upstream_key_live_dirs(key_files, all_bases))
+                    all_bases | upstream_file_live_dirs(upstream_paths, all_bases))
 
     if stop_event and stop_event.is_set():
         result.own_errors.append("stopped before the bundle was written")

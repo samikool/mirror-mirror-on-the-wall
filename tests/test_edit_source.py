@@ -188,6 +188,28 @@ def test_clearing_the_key_url_removes_it():
     assert _edit(_source(gpg_key_url="https://example.com/key.asc"), act).gpg_key_url is None
 
 
+def test_extra_files_are_editable():
+    def act(screen):
+        from textual.widgets import TextArea
+        screen.query_one("#edit-source-extra-files", TextArea).text = (
+            "https://example.com/repo.list\n\nhttps://example.com/keys/repo.asc\n")
+    result = _edit(_source(), act)
+    assert result.extra_files == ["https://example.com/repo.list",
+                                  "https://example.com/keys/repo.asc"]
+
+
+def test_existing_extra_files_are_shown_and_survive():
+    src = _source(extra_files=["https://example.com/repo.list"])
+    assert _edit(src, lambda screen: None).extra_files == ["https://example.com/repo.list"]
+
+
+def test_an_unservable_extra_file_is_refused():
+    def act(screen):
+        from textual.widgets import TextArea
+        screen.query_one("#edit-source-extra-files", TextArea).text = "https://example.com/k?x=1\n"
+    assert _edit(_source(), act) is None
+
+
 def test_suite_overrides_are_editable():
     def act(screen):
         from textual.widgets import TextArea

@@ -86,6 +86,7 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
     EditSourceScreen #edit-source-provider { margin-bottom: 1; width: 40; }
     EditSourceScreen #edit-source-key-url { margin-bottom: 1; }
     EditSourceScreen #edit-source-overrides { height: 5; margin-bottom: 1; }
+    EditSourceScreen #edit-source-extra-files { height: 5; margin-bottom: 1; }
     EditSourceScreen .dim-row { height: auto; margin-bottom: 0; }
     EditSourceScreen .dim-row Button { min-width: 0; width: auto; }
     EditSourceScreen .dim-summary {
@@ -230,6 +231,10 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
                             classes="field-label")
                 yield Input(self._source.gpg_key_url or "", id="edit-source-key-url",
                             placeholder="https://vendor.example/repo.gpg")
+                yield Label("Extra files: one URL per line, served at its own path",
+                            classes="field-label")
+                yield TextArea("".join(f"{u}\n" for u in self._source.extra_files),
+                               id="edit-source-extra-files")
                 yield Label("Per-suite components: one `suite: comp, comp` per line",
                             classes="field-label")
                 yield TextArea(format_overrides(self._suite_overrides),
@@ -419,6 +424,17 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
             self._refuse("✗ the key URL must start with http:// or https://")
             self.query_one("#edit-source-key-url", Input).focus()
             return
+        from mmw.core.upstream import upstream_rel
+        extra_files = list(dict.fromkeys(
+            line.strip() for line in
+            self.query_one("#edit-source-extra-files", TextArea).text.splitlines()
+            if line.strip()))
+        bad = [u for u in extra_files if upstream_rel(u) is None]
+        if bad:
+            self._refuse(f"✗ {bad[0]} cannot be served at its own path — it needs to be "
+                         "an http(s) URL naming a file, with no query string")
+            self.query_one("#edit-source-extra-files", TextArea).focus()
+            return
         try:
             overrides = parse_overrides(self.query_one("#edit-source-overrides", TextArea).text)
         except ValueError as e:
@@ -443,6 +459,7 @@ class EditSourceScreen(ModalScreen["config.SourceConfig | None"]):
         source.dist_upgrade = self.query_one("#du-switch", Switch).value
         source.gpg_key_url = key_url or None
         source.suite_overrides = overrides
+        source.extra_files = extra_files
         # Blank means "derive it from the URL", the same as leaving it out of
         # mmw.toml — re-validated so that derivation actually runs.
         source.label = self.query_one("#edit-source-label", Input).value.strip()

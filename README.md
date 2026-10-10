@@ -193,9 +193,11 @@ sudo nginx -t && sudo systemctl reload nginx
 Each server block has the correct `server_name` (the real upstream hostname,
 not the port-mangled directory name), the correct `root`, and `autoindex on`.
 A `dist_upgrade` network also gets one for `changelogs.ubuntu.com`, and every
-host serves the network's signing keys at `/mmw-keys/{label}/` — while a key
-fetched from a URL (`gpg_key_url`) is also published at that URL's own path,
-so a vendor's `curl … | gpg --dearmor` instructions work unchanged. Set
+host serves the network's signing keys at `/mmw-keys/{label}/`. A repository's
+key URL and any `extra_files` (a vendor's `.list`, a key outside the repository)
+are also published at their own upstream path, so a vendor's install
+instructions — NVIDIA's, Microsoft's — work unchanged; see
+[docs/airgap.md](docs/airgap.md#vendor-install-instructions). Set
 `nginx = false` on the network if you maintain your own configuration.
 
 ### HTTPS

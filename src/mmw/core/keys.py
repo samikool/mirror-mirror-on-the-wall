@@ -1,6 +1,5 @@
 import base64
 import hashlib
-import posixpath
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +22,9 @@ class KeySyncResult:
     fetched: int = 0
     skipped: int = 0   # already on disk
     failed: list[str] = field(default_factory=list)  # "name: reason"
+    # The bytes a URL fetch received, as sent — the coordinator stores them as
+    # the key URL's upstream copy instead of fetching the same URL twice.
+    raw: bytes | None = None
 
     @property
     def ok(self) -> bool:
@@ -155,65 +157,10 @@ def read_key(path: Path) -> str:
     return _armour_bytes(path.read_bytes())
 
 
-UPSTREAM_DIR = "upstream"
-
-
-def upstream_key_rel(url: str) -> str | None:
-    """Where a key fetched from `url` is published: `{host}/{path}`, exactly
-    as upstream serves it — so a vendor's own install instructions (`curl
-    https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor …`)
-    work unchanged against the mirror once DNS points there.
-
-    The host is mangled for a non-standard port exactly as
-    `MirrorConfig.mirror_base` mangles it, so a key on its repository's own
-    host:port lands in that repository's directory. None when the URL has no
-    1-to-1 path to give it: no file name, a query string, or a path that
-    would escape the tree.
-    """
-    from urllib.parse import urlparse
-
-    from mmw.core.downloader import is_safe_repo_path
-
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return None
-    if parsed.query or parsed.fragment:
-        return None
-    path = parsed.path.lstrip("/")
-    if not path or path.endswith("/"):
-        return None
-    host = parsed.hostname
-    if parsed.port:
-        host = f"{host}_{parsed.port}"
-    rel = f"{host}/{path}"
-    if not is_safe_repo_path(rel) or posixpath.normpath(rel) != rel:
-        return None
-    return rel
-
-
-def store_upstream_key(group: str, url: str, raw: bytes, mirror_dir: Path) -> Path | None:
-    """Keep the exact bytes fetched from `url` at
-    `keys/{group}/upstream/{host}/{path}`, for publish to place at
-    `{host}/{path}`. Grouped by label like every other key: a directory's
-    presence is the fact publish reads, since the pool records no keys."""
-    rel = upstream_key_rel(url)
-    if rel is None:
-        return None
-    dest = mirror_dir / KEYS_DIR / group / UPSTREAM_DIR / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and dest.read_bytes() == raw:
-        return dest
-    tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_bytes(raw)
-    tmp.replace(dest)
-    return dest
-
-
 def fetch_key_bytes(url: str, client: httpx.Client) -> bytes:
     """The key exactly as the server sent it."""
-    resp = client.get(url, timeout=15, follow_redirects=True)
-    resp.raise_for_status()
-    return resp.content
+    from mmw.core.upstream import fetch_bytes
+    return fetch_bytes(url, client)
 
 
 def fetch_key(url: str, client: httpx.Client) -> str:
@@ -337,11 +284,5 @@ def sync_custom_key(mirror_name: str, key_url: str, mirror_dir: Path,
             readme.write_text(_IMPORT_README)
         return result
     result = write_key(mirror_name, armour, mirror_dir, stem)
-    if result.ok:
-        # Kept only alongside a key write_key accepted, so a failed fetch
-        # never leaves an upstream copy with no keys/ entry beside it.
-        try:
-            store_upstream_key(mirror_name, key_url, raw, mirror_dir)
-        except OSError as e:
-            result.failed.append(f"{stem} (upstream copy): {e}")
+    result.raw = raw
     return result

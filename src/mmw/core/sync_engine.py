@@ -23,13 +23,8 @@ from mmw.core.downloader import (
     fetch_metadata_threaded,
     fetch_packages_threaded,
 )
-from mmw.core.keys import (
-    KeySyncResult,
-    fetch_key_bytes,
-    store_upstream_key,
-    sync_custom_key,
-    write_key,
-)
+from mmw.core import upstream
+from mmw.core.keys import KeySyncResult, sync_custom_key, write_key
 from mmw.core.pool import Pool
 from mmw.providers import get_provider
 
@@ -58,25 +53,15 @@ class DryRunStats:
     has_unknown: bool
 
 
-def _key_group(mirror: MirrorConfig) -> str:
-    """Fallback naming for a mirror with no label / no `Signed-By:` filename.
-
-    The *source* name, never the expanded mirror name: the latter carries suite,
-    component and arch, so one repository would scatter a key across every
-    combination of them.
-    """
-    from mmw.core.config import derive_name
-
-    source = getattr(mirror, "source", "") or mirror.source_url
-    return derive_name(source) if source else mirror.name
-
-
 class KeySyncCoordinator:
-    """Fetches each repository's declared GPG key once.
+    """Fetches each repository's GPG key and upstream files once.
 
-    There is no distro catalog to scrape well-known key locations from any more
-    ; a key is mirrored when the source
-    declares `gpg_key_url`. Sources sharing a key URL fetch it once.
+    There is no distro catalog to scrape well-known key locations from any
+    more: a key is mirrored when the source declares one (`gpg_key`, or a
+    `gpg_key_url` to fetch). The key URL and every `extra_files` URL are also
+    kept byte-for-byte (`core/upstream.py`) for publish to serve at their own
+    path. Work is claimed once across a repository's concurrently syncing
+    mirrors — ubuntu-ports alone expands to 16.
     """
 
     def __init__(self, mirror_dir: Path):
@@ -85,15 +70,26 @@ class KeySyncCoordinator:
         self._claimed: set[str] = set()
         self.results: dict[str, KeySyncResult] = {}
 
-    def sync_for(self, mirror: MirrorConfig) -> list[str]:
-        """Blocking — run in an executor thread. Returns failure descriptions.
+    def _claim(self, claim: str) -> bool:
+        with self._lock:
+            if claim in self._claimed:
+                return False
+            self._claimed.add(claim)
+            return True
 
-        An inline key (deb822 `Signed-By:`) needs no fetch; a `gpg_key_url` does.
-        Either way the work is claimed once across concurrently syncing mirrors.
-        """
+    def sync_for(self, mirror: MirrorConfig) -> list[str]:
+        """Blocking — run in an executor thread. Returns failure descriptions."""
+        failures, raw = self._sync_key(mirror)
+        failures += self._sync_upstream(mirror, raw)
+        return failures
+
+    def _sync_key(self, mirror: MirrorConfig) -> tuple[list[str], bytes | None]:
+        """keys/{label}/: an inline key (deb822 `Signed-By:`) needs no fetch; a
+        `gpg_key_url` does. Returns failures and the URL's bytes, if fetched."""
         inline = getattr(mirror, "gpg_key", None)
-        if not (inline or mirror.gpg_key_url):
-            return []
+        url = mirror.gpg_key_url
+        if not (inline or url):
+            return [], None
 
         # Keys are grouped by **label** (the host's domain), not by expanded
         # mirror name. ubuntu-ports alone expands to 16 mirrors, so the
@@ -101,32 +97,45 @@ class KeySyncCoordinator:
         # `ubuntu-archive-keyring.asc` into 16 directories — and published none
         # of them, because publish reads the pool and the pool has no key
         # column. A label directory is one place, and `label` *is* in the pool.
-        group = mirror.label or _key_group(mirror)
-        stem = getattr(mirror, "gpg_key_name", None) or _key_group(mirror)
-        url = mirror.gpg_key_url
+        group = mirror.label or upstream.repository_group(mirror)
+        stem = getattr(mirror, "gpg_key_name", None) or upstream.repository_group(mirror)
         claim = f"{group}/{stem}" if inline else f"{group}/url:{url}"
-        with self._lock:
-            if claim in self._claimed:
-                return []
-            self._claimed.add(claim)
+        if not self._claim(claim):
+            return [], None
         try:
             if inline:
                 result = write_key(group, inline, self._mirror_dir, stem)
-                # Both declared: the inline key fills keys/, and the URL is
-                # still fetched — only for its byte-for-byte upstream copy.
-                if url and result.ok:
-                    try:
-                        raw = fetch_key_bytes(url, _thread_client())
-                        store_upstream_key(group, url, raw, self._mirror_dir)
-                    except Exception as e:
-                        result.failed.append(f"{stem} (upstream copy from {url}): {e}")
             else:
                 result = sync_custom_key(group, url, self._mirror_dir, _thread_client())
             with self._lock:
                 self.results[claim] = result
-            return list(result.failed)
+            return list(result.failed), result.raw
         except Exception as e:
-            return [f"{mirror.name} key: {e}"]
+            return [f"{mirror.name} key: {e}"], None
+
+    def _sync_upstream(self, mirror: MirrorConfig, key_raw: bytes | None) -> list[str]:
+        """upstream/{repository}/: the key URL and every extra file, as sent.
+        Per repository (the derived source name), so a network gets exactly
+        the files of the repositories it publishes. A failed fetch keeps the
+        last good copy; a URL no longer named is removed."""
+        url = mirror.gpg_key_url
+        urls = ([url] if url else []) + list(getattr(mirror, "extra_files", []) or [])
+        group = upstream.repository_group(mirror)
+        if not self._claim(f"upstream:{group}"):
+            return []
+        failures: list[str] = []
+        for u in dict.fromkeys(urls):
+            try:
+                raw = key_raw if (u == url and key_raw is not None) else \
+                    upstream.fetch_bytes(u, _thread_client())
+                upstream.store(self._mirror_dir, group, u, raw)
+            except Exception as e:
+                failures.append(f"{u}: {e}")
+        try:
+            upstream.prune(self._mirror_dir, group, urls)
+        except OSError as e:
+            failures.append(f"upstream/{group}: {e}")
+        return failures
 
 
 async def classify_mirror(

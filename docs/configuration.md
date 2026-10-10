@@ -5,7 +5,8 @@ system-wide config, no `~/.config` lookup and no `--config` flag: the working
 directory *is* the selector, so two mirrors on one machine are two directories.
 
 > **Generated file — do not hand-edit.** The key tables below are built from the
-> pydantic models in `src/mmw/core/config.py`.
+> pydantic models in `src/mmw/core/config.py`:
+> `uv run python docs/tools/gen_config_docs.py`
 
 **Unknown keys are a hard error.** Every model is `extra="forbid"`, so a typo
 (`arch = ` instead of `arches = `) fails the load with a message instead of
@@ -108,9 +109,10 @@ One table per upstream repository. The only required key is `url`.
 | `components` | list of string | `[]` — *all* | `main`, `universe`, `contrib`, … **Empty means every component the repository publishes.** Overridable per suite with `suite_overrides`. |
 | `suite_overrides` | table array | *(unset)* | A list of `{suite, components}` tables replacing `components` for one suite — for `main` only on `-updates` while taking everything on the base suite. Mirroring adds to these, never narrows them. |
 | `include_sources` | bool | `false` | Also mirror `deb-src` source indexes and the `source/` index files. Off by default because source packages roughly double a suite's size and almost no airgapped client wants them. Set automatically when an imported apt config carried a `deb-src` line. |
-| `gpg_key_url` | string | *(unset)* | Fetched during sync. The exact bytes are published at the URL's own path (`https://nvidia.github.io/libnvidia-container/gpgkey` → `{root}/nvidia.github.io/libnvidia-container/gpgkey`), so a vendor's install instructions work unchanged against the mirror, and its host gets a server block and a name on the certificate. Also written to `{mirror_dir}/keys/{label}/` in both encodings (`.asc` armour and `.gpg` keyring), served at `/mmw-keys/` — unless `gpg_key` is set, which fills that instead. There is no built-in catalog of well-known key locations — if you do not state one, no key is fetched. A fetch failure is reported, never swallowed. |
+| `gpg_key_url` | string | *(unset)* | Fetched during sync and written to `{mirror_dir}/keys/{label}/` in both encodings (`.asc` armour and `.gpg` keyring), served at `/mmw-keys/` — unless `gpg_key` is set, which fills that instead. Like an `extra_files` entry, the exact bytes are also published at the URL's own path. There is no built-in catalog of well-known key locations — if you do not state one, no key is fetched. A fetch failure is reported, never swallowed. |
 | `gpg_key` | string | *(unset)* | The armoured key itself, inline. This is what an imported deb822 stanza with an inline `Signed-By:` block becomes. It is kept in `mmw.toml` rather than only on disk on purpose: an airgapped network is exactly where a key *URL* cannot be reached, so the config alone has to be able to reproduce the mirror, and `keys/` is an output directory that gets rebuilt. |
 | `gpg_key_name` | string | *(unset)* | Filename stem for the emitted key files — `nvidia-spark-repo` gives `keys/nvidia/nvidia-spark-repo.asc` and `.gpg`. Taken from the basename of a `Signed-By:` *path* when a config named a keyring file mmw does not have, which is also the handle `mmw add --keys-dir` matches against to supply it later. |
+| `extra_files` | list of string | `[]` | Any other upstream URLs a vendor's install instructions fetch — a sources `.list`, a key on another path or host, a keyring `.deb`. Each is fetched every sync and published byte-for-byte at its own path (`https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list` → `{root}/nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list`), so the vendor's commands work unchanged once DNS points at the mirror. A host that only serves such a file gets a server block and a certificate name. A failed fetch keeps the last good copy; removing a URL removes its copy. Must name a file, with no query string; 64 MiB at most. |
 | `dist_upgrade` | bool | `false` | Ubuntu only. Also mirror `changelogs.ubuntu.com/meta-release*`, which `do-release-upgrade` reads to discover releases. A **declared** opt-in — it is never inferred from a distro name. Pair it with `dist_upgrade` on the network that should publish those files. |
 
 

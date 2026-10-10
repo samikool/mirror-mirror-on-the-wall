@@ -24,11 +24,11 @@ from mmw.core.publisher.links import (
     is_package_file,
     publish_group,
     publish_keys,
-    publish_upstream_keys,
+    publish_upstream_files,
     reconcile_extra_prefix,
-    upstream_key_files,
-    upstream_key_hosts,
-    upstream_key_live_dirs,
+    upstream_files,
+    upstream_file_hosts,
+    upstream_file_live_dirs,
 )
 from mmw.core.resolve import network_mirrors
 from mmw.core.publisher.results import BundleResult, MirrorPublishResult, NetworkPublishResult
@@ -111,7 +111,7 @@ def publish_network(
     published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
     # Known before any group runs: a key inside a repository's directory must
     # be in that group's `keep`, not pruned and relinked every publish.
-    key_files = upstream_key_files(mirror_dir, published_mirrors)
+    upstream_paths = upstream_files(mirror_dir, published_mirrors)
 
     sink = TreeSink(network.root, progress=progress, stop_event=stop_event)
     try:
@@ -127,7 +127,7 @@ def publish_network(
                     mirrors, sink, pool,
                     progress=progress, stop_event=stop_event,
                     prune=network.prune, prune_exclude=nested,
-                    keep_extra=set(key_files),
+                    keep_extra=set(upstream_paths),
                 ))
 
             if network.dist_upgrade and not (stop_event and stop_event.is_set()):
@@ -150,7 +150,7 @@ def publish_network(
                     # on this machine, and the key never enters a served tree.
                     tls_paths = servable_paths(network, cfg)
                     tls = (str(tls_paths[0]), str(tls_paths[1])) if tls_paths else None
-                    extra = upstream_key_hosts(key_files)
+                    extra = upstream_file_hosts(upstream_paths)
                     if network.dist_upgrade:
                         extra.append(CHANGELOGS_HOST)
                     for rel, data in nginx_files(published_mirrors, str(network.root),
@@ -163,7 +163,7 @@ def publish_network(
                 # it produced `[[], set()]` — two bogus "errors" on every clean
                 # publish, which is how this was caught.
                 key_errors, key_rels = publish_keys(sink, mirror_dir, published_mirrors)
-                key_errors += publish_upstream_keys(sink, key_files)
+                key_errors += publish_upstream_files(sink, upstream_paths)
                 if key_errors:
                     r = MirrorPublishResult(mirror_name="keys")
                     r.errors.extend(key_errors)
@@ -181,7 +181,7 @@ def publish_network(
                     reconcile_extra_prefix(sink, "nginx", nginx_rels)
                     reconcile_extra_prefix(sink, "keys", key_rels)
                     sink.prune_stale_bases(
-                        all_bases | upstream_key_live_dirs(key_files, all_bases))
+                        all_bases | upstream_file_live_dirs(upstream_paths, all_bases))
     finally:
         sink.close()
 

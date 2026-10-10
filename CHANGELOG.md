@@ -14,6 +14,29 @@ and the result is diffed against a directly-published tree, across a delta),
 but it has never run against a genuinely airgapped site. 1.0 is tagged after
 that, not before.
 
+## [0.9.1]
+
+### Added
+
+- `extra_files` on a repository: any upstream URLs a vendor's install
+  instructions fetch (a sources `.list`, a key outside the repository) are
+  fetched each sync and published byte-for-byte at their own path, so the
+  instructions work unchanged against the mirror. The key URL is published
+  the same way. Files are kept per repository, so a network gets only its own
+  repositories' files; a failed fetch keeps the last good copy, and a removed
+  URL's copy is deleted. Editable in the TUI repository editor.
+
+### Fixed
+
+- A file beside a repository on its own host (Microsoft's
+  `packages.microsoft.com/keys/`, next to `repos/code`) was removed again by
+  the stale-directory sweep right after every pruning publish.
+
+### Changed
+
+- Releases are cut by CI from `vX.Y.Z` tags: the full test matrix runs, then the
+  wheel and sdist are attached to the GitHub release.
+
 ## [0.9.0]
 
 First public release. Prior history was not versioned.

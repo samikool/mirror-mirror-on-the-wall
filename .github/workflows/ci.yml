@@ -2,9 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [master, dev]
+    # Tags are release.yml's: it calls this workflow itself before releasing.
+    tags-ignore: ["**"]
   pull_request:
+    branches: [master, dev]
   workflow_dispatch:
+  # release.yml runs exactly these jobs as its gate — one definition of
+  # "the tests pass", not a copy that drifts.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

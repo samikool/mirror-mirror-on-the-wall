@@ -194,19 +194,20 @@ class _StepNetworkMirrors(Widget):
 
 class _StepNetworkConfirm(Widget):
     DEFAULT_CSS = """
-    _StepNetworkConfirm { padding: 1 2; }
-    _StepNetworkConfirm Label { margin-bottom: 1; }
+    _StepNetworkConfirm { padding: 1 2; height: auto; }
+    /* Single-spaced: a blank row under every summary line pushed the switch
+       rows — the only interactive part of this step — below the fold. */
+    _StepNetworkConfirm #confirm-title { margin-bottom: 1; }
     _StepNetworkConfirm .mirror-entry { color: $primary; }
     _StepNetworkConfirm #du-row, _StepNetworkConfirm #certs-row, _StepNetworkConfirm #nginx-row,
     _StepNetworkConfirm #compress-row, _StepNetworkConfirm #bundle-tls-row {
         height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
         align: left middle;
         border-top: solid $primary-darken-2;
-        margin-top: 1;
     }
     _StepNetworkConfirm #du-row Label, _StepNetworkConfirm #certs-row Label,
     _StepNetworkConfirm #nginx-row Label, _StepNetworkConfirm #compress-row Label,
-    _StepNetworkConfirm #bundle-tls-row Label { margin: 0 0 0 1; }
+    _StepNetworkConfirm #bundle-tls-row Label { margin: 0 0 0 1; height: 3; content-align: left middle; }
     """
 
     def __init__(
@@ -220,7 +221,7 @@ class _StepNetworkConfirm(Widget):
         self._selects = selects
 
     def compose(self) -> ComposeResult:
-        yield Label("[bold]Confirm[/]")
+        yield Label("[bold]Confirm[/]", id="confirm-title")
         yield Label(f"  Network name:  [cyan]{self._name}[/]")
         if self._root is not None:
             yield Label(f"  Publish root:  [cyan]{self._root}[/]")

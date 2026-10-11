@@ -14,6 +14,70 @@ and the result is diffed against a directly-published tree, across a delta),
 but it has never run against a genuinely airgapped site. 1.0 is tagged after
 that, not before.
 
+## [0.10.0]
+
+### Added
+
+- A repository can be added from the URL of a sources file — NVIDIA's install
+  docs point at `…/nvidia-container-toolkit.list`. Probe URL in the TUI reads a
+  `.list` / `.sources` URL like a pasted config (`$(ARCH)` included), and both
+  it and `mmw add --url` keep the file as an extra file of every repository it
+  names, so the vendor's own `curl …/foo.list` works against the mirror.
+- Adding a single repository (probe a URL, or a pasted config naming one) has
+  a Key… button: the same key page as editing — scan a directory of keyrings,
+  fetch from a URL (kept as the key URL, so it is mirrored at its own path), or
+  paste. Before, a key could only be set by editing the repository afterwards.
+
+### Changed
+
+- The TUI is one app. Repositories, Networks, Sync, Publish and Settings are
+  sections in a sidebar (keys 1–5); editing happens on pages that slide in over
+  the section instead of in pop-up boxes, and Esc goes back. `mmw manage`,
+  `mmw publish`, `mmw sync` and `mmw init` all open it at the matching section.
+  First-run setup and re-initialising (Settings → Re-initialize…, or
+  `mmw init --force`) also happen inside the app; `mmw init --force` keeps the
+  old `mmw.toml` until the new setup is finished.
+- Sync and publish run inside the app while you browse the other sections.
+  `s` on Repositories starts a sync; `p` publish, `r` dry run and `b` bundle on
+  a network start the job in the Publish section. The sidebar shows their
+  progress, every outcome is also shown as a notification, `x` stops either
+  (it asks first), and quitting asks while one runs. The publish progress view
+  is the same, now flat in its section; preparing, the dry-run estimate (with
+  Publish now / Discard) and "incomplete mirrors" appear there instead of
+  pop-ups. A sync and a publish can run at the same time.
+- Themes: every built-in Textual theme plus your own `themes/*.toml`, chosen
+  in Settings (or `theme =` in `[settings]`) and saved as you switch.
+- `?` lists the keys of the page you are on. The footer shows only that
+  page's own keys and fits in an 80-column terminal; `q` quits as before.
+- A network's TLS certs now go wherever the network does: with `certs = true`,
+  every bundle carries the signed certificate and its private key, and the far
+  side serves HTTPS. The separate `bundle_tls` setting is gone; an old config's
+  `bundle_tls` line is ignored and dropped on the next save. A certs network
+  refuses to bundle until its certificate is signed. Keep `certs` off for a
+  network whose transfer media must not hold the key.
+- Sizes are shown in decimal units (1 TB = 10¹² bytes), matching drive labels
+  and `df -H`. They were divided by 1024 but labelled "GB"/"TB", so every size
+  read 7–9% low.
+
+### Fixed
+
+- A network's dry run overstated its size: files several mirrors share (an
+  `Architecture: all` package is in every arch; `-security` packages are in
+  `-updates`) were counted once per mirror, so a 4.5 TB network read 7.9 TB.
+  Totals now count each file once — in the TUI dry run, `mmw publish
+  --dry-run`, and the network detail pane's "Published" size.
+- The Networks detail pane sat on "Loading…" for a published network: reading
+  its published indexes takes ~23 s for a large network, and opening Networks
+  started two such reads (more with every cursor move), none cancellable. Now
+  the mirror list shows at once with a running count for the sizes, a read for
+  a network you moved off stops, and a revisit is instant unless something was
+  republished.
+- A GPG key fetched from a URL in the TUI kept only the key text and dropped
+  the URL, so the key was never mirrored at its own path and a vendor's
+  `curl …/gpgkey` install line failed against the mirror. The URL is now kept
+  as the repository's key URL. Clearing a key now clears its key URL too (the
+  next sync used to fetch it straight back), and a key set only by URL no
+  longer shows as "no key".
 ## [0.9.1]
 
 ### Added

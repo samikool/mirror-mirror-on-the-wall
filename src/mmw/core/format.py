@@ -4,10 +4,12 @@ STALLED = object()  # sentinel for fmt_eta: no activity for too long
 
 
 def fmt_size(n: float) -> str:
+    """Decimal units (1 TB = 10¹² bytes), as drive labels and `df -H` use —
+    dividing by 1024 under a "TB" label read ~9% low beside them."""
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024:
+        if n < 1000:
             return f"{n:.1f} {unit}"
-        n /= 1024
+        n /= 1000
     return f"{n:.1f} PB"
 
 

@@ -25,18 +25,15 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-
-      # The suite decompresses .zst fixtures and `apply.py` shells out to the
-      # `zstd` binary — it is a real runtime dependency of the far-side path,
-      # not just a test convenience.
-      - name: Install zstd
-        run: sudo apt-get update && sudo apt-get install -y zstd
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
+          # One cache per Python: the three jobs finish together, and on a
+          # shared key all but the first fail to save it ("unable to reserve").
+          cache-suffix: py${{ matrix.python-version }}
 
       - name: Sync dependencies
         run: uv sync --python ${{ matrix.python-version }}
@@ -44,9 +41,12 @@ jobs:
       - name: Lint
         run: uv run --python ${{ matrix.python-version }} ruff check src tests
 
-      # ~6 minutes; offline by design (stub clients, pre-supplied content).
+      # Offline by design (stub clients, pre-supplied content). In parallel
+      # across the runner's cores: serially it took 13-15 minutes a job, and
+      # Actions minutes are a monthly budget. The suite is built to hold
+      # under parallel load (tests/waiting.py).
       - name: Test
-        run: uv run --python ${{ matrix.python-version }} pytest -q
+        run: uv run --python ${{ matrix.python-version }} pytest -q -n auto
         timeout-minutes: 20
 
       - name: Build
@@ -54,7 +54,7 @@ jobs:
 
       - name: Upload artifacts
         if: matrix.python-version == '3.13'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -68,10 +68,10 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.0
 
       - name: Build
         run: uv build --out-dir dist
@@ -98,10 +98,10 @@ jobs:
     name: apply.py compiles on the oldest available interpreter
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.0
 
       - name: py_compile under Python 3.8
         run: |

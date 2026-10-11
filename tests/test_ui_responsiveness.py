@@ -177,6 +177,9 @@ class _GatedPool:
         self.gate.wait(30)
         return {"packages": 1, "total_size": 2}
 
+    def close(self) -> None:        # the app's sync-cleanup thread closes its pool
+        pass
+
 
 async def _until(cond, timeout: float = 30.0) -> None:
     deadline = time.monotonic() + timeout

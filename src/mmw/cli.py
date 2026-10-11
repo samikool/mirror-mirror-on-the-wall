@@ -271,15 +271,26 @@ def cmd_publish(
         help="Publish even if the pool cannot serve everything the indexes promise "
              "(you are still told what is missing).",
     ),
+    snapshot: str = typer.Option(
+        None, "--snapshot", "-s",
+        help="Publish this snapshot (stamp, label or id — see `mmw snapshot list`) "
+             "instead of the current state; 'live' is the current state. Needs -n."),
+    root: Path = typer.Option(
+        None, "--root",
+        help="Publish into this directory instead of the network's root. Its nginx "
+             "config points there with the same hostnames, so serve it on its own "
+             "address. Needs -n."),
 ):
-    """Publish mirrors to network targets. Without --quiet opens the TUI."""
+    """Publish mirrors to network targets. Without --quiet opens the TUI
+    (--snapshot / --root always run headless)."""
     cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
-    if quiet or dry_run:
+    if quiet or dry_run or snapshot or root:
         from mmw.commands.publish import run
         raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run,
-                             allow_incomplete=allow_incomplete))
+                             allow_incomplete=allow_incomplete,
+                             snapshot=snapshot, root=root))
 
     _run_tui(_open_app(cfg, cfg_dir, "networks"))
 
@@ -431,10 +442,14 @@ def cmd_snapshot_rename(ref: str = typer.Argument(..., help="Stamp, label or id"
 
 @snapshot_app.command("delete")
 def cmd_snapshot_delete(ref: str = typer.Argument(..., help="Stamp, label or id"),
-                        network: str = _SNAP_NET):
-    """Delete a snapshot. `mmw prune` then frees the files only it kept."""
+                        network: str = _SNAP_NET,
+                        yes: bool = typer.Option(
+                            False, "--yes", "-y",
+                            help="Also when it is where the last bundle went")):
+    """Delete a snapshot. `mmw prune` then frees the files only it kept.
+    One a directory serves is refused: publish something else there first."""
     from mmw.commands.snapshot import delete
-    raise typer.Exit(delete(_cfg_dir(), network, ref))
+    raise typer.Exit(delete(_cfg_dir(), network, ref, yes))
 
 
 @snapshot_app.command("clean")

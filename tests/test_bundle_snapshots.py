@@ -174,3 +174,13 @@ def test_an_old_one_line_state_file_still_reads(states, tmp_path):
     (far / ".mmw-state").write_text(snaps[1].stamp + "\n")      # written by an older apply.py
     up = bundle_network(net, cfg, mirror_dir, from_ref="s1", to_ref="s2")
     assert _apply(tmp_path, up, far).returncode == 0
+
+
+def test_progress_names_each_mirror_base(states, tmp_path):
+    """`mirror_base` is a property, absent from the recorded settings JSON —
+    the bases are derived from the recorded mirrors, or none are reported."""
+    cfg, net, mirror_dir, snaps, published = states
+    calls = []
+    bundle_network(net, cfg, mirror_dir, from_ref=None, to_ref="s1",
+                   mirror_start_callback=lambda *a: calls.append(a))
+    assert calls == [("archive.ubuntu.com/ubuntu", 1, 1)]

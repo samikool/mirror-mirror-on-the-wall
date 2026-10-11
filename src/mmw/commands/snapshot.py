@@ -24,10 +24,11 @@ def _network(cfg_dir: Path, name: str):
     return cfg, net
 
 
-def _row(s: SnapshotInfo, holds: int | None = None) -> str:
+def _row(s: SnapshotInfo, holds: int | None = None, serves: list[str] = ()) -> str:
     label = s.label or ""
     held = f"  holds {fmt_size(holds)}" if holds is not None else ""
     note = "" if s.complete else "  (history only — some files pruned)"
+    note += "".join(f"  [published at {r}]" for r in serves)
     return f"  {s.stamp}  {label:<20}  {s.kind:<8}  {s.files:>9,} files{held}{note}"
 
 
@@ -61,22 +62,35 @@ def list_(cfg_dir: Path, network: str) -> int:
             return 0
         print(f"Snapshots of {net.name} (newest first):")
         for s in snaps:
-            print(_row(s, pool.snapshot_exclusive_bytes(s.id)))
+            print(_row(s, pool.snapshot_exclusive_bytes(s.id), snapshots.served_by(pool, s)))
     return 0
 
 
 def rename(cfg_dir: Path, network: str, ref: str, label: str) -> int:
-    return _with_snapshot(cfg_dir, network, ref,
-                          lambda pool, s: (pool.rename_snapshot(s.id, label),
-                                           print(f"{s.stamp} is now labelled {label!r}.")))
+    def act(pool, s):
+        pool.rename_snapshot(s.id, label)
+        print(f"{s.stamp} is now labelled {label!r}.")
+        return 0
+    return _with_snapshot(cfg_dir, network, ref, act)
 
 
-def delete(cfg_dir: Path, network: str, ref: str) -> int:
-    return _with_snapshot(cfg_dir, network, ref,
-                          lambda pool, s: (pool.delete_snapshot(s.id),
-                                           print(f"Deleted {s.stamp}"
-                                                 + (f" ({s.label})" if s.label else "")
-                                                 + " — `mmw prune` frees its files.")))
+def delete(cfg_dir: Path, network: str, ref: str, yes: bool = False) -> int:
+    from mmw.core import snapshots
+
+    def act(pool, s):
+        if not yes and s.stamp == snapshots.last_bundled_to(pool, s.network):
+            eprint(f"{s.stamp} is where the last bundle of {s.network} went — without it "
+                   "the next bundle needs --from or --full. Run again with --yes to delete it.")
+            return 1
+        try:
+            snapshots.delete_snapshot(pool, s)
+        except ValueError as e:
+            eprint(str(e))
+            return 1
+        print(f"Deleted {s.stamp}" + (f" ({s.label})" if s.label else "")
+              + " — `mmw prune` frees its files.")
+        return 0
+    return _with_snapshot(cfg_dir, network, ref, act)
 
 
 def _with_snapshot(cfg_dir, network, ref, act) -> int:
@@ -90,8 +104,7 @@ def _with_snapshot(cfg_dir, network, ref, act) -> int:
         except LookupError as e:
             eprint(str(e))
             return 1
-        act(pool, snap)
-    return 0
+        return act(pool, snap)
 
 
 def clean(cfg_dir: Path, network: str, keep: int, yes: bool = False) -> int:
@@ -101,8 +114,11 @@ def clean(cfg_dir: Path, network: str, keep: int, yes: bool = False) -> int:
         return 1
     with Pool(cfg.settings.mirror_dir) as pool:
         plan = snapshots.clean_plan(pool, net.name, keep)
+        for snap, why in plan.kept:
+            print(f"Keeping {snap.stamp}" + (f" ({snap.label})" if snap.label else "")
+                  + f" — {why}.")
         if not plan.delete:
-            print(f"{net.name} has {keep} snapshot(s) or fewer — nothing to clean.")
+            print(f"Nothing of {net.name} to clean.")
             return 0
         verb = "Deleted" if yes else "Would delete"
         print(f"{verb} {len(plan.delete)} snapshot(s) of {net.name}, keeping the newest {keep}:")

@@ -113,6 +113,16 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
         return next(s for s in pool.snapshots(network.name) if s.id == sid)
 
 
+def recorded_bases(settings: str) -> list[str]:
+    """The mirror_bases of a snapshot's recorded mirrors, longest first — so
+    the first that prefixes a path is the one it belongs to. (`mirror_base`
+    is a property: derived from each mirror, not stored.)"""
+    from mmw.core.config import MirrorConfig
+    mirrors = json.loads(settings or "{}").get("mirrors", [])
+    return sorted({MirrorConfig.model_validate(m).mirror_base for m in mirrors},
+                  key=len, reverse=True)
+
+
 # ── finding, cleaning, importing ─────────────────────────────────────────────
 
 def find_snapshot(pool: Pool, network: str, ref: str) -> SnapshotInfo:
@@ -132,21 +142,56 @@ def find_snapshot(pool: Pool, network: str, ref: str) -> SnapshotInfo:
     raise LookupError(f"no snapshot {ref!r} for network {network!r}")
 
 
+def served_by(pool: Pool, snap: SnapshotInfo) -> list[str]:
+    """The directories currently serving `snap`."""
+    return [p.root for p in pool.published(snap.network) if p.target == snap.stamp]
+
+
+def last_bundled_to(pool: Pool, network: str) -> str | None:
+    """Stamp the newest bundle of `network` went to — the next bundle's
+    default starting point."""
+    log = pool.bundles(network)
+    return log[0].to_stamp if log else None
+
+
+def delete_snapshot(pool: Pool, snap: SnapshotInfo) -> None:
+    """Delete `snap`, unless a directory serves it: its rows are what says
+    which files that tree should hold, and what publishing it again needs."""
+    roots = served_by(pool, snap)
+    if roots:
+        raise ValueError(f"snapshot {snap.stamp} is published at {', '.join(roots)} — "
+                         f"publish something else there first (e.g. `mmw publish -n "
+                         f"{snap.network} --snapshot live`)")
+    pool.delete_snapshot(snap.id)
+
+
 @dataclass(frozen=True)
 class CleanPlan:
     delete: list[SnapshotInfo]     # oldest last
     frees: int                     # bytes the next prune frees once they are gone
+    kept: list[tuple[SnapshotInfo, str]]   # past `keep` but kept anyway, and why
 
 
 def clean_plan(pool: Pool, network: str, keep: int) -> CleanPlan:
-    """What "keep the newest `keep` snapshots" would delete, and free."""
-    doomed = pool.snapshots(network)[max(keep, 0):]
-    return CleanPlan(doomed, pool.snapshot_exclusive_bytes([s.id for s in doomed]))
+    """What "keep the newest `keep` snapshots" would delete, and free. A
+    snapshot a directory serves, or the last bundle went to, is never
+    cleaned — delete it by name if it really must go."""
+    last = last_bundled_to(pool, network)
+    delete, kept = [], []
+    for s in pool.snapshots(network)[max(keep, 0):]:
+        roots = served_by(pool, s)
+        if roots:
+            kept.append((s, f"published at {', '.join(roots)}"))
+        elif s.stamp == last:
+            kept.append((s, "the last bundle went to it"))
+        else:
+            delete.append(s)
+    return CleanPlan(delete, pool.snapshot_exclusive_bytes([s.id for s in delete]), kept)
 
 
 def delete_snapshots(pool: Pool, snaps: list[SnapshotInfo]) -> None:
     for s in snaps:
-        pool.delete_snapshot(s.id)
+        delete_snapshot(pool, s)
 
 
 def import_ledger(pool: Pool, mirror_dir: Path, network: str) -> int:

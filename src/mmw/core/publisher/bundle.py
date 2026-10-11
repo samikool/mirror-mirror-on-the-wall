@@ -11,7 +11,6 @@ Deltas come from the on-disk manifest ledger (`manifest.py`), so a re-bundle a
 month later carries what changed since the last one and nothing else.
 """
 import hashlib
-import json
 from pathlib import Path
 
 from mmw.core.config import Config, NetworkConfig
@@ -23,8 +22,8 @@ from mmw.core.publisher.manifest import (
     ledger_dir,
     write_manifest,
 )
-from mmw.core.certs import CHANGELOGS_HOST, cert_dir, servable_paths
-from mmw.core.publisher.nginx import ROOT_PLACEHOLDER, nginx_files
+from mmw.core.certs import cert_dir, servable_paths
+from mmw.core.publisher.nginx import ROOT_PLACEHOLDER, recorded_nginx_files
 from mmw.core.publisher.results import BundleResult
 from mmw.core.publisher.sinks import TLS_DIR, BundleSink
 from mmw.resources import apply_script_bytes
@@ -90,21 +89,11 @@ def _write_checksum_file(target: Path) -> Path:
 
 
 def _far_nginx(settings: str, tls_files: dict[str, bytes]) -> dict[str, bytes]:
-    """The far side's nginx config for a snapshot, regenerated from its
-    recorded settings with the root left as a placeholder (apply.py fills it
-    in). Empty when that network state had nginx off."""
-    from mmw.core.config import MirrorConfig
-    recorded = json.loads(settings or "{}")
-    rec_net = recorded.get("network", {})
-    if not rec_net.get("nginx", True):
-        return {}
-    mirrors = [MirrorConfig.model_validate(m) for m in recorded.get("mirrors", [])]
-    extra = list(recorded.get("upstream_hosts", []))
-    if rec_net.get("dist_upgrade"):
-        extra.append(CHANGELOGS_HOST)
+    """The far side's nginx config for a snapshot, with the root left as a
+    placeholder (apply.py fills it in)."""
     tls = ((f"{ROOT_PLACEHOLDER}/{TLS_DIR}/mirror.crt",
             f"{ROOT_PLACEHOLDER}/{TLS_DIR}/mirror.key") if tls_files else None)
-    return nginx_files(mirrors, ROOT_PLACEHOLDER, tls=tls, extra_hosts=extra)
+    return recorded_nginx_files(settings, ROOT_PLACEHOLDER, tls=tls)
 
 
 _LAST = object()        # from_ref default: where the last bundle of this network went
@@ -171,7 +160,9 @@ def bundle_network(
     that the destination lacks — a far side of unknown state is repaired.
     The nginx config and TLS files are regenerated for the far side.
     """
-    from mmw.core.snapshots import find_snapshot, import_ledger, take_snapshot
+    from mmw.core.snapshots import (
+        find_snapshot, import_ledger, recorded_bases, take_snapshot,
+    )
 
     if full:
         from_ref = None
@@ -219,7 +210,6 @@ def bundle_network(
                           previous=header.previous, full=header.full)
     result.dist_upgrade_warnings = du_warnings
 
-    recorded = json.loads(dest.settings or "{}")
     with Pool(mirror_dir, read_only=True) as pool:
         missing = pool.snapshot_missing(dest.id)
         if missing:
@@ -235,8 +225,7 @@ def bundle_network(
         sink = BundleSink(target, header, prev, apply_script_bytes(),
                           level=level, prune=network.prune, full=start is None,
                           progress=progress, compress=compress, tls_files=tls_files)
-        bases = sorted({m["mirror_base"] for m in recorded.get("mirrors", [])
-                        if m.get("mirror_base")}, key=len, reverse=True)
+        bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
         current_base, seen_bases = None, 0
         for i, (rel, checksum, pool_path, size) in enumerate(pool.snapshot_blob_rows(dest.id)):

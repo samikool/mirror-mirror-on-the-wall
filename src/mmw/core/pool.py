@@ -141,6 +141,15 @@ CREATE TABLE IF NOT EXISTS bundles (
     made        TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now'))
 );
 
+-- What each publish destination serves: 'live' (the network's current state)
+-- or a snapshot's stamp. A snapshot some root serves cannot be deleted.
+CREATE TABLE IF NOT EXISTS published (
+    root     TEXT PRIMARY KEY,                -- absolute directory
+    network  TEXT NOT NULL,
+    target   TEXT NOT NULL,                   -- 'live' | snapshot stamp
+    made     TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now'))
+);
+
 -- mirror_stats / group_unique_count / ref_map all filter on mirror_name;
 -- without this they full-scan refs on every detail-panel highlight.
 CREATE INDEX IF NOT EXISTS idx_refs_mirror ON refs(mirror_name, checksum);
@@ -549,6 +558,14 @@ class BundleInfo:
     sent: int
     sent_bytes: int
     removed: int
+    made: str
+
+
+@dataclass(frozen=True)
+class PublishedInfo:
+    root: str
+    network: str
+    target: str            # 'live' | snapshot stamp
     made: str
 
 
@@ -1222,6 +1239,22 @@ class Pool:
                 "removed, made FROM bundles WHERE network = ? ORDER BY id DESC",
                 (network,)).fetchall()
         return [BundleInfo(*r) for r in rows]
+
+    def record_published(self, root: str, network: str, target: str) -> None:
+        """`root` now serves `target` ('live' or a snapshot stamp)."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO published (root, network, target) VALUES (?, ?, ?)",
+                (root, network, target))
+            self._conn.commit()
+
+    def published(self, network: str) -> list[PublishedInfo]:
+        """Every destination this network was published to, newest first."""
+        with self._read() as c:
+            rows = c.execute(
+                "SELECT root, network, target, made FROM published WHERE network = ? "
+                "ORDER BY made DESC, root", (network,)).fetchall()
+        return [PublishedInfo(*r) for r in rows]
 
     def snapshot_exclusive_bytes(self, snapshot_ids: "int | list[int]") -> int:
         """Bytes only these snapshots keep — what deleting them (then pruning)

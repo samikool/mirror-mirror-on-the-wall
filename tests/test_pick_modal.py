@@ -2,10 +2,11 @@
 import asyncio
 
 from textual import work
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Button, SelectionList
 
-from mmw.tui.pick import PickModal
+from mmw.tui.ui.base import ThemedApp
+from mmw.tui.pick import PickPage
 
 OPTIONS = [f"suite-{i}" for i in range(10)]
 
@@ -17,7 +18,7 @@ UBUNTU = [
 ]
 
 
-class _Harness(App):
+class _Harness(ThemedApp):
     def __init__(self, options=None, selected=None):
         super().__init__()
         self._options = options if options is not None else OPTIONS
@@ -33,7 +34,7 @@ class _Harness(App):
     @work
     async def _go(self):
         self.result = await self.push_screen_wait(
-            PickModal("Choose suites", "http://example.com/repo", self._options, self._selected)
+            PickPage("Choose suites", "http://example.com/repo", self._options, self._selected)
         )
 
 
@@ -396,3 +397,9 @@ def test_shift_click_leaves_selections_outside_the_range_alone():
             assert "noble-updates" in lst.selected
 
     _run(scenario)
+
+
+def test_pick_page_is_a_page():
+    from mmw.tui.pick import PickPage
+    from mmw.tui.ui.page import Page
+    assert issubclass(PickPage, Page) and PickPage.SCROLLS is False

@@ -24,8 +24,8 @@ The two signatures, and the bugs that produced them:
 
 2. **A starved scroll region** — a container that *can* scroll but is given so
    few rows that scrolling is not a usable substitute for space.
-   `EditNetworkScreen`'s `#axis-scroll` rendered at 1 row for 34 rows of
-   content, `KeyModal`'s paste box at 0, and `NetworkDetail`'s mirror list at
+   `EditNetworkPage`'s `#axis-scroll` rendered at 1 row for 34 rows of
+   content, `KeyPage`'s paste box at 0, and `NetworkDetail`'s mirror list at
    1 row for 5 mirrors.
 
 **The measure is `max_scroll_x` / `max_scroll_y`, not `virtual_size` against
@@ -39,9 +39,10 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
 from mmw.core import config
+from mmw.tui.ui.base import ThemedApp
 from mmw.core.draft import RepositoryDraft
 from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
 
@@ -100,7 +101,7 @@ def _demo_config():
 
 
 def _host(factory):
-    class _App(App):
+    class _App(ThemedApp):
         def compose(self) -> ComposeResult:
             yield from ()
 
@@ -165,20 +166,21 @@ def _sweep(app_factory, label, size) -> list[str]:
 def _screens():
     """Every screen that can be mounted without network or pool access.
 
-    `SyncApp` is deliberately absent: it starts real HTTP on mount, which is
-    also why it is in neither of the other TUI test files.
+    A running sync is deliberately absent: it starts real HTTP on mount, which
+    is also why it is in neither of the other TUI test files.
     """
-    from mmw.tui.bulk_review import BulkReviewScreen
-    from mmw.tui.key_modal import KeyModal
-    from mmw.tui.modals import ConfirmModal, InfoModal
-    from mmw.tui.network_screens import AddNetworkScreen, EditNetworkScreen
-    from mmw.tui.path_pick import PathPickModal
-    from mmw.tui.pick import PickModal
+    from mmw.tui.bulk_review import BulkReviewPage
+    from mmw.tui.key_modal import KeyPage
+    from mmw.tui.modals import InfoModal
+    from mmw.tui.ui.dialog import ConfirmDialog, HelpDialog
+    from mmw.tui.network_screens import AddNetworkPage, EditNetworkPage
+    from mmw.tui.path_pick import PathPickPage
+    from mmw.tui.pick import PickPage
     from mmw.tui.publish_modals import (
-        BundleModeModal, CertsModal, DryRunResultModal, PreparePublishModal,
+        BundleModeModal, CertsPage, DryRunResultPage, PreparePublishModal,
         PublishProgressModal,
     )
-    from mmw.tui.source_screens import EditSourceScreen
+    from mmw.tui.source_screens import EditSourcePage
 
     net = config.NetworkConfig(name="lab", select=[])
     src = config.SourceConfig(url="https://deb.example.com/debian",
@@ -190,21 +192,23 @@ def _screens():
                  for i in range(6)],
     )
     return {
-        "EditNetworkScreen": lambda: EditNetworkScreen(net, _mirrors()),
-        "AddNetworkScreen": lambda: AddNetworkScreen(_mirrors(), set()),
-        "EditSourceScreen": lambda: EditSourceScreen(src),
-        "KeyModal": lambda: KeyModal("debian", "debian-archive.gpg"),
-        "PickModal": lambda: PickModal("Suites", "sub", [f"suite-{i}" for i in range(55)], []),
-        "BulkReviewScreen": lambda: BulkReviewScreen(
+        "EditNetworkPage": lambda: EditNetworkPage(net, _mirrors()),
+        "AddNetworkPage": lambda: AddNetworkPage(_mirrors(), set()),
+        "EditSourcePage": lambda: EditSourcePage(src),
+        "KeyPage": lambda: KeyPage("debian", "debian-archive.gpg"),
+        "PickPage": lambda: PickPage("Suites", "sub", [f"suite-{i}" for i in range(55)], []),
+        "BulkReviewPage": lambda: BulkReviewPage(
             [RepositoryDraft(url=f"https://repo{i}.example.com/ubuntu") for i in range(5)]),
         "BundleModeModal": lambda: BundleModeModal("lab"),
-        "CertsModal": lambda: CertsModal("lab", [f"host{i}.example.com" for i in range(6)]),
-        "DryRunResultModal": lambda: DryRunResultModal("lab", result),
+        "CertsPage": lambda: CertsPage("lab", [f"host{i}.example.com" for i in range(6)]),
+        "DryRunResultPage": lambda: DryRunResultPage("lab", result),
         "PublishProgressModal": lambda: PublishProgressModal("lab", 100),
         "PreparePublishModal": lambda: PreparePublishModal("lab"),
-        "PathPickModal": lambda: PathPickModal("Pick a directory", "sub", tempfile.mkdtemp()),
+        "PathPickPage": lambda: PathPickPage("Pick a directory", "sub", tempfile.mkdtemp()),
         "InfoModal": lambda: InfoModal("Title", "A message body."),
-        "ConfirmModal": lambda: ConfirmModal("Title", "Really do the thing?"),
+        "ConfirmDialog": lambda: ConfirmDialog("Title", "Really do the thing?"),
+        "HelpDialog": lambda: HelpDialog("Repositories", [(k, f"does {k}") for k in "asdpe"],
+                                         "Notes about this page."),
     }
 
 
@@ -217,16 +221,16 @@ def test_no_screen_hides_content_behind_the_layout():
     assert not problems, "\n  " + "\n  ".join(problems)
 
 
-def test_the_main_app_hides_nothing_on_either_tab():
-    """The two highest-traffic screens, swept whole — both action bars were
+def test_the_main_app_hides_nothing_in_any_section():
+    """The highest-traffic screens, swept whole — both action bars were
     caught here rather than by any named assertion."""
-    from mmw.tui.manage import ManageApp
+    from mmw.tui.app import MmwApp
 
     cfg = _demo_config()
     problems: list[str] = []
-    for tab in ("tab-manage", "tab-networks"):
+    for section in ("repositories", "networks", "settings", "sync"):
         for size in SIZES:
             problems += _sweep(
-                lambda t=tab: ManageApp(cfg, Path("."), initial_tab=t),
-                f"ManageApp[{tab}]", size)
+                lambda s=section: MmwApp(cfg, Path(tempfile.mkdtemp()), initial_section=s),
+                f"MmwApp[{section}]", size)
     assert not problems, "\n  " + "\n  ".join(problems)

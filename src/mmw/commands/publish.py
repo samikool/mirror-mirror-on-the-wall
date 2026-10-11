@@ -61,7 +61,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
                   f"set (use `mmw bundle` instead)")
             continue
 
-        # The gate `tui/publish_panel._run_pre_publish` has always run and the
+        # The gate `tui/publish_flows.PublishFlows._run_pre_publish` has always run and the
         # headless path never did. `pool.mirror_files()` is `refs ⋈ packages`,
         # so a ref whose blob the pool lacks is invisible to it — and the
         # destination **prune** then runs against that under-complete keep set
@@ -113,7 +113,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         for w in result.dist_upgrade_warnings:
             eprint(f"    ⚠ {w}")
 
-        # `net.certs` is the TUI's cue too (publish_panel._execute_publish
+        # `net.certs` is the TUI's cue too (publish_flows.PublishFlows._execute_publish
         # calls `_run_certs` after a clean publish) — headless never called
         # it at all, so the same config produced a cert from the TUI and none
         # from cron. Skipped on a dry run: generating real key material is

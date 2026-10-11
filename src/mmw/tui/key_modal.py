@@ -25,94 +25,31 @@ identically regardless of which door the key came in.
 import asyncio
 from pathlib import Path
 
-from rich.markup import escape as _escape
 from textual import on, work
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
+from textual.containers import Horizontal
+from textual.markup import escape
 from textual.widgets import Input, Label, OptionList, TextArea
 
 from mmw.core import keys
-from mmw.tui.path_pick import PathPickModal
-from mmw.tui.widgets import Button
+from mmw.tui.path_pick import PathPickPage
+from mmw.tui.ui.form import Heading
+from mmw.tui.ui.page import Page
+from mmw.tui.ui.widgets import Button
 
 
-class KeyModal(ModalScreen):
+class KeyPage(Page):
     """Supply or clear one repository's key.
 
     Dismisses with `(armour, name)`, `("", None)` to clear, or `None` when
-    cancelled — the same "None means leave it alone" convention as `PickModal`.
+    cancelled — the same "None means leave it alone" convention as `PickPage`.
     """
-
-    DEFAULT_CSS = """
-    KeyModal { align: center middle; }
-    KeyModal > Vertical {
-        width: 92;
-        max-width: 96%;
-        height: 84%;
-        max-height: 92%;
-        border: double $primary;
-        background: $surface;
-        /* Scrolls, so the min-height floor on #key-area below can push content
-           past the bottom on a short terminal without any of it becoming
-           unreachable. */
-        overflow-y: auto;
-    }
-    KeyModal #key-title {
-        height: 1;
-        background: $primary-darken-3;
-        padding: 0 2;
-        color: $text;
-        text-style: bold;
-    }
-    KeyModal #key-subtitle {
-        height: 1;
-        padding: 0 2;
-        color: $text-muted;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    KeyModal .section { height: 1; padding: 0 2; color: $accent; margin-top: 1; }
-    KeyModal #dir-row { height: 3; padding: 0 2; }
-    KeyModal #dir-row Input { width: 1fr; }
-    KeyModal #dir-row Button { width: auto; min-width: 8; margin-left: 1; }
-    KeyModal #key-found { height: auto; max-height: 8; margin: 0 2; border: solid $primary-darken-2; }
-    KeyModal #url-row { height: 3; padding: 0 2; }
-    KeyModal #url-row Input { width: 1fr; }
-    KeyModal #url-row Button { width: auto; min-width: 8; margin-left: 1; }
-    /* A fixed height, deliberately not `1fr`. This modal stacks ~18 rows of
-       fixed furniture — title, subtitle, three section labels, a 3-row
-       directory row, a 3-row URL row, a status line and the button bar —
-       so in an 84%-height modal on an 80x24 terminal (the POSIX default)
-       `1fr` resolved to **zero**: the paste box, the whole point of the
-       screen, rendered at no height at all and the modal looked like it had
-       simply lost its input. `min-height` does not rescue it either, because
-       Textual clamps a flexible child to the space actually available. A
-       fixed height plus the scrollable body above is what makes it
-       deterministic: 8 usable rows at every terminal size, with anything
-       that no longer fits reachable by scrolling. It does not grow on a tall
-       terminal, which is the right trade — you paste a key here, you do not
-       read one. */
-    KeyModal #key-area { height: 10; margin: 0 2; }
-    KeyModal #key-status { height: 1; padding: 0 2; color: $text-muted; }
-    KeyModal #key-bar {
-        height: auto;
-        align: right middle;
-        padding: 0 2;
-        background: $surface;
-        border-top: solid $primary-darken-2;
-        overflow-x: auto;
-    }
-    KeyModal #key-bar Button { margin-left: 1; min-width: 0; width: auto; }
-    KeyModal #key-bar .spacer { width: 1fr; height: 1; }
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     def __init__(self, repo_name: str, key_name: str | None = None,
                  armour: str | None = None, key_dir: str = ""):
         super().__init__()
+        self.TITLE = f"GPG key — {repo_name}"
+        self.subtitle = f"needs {key_name}" if key_name else "no keyring named"
         self._repo_name = repo_name
         self._key_name = key_name
         self._armour = armour or ""
@@ -120,29 +57,26 @@ class KeyModal(ModalScreen):
         self._found: dict[str, Path] = {}
         self._names: list[str] = []
 
-    def compose(self) -> ComposeResult:
-        wanted = f"needs [b]{_escape(self._key_name)}[/]" if self._key_name else "no keyring named"
-        with Vertical():
-            yield Label(f"  GPG key — {_escape(self._repo_name)}", id="key-title")
-            yield Label(f"  {wanted}", id="key-subtitle")
-            yield Label("  Search a directory for keyrings", classes="section")
-            with Horizontal(id="dir-row"):
-                yield Input(placeholder="/path/to/keys", id="key-dir", value=self._key_dir)
-                yield Button("Browse…", id="btn-browse", variant="default")
-                yield Button("Scan", id="btn-scan", variant="primary")
-            yield OptionList(id="key-found")
-            yield Label("  …or fetch it from a URL", classes="section")
-            with Horizontal(id="url-row"):
-                yield Input(placeholder="https://example.com/repo.gpg", id="key-url")
-                yield Button("Fetch", id="btn-fetch", variant="primary")
-            yield Label("  …or paste the armoured key", classes="section")
-            yield TextArea(self._armour, id="key-area", show_line_numbers=False)
-            yield Label("", id="key-status")
-            with Horizontal(id="key-bar"):
-                yield Button("Clear key", id="btn-clear", variant="default")
-                yield Label("", classes="spacer")
-                yield Button("Cancel", id="btn-cancel", variant="default")
-                yield Button("Save", id="btn-save", variant="primary")
+    def compose_body(self) -> ComposeResult:
+        yield Heading("Search a directory for keyrings")
+        with Horizontal(id="dir-row"):
+            yield Input(placeholder="/path/to/keys", id="key-dir", value=self._key_dir,
+                        compact=True)
+            yield Button("Browse…", id="btn-browse", compact=True)
+            yield Button("Scan", id="btn-scan", variant="primary", compact=True)
+        yield OptionList(id="key-found", compact=True)
+        yield Heading("…or fetch it from a URL")
+        with Horizontal(id="url-row"):
+            yield Input(placeholder="https://example.com/repo.gpg", id="key-url", compact=True)
+            yield Button("Fetch", id="btn-fetch", variant="primary", compact=True)
+        yield Heading("…or paste the armoured key")
+        yield TextArea(self._armour, id="key-area", show_line_numbers=False, compact=True)
+        yield Label("", id="key-status")
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Clear key", id="btn-clear", compact=True)
+        yield Button("Cancel", id="btn-cancel", compact=True)
+        yield Button("Save", id="btn-save", variant="primary", compact=True)
 
     def on_mount(self) -> None:
         self.query_one("#key-found").display = False
@@ -169,7 +103,7 @@ class KeyModal(ModalScreen):
 
     @work
     async def _browse(self) -> None:
-        picked = await self.app.push_screen_wait(PathPickModal(
+        picked = await self.app.push_screen_wait(PathPickPage(
             "Where are the keyrings?",
             "searched recursively for .gpg / .asc / .key / .pub",
             self.query_one("#key-dir", Input).value.strip(),
@@ -182,9 +116,9 @@ class KeyModal(ModalScreen):
     def _scan(self, path: str) -> None:
         status = self.query_one("#key-status", Label)
         if not path:
-            status.update("  [dim]Enter a directory to search.[/]")
+            status.update("[dim]Enter a directory to search.[/]")
             return
-        status.update("  [dim]Searching…[/]")
+        status.update("[dim]Searching…[/]")
         self._scan_worker(path)
 
     @work(thread=True, exit_on_error=False)
@@ -199,7 +133,7 @@ class KeyModal(ModalScreen):
         ol.clear_options()
         if not found:
             ol.display = False
-            status.update(f"  [yellow]No key files under {_escape(path)}[/]")
+            status.update(f"[$mmw-warn]No key files under {escape(path)}[/]")
             return
         # The wanted keyring first: with 24 keys in a DGX bundle, the one this
         # repository actually names should not need hunting for.
@@ -208,10 +142,10 @@ class KeyModal(ModalScreen):
         self._names = names
         ol.display = True
         if self._key_name in found:
-            status.update(f"  [green]✓ found {_escape(self._key_name)}[/] — select it to load")
+            status.update(f"[$mmw-ok]✓ found {escape(self._key_name)}[/] — select it to load")
             ol.highlighted = 0
         else:
-            status.update(f"  [dim]{len(found)} key(s) found[/]")
+            status.update(f"[dim]{len(found)} key(s) found[/]")
 
     @on(OptionList.OptionSelected, "#key-found")
     async def _load_selected(self, event) -> None:
@@ -224,12 +158,12 @@ class KeyModal(ModalScreen):
         try:
             armour = await asyncio.to_thread(keys.read_key, self._found[name])
         except Exception as e:
-            self.query_one("#key-status", Label).update(f"  [red]✗ {_escape(str(e))}[/]")
+            self.query_one("#key-status", Label).update(f"[$mmw-error]✗ {escape(str(e))}[/]")
             return
         self.query_one("#key-area", TextArea).text = armour
         self._key_name = name
         self.query_one("#key-status", Label).update(
-            f"  [green]✓ loaded {_escape(name)}[/] [dim]({len(armour)} bytes armoured)[/]"
+            f"[$mmw-ok]✓ loaded {escape(name)}[/] [dim]({len(armour)} bytes armoured)[/]"
         )
 
     # ── fetching from a URL ──────────────────────────────────────────────────
@@ -246,9 +180,9 @@ class KeyModal(ModalScreen):
     def _fetch(self, url: str) -> None:
         status = self.query_one("#key-status", Label)
         if not url:
-            status.update("  [dim]Enter a URL to fetch.[/]")
+            status.update("[dim]Enter a URL to fetch.[/]")
             return
-        status.update("  [dim]Fetching…[/]")
+        status.update("[dim]Fetching…[/]")
         self._fetch_worker(url)
 
     @work(thread=True, exit_on_error=False)
@@ -265,18 +199,15 @@ class KeyModal(ModalScreen):
     def _on_fetched(self, armour: str) -> None:
         self.query_one("#key-area", TextArea).text = armour
         self.query_one("#key-status", Label).update(
-            f"  [green]✓ fetched[/] [dim]({len(armour)} bytes armoured)[/]"
+            f"[$mmw-ok]✓ fetched[/] [dim]({len(armour)} bytes armoured)[/]"
         )
 
     def _on_fetch_failed(self, error: Exception) -> None:
         self.query_one("#key-status", Label).update(
-            f"  [red]✗ {_escape(str(error) or type(error).__name__)}[/]"
+            f"[$mmw-error]✗ {escape(str(error) or type(error).__name__)}[/]"
         )
 
     # ── result ───────────────────────────────────────────────────────────────
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
     @on(Button.Pressed, "#btn-cancel")
     def _cancel(self) -> None:
@@ -291,7 +222,7 @@ class KeyModal(ModalScreen):
         text = self.query_one("#key-area", TextArea).text.strip()
         if text and "BEGIN PGP PUBLIC KEY BLOCK" not in text:
             self.query_one("#key-status", Label).update(
-                "  [red]✗ That is not an armoured public key block.[/]"
+                "[$mmw-error]✗ That is not an armoured public key block.[/]"
             )
             return
         self.dismiss((text, self._key_name))

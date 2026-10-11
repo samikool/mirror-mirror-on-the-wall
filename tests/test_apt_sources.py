@@ -641,7 +641,7 @@ def test_a_comment_cannot_empty_a_line_into_a_parse_error():
 # ── signed-by= in a one-line options block ───────────────────────────────────
 
 def test_one_line_signed_by_path_is_remembered_by_basename():
-    """The handle `mmw add --keys-dir`, the review pane's scan and KeyModal all
+    """The handle `mmw add --keys-dir`, the review pane's scan and KeyPage all
     match on — dropped for every one-line config, which is the format Docker
     and Kubernetes still publish."""
     e = parse_apt_sources(

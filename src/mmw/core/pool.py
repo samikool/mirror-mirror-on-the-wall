@@ -551,7 +551,7 @@ class Pool:
         # but that only justifies skipping the *lock contention* half of this;
         # it says nothing about the *cache tuning* half. A read-only pool
         # (verify, dry-run, publish, bundle) still runs `_PREPARE_WORKERS`-many
-        # concurrent reads (`publish_panel._run_per_mirror`) against `self._conn`
+        # concurrent reads (`publish_flows._run_per_mirror`) against `self._conn`
         # with no `_tune_reads()` at all — a 2 MB default cache, no mmap — and
         # every one of those concurrent reads serialized on `self._lock` since
         # there was no separate reader to give them. Measured live on an 800 MB
@@ -1083,7 +1083,7 @@ class Pool:
         download workers hold constantly: taking that lock made every worker
         block behind the scan and the scan block behind the workers.
 
-        Callers must keep this off any event loop. See `SyncApp`.
+        Callers must keep this off any event loop. See `SyncView`.
 
         Flushes first: this is the figure the sync footer shows, and a count
         that silently lags behind the packages on disk is worse than a

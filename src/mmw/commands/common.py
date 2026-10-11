@@ -85,7 +85,7 @@ def interruptible(fn):
 def incomplete_mirrors(net, cfg, mirror_dir: Path) -> list[str]:
     """One line per mirror of `net` the pool cannot fully serve. Read-only.
 
-    The same check `tui/publish_panel._run_pre_publish` runs, reached the same
+    The same check `tui/publish_flows.PublishFlows._run_pre_publish` runs, reached the same
     way — `resolve.network_mirrors()` for the mirror set, `verify_mirror()` for
     each. The pool is opened read-only, so this is safe alongside a running
     sync and creates nothing on disk.

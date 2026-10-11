@@ -33,8 +33,8 @@ def test_record_counts_linked_and_skipped():
     assert modal._mirror_linked == 2
     assert modal._mirror_skipped == 1
     assert modal._log_pending == [
-        "  [green]→[/] host/repo/pool/a.deb",
-        "  [green]→[/] host/repo/pool/b.deb",
+        "  [$mmw-ok]→[/] host/repo/pool/a.deb",
+        "  [$mmw-ok]→[/] host/repo/pool/b.deb",
     ]
 
 
@@ -259,7 +259,7 @@ def test_record_archive_progress_logs_the_file_that_just_completed():
     modal.record("", "archive-start:10:1000")
     modal.record("host/repo/pool/nvhpc_26.1_arm64.deb", "archive-progress:1:500:200")
 
-    assert modal._log_pending[-1] == "  [magenta]⇢[/] host/repo/pool/nvhpc_26.1_arm64.deb"
+    assert modal._log_pending[-1] == "  [$accent]⇢[/] host/repo/pool/nvhpc_26.1_arm64.deb"
 
 
 def test_archive_progress_repurposes_overall_bar_and_mirror_label(tmp_path):

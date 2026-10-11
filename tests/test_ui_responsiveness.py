@@ -177,14 +177,20 @@ def test_the_pool_scan_runs_off_the_event_loop(tmp_path):
     """The freeze: a 9-14 s scan ran inside the tick callback, so the UI never
     repainted and the 32 download workers blocked behind the pool lock."""
     from mmw.core import config
-    from mmw.tui.sync import SyncApp
+    from mmw.tui.app import MmwApp
 
     slow = _SlowPool(delay=0.4)
     cfg = config.Config(
         settings=config.Settings(mirror_dir=tmp_path, max_connections=2), sources=[])
 
     async def scenario():
-        app = SyncApp(cfg, mirrors=[])
+        # The machinery lives on SyncView; its thread worker needs a running
+        # app, so the Sync section hosts it.
+        host = MmwApp(cfg, tmp_path, initial_section="sync", start_sync_with=([], False))
+        async with host.run_test():
+            await _inner(host.active_sync)
+
+    async def _inner(app):
         app._pool = slow
         loop_name = threading.current_thread().name
         app._maybe_refresh_pool_stats(time.monotonic())
@@ -210,14 +216,18 @@ def test_only_one_pool_scan_is_ever_in_flight(tmp_path):
     """Ticks arrive at 60 Hz. Without the guard they queue scans faster than
     the scans complete."""
     from mmw.core import config
-    from mmw.tui.sync import SyncApp
+    from mmw.tui.app import MmwApp
 
     slow = _SlowPool(delay=0.3)
     cfg = config.Config(
         settings=config.Settings(mirror_dir=tmp_path, max_connections=2), sources=[])
 
     async def scenario():
-        app = SyncApp(cfg, mirrors=[])
+        host = MmwApp(cfg, tmp_path, initial_section="sync", start_sync_with=([], False))
+        async with host.run_test():
+            await _inner(host.active_sync)
+
+    async def _inner(app):
         app._pool = slow
         for _ in range(50):
             app._maybe_refresh_pool_stats(time.monotonic())
@@ -234,11 +244,11 @@ def test_the_scan_interval_is_measured_from_completion(tmp_path):
     scan the 1 Hz gate was already 13 s stale and the next tick started another
     scan immediately — back-to-back scans with no gap at all."""
     from mmw.core import config
-    from mmw.tui.sync import SyncApp
+    from mmw.tui.sync import SyncView
 
     cfg = config.Config(
         settings=config.Settings(mirror_dir=tmp_path, max_connections=2), sources=[])
-    app = SyncApp(cfg, mirrors=[])
+    app = SyncView(cfg, mirrors=[])
 
     started = time.monotonic()
     app._pool_stats_inflight = True
@@ -255,11 +265,11 @@ def test_the_scan_interval_is_measured_from_completion(tmp_path):
 def test_a_failed_scan_releases_the_guard(tmp_path):
     """A wedged guard would silently stop the footer updating for the whole run."""
     from mmw.core import config
-    from mmw.tui.sync import SyncApp
+    from mmw.tui.sync import SyncView
 
     cfg = config.Config(
         settings=config.Settings(mirror_dir=tmp_path, max_connections=2), sources=[])
-    app = SyncApp(cfg, mirrors=[])
+    app = SyncView(cfg, mirrors=[])
     app._pool_stats_inflight = True
     app._on_pool_stats(None)
 
@@ -959,33 +969,33 @@ def test_the_sync_lock_is_never_taken_on_the_event_loop(tmp_path, monkeypatch):
     assert held > 10, f"event loop only ticked {held}x while the pool was locked"
 
 
-def test_sync_app_opens_its_pool_off_the_mount_path(tmp_path):
+def test_sync_opens_its_pool_off_the_mount_path(tmp_path):
     """`on_mount` runs on the event loop, so opening the pool there stalled the
     first frame: a mkdir, a SQLite connect, the schema script and a sweep of
     `.pool/tmp/`. It is deferred to a thread now, which means the app must
     still end up with a usable pool — and must not fall over when it has none
     yet.
 
-    Mounted with `mirrors=[]` on purpose: SyncApp starts real HTTP for every
+    Mounted with `mirrors=[]` on purpose: a sync starts real HTTP for every
     mirror it is given, which is why it is absent from the layout suites.
     """
     from mmw.core import config
-    from mmw.tui.sync import SyncApp
+    from mmw.tui.app import MmwApp
 
     cfg = config.Config(
         settings=config.Settings(mirror_dir=tmp_path / "m", max_connections=2),
         sources=[])
 
     async def scenario():
-        app = SyncApp(cfg, mirrors=[])
+        app = MmwApp(cfg, tmp_path, initial_section="sync", start_sync_with=([], False))
         async with app.run_test() as pilot:
             await pilot.pause()
             # The tick runs at 60 Hz from the moment of mount and must survive
             # `self._pool` still being None.
             deadline = time.monotonic() + 5.0
-            while app._pool is None and time.monotonic() < deadline:
+            while app.active_sync._pool is None and time.monotonic() < deadline:
                 await asyncio.sleep(0.02)
-            return app._pool is not None
+            return app.active_sync._pool is not None
 
     assert asyncio.run(scenario()), "the pool was never opened"
     assert (tmp_path / "m" / ".pool").is_dir(), "pool directory was not created"
@@ -1054,7 +1064,7 @@ def test_no_tui_handler_does_blocking_io_on_the_event_loop():
     It has now been broken three separate ways: a pool `stats()` scan inside
     the 60 Hz tick (9-14 s of frozen UI), `flock` taken per mirror inside
     `download_mirror` (a sync that locked up outright), and `Pool()` itself
-    built in `SyncApp.on_mount`. Each was found by a human noticing a freeze;
+    built in the sync's `on_mount`. Each was found by a human noticing a freeze;
     this finds the next one at import time.
 
     If something here is genuinely cheap enough to stay on the loop, add it to
@@ -1071,7 +1081,9 @@ def test_no_tui_handler_does_blocking_io_on_the_event_loop():
     # which is where the worst instance of this actually happened (a per-mirror
     # `flock` that locked a 45-mirror sync solid). A guard that only watched
     # `tui/` would have missed it entirely.
-    scanned = sorted(pathlib.Path("src/mmw/tui").glob("*.py")) + [
+    # rglob: the rebuilt TUI lives in tui/ui/ and tui/sections/ — a flat glob
+    # would exempt every handler in it.
+    scanned = sorted(pathlib.Path("src/mmw/tui").rglob("*.py")) + [
         pathlib.Path("src/mmw/core/downloader.py"),
         pathlib.Path("src/mmw/core/sync_engine.py"),
     ]

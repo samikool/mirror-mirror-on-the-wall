@@ -1,4 +1,4 @@
-"""`NetworkPanel._execute_bundle` must branch its notification on the outcome
+"""`PublishFlows._execute_bundle` must branch its notification on the outcome
 exactly like `_execute_publish` does — a stopped or partially-failed bundle
 reported as unqualified success is exactly what this project's "nothing is
 silent" outcome discipline forbids. `BundleResult.errors` is populated
@@ -14,12 +14,12 @@ given `BundleResult` + stop state, not about the bundling pipeline itself
 import asyncio
 from pathlib import Path
 
-from textual.app import App, ComposeResult
 
 from mmw.core import config
 from mmw.core.publisher.results import BundleResult
 from mmw.tui.publish_modals import BundleProgressModal
-from mmw.tui.publish_panel import NetworkPanel
+from mmw.tui.app import MmwApp
+from mmw.tui.publish_flows import PublishFlows
 
 
 def _cfg_with_bundle_network(tmp_path: Path) -> config.Config:
@@ -29,26 +29,22 @@ def _cfg_with_bundle_network(tmp_path: Path) -> config.Config:
     )
 
 
-class _RecordingApp(App):
-    """Hosts one `NetworkPanel` and records every `notify()` call instead of
+class _RecordingApp(MmwApp):
+    """The Networks section, recording every `notify()` call instead of
     rendering a toast — the thing under test is what `_execute_bundle`
     chooses to say, not Textual's notification widget."""
 
     def __init__(self, cfg: config.Config, cfg_dir: Path):
-        super().__init__()
-        self._cfg = cfg
-        self._cfg_dir = cfg_dir
+        config.save(cfg, cfg_dir)
+        super().__init__(cfg, cfg_dir, initial_section="networks")
         self.notifications: list[tuple[str, str]] = []
-
-    def compose(self) -> ComposeResult:
-        yield NetworkPanel(self._cfg, self._cfg_dir)
 
     def notify(self, message, *, title="", severity="information", timeout=None, markup=True) -> None:
         self.notifications.append((message, severity))
 
 
 def _run_bundle_scenario(tmp_path: Path, fake_bundle_network, monkeypatch):
-    """Mount NetworkPanel, run `_execute_bundle` against a faked
+    """Open the Networks section, run `_execute_bundle` against a faked
     `bundle_network`, and return the notifications the run produced.
 
     `BundleProgressModal.set_timer` is patched to fire its callback
@@ -71,14 +67,14 @@ def _run_bundle_scenario(tmp_path: Path, fake_bundle_network, monkeypatch):
         app = _RecordingApp(cfg, tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            panel = app.query_one(NetworkPanel)
+            flows = PublishFlows(app, lambda: app.cfg)
             net = cfg.networks[0]
             # `push_screen_wait` (used inside `_execute_bundle`) requires an
             # active worker context — the real call path is `do_bundle`
             # (itself `@work`-decorated); `run_worker` reproduces that here
             # without going through the button/selection machinery, which
             # this test has no need to exercise.
-            worker = panel.run_worker(panel._execute_bundle(net), exit_on_error=False)
+            worker = app.run_worker(flows._execute_bundle(net), exit_on_error=False)
             await worker.wait()
             await pilot.pause()
         return app.notifications

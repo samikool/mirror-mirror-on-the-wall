@@ -10,14 +10,13 @@ metadata, never served content and never shared with anything else.
 import asyncio
 from pathlib import Path
 
-from textual.app import App, ComposeResult
 from textual.widgets import ListView
 
 from mmw.core import config
 from mmw.core.publisher.manifest import ledger_dir
-from mmw.tui.modals import ConfirmModal
-from mmw.tui.publish_panel import NetworkPanel
-from mmw.tui.widgets import Button
+from mmw.tui.app import MmwApp
+from mmw.tui.ui.dialog import ConfirmDialog
+from mmw.tui.ui.widgets import Button
 
 
 def _cfg(tmp_path) -> config.Config:
@@ -27,14 +26,10 @@ def _cfg(tmp_path) -> config.Config:
     )
 
 
-class _App(App):
-    def __init__(self, cfg: config.Config, cfg_dir):
-        super().__init__()
-        self._cfg = cfg
-        self._cfg_dir = cfg_dir
-
-    def compose(self) -> ComposeResult:
-        yield NetworkPanel(self._cfg, self._cfg_dir)
+def _App(cfg: config.Config, cfg_dir):
+    """The Networks section of the one app, on a saved copy of `cfg`."""
+    config.save(cfg, cfg_dir)
+    return MmwApp(cfg, cfg_dir, initial_section="networks")
 
 
 async def _settle(pilot, tries: int = 40):
@@ -58,18 +53,17 @@ def test_removing_a_network_clears_its_bundle_ledger(tmp_path):
         app = _App(cfg, tmp_path)
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            panel = app.query_one(NetworkPanel)
-            panel.query_one("#pub-list", ListView).index = 0
+            app.screen.query_one("#net-list", ListView).index = 0
             await _settle(pilot)
 
-            panel.query_one("#btn-remove-network", Button).press()
+            app.screen.query_one("#btn-net-remove", Button).press()
             await _settle(pilot)
-            panel.app.screen.query_one("#confirm", Button).press()
+            app.screen.query_one("#confirm", Button).press()
             await _settle(pilot)
 
     asyncio.run(scenario())
 
-    assert cfg.networks == []
+    assert config.load(tmp_path).networks == []
     assert not ledger.exists()
 
 
@@ -81,19 +75,18 @@ def test_cancelling_network_removal_leaves_the_ledger_alone(tmp_path):
         app = _App(cfg, tmp_path)
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            panel = app.query_one(NetworkPanel)
-            panel.query_one("#pub-list", ListView).index = 0
+            app.screen.query_one("#net-list", ListView).index = 0
             await _settle(pilot)
 
-            panel.query_one("#btn-remove-network", Button).press()
+            app.screen.query_one("#btn-net-remove", Button).press()
             await _settle(pilot)
-            assert isinstance(panel.app.screen, ConfirmModal)
-            panel.app.screen.query_one("#cancel", Button).press()
+            assert isinstance(app.screen, ConfirmDialog)
+            app.screen.query_one("#cancel", Button).press()
             await _settle(pilot)
 
     asyncio.run(scenario())
 
-    assert [n.name for n in cfg.networks] == ["lab"]
+    assert [n.name for n in config.load(tmp_path).networks] == ["lab"]
     assert ledger.exists()
     assert (ledger / "20260901T000000Z.manifest.jsonl.zst").exists()
 
@@ -106,15 +99,14 @@ def test_removing_a_network_with_no_ledger_does_not_crash(tmp_path):
         app = _App(cfg, tmp_path)
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            panel = app.query_one(NetworkPanel)
-            panel.query_one("#pub-list", ListView).index = 0
+            app.screen.query_one("#net-list", ListView).index = 0
             await _settle(pilot)
 
-            panel.query_one("#btn-remove-network", Button).press()
+            app.screen.query_one("#btn-net-remove", Button).press()
             await _settle(pilot)
-            panel.app.screen.query_one("#confirm", Button).press()
+            app.screen.query_one("#confirm", Button).press()
             await _settle(pilot)
 
     asyncio.run(scenario())   # must not raise
 
-    assert cfg.networks == []
+    assert config.load(tmp_path).networks == []

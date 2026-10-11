@@ -286,7 +286,7 @@ class SourceConfig(_StrictModel):
         an architecture" rule forbids: a repository nobody has listed yet has no
         business being labelled as anything, least of all before the first sync
         — `to_mirrors()` yields no sync units and callers that display "what
-        will this expand to" (the network editor, `manage.py`'s `_unresolved()`)
+        will this expand to" (the network editor, `RepositoryList.unresolved()`)
         render that honestly as "all — resolved at sync".
 
         **A flat repository is never arch-expanded** — the architecture is baked
@@ -373,9 +373,15 @@ class SourceConfig(_StrictModel):
         return []
 
 
+# The TUI's colour theme when none is chosen. Lives here, not in tui/, because
+# `save()` needs it to decide whether `theme` is worth writing.
+DEFAULT_THEME = "mmw"
+
+
 class Settings(_StrictModel):
     mirror_dir: Path
     max_connections: int = os.cpu_count() or 10
+    theme: str = DEFAULT_THEME
 
 
 class NetworkSelect(_StrictModel):
@@ -757,6 +763,10 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
         "settings": {
             "mirror_dir": str(cfg.settings.mirror_dir),
             "max_connections": cfg.settings.max_connections,
+            # Omitted at the default, like the network flags above: a
+            # hand-edited file should only say what was actually chosen.
+            **({"theme": cfg.settings.theme}
+               if cfg.settings.theme != DEFAULT_THEME else {}),
         },
         **({"sources": sources_data} if sources_data else {}),
         **({"networks": networks_data} if networks_data else {}),

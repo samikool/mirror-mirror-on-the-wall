@@ -92,6 +92,7 @@ certs = true
 |-----|------|---------|---------|
 | `mirror_dir` | path | **required** | Where everything lands: `.pool/` (blobs + the SQLite index), `keys/`, and `certs/` for networks with `certs = true`. **No browsable mirror tree is created here** — trees exist only at publish destinations. Needs to be on a filesystem that supports hardlinks, and ideally the same filesystem as your publish roots, or publishing copies instead of linking. |
 | `max_connections` | int | `os.cpu_count()`, or `10` if that is unavailable | Global cap on simultaneous HTTP downloads — across *all* mirrors, not per mirror. Also the size of the single thread pool every network operation (metadata, packages, GPG keys) runs on. Raise it for a fast link and many small files; lower it if you are being rate-limited or the disk is the bottleneck. |
+| `theme` | string | `'mmw'` | Colour theme for the TUI: `mmw`, `mmw-light`, any built-in Textual theme (`nord`, `gruvbox`, `tokyo-night`, `catppuccin-mocha`, …), or the name of a custom theme file in `themes/` beside `mmw.toml`. Changed from the Settings page or the command palette (Ctrl+P); an unknown name falls back to `mmw` with a warning. See [themes.md](themes.md). |
 
 
 ## `[[sources]]`

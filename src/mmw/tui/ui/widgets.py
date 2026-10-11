@@ -2,8 +2,10 @@ import hashlib
 import re
 
 from textual.binding import Binding
-from textual.widgets import Button as _Button, SelectionList
+from textual.widgets import Button as _Button, RichLog, SelectionList
 
+_TAG = re.compile(r"\[([^\[\]]*)\]")
+_VARIABLE = re.compile(r"\$([a-zA-Z][a-zA-Z0-9-]*)")
 _UNSAFE_ID = re.compile(r"[^a-zA-Z0-9_-]")
 _LOOKS_DISAMBIGUATED = re.compile(r"-[0-9a-f]{8}$")
 
@@ -88,3 +90,27 @@ class JumpSelectionList(SelectionList):
 
         self._jump_char = ""
         self._jump_idx = -1
+
+
+class ThemedLog(RichLog):
+    """A RichLog that understands the theme's colours in its markup.
+
+    RichLog parses strings with *Rich* markup, which has no `$variables`:
+    `[$mmw-warn]…[/]` stayed literal text and its `[/]` then raised
+    MarkupError, killing the app on the first sync warning. Each variable
+    inside a tag is swapped for the current theme's value before Rich sees it
+    (lines already written keep the colours of the theme they were written in).
+    """
+
+    def write(self, content, *args, **kwargs):
+        if isinstance(content, str) and self.markup and "$" in content:
+            content = self._resolve(content)
+        return super().write(content, *args, **kwargs)
+
+    def _resolve(self, text: str) -> str:
+        variables = self.app.get_css_variables()
+
+        def tag(m: re.Match) -> str:
+            inner = _VARIABLE.sub(lambda v: variables.get(v.group(1), v.group(0)), m.group(1))
+            return f"[{inner}]"
+        return _TAG.sub(tag, text)

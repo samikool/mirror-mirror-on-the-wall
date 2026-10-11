@@ -42,9 +42,13 @@ def _mirrors(n=2):
 
 def _app(factory):
     """A host app that pushes one screen, for snap_compare to drive."""
-    from textual.app import App, ComposeResult
+    from textual.app import ComposeResult
 
-    class _Host(App):
+    from mmw.tui.ui.base import ThemedApp
+
+    # ThemedApp, not App: converted screens are Pages styled by mmw.tcss, and
+    # an approved baseline must show them as users see them.
+    class _Host(ThemedApp):
         def compose(self) -> ComposeResult:
             yield from ()
 
@@ -59,35 +63,35 @@ def _app(factory):
 # interesting rather than whatever a module-level app would have.
 
 def test_snapshot_edit_network(snap_compare):
-    from mmw.tui.network_screens import EditNetworkScreen
+    from mmw.tui.network_screens import EditNetworkPage
 
     net = config.NetworkConfig(name="lab", select=[])
-    assert snap_compare(_app(lambda: EditNetworkScreen(net, _mirrors())),
+    assert snap_compare(_app(lambda: EditNetworkPage(net, _mirrors())),
                         terminal_size=SNAP_SIZE)
 
 
 def test_snapshot_edit_source(snap_compare):
-    from mmw.tui.source_screens import EditSourceScreen
+    from mmw.tui.source_screens import EditSourcePage
 
     src = config.SourceConfig(url="https://deb.example.com/debian",
                               suites=["bookworm", "trixie"],
                               components=["main", "contrib"], arches=["amd64", "arm64"])
-    assert snap_compare(_app(lambda: EditSourceScreen(src)), terminal_size=SNAP_SIZE)
+    assert snap_compare(_app(lambda: EditSourcePage(src)), terminal_size=SNAP_SIZE)
 
 
 def test_snapshot_key_modal(snap_compare):
     """The one that rendered its paste box at zero rows on a short terminal."""
-    from mmw.tui.key_modal import KeyModal
+    from mmw.tui.key_modal import KeyPage
 
-    assert snap_compare(_app(lambda: KeyModal("debian", "debian-archive.gpg")),
+    assert snap_compare(_app(lambda: KeyPage("debian", "debian-archive.gpg")),
                         terminal_size=SNAP_SIZE)
 
 
 def test_snapshot_pick_modal(snap_compare):
-    from mmw.tui.pick import PickModal
+    from mmw.tui.pick import PickPage
 
     assert snap_compare(
-        _app(lambda: PickModal("Suites", "archive.ubuntu.com publishes 55",
+        _app(lambda: PickPage("Suites", "archive.ubuntu.com publishes 55",
                                [f"suite-{i}" for i in range(55)], ["suite-0"])),
         terminal_size=SNAP_SIZE,
     )
@@ -100,21 +104,21 @@ def test_snapshot_bundle_mode_modal(snap_compare):
 
 
 def test_snapshot_certs_modal(snap_compare):
-    from mmw.tui.publish_modals import CertsModal
+    from mmw.tui.publish_modals import CertsPage
 
     assert snap_compare(
-        _app(lambda: CertsModal("lab", [f"host{i}.example.com" for i in range(6)])),
+        _app(lambda: CertsPage("lab", [f"host{i}.example.com" for i in range(6)])),
         terminal_size=SNAP_SIZE,
     )
 
 
 def test_snapshot_bulk_review(snap_compare):
     from mmw.core.draft import RepositoryDraft
-    from mmw.tui.bulk_review import BulkReviewScreen
+    from mmw.tui.bulk_review import BulkReviewPage
 
     drafts = [RepositoryDraft(url=f"https://repo{i}.example.com/ubuntu", provider="apt")
               for i in range(5)]
-    assert snap_compare(_app(lambda: BulkReviewScreen(drafts)), terminal_size=SNAP_SIZE)
+    assert snap_compare(_app(lambda: BulkReviewPage(drafts)), terminal_size=SNAP_SIZE)
 
 
 def _demo_config(tmp_path):
@@ -143,22 +147,118 @@ def _demo_config(tmp_path):
     )
 
 
-def test_snapshot_manage_tab(snap_compare, tmp_path):
-    """The highest-traffic screen in the app, and the one where a fixed 36-column
-    list panel hard-cut every row mid-word."""
-    from pathlib import Path
+# ── Rebuilt single-app TUI (refactor/tui-overhaul) ──────────────────────
+from pathlib import Path as _Path  # noqa: E402
 
-    from mmw.tui.manage import ManageApp
-
-    app = ManageApp(_demo_config(tmp_path), Path("."), initial_tab="tab-manage")
-    assert snap_compare(app, terminal_size=SNAP_SIZE)
+import pytest as _pytest  # noqa: E402
 
 
-def test_snapshot_networks_tab(snap_compare, tmp_path):
-    """Seven action buttons and the r/b bindings — the surface completed last."""
-    from pathlib import Path
+def _mmw_app(tmp_path, section, theme):
+    from mmw.tui.app import MmwApp
+    cfg = config.Config(settings=config.Settings(
+        mirror_dir=_Path("/srv/pool"), max_connections=8, theme=theme))
+    return MmwApp(cfg, tmp_path, initial_section=section)
 
-    from mmw.tui.manage import ManageApp
 
-    app = ManageApp(_demo_config(tmp_path), Path("."), initial_tab="tab-networks")
-    assert snap_compare(app, terminal_size=SNAP_SIZE)
+@_pytest.mark.parametrize("theme", ["mmw", "mmw-light"])
+@_pytest.mark.parametrize("section", ["settings", "repositories"])
+def test_snapshot_mmw_app(snap_compare, tmp_path, section, theme):
+    assert snap_compare(_mmw_app(tmp_path, section, theme), terminal_size=SNAP_SIZE)
+
+
+def test_snapshot_mmw_app_narrow(snap_compare, tmp_path):
+    assert snap_compare(_mmw_app(tmp_path, "settings", "mmw"), terminal_size=(80, 24))
+
+
+def _repos_cfg(theme="mmw"):
+    hosts = ["https://deb.example.com/debian", "https://deb.example.com/debian-security",
+             "https://ppa.example.org/ubuntu"]
+    return config.Config(
+        settings=config.Settings(mirror_dir=_Path("/srv/pool"), max_connections=8, theme=theme),
+        sources=[config.SourceConfig(url=u, suites=["bookworm"], components=["main"],
+                                     arches=["amd64"]) for u in hosts],
+    )
+
+
+async def _tick_first(pilot):
+    for _ in range(6):
+        await pilot.pause()
+    await pilot.app.workers.wait_for_complete()
+    lst = pilot.app.screen.query_one("#repo-list")
+    lst.focus()
+    lst.index = 1
+    await pilot.press("space")
+
+
+@_pytest.mark.parametrize("theme", ["mmw", "mmw-light"])
+def test_snapshot_mmw_repositories(snap_compare, tmp_path, theme):
+    from mmw.tui.app import MmwApp
+    assert snap_compare(MmwApp(_repos_cfg(theme), tmp_path, initial_section="repositories"),
+                        terminal_size=SNAP_SIZE, run_before=_tick_first)
+
+
+def test_snapshot_mmw_edit_source(snap_compare, tmp_path):
+    from mmw.tui.app import MmwApp
+    from mmw.tui.source_screens import EditSourcePage
+
+    async def open_edit(pilot):
+        for _ in range(4):
+            await pilot.pause()
+        pilot.app.push_screen(EditSourcePage(_repos_cfg().sources[0]))
+        for _ in range(4):
+            await pilot.pause()
+
+    assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="repositories"),
+                        terminal_size=(80, 24), run_before=open_edit)
+
+
+def test_snapshot_mmw_add_repository(snap_compare, tmp_path):
+    from mmw.tui.app import MmwApp
+
+    async def open_add(pilot):
+        for _ in range(4):
+            await pilot.pause()
+        await pilot.app.workers.wait_for_complete()
+        pilot.app.screen.query_one("#repo-list").focus()
+        await pilot.press("a")
+        for _ in range(4):
+            await pilot.pause()
+
+    assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="repositories"),
+                        terminal_size=(80, 24), run_before=open_add)
+
+
+def _nets_cfg(theme="mmw"):
+    cfg = _repos_cfg(theme)
+    cfg.networks = [config.NetworkConfig(name=n, root=_Path(f"/srv/{n}"),
+                                         select=[config.NetworkSelect(source=cfg.sources[0].url)])
+                    for n in ("dgx", "lab")]
+    return cfg
+
+
+@_pytest.mark.parametrize("theme", ["mmw", "mmw-light"])
+def test_snapshot_mmw_networks(snap_compare, tmp_path, theme):
+    from mmw.tui.app import MmwApp
+
+    async def settle(pilot):
+        for _ in range(6):
+            await pilot.pause()
+        await pilot.app.workers.wait_for_complete()
+        for _ in range(3):
+            await pilot.pause()
+
+    assert snap_compare(MmwApp(_nets_cfg(theme), tmp_path, initial_section="networks"),
+                        terminal_size=SNAP_SIZE, run_before=settle)
+
+
+def test_snapshot_mmw_edit_network(snap_compare, tmp_path):
+    from mmw.tui.network_screens import EditNetworkPage
+
+    net = config.NetworkConfig(name="lab", root=_Path("/srv/lab"), select=[])
+    assert snap_compare(_app(lambda: EditNetworkPage(net, _mirrors())), terminal_size=(80, 24))
+
+
+def test_snapshot_mmw_sync_idle(snap_compare, tmp_path):
+    from mmw.tui.app import MmwApp
+    assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="sync"),
+                        terminal_size=SNAP_SIZE)

@@ -295,7 +295,7 @@ def _suite_mirror(name: str, suite: str, url: str) -> config.MirrorConfig:
 
 def test_removed_mirror_sharing_a_base_is_never_deleted(tmp_path):
     """Dropping jammy must not offer to delete the tree noble still publishes to."""
-    from mmw.tui.publish_panel import exclusive_publish_dirs
+    from mmw.tui.networks import exclusive_publish_dirs
 
     archive = "http://archive.ubuntu.com/ubuntu"
     jammy = _suite_mirror("u-jammy-main-amd64", "jammy", archive)
@@ -311,7 +311,7 @@ def test_removed_mirror_sharing_a_base_is_never_deleted(tmp_path):
 
 def test_removed_mirror_with_its_own_base_is_deletable(tmp_path):
     """A base no kept mirror publishes to is still offered for deletion."""
-    from mmw.tui.publish_panel import exclusive_publish_dirs
+    from mmw.tui.networks import exclusive_publish_dirs
 
     archive = _suite_mirror("u-noble-main-amd64", "noble", "http://archive.ubuntu.com/ubuntu")
     ports = config.MirrorConfig(name="u-ports-noble-main-arm64", provider="apt", label="ubuntu",
@@ -328,7 +328,7 @@ def test_removed_mirror_with_its_own_base_is_deletable(tmp_path):
 
 
 def test_removed_mirror_base_that_was_never_published_is_skipped(tmp_path):
-    from mmw.tui.publish_panel import exclusive_publish_dirs
+    from mmw.tui.networks import exclusive_publish_dirs
 
     ports = config.MirrorConfig(name="u-ports-noble-main-arm64", provider="apt", label="ubuntu",
                                 source_url="http://ports.ubuntu.com/ubuntu-ports",
@@ -342,7 +342,7 @@ def test_removed_mirror_base_that_was_never_published_is_skipped(tmp_path):
 
 def test_bundle_only_network_offers_nothing_to_delete(tmp_path):
     """A network with no `root` never hardlinked anything — nothing to offer deleting."""
-    from mmw.tui.publish_panel import exclusive_publish_dirs
+    from mmw.tui.networks import exclusive_publish_dirs
 
     ports = config.MirrorConfig(name="u-ports-noble-main-arm64", provider="apt", label="ubuntu",
                                 source_url="http://ports.ubuntu.com/ubuntu-ports",

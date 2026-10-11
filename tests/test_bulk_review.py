@@ -12,8 +12,8 @@ from textual.widgets import Button, Checkbox, Input, Label, OptionList, Selectio
 from mmw.core import discover
 from mmw.core.apt_sources import parse_apt_sources
 from mmw.core.draft import drafts_from_entries
-from mmw.tui.bulk_review import BulkReviewScreen, RepoRow
-from mmw.tui.key_modal import KeyModal
+from mmw.tui.bulk_review import BulkReviewPage, RepoRow
+from mmw.tui.key_modal import KeyPage
 
 ARMOUR = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQINBGXf\n-----END PGP PUBLIC KEY BLOCK-----\n"
 
@@ -75,7 +75,7 @@ def _drafts():
 
 def test_every_repository_gets_a_row():
     async def scenario():
-        app = _Harness(BulkReviewScreen(_drafts()))
+        app = _Harness(BulkReviewPage(_drafts()))
         async with app.run_test() as pilot:
             await _settle(pilot)
             rows = list(app.screen.query(RepoRow))
@@ -91,7 +91,7 @@ def test_every_repository_gets_a_row():
 
 def test_unticking_a_row_drops_it_from_the_result():
     async def scenario():
-        app = _Harness(BulkReviewScreen(_drafts()))
+        app = _Harness(BulkReviewPage(_drafts()))
         async with app.run_test() as pilot:
             await _settle(pilot)
             screen = app.screen
@@ -107,9 +107,9 @@ def test_unticking_a_row_drops_it_from_the_result():
 
 
 def test_cancelling_keeps_everything_untouched():
-    """None means "leave it alone" — the same convention as PickModal."""
+    """None means "leave it alone" — the same convention as PickPage."""
     async def scenario():
-        app = _Harness(BulkReviewScreen(_drafts()))
+        app = _Harness(BulkReviewPage(_drafts()))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#btn-cancel", Button).press()
@@ -122,7 +122,7 @@ def test_cancelling_keeps_everything_untouched():
 
 def test_clear_then_select_all_round_trips():
     async def scenario():
-        app = _Harness(BulkReviewScreen(_drafts()))
+        app = _Harness(BulkReviewPage(_drafts()))
         async with app.run_test() as pilot:
             await _settle(pilot)
             screen = app.screen
@@ -141,7 +141,7 @@ def test_a_row_matching_a_configured_repository_is_marked_as_a_merge():
     rather than adding a second one — worth saying before Add is pressed."""
     async def scenario():
         drafts = _drafts()
-        app = _Harness(BulkReviewScreen(drafts, {drafts[0].identity}))
+        app = _Harness(BulkReviewPage(drafts, {drafts[0].identity}))
         async with app.run_test() as pilot:
             await _settle(pilot)
             tags = [str(lbl.render()) for lbl in app.screen.query(".repo-tag")]
@@ -158,7 +158,7 @@ def test_a_row_drills_into_the_same_pick_modal(monkeypatch):
         drafts = _drafts()
         for d in drafts:
             d.probe()
-        app = _Harness(BulkReviewScreen(drafts))
+        app = _Harness(BulkReviewPage(drafts))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#repo-1-btn-arches", Button).press()
@@ -183,7 +183,7 @@ def test_scanning_a_directory_fills_in_the_named_keyrings(tmp_path):
 
     async def scenario():
         drafts = _drafts()
-        app = _Harness(BulkReviewScreen(drafts))
+        app = _Harness(BulkReviewPage(drafts))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#keydir", Input).value = str(tmp_path)
@@ -201,7 +201,7 @@ def test_the_key_modal_loads_a_scanned_file(tmp_path):
     (tmp_path / "nested" / "a.gpg").write_text(ARMOUR)
 
     async def scenario():
-        app = _Harness(KeyModal("repo-a", "a.gpg", None, str(tmp_path)))
+        app = _Harness(KeyPage("repo-a", "a.gpg", None, str(tmp_path)))
         async with app.run_test() as pilot:
             await _settle(pilot, 60)
             found = app.screen.query_one("#key-found", OptionList)
@@ -220,7 +220,7 @@ def test_the_key_modal_loads_a_scanned_file(tmp_path):
 
 def test_the_key_modal_refuses_text_that_is_not_a_key():
     async def scenario():
-        app = _Harness(KeyModal("repo-a", "a.gpg"))
+        app = _Harness(KeyPage("repo-a", "a.gpg"))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#key-area", TextArea).text = "just some text"
@@ -234,7 +234,7 @@ def test_the_key_modal_refuses_text_that_is_not_a_key():
 
 def test_the_key_modal_can_clear_a_key():
     async def scenario():
-        app = _Harness(KeyModal("repo-a", "a.gpg", ARMOUR))
+        app = _Harness(KeyPage("repo-a", "a.gpg", ARMOUR))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#btn-clear", Button).press()
@@ -252,19 +252,19 @@ def test_browsing_sets_the_key_directory_and_scans_it(tmp_path):
     fills the box and runs the scan, so there is no second way to be wrong."""
     from textual.widgets import Button as TButton
 
-    from mmw.tui.path_pick import PathPickModal
+    from mmw.tui.path_pick import PathPickPage
     (tmp_path / "a.gpg").write_text(ARMOUR)
 
     async def scenario():
         drafts = _drafts()
-        app = _Harness(BulkReviewScreen(drafts))
+        app = _Harness(BulkReviewPage(drafts))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#btn-keydir-browse", TButton).press()
             await _settle(pilot)
 
             picker = pilot.app.screen
-            assert isinstance(picker, PathPickModal)
+            assert isinstance(picker, PathPickPage)
             picker.query_one("#path-input", Input).value = str(tmp_path)
             picker.query_one("#btn-use", TButton).press()
             await _settle(pilot, 60)
@@ -280,7 +280,7 @@ def test_cancelling_the_browser_leaves_the_key_directory_alone(tmp_path):
     from textual.widgets import Button as TButton
 
     async def scenario():
-        app = _Harness(BulkReviewScreen(_drafts()))
+        app = _Harness(BulkReviewPage(_drafts()))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#keydir", Input).value = "/already/typed"
@@ -300,7 +300,7 @@ def test_the_key_modal_can_fetch_from_a_url(monkeypatch):
     monkeypatch.setattr(keys, "fetch_key", lambda url, client: ARMOUR)
 
     async def scenario():
-        app = _Harness(KeyModal("repo-a", "a.gpg"))
+        app = _Harness(KeyPage("repo-a", "a.gpg"))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#key-url", Input).value = "https://nvidia.example/gpgkey"
@@ -326,7 +326,7 @@ def test_the_key_modal_reports_a_failed_fetch_and_does_not_advance(monkeypatch):
     monkeypatch.setattr(keys, "fetch_key", boom)
 
     async def scenario():
-        app = _Harness(KeyModal("repo-a", "a.gpg"))
+        app = _Harness(KeyPage("repo-a", "a.gpg"))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#key-url", Input).value = "https://nvidia.example/gpgkey"
@@ -345,7 +345,7 @@ def test_the_key_modal_can_browse_too(tmp_path):
     (tmp_path / "a.gpg").write_text(ARMOUR)
 
     async def scenario():
-        app = _Harness(KeyModal("repo-a", "a.gpg"))
+        app = _Harness(KeyPage("repo-a", "a.gpg"))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#btn-browse", TButton).press()
@@ -404,3 +404,51 @@ def test_row_summary_is_positional_and_fits_a_narrow_row():
     # 64 is what the row actually gets at an 80-column terminal.
     for draft in (d, d2, d3):
         assert len(rendered(draft)) <= 64, f"{rendered(draft)!r} is too wide"
+
+
+def test_key_page_is_a_scrolling_page_with_one_row_controls():
+    import asyncio
+
+    from mmw.tui.key_modal import KeyPage
+    from mmw.tui.ui.base import ThemedApp
+    from mmw.tui.ui.page import Page
+
+    assert issubclass(KeyPage, Page)
+
+    class _Host(ThemedApp):
+        def on_mount(self):
+            self.push_screen(KeyPage("debian", "debian-archive.gpg"))
+
+    async def go():
+        app = _Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(3):
+                await pilot.pause()
+            assert app.screen.TITLE == "GPG key — debian"
+            assert all(w.region.height == 1 for w in app.screen.query("Input, Button"))
+    asyncio.run(go())
+
+
+def test_bulk_review_page_rows_escape_markup_and_controls_are_one_row():
+    import asyncio
+
+    from mmw.core.draft import RepositoryDraft
+    from mmw.tui.bulk_review import BulkReviewPage
+    from mmw.tui.ui.base import ThemedApp
+    from mmw.tui.ui.page import Page
+
+    assert issubclass(BulkReviewPage, Page)
+    drafts = [RepositoryDraft(url="https://r.example.com/x[b]y")]
+
+    class _Host(ThemedApp):
+        def on_mount(self):
+            self.push_screen(BulkReviewPage(drafts))
+
+    async def go():
+        app = _Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(3):
+                await pilot.pause()
+            assert "x[b]y" in str(app.screen.query_one(".repo-url").render())
+            assert all(b.region.height == 1 for b in app.screen.query("Button"))
+    asyncio.run(go())

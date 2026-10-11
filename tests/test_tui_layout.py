@@ -12,8 +12,9 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from textual.widgets import Button, TabbedContent
+from textual.widgets import Button
 
+from mmw.tui.ui.base import ThemedApp
 from mmw.core import config
 
 CFG = """
@@ -121,29 +122,15 @@ def _check(screen, size):
 
 
 @pytest.mark.parametrize("size", SIZES)
-def test_manage_tab_layout(cfg, size):
+@pytest.mark.parametrize("section", ["repositories", "networks", "sync", "settings"])
+def test_section_layout(cfg, size, section):
     cfg_obj, cfg_dir = cfg
-    from mmw.tui.manage import ManageApp
+    from mmw.tui.app import MmwApp
+    config.save(cfg_obj, cfg_dir)
 
     async def scenario():
-        app = ManageApp(cfg_obj, cfg_dir)
+        app = MmwApp(cfg_obj, cfg_dir, initial_section=section)
         async with app.run_test(size=size) as pilot:
-            await pilot.pause()
-            _check(app.screen, size)
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("size", SIZES)
-def test_networks_tab_layout(cfg, size):
-    cfg_obj, cfg_dir = cfg
-    from mmw.tui.manage import ManageApp
-
-    async def scenario():
-        app = ManageApp(cfg_obj, cfg_dir)
-        async with app.run_test(size=size) as pilot:
-            await pilot.pause()
-            app.query_one(TabbedContent).active = "tab-networks"
             await pilot.pause()
             await pilot.pause()
             _check(app.screen, size)
@@ -151,65 +138,53 @@ def test_networks_tab_layout(cfg, size):
     asyncio.run(scenario())
 
 
-def test_networks_tab_exists_and_has_a_bundle_button(tmp_path):
-    from mmw.tui.manage import ManageApp
+def test_networks_section_has_a_bundle_button(tmp_path):
+    from mmw.tui.app import MmwApp
 
     cfg_obj = _cfg_with_network(tmp_path)
+    config.save(cfg_obj, tmp_path)
 
     async def scenario():
-        app = ManageApp(cfg_obj, tmp_path, initial_tab="tab-networks")
+        app = MmwApp(cfg_obj, tmp_path, initial_section="networks")
         async with app.run_test() as pilot:
             await pilot.pause()
-            tabs = app.query_one(TabbedContent)
-            assert tabs.active == "tab-networks"
-            assert app.query_one("#btn-bundle", Button)
-
-    asyncio.run(scenario())
-
-
-def test_bundle_button_warns_when_no_network_selected(tmp_path):
-    from mmw.tui.manage import ManageApp
-
-    cfg_obj = config.Config(settings=config.Settings(mirror_dir=tmp_path / "mirror"))
-
-    async def scenario():
-        app = ManageApp(cfg_obj, tmp_path, initial_tab="tab-networks")
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.click("#btn-bundle")
-            await pilot.pause()
-            # No crash, and nothing was written.
-            assert not (tmp_path / "out").exists()
+            assert app.current_mode == "networks"
+            assert app.screen.query_one("#btn-net-bundle", Button)
 
     asyncio.run(scenario())
 
 
 def test_every_network_row_is_one_screen_row(tmp_path):
-    """Same rule the manage list has: border-top + margin-top makes one row three."""
-    from mmw.tui.manage import ManageApp
+    """Same rule the repository list has: border-top + margin-top makes one row three."""
+    from mmw.tui.app import MmwApp
 
     cfg_obj = _cfg_with_network(tmp_path)
+    config.save(cfg_obj, tmp_path)
 
     async def scenario():
-        app = ManageApp(cfg_obj, tmp_path, initial_tab="tab-networks")
+        app = MmwApp(cfg_obj, tmp_path, initial_section="networks")
         async with app.run_test() as pilot:
             await pilot.pause()
-            for item in app.query("#pub-list ListItem"):
+            items = list(app.screen.query("#net-list ListItem"))
+            assert items
+            for item in items:
                 assert item.size.height == 1
 
     asyncio.run(scenario())
 
 
-def test_manage_action_bar_is_on_screen(cfg):
+@pytest.mark.parametrize("section", ["repositories", "networks"])
+def test_page_action_bar_is_on_screen(cfg, section):
     """The specific regression: the button row must be visible, not below the fold."""
     cfg_obj, cfg_dir = cfg
-    from mmw.tui.manage import ManageApp
+    from mmw.tui.app import MmwApp
+    config.save(cfg_obj, cfg_dir)
 
     async def scenario():
-        app = ManageApp(cfg_obj, cfg_dir)
+        app = MmwApp(cfg_obj, cfg_dir, initial_section=section)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            bar = app.screen.query_one("#action-bar")
+            bar = app.screen.query_one("#page-actions")
             assert bar.region.bottom <= 30, f"action bar at {bar.region} is below the viewport"
             for btn in bar.query(Button):
                 assert btn.region.bottom <= 30, f"{btn.id} at {btn.region} is below the viewport"
@@ -221,11 +196,11 @@ def test_manage_action_bar_is_on_screen(cfg):
 def test_network_screens_layout(cfg, size):
     cfg_obj, _ = cfg
     from textual import work
-    from textual.app import App, ComposeResult
+    from textual.app import ComposeResult
 
-    from mmw.tui.network_screens import EditNetworkScreen
+    from mmw.tui.network_screens import EditNetworkPage
 
-    class _Host(App):
+    class _Host(ThemedApp):
         def compose(self) -> ComposeResult:
             yield from ()
 
@@ -235,7 +210,7 @@ def test_network_screens_layout(cfg, size):
         @work
         async def _go(self):
             await self.push_screen_wait(
-                EditNetworkScreen(cfg_obj.networks[0], cfg_obj.mirrors)
+                EditNetworkPage(cfg_obj.networks[0], cfg_obj.mirrors)
             )
 
     async def scenario():
@@ -252,9 +227,9 @@ def test_network_screens_layout(cfg, size):
 
 def _modal_host(factory):
     from textual import work
-    from textual.app import App, ComposeResult
+    from textual.app import ComposeResult
 
-    class _Host(App):
+    class _Host(ThemedApp):
         def __init__(self):
             super().__init__()
             self.result = "unset"
@@ -274,10 +249,10 @@ def _modal_host(factory):
 
 def test_escape_cancels_confirm_modal():
     """Escape must decline, never take the destructive branch."""
-    from mmw.tui.modals import ConfirmModal
+    from mmw.tui.ui.dialog import ConfirmDialog
 
     async def scenario():
-        app = _modal_host(lambda: ConfirmModal("Delete", "Really?"))
+        app = _modal_host(lambda: ConfirmDialog("Delete", "Really?"))
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             await pilot.press("escape")
@@ -311,10 +286,10 @@ def test_escape_closes_info_modal():
 @pytest.mark.parametrize(
     "factory,label",
     [
-        (lambda: __import__("mmw.tui.modals", fromlist=["x"]).ConfirmModal(
+        (lambda: __import__("mmw.tui.ui.dialog", fromlist=["x"]).ConfirmDialog(
             "Wipe Package Pool",
             "Delete /very/long/path/to/the/pool?\nAll pooled packages will be removed.",
-        ), "ConfirmModal"),
+        ), "ConfirmDialog"),
         (lambda: __import__("mmw.tui.modals", fromlist=["x"]).InfoModal(
             "Heads up", "A reasonably long informational message that has to wrap."
         ), "InfoModal"),
@@ -324,9 +299,9 @@ def test_modal_layout(size, factory, label):
     """Modals carry fixed widths (60/70/72), so a narrow terminal is the case
     that breaks them."""
     from textual import work
-    from textual.app import App, ComposeResult
+    from textual.app import ComposeResult
 
-    class _Host(App):
+    class _Host(ThemedApp):
         def compose(self) -> ComposeResult:
             yield from ()
 

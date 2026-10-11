@@ -3,89 +3,62 @@ import threading
 import time
 from pathlib import Path
 
-from rich.markup import escape as _escape
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.containers import Horizontal, Vertical
+from textual.markup import escape
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Label, ProgressBar, RichLog, Static
+from textual.widgets import DataTable, Label, ProgressBar, Static
 
 from mmw.core.format import (
     fmt_duration as _fmt_duration,
     fmt_size as _fmt_bytes,
     fmt_speed as _fmt_speed,
 )
-from mmw.tui.widgets import Button
+from mmw.tui.ui.form import Heading
+from mmw.tui.ui.page import Page
+from mmw.tui.ui.widgets import Button, ThemedLog
 
 
-class DryRunResultModal(ModalScreen[bool]):
-    """Read-only publish report — shows sizes and diff, no filesystem writes."""
-
-    DEFAULT_CSS = """
-    DryRunResultModal { align: center middle; }
-    DryRunResultModal > Vertical {
-        width: 90%;
-        max-width: 130;
-        height: auto;
-        max-height: 85%;
-        border: double $primary;
-        background: $surface;
-        padding: 1 2;
-    }
-    DryRunResultModal .modal-title { text-style: bold; color: $primary; margin-bottom: 1; }
-    DryRunResultModal .error-row   { color: $error; }
-    /* `width: 1fr` so this wraps inside the dialog. At `auto` it sized to its
-       own text — 101 columns for a real network ('Total  76,831 files · 99.9
-       GB → 99.8 GB already published · ≈17.2 MB to add') — and that single
-       Label, not the table beside it, was what pushed the modal into
-       horizontal scroll. Worth stating because the table is the obvious
-       suspect and was the wrong one. */
-    DryRunResultModal .totals      { width: 1fr; color: $primary; margin-top: 1; text-style: bold; }
-    DryRunResultModal .du-hdr      { color: $accent; text-style: bold; margin-top: 1; }
-    DryRunResultModal .du-path     { color: $text; margin-left: 2; }
-    DryRunResultModal .du-warn     { color: $warning; margin-left: 2; }
-    DryRunResultModal .du-empty    { color: $text-muted; margin-left: 2; }
-    /* `width: 1fr` so the table fits the modal and scrolls inside itself
-       rather than sizing to its five columns and pushing the parent wider
-       than the dialog. A table that scrolls is fine; a dialog whose buttons
-       scroll away with it is not. */
-    DryRunResultModal DataTable    { width: 1fr; height: auto; max-height: 24; margin-bottom: 1; }
-    DryRunResultModal Horizontal   { align: center middle; height: auto; margin-top: 1; }
-    DryRunResultModal Button       { margin: 0 1; }
-    """
+class DryRunResultPage(Page):
+    """Read-only publish report — sizes and diff, no filesystem writes.
+    Dismisses True to publish now; False/None (Close, Esc) to stop."""
 
     def __init__(self, network_name: str, result):
         super().__init__()
+        self.TITLE = f"Dry run — {network_name}"
         self._network_name = network_name
         self._result = result
 
-    def compose(self) -> ComposeResult:
+    def compose_body(self) -> ComposeResult:
         r = self._result
         fmt = _fmt_bytes
-        with Vertical():
-            yield Label(f"Publish dry run — {self._network_name}", classes="modal-title")
-            yield DataTable(show_cursor=False, zebra_stripes=True, id="dry-run-table")
-            yield Label(
-                f"  Total  {r.total_files:,} files  ·  {fmt(r.total_bytes)}"
-                f"  →  {fmt(r.skipped_bytes)} already published"
-                f"  ·  ≈{fmt(r.linked_bytes)} to add (estimated from index diff)",
-                classes="totals",
-            )
-            if r.errors:
-                yield Label(f"  {len(r.errors)} error(s) — see rows marked ✗", classes="error-row")
-            if r.dist_upgrade_paths or r.dist_upgrade_warnings:
-                yield Label("  Dist-Upgrade", classes="du-hdr")
-                if r.dist_upgrade_paths:
-                    for from_s, to_s in r.dist_upgrade_paths:
-                        yield Label(f"  ✓  {from_s} → {to_s}", classes="du-path")
-                else:
-                    yield Label("  No consecutive LTS pairs found in this network", classes="du-empty")
-                for w in r.dist_upgrade_warnings:
-                    yield Label(f"  ⚠  {w}", classes="du-warn")
-            with Horizontal():
-                yield Button("Close", variant="default", id="cancel")
-                yield Button("Publish Now", variant="primary", id="proceed")
+        yield DataTable(show_cursor=False, zebra_stripes=True, id="dry-run-table")
+        yield Label(
+            f"Total  {r.total_files:,} files  ·  {fmt(r.total_bytes)}"
+            f"  →  {fmt(r.skipped_bytes)} already published"
+            f"  ·  ≈{fmt(r.linked_bytes)} to add (estimated from index diff)",
+            classes="totals",
+        )
+        if r.errors:
+            yield Label(f"[$mmw-error]{len(r.errors)} error(s) — see rows marked ✗[/]",
+                        classes="error-row")
+        if r.dist_upgrade_paths or r.dist_upgrade_warnings:
+            yield Heading("Dist-upgrade")
+            if r.dist_upgrade_paths:
+                for from_s, to_s in r.dist_upgrade_paths:
+                    yield Label(f"[$mmw-ok]✓[/]  {escape(from_s)} → {escape(to_s)}",
+                                classes="du-line")
+            else:
+                yield Label("[dim]No consecutive LTS pairs found in this network[/]",
+                            classes="du-line")
+            for w in r.dist_upgrade_warnings:
+                yield Label(f"[$mmw-warn]⚠  {escape(w)}[/]", classes="du-line")
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Close", id="cancel", compact=True)
+        yield Button("Publish now", variant="primary", id="proceed", compact=True)
 
     def on_mount(self) -> None:
         r = self._result
@@ -116,86 +89,6 @@ class DryRunResultModal(ModalScreen[bool]):
     @on(Button.Pressed, "#proceed")
     def _proceed(self) -> None:
         self.dismiss(True)
-
-def _transfer_progress_css(cls_name: str, prefix: str) -> str:
-    """CSS for a `_TransferProgressModal` subclass, parameterized by its own
-    class name (Textual CSS type selectors match by name, not by base class)
-    and its `ID_PREFIX`. Generated rather than duplicated so the geometry the
-    two variants share can never drift — see `_TransferProgressModal`'s
-    docstring for why the duplicate this replaces was worth removing."""
-    return f"""
-    {cls_name} {{ align: center middle; }}
-    {cls_name} > Vertical {{
-        width: 95%;
-        height: 90%;
-        border: double $primary;
-        background: $surface;
-    }}
-    {cls_name} #{prefix}-title-bar {{
-        background: $primary-darken-3;
-        padding: 0 2;
-        height: 1;
-        color: $text;
-        text-style: bold;
-    }}
-    {cls_name} #{prefix}-progress-area {{
-        height: auto;
-        padding: 1 2 0 2;
-    }}
-    {cls_name} ProgressBar {{
-        margin: 0 0 1 0;
-    }}
-    {cls_name} .{prefix}-section-label {{
-        height: 1;
-        color: $text-muted;
-        text-style: bold;
-    }}
-    {cls_name} .{prefix}-mirror-label {{
-        height: 1;
-        color: $accent;
-        margin-top: 1;
-    }}
-    {cls_name} .{prefix}-archive-rate-label {{
-        height: 1;
-        color: $accent;
-    }}
-    {cls_name} .{prefix}-archive-file-label {{
-        height: 1;
-        color: $warning;
-    }}
-    {cls_name} .{prefix}-stats {{
-        height: 1;
-        color: $text;
-        margin-top: 1;
-    }}
-    {cls_name} .{prefix}-eta {{
-        height: 1;
-        color: $text-muted;
-        margin-bottom: 1;
-    }}
-    {cls_name} #{prefix}-log {{
-        height: 1fr;
-        border-top: solid $primary-darken-2;
-        background: $background;
-    }}
-    {cls_name} #{prefix}-controls {{
-        height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
-        align: right middle;
-        padding: 0 2;
-        background: $primary-darken-3;
-        border-top: solid $primary-darken-1;
-        dock: bottom;
-    }}
-    {cls_name} #{prefix}-footer-label {{
-        width: 1fr;
-        color: $text-muted;
-        content-align: left middle;
-    }}
-    {cls_name} #btn-stop {{
-        margin-left: 1;
-    }}
-    """
-
 
 class _TransferProgressModal(ModalScreen):
     """Shared machinery behind `PublishProgressModal` and `BundleProgressModal`.
@@ -304,32 +197,32 @@ class _TransferProgressModal(ModalScreen):
     def compose(self) -> ComposeResult:
         p = self.ID_PREFIX
         with Vertical():
-            yield Static(f"  {self.VERB_ING}  {self._network_name}", id=f"{p}-title-bar")
-            with Vertical(id=f"{p}-progress-area"):
-                yield Label("  Overall", id=f"{p}-overall-label", classes=f"{p}-section-label")
+            yield Static(f"  {self.VERB_ING}  {self._network_name}", id=f"{p}-title-bar", classes="xfer-title-bar")
+            with Vertical(id=f"{p}-progress-area", classes="xfer-progress-area"):
+                yield Label("  Overall", id=f"{p}-overall-label", classes="xfer-section-label")
                 yield ProgressBar(
                     total=self._total if self._total else None,
                     show_eta=False,
                     id=f"{p}-pbar",
                 )
-                yield Label("  Waiting for first mirror…", id=f"{p}-mirror-label", classes=f"{p}-mirror-label")
+                yield Label("  Waiting for first mirror…", id=f"{p}-mirror-label", classes="xfer-mirror-label")
                 archive_rate_label = Label(
-                    "", id=f"{p}-archive-rate-label", classes=f"{p}-archive-rate-label")
+                    "", id=f"{p}-archive-rate-label", classes="xfer-archive-rate-label")
                 archive_rate_label.display = False
                 yield archive_rate_label
                 archive_file_label = Label(
-                    "", id=f"{p}-archive-file-label", classes=f"{p}-archive-file-label")
+                    "", id=f"{p}-archive-file-label", classes="xfer-archive-file-label")
                 archive_file_label.display = False
                 yield archive_file_label
                 if self.SHOW_MIRROR_BAR:
                     yield ProgressBar(total=None, show_eta=False, id=f"{p}-mirror-pbar")
-                yield Label("  Starting…", id=f"{p}-stats", classes=f"{p}-stats")
-                yield Label("", id=f"{p}-eta", classes=f"{p}-eta")
-            log = RichLog(id=f"{p}-log", highlight=False, markup=True, wrap=False, max_lines=2000)
+                yield Label("  Starting…", id=f"{p}-stats", classes="xfer-stats")
+                yield Label("", id=f"{p}-eta", classes="xfer-eta")
+            log = ThemedLog(id=f"{p}-log", classes="xfer-log", highlight=False, markup=True, wrap=False, max_lines=2000)
             log.can_focus = False
             yield log
-            with Horizontal(id=f"{p}-controls"):
-                yield Static("", id=f"{p}-footer-label")
+            with Horizontal(id=f"{p}-controls", classes="xfer-controls"):
+                yield Static("", id=f"{p}-footer-label", classes="xfer-footer-label")
                 yield Button("Stop", id="btn-stop", variant="error")
 
     def on_mount(self) -> None:
@@ -390,7 +283,7 @@ class _TransferProgressModal(ModalScreen):
             if status == "linked":
                 self._linked += 1
                 self._mirror_linked += 1
-                self._log_pending.append(f"  [green]→[/] {short}")
+                self._log_pending.append(f"  [$mmw-ok]→[/] {short}")
             elif status == "skipped":
                 self._skipped += 1
                 self._mirror_skipped += 1
@@ -398,7 +291,7 @@ class _TransferProgressModal(ModalScreen):
                 pass  # metadata ops don't count toward package totals
             elif status == "pruned":
                 self._pruned += 1
-                self._log_pending.append(f"  [red]✂[/] {short}  [dim](pruned)[/]")
+                self._log_pending.append(f"  [$mmw-error]✂[/] {short}  [dim](pruned)[/]")
             elif status.startswith("by-hash:"):
                 n = status.split(":", 1)[1]
                 self._log_pending.append(f"  [dim]# by-hash links: {n}[/]")
@@ -440,7 +333,7 @@ class _TransferProgressModal(ModalScreen):
                 self._current_large_file_done = 0
                 self._current_large_file_size = size
                 self._log_pending.append(
-                    f"  [magenta]▶[/] compressing {short}  [dim]({_fmt_bytes(size)})[/]"
+                    f"  [$accent]▶[/] compressing {short}  [dim]({_fmt_bytes(size)})[/]"
                 )
             elif status.startswith("archive-large-file-progress:"):
                 # No log line — this can fire many times a second for as long
@@ -471,7 +364,7 @@ class _TransferProgressModal(ModalScreen):
                 # file. Enough to show real motion through the archive
                 # without a second unthrottled log path into this widget.
                 if dst:
-                    self._log_pending.append(f"  [magenta]⇢[/] {short}")
+                    self._log_pending.append(f"  [$accent]⇢[/] {short}")
                 # This file has finished (that's what `archive-progress` fires
                 # on) — if it was the large file currently shown as "in
                 # progress", clear it so the status line stops claiming it's
@@ -624,15 +517,15 @@ class _TransferProgressModal(ModalScreen):
                 # even added — well past any terminal width worth assuming.
                 self.query_one(f"#{p}-mirror-label", Label).update(
                     f"  [bold]Writing archive[/]"
-                    f"  [dim]·[/]  [green]{_fmt_bytes(archive_raw_bytes_done)} / "
+                    f"  [dim]·[/]  [$mmw-ok]{_fmt_bytes(archive_raw_bytes_done)} / "
                     f"{_fmt_bytes(archive_total_bytes)}[/]{pct}"
                     f"  [dim]·[/]  [dim]{archive_files_done:,} / {archive_total_files:,} files[/]"
                 )
                 rate_label = self.query_one(f"#{p}-archive-rate-label", Label)
                 rate_label.update(
-                    f"  [cyan]{self._archive_files_ema:,.0f} files/s[/]"
-                    f"  [dim]·[/]  [cyan]{_fmt_speed(self._archive_bps_ema)}[/]"
-                    f"  [dim]·[/]  [magenta]{_fmt_bytes(archive_compressed_bytes_done)} written[/]{ratio_str}"
+                    f"  [$mmw-running]{self._archive_files_ema:,.0f} files/s[/]"
+                    f"  [dim]·[/]  [$mmw-running]{_fmt_speed(self._archive_bps_ema)}[/]"
+                    f"  [dim]·[/]  [$accent]{_fmt_bytes(archive_compressed_bytes_done)} written[/]{ratio_str}"
                 )
                 rate_label.display = True
                 # One big file's own progress, when there is one in flight —
@@ -641,7 +534,7 @@ class _TransferProgressModal(ModalScreen):
                 if current_large_file and current_large_file_size:
                     file_pct = 100 * current_large_file_done / current_large_file_size
                     fname = current_large_file.rsplit("/", 1)[-1]
-                    file_label.update(f"  [yellow]▶ compressing {fname}: {file_pct:.0f}%[/]")
+                    file_label.update(f"  [$mmw-warn]▶ compressing {fname}: {file_pct:.0f}%[/]")
                     file_label.display = True
                 else:
                     file_label.display = False
@@ -676,11 +569,11 @@ class _TransferProgressModal(ModalScreen):
         pct = f"  [dim]{100 * total_done / self._total:.0f}%[/]" if self._total else ""
         total_str = f"{self._total:,}" if self._total else "?"
 
-        pruned_str = f"  [red]✂ {pruned:,}[/] pruned" if pruned else ""
+        pruned_str = f"  [$mmw-error]✂ {pruned:,}[/] pruned" if pruned else ""
         try:
             self.query_one(f"#{p}-stats", Label).update(
-                f"  [green]↗ {linked:,}[/] {self.COUNT_LABEL}"
-                f"  [cyan]= {skipped:,}[/] already current"
+                f"  [$mmw-ok]↗ {linked:,}[/] {self.COUNT_LABEL}"
+                f"  [$mmw-running]= {skipped:,}[/] already current"
                 f"{pruned_str}"
                 f"  [dim]·[/]  [bold]{speed:,.0f}[/] files/s"
                 f"{pct}"
@@ -692,10 +585,10 @@ class _TransferProgressModal(ModalScreen):
         except Exception:
             pass
 
-        # Flush log entries into RichLog
+        # Flush log entries into the log
         if pending:
             try:
-                log = self.query_one(f"#{p}-log", RichLog)
+                log = self.query_one(f"#{p}-log", ThemedLog)
                 for entry in pending:
                     log.write(entry)
             except Exception:
@@ -703,7 +596,7 @@ class _TransferProgressModal(ModalScreen):
 
         # Footer label
         try:
-            stopping = "  [bold red]Stopping…[/]  " if self.stop_event.is_set() else ""
+            stopping = "  [b $mmw-error]Stopping…[/]  " if self.stop_event.is_set() else ""
             self.query_one(f"#{p}-footer-label", Static).update(
                 f"{stopping}[dim]{self._network_name}  ·  {_fmt_duration(elapsed)}[/]"
             )
@@ -719,10 +612,10 @@ class _TransferProgressModal(ModalScreen):
             try:
                 if error:
                     self.query_one(f"#{p}-title-bar", Static).update(
-                        f"  [bold red]✗ Error[/]  {self._network_name}"
+                        f"  [b $mmw-error]✗ Error[/]  {self._network_name}"
                     )
-                    self.query_one(f"#{p}-log", RichLog).write(
-                        f"  [red]✗ {_escape(error)}[/]"
+                    self.query_one(f"#{p}-log", ThemedLog).write(
+                        f"  [$mmw-error]✗ {escape(error)}[/]"
                     )
                     btn = self.query_one("#btn-stop", Button)
                     btn.label = "Close"
@@ -730,7 +623,7 @@ class _TransferProgressModal(ModalScreen):
                     btn.disabled = False
                 elif self.stop_event.is_set():
                     self.query_one(f"#{p}-title-bar", Static).update(
-                        f"  [bold yellow]⚠ Stopped[/]  {self._network_name}"
+                        f"  [b $mmw-warn]⚠ Stopped[/]  {self._network_name}"
                     )
                     btn = self.query_one("#btn-stop", Button)
                     btn.label = "Close"
@@ -738,7 +631,7 @@ class _TransferProgressModal(ModalScreen):
                     btn.disabled = False
                 else:
                     self.query_one(f"#{p}-title-bar", Static).update(
-                        f"  [bold green]✓ {self.VERB_PAST}[/]  {self._network_name}"
+                        f"  [b $mmw-ok]✓ {self.VERB_PAST}[/]  {self._network_name}"
                     )
                     btn = self.query_one("#btn-stop", Button)
                     btn.label = "Close"
@@ -760,7 +653,6 @@ class PublishProgressModal(_TransferProgressModal):
     COUNT_LABEL = "linked"
     SHOW_MIRROR_BAR = True
 
-    DEFAULT_CSS = _transfer_progress_css("PublishProgressModal", "pub")
 
 
 class BundleProgressModal(_TransferProgressModal):
@@ -783,7 +675,6 @@ class BundleProgressModal(_TransferProgressModal):
     COUNT_LABEL = "sent"
     SHOW_MIRROR_BAR = False
 
-    DEFAULT_CSS = _transfer_progress_css("BundleProgressModal", "bun")
 
 
 class BundleModeModal(ModalScreen["bool | None"]):
@@ -792,24 +683,9 @@ class BundleModeModal(ModalScreen["bool | None"]):
     Returns `True` for full, `False` for delta, `None` on cancel (Escape or
     the Cancel button) — three real outcomes, not two: declining this choice
     must abort the bundle entirely, not silently fall back to delta the way
-    `ConfirmModal`'s plain yes/no would if reused here.
+    `ConfirmDialog`'s plain yes/no would if reused here.
     """
 
-    DEFAULT_CSS = """
-    BundleModeModal { align: center middle; }
-    BundleModeModal > Vertical {
-        width: 64;
-        max-width: 90%;
-        height: auto;
-        border: double $primary;
-        background: $surface;
-        padding: 1 2;
-    }
-    BundleModeModal .title { text-style: bold; margin-bottom: 1; }
-    BundleModeModal Label { width: 100%; margin-bottom: 1; }
-    BundleModeModal Horizontal { align: center middle; height: auto; margin-top: 1; }
-    BundleModeModal Button { margin: 0 1; }
-    """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
@@ -819,15 +695,15 @@ class BundleModeModal(ModalScreen["bool | None"]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(f"Bundle — {_escape(self._network_name)}", classes="title")
+            yield Label(f"Bundle — {escape(self._network_name)}", classes="title")
             yield Label(
                 "Send only what changed since the last bundle, "
                 "or the whole network again?"
             )
             with Horizontal():
-                yield Button("Cancel", variant="default", id="cancel")
-                yield Button("Delta", variant="primary", id="delta")
-                yield Button("Full", variant="warning", id="full")
+                yield Button("Cancel", id="cancel", compact=True)
+                yield Button("Delta", variant="primary", id="delta", compact=True)
+                yield Button("Full", variant="warning", id="full", compact=True)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -848,37 +724,6 @@ class BundleModeModal(ModalScreen["bool | None"]):
 class PreparePublishModal(ModalScreen[None]):
     """Non-dismissable modal shown during verify and optional dry-run phases."""
 
-    DEFAULT_CSS = """
-    PreparePublishModal { align: center middle; }
-    PreparePublishModal > Vertical {
-        width: 82;
-        max-width: 96%;
-        height: 26;
-        max-height: 90%;
-        border: double $primary;
-        background: $surface;
-    }
-    PreparePublishModal #pp-title {
-        height: 1;
-        background: $primary-darken-3;
-        padding: 0 2;
-        color: $text-muted;
-        text-style: bold;
-    }
-    PreparePublishModal #pp-phase-area {
-        height: auto;
-        padding: 1 2 0 2;
-    }
-    PreparePublishModal #pp-phase { color: $text; text-style: bold; margin-bottom: 1; }
-    PreparePublishModal ProgressBar { margin-bottom: 0; }
-    PreparePublishModal #pp-log {
-        height: 1fr;
-        border-top: solid $primary-darken-2;
-        background: $background;
-        margin-top: 1;
-    }
-    """
-
     def __init__(self, network_name: str):
         super().__init__()
         self._network_name = network_name
@@ -889,7 +734,7 @@ class PreparePublishModal(ModalScreen[None]):
             with Vertical(id="pp-phase-area"):
                 yield Label("", id="pp-phase")
                 yield ProgressBar(total=1, show_eta=False, id="pp-pbar")
-            log = RichLog(id="pp-log", highlight=False, markup=True, wrap=False, max_lines=1000)
+            log = ThemedLog(id="pp-log", highlight=False, markup=True, wrap=False, max_lines=1000)
             log.can_focus = False
             yield log
 
@@ -899,53 +744,32 @@ class PreparePublishModal(ModalScreen[None]):
             pbar = self.query_one("#pp-pbar", ProgressBar)
             pbar.total = total
             pbar.progress = 0
-            self.query_one("#pp-log", RichLog).clear()
+            self.query_one("#pp-log", ThemedLog).clear()
         except Exception:
             pass
 
     def mirror_done(self, idx: int, name: str, detail: str, ok: bool) -> None:
         try:
             self.query_one("#pp-pbar", ProgressBar).progress = idx
-            icon = "[green]✓[/]" if ok else "[red]✗[/]"
+            icon = "[$mmw-ok]✓[/]" if ok else "[$mmw-error]✗[/]"
             detail_markup = f"  [dim]{detail}[/]" if detail else ""
-            self.query_one("#pp-log", RichLog).write(f"  {icon}  {name}{detail_markup}")
+            self.query_one("#pp-log", ThemedLog).write(f"  {icon}  {name}{detail_markup}")
         except Exception:
             pass
 
     def on_key(self, event) -> None:
         event.stop()
 
-class CertsModal(ModalScreen[bool]):
-    """Generate a private key + CSR for a network's hostnames."""
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
-
-    DEFAULT_CSS = """
-    CertsModal { align: center middle; }
-    CertsModal > Vertical {
-        width: 90%;
-        max-width: 110;
-        height: auto;
-        max-height: 85%;
-        border: double $primary;
-        background: $surface;
-        padding: 1 2;
-    }
-    CertsModal .modal-title  { text-style: bold; color: $primary; margin-bottom: 1; }
-    CertsModal .host-entry   { color: $text; margin-left: 2; }
-    CertsModal .path-line    { color: $text-muted; margin-top: 1; }
-    CertsModal .error-line   { color: $error; margin-top: 1; }
-    CertsModal .success-line { color: $success; margin-top: 1; text-style: bold; }
-    CertsModal Horizontal    { align: center middle; height: auto; margin-top: 1; }
-    CertsModal Button        { margin: 0 1; }
-    CertsModal ScrollableContainer { height: auto; max-height: 30; }
-    """
+class CertsPage(Page):
+    """Generate a private key + CSR for a network's hostnames: a preview
+    (Generate → True), or the result of generating (Close)."""
 
     def __init__(self, network_name: str, hostnames: list[str],
                  key_path: "Path | None" = None, cnf_path: "Path | None" = None,
                  csr_path: "Path | None" = None, md_path: "Path | None" = None,
                  error: str = ""):
         super().__init__()
+        self.TITLE = f"TLS certificates — {network_name}"
         self._network_name = network_name
         self._hostnames = hostnames
         self._key_path = key_path
@@ -954,40 +778,31 @@ class CertsModal(ModalScreen[bool]):
         self._md_path = md_path
         self._error = error
 
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(f"  TLS Certificates — {self._network_name}", classes="modal-title")
-            with ScrollableContainer():
-                if self._error:
-                    yield Label(f"  [red]✗ {_escape(self._error)}[/]", classes="error-line")
-                elif self._key_path:
-                    yield Label("  [green]✓ Files written[/]", classes="success-line")
-                    yield Label(f"  [dim]Key:[/]  {self._key_path}", classes="path-line")
-                    yield Label(f"  [dim]Cfg:[/]  {self._cnf_path}", classes="path-line")
-                    yield Label(f"  [dim]CSR:[/]  {self._csr_path}", classes="path-line")
-                    yield Label(f"  [dim]Docs:[/] {self._md_path}", classes="path-line")
-                    yield Label("")
-                    yield Label(f"  [bold]{len(self._hostnames)} hostnames covered:[/]")
-                    for h in self._hostnames:
-                        yield Label(f"    {h}", classes="host-entry")
-                    yield Label("")
-                    yield Label(
-                        f"  Send [bold]{self._csr_path.name}[/] to your CA machine and follow [bold]CERTS.md[/].",
-                        classes="path-line",
-                    )
-                else:
-                    yield Label(f"  [bold]{len(self._hostnames)} hostnames to include:[/]")
-                    for h in self._hostnames:
-                        yield Label(f"    {h}", classes="host-entry")
-            with Horizontal():
-                if self._key_path or self._error:
-                    yield Button("Close", variant="primary", id="btn-close")
-                else:
-                    yield Button("Cancel", variant="default", id="btn-close")
-                    yield Button("Generate", variant="primary", id="btn-generate")
+    def compose_body(self) -> ComposeResult:
+        if self._error:
+            yield Label(f"[$mmw-error]✗ {escape(self._error)}[/]", classes="error-line")
+            return
+        if self._key_path:
+            yield Label("[$mmw-ok]✓ Files written[/]", classes="success-line")
+            for label, path in (("Key", self._key_path), ("Cfg", self._cnf_path),
+                                ("CSR", self._csr_path), ("Docs", self._md_path)):
+                yield Label(f"[dim]{label + ':':<5}[/] [$mmw-path]{escape(str(path))}[/]",
+                            classes="path-line")
+            yield Heading(f"{len(self._hostnames)} hostnames covered")
+        else:
+            yield Heading(f"{len(self._hostnames)} hostnames to include")
+        for h in self._hostnames:
+            yield Label(escape(h), classes="host-entry")
+        if self._key_path:
+            yield Label(f"Send [b]{escape(self._csr_path.name)}[/] to your CA machine and "
+                        "follow [b]CERTS.md[/].", classes="path-line")
 
-    def action_cancel(self) -> None:
-        self.dismiss(False)
+    def compose_actions(self) -> ComposeResult:
+        if self._key_path or self._error:
+            yield Button("Close", variant="primary", id="btn-close", compact=True)
+        else:
+            yield Button("Cancel", id="btn-close", compact=True)
+            yield Button("Generate", variant="primary", id="btn-generate", compact=True)
 
     @on(Button.Pressed, "#btn-close")
     def _close(self) -> None:

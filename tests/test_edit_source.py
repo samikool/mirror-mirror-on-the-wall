@@ -8,11 +8,12 @@ probe a repository.
 """
 import asyncio
 
-from textual.app import App, ComposeResult
-from textual.widgets import Button, Input, SelectionList, Switch
+from textual.app import ComposeResult
+from textual.widgets import Button, Checkbox, Input, SelectionList
 
 from mmw.core import config
-from mmw.tui.source_screens import EditSourceScreen
+from mmw.tui.ui.base import ThemedApp
+from mmw.tui.source_screens import EditSourcePage
 
 
 def _source(**overrides) -> config.SourceConfig:
@@ -34,7 +35,7 @@ async def _settle(pilot, tries: int = 25):
 
 
 def _host_app(screen):
-    class _App(App):
+    class _App(ThemedApp):
         def compose(self) -> ComposeResult:
             yield from ()
 
@@ -50,7 +51,7 @@ def _host_app(screen):
 
 
 async def _pick(pilot, app, dim: str, values: list[str]) -> None:
-    """Open a dimension's PickModal (pushed on top of EditSourceScreen), tick
+    """Open a dimension's PickPage (pushed on top of EditSourcePage), tick
     exactly `values`, confirm."""
     app.screen.query_one(f"#btn-{dim}", Button).press()
     await _settle(pilot)
@@ -70,7 +71,7 @@ def _run_and_get(scenario):
 
 def test_escape_returns_none():
     async def scenario():
-        app = _host_app(EditSourceScreen(_source()))
+        app = _host_app(EditSourcePage(_source()))
         async with app.run_test(size=(100, 40)) as pilot:
             await _settle(pilot)
             await pilot.press("escape")
@@ -84,7 +85,7 @@ def test_saving_unchanged_returns_an_equivalent_source():
     src = _source()
 
     async def scenario():
-        app = _host_app(EditSourceScreen(src))
+        app = _host_app(EditSourcePage(src))
         async with app.run_test(size=(100, 40)) as pilot:
             await _settle(pilot)
             app.screen.query_one("#btn-save-source", Button).press()
@@ -106,7 +107,7 @@ def test_narrowing_a_dimension_is_preserved_through_save():
     src = _source(suites=["bookworm", "trixie"])
 
     async def scenario():
-        app = _host_app(EditSourceScreen(src))
+        app = _host_app(EditSourcePage(src))
         async with app.run_test(size=(100, 40)) as pilot:
             await _settle(pilot)
             await _pick(pilot, app, "suites", ["bookworm"])
@@ -123,7 +124,7 @@ def test_narrowing_arches_is_preserved_through_save():
     src = _source(arches=["amd64", "arm64"])
 
     async def scenario():
-        app = _host_app(EditSourceScreen(src))
+        app = _host_app(EditSourcePage(src))
         async with app.run_test(size=(100, 40)) as pilot:
             await _settle(pilot)
             await _pick(pilot, app, "arches", ["arm64"])
@@ -140,7 +141,7 @@ def _edit(src, actions, existing_names=None, existing_urls=None):
     """Open the editor on `src`, run `actions(app)` (sync, on the screen's
     widgets), press Save, and return what it dismissed with."""
     async def scenario():
-        app = _host_app(EditSourceScreen(src, existing_names=existing_names,
+        app = _host_app(EditSourcePage(src, existing_names=existing_names,
                                          existing_urls=existing_urls))
         async with app.run_test(size=(100, 50)) as pilot:
             await _settle(pilot)
@@ -240,7 +241,7 @@ def test_clearing_stated_suites_to_zero_is_refused():
     src = _source()
 
     async def scenario():
-        app = _host_app(EditSourceScreen(src))
+        app = _host_app(EditSourcePage(src))
         async with app.run_test(size=(100, 40)) as pilot:
             await _settle(pilot)
             await _pick(pilot, app, "suites", [])
@@ -258,7 +259,7 @@ def test_dist_upgrade_and_gpg_key_url_survive_an_edit():
     src = _source(dist_upgrade=True, gpg_key_url="https://example.com/key.gpg")
 
     async def scenario():
-        app = _host_app(EditSourceScreen(src))
+        app = _host_app(EditSourcePage(src))
         async with app.run_test(size=(100, 40)) as pilot:
             await _settle(pilot)
             # Touch an unrelated dimension so this isn't just testing the
@@ -279,10 +280,10 @@ def test_include_sources_switch_is_saved():
     src = _source(include_sources=False)
 
     async def scenario():
-        app = _host_app(EditSourceScreen(src))
+        app = _host_app(EditSourcePage(src))
         async with app.run_test(size=(100, 40)) as pilot:
             await _settle(pilot)
-            app.screen.query_one("#include-sources-switch", Switch).value = True
+            app.screen.query_one("#include-sources-switch", Checkbox).value = True
             await _settle(pilot)
             app.screen.query_one("#btn-save-source", Button).press()
             await _settle(pilot)
@@ -306,7 +307,7 @@ def test_a_repository_already_mirroring_all_suites_can_still_be_saved():
     assert src.suites == []
 
     async def scenario():
-        app = _host_app(EditSourceScreen(src))
+        app = _host_app(EditSourcePage(src))
         async with app.run_test(size=(100, 40)) as pilot:
             await _settle(pilot)
             app.screen.query_one("#btn-save-source", Button).press()
@@ -317,3 +318,32 @@ def test_a_repository_already_mirroring_all_suites_can_still_be_saved():
     assert result is not None, "an all-suites repository must be saveable"
     assert result.suites == []          # still "all", not materialized
     assert result.identity == src.identity
+
+
+def test_edit_source_page_fields_are_one_row_and_name_clash_is_refused_in_place():
+    from mmw.tui.source_screens import EditSourcePage
+
+    src = config.SourceConfig(url="https://deb.example.com/debian", suites=["bookworm"],
+                              components=["main"], arches=["amd64"])
+    result = []
+
+    class _Host(ThemedApp):
+        def on_mount(self):
+            self.push_screen(EditSourcePage(src, existing_names={src.name, "taken"}),
+                             result.append)
+
+    async def go():
+        app = _Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(3):
+                await pilot.pause()
+            page = app.screen
+            assert all(w.region.height == 1 for w in page.query("Input, Button, Checkbox"))
+            page.query_one("#edit-source-name").value = "taken"
+            page.query_one("#btn-save-source").press()
+            for _ in range(3):
+                await pilot.pause()
+            assert "already the name" in str(page.query_one("#page-status").render())
+            assert app.focused.id == "edit-source-name"
+            assert result == []
+    asyncio.run(go())

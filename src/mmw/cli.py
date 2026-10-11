@@ -141,66 +141,10 @@ def _profiling(enabled: bool):
             typer.echo(f"Could not write profile: {e}", err=True)
 
 
-def _resolved_for_sync(cfg, selection):
-    """Resolve "all" dimensions, then narrow to what was selected.
-
-    The manage list hands back a `(repository identities, mirror names)` pair;
-    the concrete mirror set only exists after listing upstream, so resolution
-    happens here — and what "all" expanded to is printed before the sync TUI
-    takes the screen.
-
-    **Identities are what survive resolution.** A mirror name chosen before the
-    first sync names the *config expansion*, which resolution may widen right
-    past (`arches = []` expands to one invented `amd64` offline and to five real
-    arches upstream). Selecting the repository keeps meaning the repository.
-    """
-    from mmw.commands.mirror import resolve_and_report
-
-    sources, names = _split_selection(selection)
-    mirrors, errors = resolve_and_report(cfg)
-    if sources or names:
-        chosen = [m for m in mirrors if m.source in sources or m.name in names]
-        if not chosen:
-            # Never widen a selection back to everything: syncing terabytes
-            # nobody asked for is far worse than syncing nothing and saying so.
-            typer.echo("Nothing selected could be resolved — is it still configured?",
-                       err=True)
-            return None
-        mirrors = chosen
-    if not mirrors:
-        typer.echo("Nothing to sync." if not errors else "No mirrors could be resolved.",
-                   err=bool(errors))
-        return None
-    return mirrors
-
-
-def _split_selection(selection) -> tuple[set[str], set[str]]:
-    """(repository identities, mirror names) from what the manage TUI returned."""
-    if isinstance(selection, tuple):
-        sources, names = selection
-        return set(sources or ()), set(names or ())
-    return set(), set(selection or ())
-
-
-def _run_manage_sync_loop(cfg, cfg_dir, initial_tab: str = "tab-manage"):
-    """Run ManageApp ↔ SyncApp in a loop, handling 'sync' and 'manage' results."""
-    from mmw.tui.manage import ManageApp
-    from mmw.tui.sync import SyncApp
-
-    result = _run_tui(ManageApp(cfg, cfg_dir, initial_tab=initial_tab))
-    while True:
-        if isinstance(result, tuple) and result[0] == "sync":
-            mirrors = _resolved_for_sync(cfg, result[1])
-            if mirrors is None:
-                return None
-            result = _run_tui(SyncApp(cfg, mirrors=mirrors))
-            if result == "manage":
-                result = _run_tui(ManageApp(cfg, cfg_dir, initial_tab=initial_tab))
-                continue
-            break
-        else:
-            return result  # reinit or None
-    return None
+def _open_app(cfg, cfg_dir, section: str = "repositories", **kwargs):
+    """Build MmwApp — the one TUI — at `section`. With no config it opens on Setup."""
+    from mmw.tui.app import MmwApp
+    return MmwApp(cfg, cfg_dir, initial_section=section, **kwargs)
 
 
 @app.command("init")
@@ -210,10 +154,9 @@ def cmd_init(
     force: bool = typer.Option(False, "--force", help="Re-initialize even if config exists"),
 ):
     """Setup wizard. Launches manage if config already exists."""
-    from mmw.tui.init_wizard import InitWizardApp
-
     cfg_dir = _cfg_dir()
     cfg_path = config.config_path(cfg_dir)
+    defaults = {"mirror_dir": mirror_dir, "max_connections": max_connections}
 
     if cfg_path.exists() and not force:
         typer.echo(f"Config found at {cfg_path} — launching manage.")
@@ -222,14 +165,11 @@ def cmd_init(
         except Exception as e:
             typer.echo(f"Error loading config: {e}", err=True)
             raise typer.Exit(1)
-        result = _run_manage_sync_loop(cfg, cfg_dir)
-        if result == "reinit":
-            _run_tui(InitWizardApp(cfg_dir, mirror_dir=mirror_dir, max_connections=max_connections))
+        _run_tui(_open_app(cfg, cfg_dir, **defaults))
         return
 
-    result = _run_tui(InitWizardApp(cfg_dir, mirror_dir=mirror_dir, max_connections=max_connections))
-    if result == "done":
-        typer.echo(f"Config written to {cfg_path}")
+    # --force keeps the old file until Setup writes the new one.
+    _run_tui(_open_app(None, cfg_dir, "setup", **defaults))
 
 
 @app.command("manage")
@@ -243,8 +183,6 @@ def cmd_manage(
     ),
 ):
     """Manage configured mirrors (add, remove)."""
-    from mmw.tui.init_wizard import InitWizardApp
-
     cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
@@ -258,11 +196,9 @@ def cmd_manage(
         return
 
     with _profiling(profile) as prof:
-        result = _run_manage_sync_loop(cfg, cfg_dir)
+        _run_tui(_open_app(cfg, cfg_dir))
     if prof is not None:
         typer.echo(f"Profile written to {prof}")
-    if result == "reinit":
-        _run_tui(InitWizardApp(cfg_dir))
 
 
 @app.command("sync")
@@ -312,13 +248,10 @@ def cmd_sync(
         typer.echo("Nothing to sync." if not errors else "No mirrors could be resolved.", err=bool(errors))
         raise typer.Exit(1 if errors else 0)
 
-    from mmw.tui.sync import SyncApp
     with _profiling(profile) as prof:
-        result = _run_tui(SyncApp(cfg, mirrors=mirrors, dry_run=dry_run))
+        _run_tui(_open_app(cfg, cfg_dir, "sync", start_sync_with=(mirrors, dry_run)))
     if prof is not None:
         typer.echo(f"Profile written to {prof}")
-    if result == "manage":
-        _run_manage_sync_loop(cfg, cfg_dir)
 
 
 @app.command("dry-run")
@@ -348,11 +281,7 @@ def cmd_publish(
         raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run,
                              allow_incomplete=allow_incomplete))
 
-    from mmw.tui.init_wizard import InitWizardApp
-
-    result = _run_manage_sync_loop(cfg, cfg_dir, initial_tab="tab-networks")
-    if result == "reinit":
-        _run_tui(InitWizardApp(cfg_dir))
+    _run_tui(_open_app(cfg, cfg_dir, "networks"))
 
 
 @app.command("add")

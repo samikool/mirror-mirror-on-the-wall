@@ -4,27 +4,27 @@
 dozen — names many repositories in one paste. One set of pickers cannot express
 that, and importing it wholesale gives the user no say over the terabytes it
 implies. So the bundle gets a pane: one row per repository, each drilling into
-the *same* `PickModal` and `KeyModal` the single-repository step uses.
+the *same* `PickPage` and `KeyPage` the single-repository step uses.
 
 Rows are `RepositoryDraft`s, so nothing here re-implements probing, the
 "empty means all" rule, or the conversion to `SourceConfig`.
 """
 from pathlib import Path
 
-from rich.markup import escape as _escape
 from textual import on, work
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.markup import escape
 from textual.widgets import Checkbox, Input, Label
 
 from mmw.core import keys
 from mmw.core.draft import DIMENSIONS, RepositoryDraft
-from mmw.tui.key_modal import KeyModal
-from mmw.tui.path_pick import PathPickModal
-from mmw.tui.pick import PickModal
-from mmw.tui.widgets import Button
+from mmw.tui.key_modal import KeyPage
+from mmw.tui.path_pick import PathPickPage
+from mmw.tui.pick import PickPage
+from mmw.tui.ui.form import Heading
+from mmw.tui.ui.page import Page
+from mmw.tui.ui.widgets import Button
 
 _DIM_TITLES = {"suites": "suites", "components": "components", "arches": "architectures"}
 
@@ -36,42 +36,6 @@ def _row_id(idx: int, part: str) -> str:
 class RepoRow(Vertical):
     """One repository: include-or-not, its three dimensions, and its key."""
 
-    DEFAULT_CSS = """
-    RepoRow {
-        height: auto;
-        border: round $primary-darken-2;
-        margin: 0 0 1 0;
-        padding: 0 1;
-    }
-    RepoRow.excluded { border: round $surface-lighten-2; }
-    RepoRow .head { height: auto; }
-    RepoRow Checkbox { border: none; padding: 0; margin: 0; width: auto; }
-    RepoRow .repo-name { width: auto; color: $text; text-style: bold; padding: 0 1; }
-    RepoRow .repo-tag { width: auto; padding: 0 1; }
-    RepoRow .repo-url {
-        width: 1fr;
-        color: $text-muted;
-        height: 1;
-        padding: 0 1;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    RepoRow .dims { height: auto; }
-    RepoRow .dims Button { min-width: 0; width: auto; margin-right: 1; }
-    RepoRow .dim-text {
-        width: 1fr;
-        /* height: auto — NOT a fixed height alongside a top padding.
-           Textual boxes are border-box, so the padding is subtracted from
-           the declared height: `height: 1` with `padding-top: 1` leaves
-           zero rows and the label renders nothing at all while still
-           reporting itself present, displayed and visible. */
-        height: auto;
-        padding: 1 0 0 1;
-        color: $accent;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    """
 
     def __init__(self, idx: int, draft: RepositoryDraft, existing: bool):
         super().__init__(id=_row_id(idx, "row"))
@@ -85,17 +49,17 @@ class RepoRow(Vertical):
         # "merge" is not cosmetic: `config.merge_sources()` keys on the
         # repository URI, so this row will widen an existing source rather than
         # create a second one — worth saying before the user hits Add.
-        tag = ("[yellow]merge[/]" if self._existing else "[dim]new[/]")
+        tag = ("[$mmw-warn]merge[/]" if self._existing else "[dim]new[/]")
         with Horizontal(classes="head"):
-            yield Checkbox(value=True, id=_row_id(self._idx, "on"))
-            yield Label(_escape(d.name), classes="repo-name", id=_row_id(self._idx, "name"))
+            yield Checkbox(value=True, id=_row_id(self._idx, "on"), compact=True)
+            yield Label(escape(d.name), classes="repo-name", id=_row_id(self._idx, "name"))
             yield Label(tag, classes="repo-tag")
-            yield Label(_escape(d.url), classes="repo-url")
+            yield Label(escape(d.url), classes="repo-url")
         with Horizontal(classes="dims"):
             for dim in DIMENSIONS:
                 yield Button(_DIM_TITLES[dim].capitalize() + "…",
-                             id=_row_id(self._idx, f"btn-{dim}"), variant="default")
-            yield Button("Key…", id=_row_id(self._idx, "btn-key"), variant="default")
+                             id=_row_id(self._idx, f"btn-{dim}"), compact=True)
+            yield Button("Key…", id=_row_id(self._idx, "btn-key"), compact=True)
         yield Label("", classes="dim-text", id=_row_id(self._idx, "summary"))
 
     def on_mount(self) -> None:
@@ -129,22 +93,22 @@ class RepoRow(Vertical):
             if not stored:
                 parts.append("[dim]all[/]")
             elif len(stored) <= 3:
-                parts.append(_escape(", ".join(stored)))
+                parts.append(escape(", ".join(stored)))
             else:
-                parts.append(_escape(f"{', '.join(stored[:2])} +{len(stored) - 2}"))
+                parts.append(escape(f"{', '.join(stored[:2])} +{len(stored) - 2}"))
         return "  ·  ".join(parts)
 
     def refresh_summary(self) -> None:
         d = self.draft
         if d.error:
-            text = f"[red]✗ {_escape(d.error)}[/]"
+            text = f"[$mmw-error]✗ {escape(d.error)}[/]"
         else:
             text = self._dimension_text()
         state = d.key_state()
         if state == "have":
-            text += f"  ·  [green]✓ key[/] [dim]({d.key_source or 'inline'})[/]"
+            text += f"  ·  [$mmw-ok]✓ key[/] [dim]({d.key_source or 'inline'})[/]"
         elif state == "needs":
-            text += f"  ·  [yellow]⚠ needs {_escape(d.gpg_key_name)}[/]"
+            text += f"  ·  [$mmw-warn]⚠ needs {escape(d.gpg_key_name)}[/]"
         self.query_one(f"#{_row_id(self._idx, 'summary')}", Label).update(text)
 
     @on(Checkbox.Changed)
@@ -154,82 +118,40 @@ class RepoRow(Vertical):
         self.set_class(not event.value, "excluded")
 
 
-class BulkReviewScreen(ModalScreen):
+class BulkReviewPage(Page):
     """Configure a bundle of repositories. Dismisses with the included drafts,
-    or None when cancelled."""
+    or None when cancelled (Esc or Cancel)."""
 
-    DEFAULT_CSS = """
-    BulkReviewScreen { align: center middle; }
-    BulkReviewScreen > Vertical {
-        width: 120;
-        max-width: 96%;
-        height: 90%;
-        max-height: 96%;
-        border: double $primary;
-        background: $surface;
-    }
-    BulkReviewScreen #bulk-title {
-        height: 1;
-        background: $primary-darken-3;
-        padding: 0 2;
-        color: $text;
-        text-style: bold;
-    }
-    BulkReviewScreen #bulk-hint { height: 1; padding: 0 2; color: $text-muted; }
-    BulkReviewScreen #keydir-row { height: 3; padding: 0 2; }
-    BulkReviewScreen #keydir-row Input { width: 1fr; }
-    BulkReviewScreen #keydir-row Button { width: auto; min-width: 8; margin-left: 1; }
-    BulkReviewScreen #keydir-status { height: 1; padding: 0 2; color: $text-muted; }
-    BulkReviewScreen #repo-list { height: 1fr; padding: 0 2; }
-    BulkReviewScreen #bulk-bar {
-        height: auto;
-        align: right middle;
-        padding: 0 2;
-        background: $surface;
-        border-top: solid $primary-darken-2;
-        overflow-x: auto;
-    }
-    BulkReviewScreen #bulk-bar Button { margin-left: 1; min-width: 0; width: auto; }
-    BulkReviewScreen #bulk-bar .spacer { width: 1fr; height: 1; }
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    SCROLLS = False
 
     def __init__(self, drafts: list[RepositoryDraft], existing: set[str] | None = None):
         super().__init__()
+        self.TITLE = f"Review {len(drafts)} repositories"
+        self.subtitle = "untick what you don't want · each row drills into the same pickers"
         self._drafts = drafts
         self._existing = existing or set()
         self._key_dir = ""
 
-    def compose(self) -> ComposeResult:
+    def compose_body(self) -> ComposeResult:
         needs = sum(1 for d in self._drafts if d.key_state() == "needs")
-        with Vertical():
-            yield Label(f"  Review {len(self._drafts)} repositories", id="bulk-title")
-            yield Label(
-                "  untick what you don't want · each row drills into the same pickers",
-                id="bulk-hint",
-            )
-            yield Label(
-                f"  Key directory  [dim]({needs} repositor{'y' if needs == 1 else 'ies'} "
-                "named a keyring we don't have)[/]" if needs else "  Key directory",
-                id="keydir-label",
-            )
-            with Horizontal(id="keydir-row"):
-                yield Input(placeholder="/path/to/keys — searched recursively", id="keydir")
-                yield Button("Browse…", id="btn-keydir-browse", variant="default")
-                yield Button("Scan", id="btn-keydir", variant="primary")
-            yield Label("", id="keydir-status")
-            with VerticalScroll(id="repo-list"):
-                for i, d in enumerate(self._drafts):
-                    yield RepoRow(i, d, d.identity in self._existing)
-            with Horizontal(id="bulk-bar"):
-                yield Button("Select all", id="btn-all", variant="default")
-                yield Button("Clear", id="btn-none", variant="default")
-                yield Label("", classes="spacer")
-                yield Button("Cancel", id="btn-cancel", variant="default")
-                yield Button("Done", id="btn-done", variant="primary")
+        yield Heading(
+            f"Key directory ({needs} repositor{'y' if needs == 1 else 'ies'} named a keyring "
+            "we don't have)" if needs else "Key directory")
+        with Horizontal(id="keydir-row"):
+            yield Input(placeholder="/path/to/keys — searched recursively", id="keydir",
+                        compact=True)
+            yield Button("Browse…", id="btn-keydir-browse", compact=True)
+            yield Button("Scan", id="btn-keydir", variant="primary", compact=True)
+        yield Label("", id="keydir-status")
+        with VerticalScroll(id="repo-list"):
+            for i, d in enumerate(self._drafts):
+                yield RepoRow(i, d, d.identity in self._existing)
 
-    # ── the key directory, applied to every row at once ──────────────────────
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Select all", id="btn-all", compact=True)
+        yield Button("Clear", id="btn-none", compact=True)
+        yield Button("Cancel", id="btn-cancel", compact=True)
+        yield Button("Done", id="btn-done", variant="primary", compact=True)
 
     @on(Button.Pressed, "#btn-keydir")
     def _keydir_pressed(self, event: "Button.Pressed") -> None:
@@ -247,7 +169,7 @@ class BulkReviewScreen(ModalScreen):
 
     @work
     async def _browse_keydir(self) -> None:
-        picked = await self.app.push_screen_wait(PathPickModal(
+        picked = await self.app.push_screen_wait(PathPickPage(
             "Where are the keyrings?",
             "searched recursively, matched to each `Signed-By:` by basename",
             self.query_one("#keydir", Input).value.strip(),
@@ -261,7 +183,7 @@ class BulkReviewScreen(ModalScreen):
         if not path:
             return
         self._key_dir = path
-        self.query_one("#keydir-status", Label).update("  [dim]Searching…[/]")
+        self.query_one("#keydir-status", Label).update("[dim]Searching…[/]")
         self._scan_worker(path)
 
     @work(thread=True, exit_on_error=False)
@@ -280,7 +202,7 @@ class BulkReviewScreen(ModalScreen):
     def _on_scanned(self, path: str, loaded: "dict[str, str]") -> None:
         status = self.query_one("#keydir-status", Label)
         if not loaded:
-            status.update(f"  [yellow]No key files under {_escape(path)}[/]")
+            status.update(f"[$mmw-warn]No key files under {escape(path)}[/]")
             return
         matched = 0
         for row in self.query(RepoRow):
@@ -296,8 +218,8 @@ class BulkReviewScreen(ModalScreen):
             matched += 1
             row.refresh_summary()
         still = sum(1 for d in self._drafts if d.key_state() == "needs")
-        tail = f"  [yellow]{still} still missing[/]" if still else "  [green]all resolved[/]"
-        status.update(f"  [green]✓ {len(loaded)} key(s) found, {matched} matched[/]{tail}")
+        tail = f"  [$mmw-warn]{still} still missing[/]" if still else "  [$mmw-ok]all resolved[/]"
+        status.update(f"[$mmw-ok]✓ {len(loaded)} key(s) found, {matched} matched[/]{tail}")
 
     # ── per-row drill-down ───────────────────────────────────────────────────
 
@@ -317,7 +239,7 @@ class BulkReviewScreen(ModalScreen):
     @work
     async def _choose_dimension(self, row: RepoRow, dim: str) -> None:
         d = row.draft
-        picked = await self.app.push_screen_wait(PickModal(
+        picked = await self.app.push_screen_wait(PickPage(
             f"Choose {_DIM_TITLES[dim]}", d.url, d.available[dim], d.chosen[dim],
         ))
         if picked is None:
@@ -338,7 +260,7 @@ class BulkReviewScreen(ModalScreen):
     async def _choose_key(self, row: RepoRow) -> None:
         d = row.draft
         result = await self.app.push_screen_wait(
-            KeyModal(d.name, d.gpg_key_name, d.gpg_key, self._key_dir)
+            KeyPage(d.name, d.gpg_key_name, d.gpg_key, self._key_dir)
         )
         if result is None:
             return
@@ -361,9 +283,6 @@ class BulkReviewScreen(ModalScreen):
     def _set_all(self, value: bool) -> None:
         for cb in self.query("#repo-list Checkbox").results(Checkbox):
             cb.value = value
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
     @on(Button.Pressed, "#btn-cancel")
     def _cancel(self, event: "Button.Pressed") -> None:

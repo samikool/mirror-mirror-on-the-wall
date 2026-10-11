@@ -1,7 +1,7 @@
 """Picking a network's publish root instead of typing it.
 
 The publish root is an absolute path to somewhere on a fileserver; typing it
-blind is exactly the case `PathPickModal` exists for. The picker is shared with
+blind is exactly the case `PathPickPage` exists for. The picker is shared with
 the key-directory scan and the config loader — one modal, three callers.
 """
 import asyncio
@@ -9,8 +9,8 @@ import asyncio
 from textual.widgets import Button, Input
 
 from mmw.core import config
-from mmw.tui.network_screens import AddNetworkScreen
-from mmw.tui.path_pick import PathPickModal
+from mmw.tui.network_screens import AddNetworkPage
+from mmw.tui.path_pick import PathPickPage
 
 
 def _mirror():
@@ -29,7 +29,7 @@ def _run(scenario):
 
 
 class _Harness:
-    """Mounts AddNetworkScreen on a bare app."""
+    """Mounts AddNetworkPage on a bare app."""
 
     def __new__(cls):
         from textual.app import App, ComposeResult
@@ -39,7 +39,7 @@ class _Harness:
                 yield from ()
 
             def on_mount(self):
-                self.push_screen(AddNetworkScreen([_mirror()]))
+                self.push_screen(AddNetworkPage([_mirror()]))
 
         return _App()
 
@@ -55,7 +55,7 @@ def test_browsing_fills_in_the_publish_root(tmp_path):
             await _settle(pilot)
 
             picker = pilot.app.screen
-            assert isinstance(picker, PathPickModal)
+            assert isinstance(picker, PathPickPage)
             picker.query_one("#path-input", Input).value = str(tmp_path / "srv" / "lab")
             picker.query_one("#btn-use", Button).press()
             await _settle(pilot)
@@ -91,7 +91,7 @@ def test_the_preview_follows_a_browsed_root(tmp_path):
         app = _Harness()
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            app.screen.query_one("#inp-name", Input).value = "lab"
+            app.screen.query_one("#inp-net-name", Input).value = "lab"
             await pilot.pause()
             app.screen.query_one("#btn-browse-root", Button).press()
             await _settle(pilot)
@@ -108,7 +108,7 @@ def test_the_preview_follows_a_browsed_root(tmp_path):
 
 def _host_app(screen):
     """Mounts an already-constructed screen on a bare app, capturing whatever
-    it dismisses with — used to drive `AddNetworkScreen` all the way through
+    it dismisses with — used to drive `AddNetworkPage` all the way through
     to its final `NetworkConfig`, which `_Harness` above never needed."""
     from textual.app import App, ComposeResult
 
@@ -134,15 +134,15 @@ async def _finish(pilot, app):
     everything ticked, and return the dismissed `NetworkConfig`."""
     from textual.widgets import SelectionList
 
-    app.screen.query_one("#btn-next", Button).press()   # path & name -> repositories
+    app.screen.query_one("#btn-wizard-next", Button).press()   # path & name -> repositories
     await _settle(pilot)
-    app.screen.query_one("#repo-list", SelectionList).select_all()
+    app.screen.query_one("#repo-checklist", SelectionList).select_all()
     await _settle(pilot)
-    app.screen.query_one("#btn-next", Button).press()   # repositories -> dimensions
+    app.screen.query_one("#btn-wizard-next", Button).press()   # repositories -> dimensions
     await _settle(pilot)
-    app.screen.query_one("#btn-next", Button).press()   # dimensions -> confirm
+    app.screen.query_one("#btn-wizard-next", Button).press()   # dimensions -> confirm
     await _settle(pilot)
-    app.screen.query_one("#btn-next", Button).press()   # confirm -> dismiss
+    app.screen.query_one("#btn-wizard-next", Button).press()   # confirm -> dismiss
     await _settle(pilot)
     return app.result
 
@@ -151,10 +151,10 @@ def test_a_network_may_be_created_with_only_a_bundle_dir(tmp_path):
     """Bundle-only network: no publish root, and none is invented."""
 
     async def scenario():
-        app = _host_app(AddNetworkScreen([_mirror()], set()))
+        app = _host_app(AddNetworkPage([_mirror()], set()))
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            app.screen.query_one("#inp-name", Input).value = "dgx-site"
+            app.screen.query_one("#inp-net-name", Input).value = "dgx-site"
             app.screen.query_one("#inp-bundle-dir", Input).value = str(tmp_path / "out")
             app.screen.query_one("#inp-root", Input).value = ""
             net = await _finish(pilot, app)
@@ -170,10 +170,10 @@ def test_neither_destination_is_allowed(tmp_path):
     """A network is a downselect; destinations belong to verbs. Both may be blank."""
 
     async def scenario():
-        app = _host_app(AddNetworkScreen([_mirror()], set()))
+        app = _host_app(AddNetworkPage([_mirror()], set()))
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            app.screen.query_one("#inp-name", Input).value = "dgx-site"
+            app.screen.query_one("#inp-net-name", Input).value = "dgx-site"
             net = await _finish(pilot, app)
 
         assert net is not None
@@ -196,7 +196,7 @@ def test_bundle_dir_browse_does_not_require_the_path_to_exist(tmp_path):
             await _settle(pilot)
 
             picker = pilot.app.screen
-            assert isinstance(picker, PathPickModal)
+            assert isinstance(picker, PathPickPage)
             picker.query_one("#path-input", Input).value = str(tmp_path / "srv")
             picker.query_one("#btn-use", Button).press()
             await _settle(pilot)
@@ -232,7 +232,7 @@ def test_the_base_path_need_not_contain_the_network_yet(tmp_path):
 
 def test_edit_screen_browse_root_saves_verbatim_no_name_appended(tmp_path):
     """IMPORTANT 6 (whole-branch review) — Edit shows and saves the full path
-    verbatim (`EditNetworkScreen._save`: `root = Path(root_str)`, no join
+    verbatim (`EditNetworkPage._save`: `root = Path(root_str)`, no join
     with the network name), unlike Add, which appends the name. The picker's
     hint text used to describe Add's rule ("pick the base path — the network
     name is created inside it") even inside Edit — so a lab already
@@ -245,7 +245,7 @@ def test_edit_screen_browse_root_saves_verbatim_no_name_appended(tmp_path):
     from textual.app import App, ComposeResult
     from textual.widgets import Button, Input
 
-    from mmw.tui.network_screens import EditNetworkScreen
+    from mmw.tui.network_screens import EditNetworkPage
 
     (tmp_path / "srv").mkdir()
     net = config.NetworkConfig(
@@ -265,7 +265,7 @@ def test_edit_screen_browse_root_saves_verbatim_no_name_appended(tmp_path):
 
         @work
         async def _go(self):
-            self.result = await self.push_screen_wait(EditNetworkScreen(net, mirrors))
+            self.result = await self.push_screen_wait(EditNetworkPage(net, mirrors))
 
     async def scenario():
         app = _Host()
@@ -276,11 +276,11 @@ def test_edit_screen_browse_root_saves_verbatim_no_name_appended(tmp_path):
             app.screen.query_one("#btn-browse-root", Button).press()
             await _settle(pilot)
             picker = pilot.app.screen
-            assert isinstance(picker, PathPickModal)
+            assert isinstance(picker, PathPickPage)
             # The hint must describe what Edit actually does with the picked
             # path (saves it verbatim), not Add's "base path, name appended"
             # rule.
-            subtitle = str(picker.query_one("#path-subtitle").render())
+            subtitle = str(picker.query_one("#page-subtitle").render())
             assert "publishes into" in subtitle
             assert "created inside it" not in subtitle
             picker.query_one("#path-input", Input).value = str(tmp_path / "srv")
@@ -308,7 +308,7 @@ def test_edit_screen_round_trips_a_bundle_only_network(tmp_path):
     from textual import work
     from textual.app import App, ComposeResult
 
-    from mmw.tui.network_screens import EditNetworkScreen
+    from mmw.tui.network_screens import EditNetworkPage
 
     net = config.NetworkConfig(
         name="dgx-site",
@@ -328,7 +328,7 @@ def test_edit_screen_round_trips_a_bundle_only_network(tmp_path):
 
         @work
         async def _go(self):
-            self.result = await self.push_screen_wait(EditNetworkScreen(net, mirrors))
+            self.result = await self.push_screen_wait(EditNetworkPage(net, mirrors))
 
     async def scenario():
         app = _Host()

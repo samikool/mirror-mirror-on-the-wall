@@ -1,6 +1,6 @@
 [project]
 name = "mirror-mirror-on-the-wall"
-version = "0.9.1"
+version = "0.10.0"
 description = "APT repository mirror for airgapped networks — exact upstream mirroring, GPG signatures preserved, content-addressable pool"
 readme = "README.md"
 license = "MIT"

@@ -201,12 +201,22 @@ class EditSourcePage(Page):
 
     def _refresh_key_status(self) -> None:
         state = self._draft.key_state()
+        # The Key URL field is what gets saved, so it is what this reads: a
+        # key configured only by URL is a key, not "no key".
+        url = self.query_one("#edit-source-key-url", Input).value.strip()
         text = {
             "have": "[$mmw-ok]key set[/]",
             "needs": f"[$mmw-warn]needs {escape(self._draft.gpg_key_name or '')}[/]",
             "none": "[dim]no key[/]",
         }[state]
+        if url:
+            text = (f"[$mmw-ok]key set[/] [dim]· also from {escape(url)}[/]" if state == "have"
+                    else f"[$mmw-ok]from {escape(url)}[/]")
         self.query_one("#field-btn-key", ActionField).set_summary(text)
+
+    @on(Input.Changed, "#edit-source-key-url")
+    def _key_url_changed(self) -> None:
+        self._refresh_key_status()
 
     @on(Button.Pressed, "#btn-key")
     def _key_pressed(self, event: "Button.Pressed") -> None:
@@ -223,9 +233,14 @@ class EditSourcePage(Page):
         armour, name, url = result
         self._draft.set_key(armour or None, name=name, url=url,
                             source="fetched" if url else "pasted" if armour else "")
+        key_url = self.query_one("#edit-source-key-url", Input)
         if url:
             # Shown, not hidden: sync mirrors the key at this path too.
-            self.query_one("#edit-source-key-url", Input).value = url
+            key_url.value = url
+        elif not armour:
+            # Cleared. The URL is a key too: left in place, the next sync
+            # would fetch the key just cleared straight back.
+            key_url.value = ""
         self._refresh_key_status()
 
     # ── result ───────────────────────────────────────────────────────────────

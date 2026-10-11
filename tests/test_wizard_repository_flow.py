@@ -931,3 +931,64 @@ def test_back_in_paste_mode_focuses_something_visible(monkeypatch):
             assert app.focused.id == "paste-area"
 
     _run(scenario)
+
+
+# ── a key while adding ───────────────────────────────────────────────────────
+
+KEY = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQINBGXf\n-----END PGP PUBLIC KEY BLOCK-----"
+KEY_URL = "https://repo.example.com/gpgkey"
+
+
+async def _fetch_key_on_key_page(pilot, step):
+    step.query_one("#btn-key", Button).press()
+    await _settle(pilot)
+    page = pilot.app.screen
+    page.query_one("#key-url", Input).value = KEY_URL
+    page.query_one("#btn-fetch", Button).press()
+    await _settle(pilot)
+    page.query_one("#btn-save", Button).press()
+    await _settle(pilot)
+
+
+def test_a_key_can_be_fetched_while_adding_and_its_url_is_kept(monkeypatch):
+    """Before, a key could only be set by editing the repository afterwards."""
+    from mmw.core import keys
+    _stub(monkeypatch)
+    monkeypatch.setattr(keys, "fetch_key", lambda url, client: KEY)
+
+    async def scenario():
+        app = _Harness()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            step = await _probe(pilot)
+            assert "no key" in str(step.query_one("#key-status").render())
+            await _fetch_key_on_key_page(pilot, step)
+            assert KEY_URL in str(step.query_one("#key-status").render())
+            await _pick(pilot, step, "suites", ["noble"])
+            src = step.get_sources()[0]
+            assert (src.gpg_key, src.gpg_key_url) == (KEY, KEY_URL)
+
+    _run(scenario)
+
+
+def test_a_pasted_config_naming_a_keyring_can_be_given_it_while_adding(monkeypatch):
+    _stub(monkeypatch)
+
+    async def scenario():
+        app = _Harness()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            step = await _paste(pilot, (
+                "Types: deb\nURIs: https://repo.example.com/ubuntu\nSuites: noble\n"
+                "Components: main\nSigned-By: /usr/share/keyrings/repo.gpg\n"))
+            assert "needs repo.gpg" in str(step.query_one("#key-status").render())
+            step.query_one("#btn-key", Button).press()
+            await _settle(pilot)
+            pilot.app.screen.query_one("#key-area", TextArea).text = KEY
+            pilot.app.screen.query_one("#btn-save", Button).press()
+            await _settle(pilot)
+            src = step.get_sources()[0]
+            assert src.gpg_key == KEY and src.gpg_key_name == "repo.gpg"
+            assert src.gpg_key_url is None
+
+    _run(scenario)

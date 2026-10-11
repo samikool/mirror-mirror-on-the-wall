@@ -32,10 +32,38 @@ from textual.markup import escape
 from textual.widgets import Input, Label, OptionList, TextArea
 
 from mmw.core import keys
+from mmw.core.draft import RepositoryDraft
 from mmw.tui.path_pick import PathPickPage
 from mmw.tui.ui.form import Heading
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
+
+
+def apply_key(draft: RepositoryDraft, result) -> bool:
+    """Put a `KeyPage` result on `draft`. False when it was cancelled. Every
+    caller (adding, the bulk review, editing) goes through here, so a key
+    fetched from a URL keeps that URL wherever it was chosen."""
+    if result is None:
+        return False
+    armour, name, url = result
+    draft.set_key(armour or None, name=name, url=url,
+                  source="fetched" if url else "pasted" if armour else "")
+    return True
+
+
+def key_summary(draft: RepositoryDraft, url: str | None = None) -> str:
+    """One line for a Key field: what the repository's key is, and where it
+    comes from when that is a URL (`url`, else the draft's own)."""
+    url = (url if url is not None else draft.gpg_key_url) or ""
+    state = draft.key_state()
+    if url:
+        return (f"[$mmw-ok]key set[/] [dim]· also from {escape(url)}[/]" if state == "have"
+                else f"[$mmw-ok]from {escape(url)}[/]")
+    return {
+        "have": "[$mmw-ok]key set[/]",
+        "needs": f"[$mmw-warn]needs {escape(draft.gpg_key_name or '')}[/]",
+        "none": "[dim]no key[/]",
+    }[state]
 
 
 class KeyPage(Page):

@@ -19,7 +19,7 @@ from textual.widgets import Checkbox, Input, Label
 
 from mmw.core import keys
 from mmw.core.draft import DIMENSIONS, RepositoryDraft
-from mmw.tui.key_modal import KeyPage
+from mmw.tui.key_modal import KeyPage, apply_key
 from mmw.tui.path_pick import PathPickPage
 from mmw.tui.pick import PickPage
 from mmw.tui.ui.form import Heading
@@ -262,12 +262,8 @@ class BulkReviewPage(Page):
         result = await self.app.push_screen_wait(
             KeyPage(d.name, d.gpg_key_name, d.gpg_key, self._key_dir)
         )
-        if result is None:
-            return
-        armour, name, url = result
-        d.set_key(armour, name=name, url=url,
-                  source="fetched" if url else "pasted" if armour else "")
-        row.refresh_summary()
+        if apply_key(d, result):
+            row.refresh_summary()
 
     # ── result ───────────────────────────────────────────────────────────────
 

@@ -512,3 +512,27 @@ def _unique_name(url: str, taken: set[str], suites: list[str] | None = None) -> 
     name = derive_name(url, taken, suites=suites)
     taken.add(name)
     return name
+
+
+# ── a sources file given by URL ──────────────────────────────────────────────
+
+def is_sources_file_url(url: str) -> bool:
+    """True for the URL of an apt sources file (`.list` / `.sources`) — what
+    NVIDIA's install docs `curl` — rather than of a repository: it is read like
+    a pasted config, never probed as a repository."""
+    from mmw.core.upstream import upstream_rel
+    path = url.split("?", 1)[0].split("#", 1)[0].lower()
+    return path.endswith((".list", ".sources")) and upstream_rel(url) is not None
+
+
+def remember_sources_url(targets, url: str) -> None:
+    """Keep the sources file a repository was added from as one of its
+    `extra_files`, so the vendor's own `curl …/foo.list` works against the
+    mirror. `targets` are SourceConfigs or RepositoryDrafts; a URL that cannot
+    be served at its own path (a query string, no file name) is skipped."""
+    from mmw.core.upstream import upstream_rel
+    if upstream_rel(url) is None:
+        return
+    for t in targets:
+        if url not in t.extra_files:
+            t.extra_files = [*t.extra_files, url]

@@ -29,6 +29,9 @@ class RepositoryDraft:
     # it byte-for-byte at that path, so a vendor's `curl …/gpgkey` works.
     gpg_key_url: str | None = None
     include_sources: bool = False
+    # Upstream files mirrored at their own path — the sources file this
+    # repository was added from, when it came from one.
+    extra_files: list[str] = field(default_factory=list)
 
     # Per dimension: what the repository offers, what is ticked, and whether the
     # offer came from the repository itself.
@@ -219,6 +222,7 @@ class RepositoryDraft:
             gpg_key=self.gpg_key,
             gpg_key_name=self.gpg_key_name,
             gpg_key_url=self.gpg_key_url,
+            extra_files=list(self.extra_files),
         )
 
     @classmethod
@@ -251,6 +255,7 @@ class RepositoryDraft:
             gpg_key_name=source.gpg_key_name,
             gpg_key_url=source.gpg_key_url,
             include_sources=source.include_sources,
+            extra_files=list(source.extra_files),
         )
         if source.gpg_key:
             draft.key_source = "inline"

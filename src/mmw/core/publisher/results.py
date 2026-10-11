@@ -138,7 +138,7 @@ class NetworkPublishResult:
 
 @dataclass
 class BundleResult:
-    """Mirrors `NetworkPublishResult`'s shape, but for one `.tar.zst`.
+    """Mirrors `NetworkPublishResult`'s shape, but for one bundle `.tar`.
 
     `errors` folds every group's `MirrorPublishResult.errors` in exactly as
     `NetworkPublishResult.errors` does — see `_FoldedErrors` above for why it

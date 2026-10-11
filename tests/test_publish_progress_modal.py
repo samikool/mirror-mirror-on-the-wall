@@ -102,13 +102,8 @@ def test_record_short_path_under_four_segments_kept_whole():
 
 def test_record_archive_phase_messages():
     """`BundleSink.close()` is where a bundle does its real I/O — reading pool
-    blobs, streaming through zstd — invisible to the fast enumeration phase
-    the tests above cover. These status events are its only signal.
-
-    Raw (uncompressed) and compressed bytes are carried and tracked
-    separately — conflating them was the bug: the raw figure is what the
-    total (also uncompressed) can be meaningfully compared against, and the
-    compressed figure is what's actually landing on disk."""
+    blobs into the tar — invisible to the fast enumeration phase the tests
+    above cover. These status events are its only signal."""
     modal = _modal()
     modal.record("", "archive-start:100:2048000")
     assert modal._archive_total_files == 100
@@ -119,40 +114,35 @@ def test_record_archive_phase_messages():
     # care about the counters) adds no per-file log line of its own; the
     # literal string "archive-progress" never appears either way, since the
     # log line is a rendered file path, not the wire status name.
-    modal.record("", "archive-progress:40:900000:300000")
+    modal.record("", "archive-progress:40:900000")
     assert modal._archive_files_done == 40
-    assert modal._archive_raw_bytes_done == 900000
-    assert modal._archive_compressed_bytes_done == 300000
+    assert modal._archive_bytes_done == 900000
     assert not any("archive-progress" in line for line in modal._log_pending)
 
-    modal.record("", "archive-done:100:2048000:700000")
+    modal.record("", "archive-done:100:2048000")
     assert modal._archive_files_done == 100
-    assert modal._archive_raw_bytes_done == 2048000
-    assert modal._archive_compressed_bytes_done == 700000
+    assert modal._archive_bytes_done == 2048000
     last = modal._log_pending[-1]
-    assert "archive written" in last
-    # 2048000 / 700000 ≈ 2.9x — the ratio must actually appear, not just the
-    # raw/compressed byte counts individually.
-    assert "2.9x" in last
+    assert "archive written" in last and "100 files" in last
 
 
 def test_record_large_file_gets_an_immediate_announcement_with_size():
     """A single multi-hundred-MB/GB file (driver/kernel packages this pool
     holds plenty of) can leave the throttled per-file sampling silent for as
-    long as it takes to compress — this is the announcement that fires the
+    long as it takes to write — this is the announcement that fires the
     instant such a file starts, so it reads as real progress, not a stall."""
     modal = _modal()
     modal.record("host/repo/pool/nvhpc_26.1_arm64.deb", f"archive-large-file:{5_200_000_000}")
 
     last = modal._log_pending[-1]
-    assert "compressing" in last
+    assert "writing" in last
     assert "nvhpc_26.1_arm64.deb" in last
     assert "5.2 GB" in last or "GB" in last  # exact _fmt_bytes rounding not asserted here
 
 
 def test_record_large_file_progress_updates_state_without_logging():
     """Percentage-through progress on one big file can fire many times a
-    second for as long as it takes to compress — it must update state for
+    second for as long as it takes to write — it must update state for
     the status line to render, not add a line to the scrolling log every
     time (that would spam it for a multi-minute file)."""
     modal = _modal()
@@ -190,7 +180,7 @@ def test_large_file_state_clears_when_that_file_completes():
     modal.record(rel, "archive-large-file-progress:500:1000")
     assert modal._current_large_file == rel
 
-    modal.record(rel, "archive-progress:1:1000:400")   # the file finished
+    modal.record(rel, "archive-progress:1:1000")   # the file finished
 
     assert modal._current_large_file == ""
     assert modal._current_large_file_done == 0
@@ -200,10 +190,10 @@ def test_large_file_state_clears_when_that_file_completes():
 def test_large_file_state_clears_when_archive_finishes():
     """Belt-and-suspenders: even if the last large file's own completion
     sample got throttled away, the archive finishing at all must not leave a
-    stale "still compressing" claim on screen."""
+    stale "still writing" claim on screen."""
     modal = _modal()
     modal.record("host/repo/pool/big.deb", "archive-large-file:1000")
-    modal.record("", "archive-done:1:1000:400")
+    modal.record("", "archive-done:1:1000")
 
     assert modal._current_large_file == ""
 
@@ -239,13 +229,13 @@ def test_large_file_progress_renders_on_its_own_line(tmp_path):
 
             assert file_label.display is True
             file_label_text = str(file_label.render())
-            assert "compressing big.deb: 50%" in file_label_text
+            assert "writing big.deb: 50%" in file_label_text
             mirror_label_text = str(
                 modal.query_one(f"#{modal.ID_PREFIX}-mirror-label", Label).render())
-            assert "compressing" not in mirror_label_text
+            assert "big.deb" not in mirror_label_text
 
             # And it hides again once the file completes.
-            modal.record("host/repo/pool/big.deb", "archive-progress:1:800:400")
+            modal.record("host/repo/pool/big.deb", "archive-progress:1:800")
             modal._tick()
             assert file_label.display is False
 
@@ -255,12 +245,12 @@ def test_large_file_progress_renders_on_its_own_line(tmp_path):
 
 def test_record_archive_progress_logs_the_file_that_just_completed():
     """Once enumeration's list of "planned" files finishes, the log should
-    keep moving with what's actually been tarred and compressed — sampled at
+    keep moving with what's actually been tarred — sampled at
     the same throttled cadence as the numeric counters (see BundleSink.
     _maybe_report_archive_progress), not a second unthrottled per-file path."""
     modal = _modal()
     modal.record("", "archive-start:10:1000")
-    modal.record("host/repo/pool/nvhpc_26.1_arm64.deb", "archive-progress:1:500:200")
+    modal.record("host/repo/pool/nvhpc_26.1_arm64.deb", "archive-progress:1:500")
 
     assert modal._log_pending[-1] == "  [$accent]⇢[/] host/repo/pool/nvhpc_26.1_arm64.deb"
 
@@ -270,12 +260,12 @@ def test_archive_progress_repurposes_overall_bar_and_mirror_label(tmp_path):
     line switch to reporting it — the enumeration phase's own progress is
     already over by the time BundleSink.close() runs.
 
-    Both the bar and the percentage are bytes-based (raw/uncompressed), not
+    Both the bar and the percentage are bytes-based, not
     file-count-based: a pool holding files from a few KB to several GB would
     make a file-count fraction read as "almost done" the instant the many
     small files clear, while most of the actual data volume remained.
 
-    Rate/output info (files/s, speed, written+ratio) lives on its own line —
+    Rate info (files/s, speed) lives on its own line —
     see test_large_file_progress_renders_on_its_own_line for why the combined
     line had to be split up in the first place."""
     from textual.app import App, ComposeResult
@@ -294,7 +284,7 @@ def test_archive_progress_repurposes_overall_bar_and_mirror_label(tmp_path):
             modal = modal_holder["modal"]
             modal.begin(10, {"m": 10})
             modal.record("", "archive-start:10:1000")
-            modal.record("", "archive-progress:4:400:100")
+            modal.record("", "archive-progress:4:400")
             modal._tick()
 
             from textual.widgets import Label, ProgressBar
@@ -305,13 +295,12 @@ def test_archive_progress_repurposes_overall_bar_and_mirror_label(tmp_path):
             label_text = str(modal.query_one(f"#{modal.ID_PREFIX}-mirror-label", Label).render())
             assert "Writing archive" in label_text
             assert "4 / 10 files" in label_text
-            assert "(40%)" in label_text          # 400 / 1000 raw bytes
+            assert "(40%)" in label_text          # 400 / 1000 bytes
 
             rate_label = modal.query_one(f"#{modal.ID_PREFIX}-archive-rate-label", Label)
             assert rate_label.display is True
             rate_text = str(rate_label.render())
-            assert "written" in rate_text
-            assert "4.0x" in rate_text            # 400 raw / 100 compressed
+            assert "files/s" in rate_text
 
     import asyncio
     asyncio.run(run())

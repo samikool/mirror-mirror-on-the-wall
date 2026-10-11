@@ -29,7 +29,7 @@ would online.)
 - **Exact upstream layout** — published trees are `{root}/{hostname}/{path}`,
   matching upstream URLs byte-for-byte. Nothing is rewritten, so nothing
   invalidates a signature.
-- **Bundling across an airgap** — one `.tar.zst` per network carrying only what
+- **Bundling across an airgap** — one plain `.tar` per network carrying only what
   changed, plus a stdlib-only applier that runs on Python 3.6.
 - **Two frontends, one engine** — a full Textual TUI and cron-safe headless
   commands with meaningful exit codes.
@@ -40,7 +40,6 @@ would online.)
 ## Requirements
 
 - Linux, Python **3.11+**, and [uv](https://docs.astral.sh/uv/).
-- The `zstd` binary on `PATH` (used for compressed metadata and for bundles).
 - A filesystem supporting **hardlinks**, with the pool and your publish roots
   ideally on the same one — otherwise publishing copies instead of linking.
 - Disk. A lot of it: read [Sizing](#sizing) before you start.
@@ -292,18 +291,18 @@ more — superseded package versions are not kept forever.
 
 ## Moving a mirror to the airgapped side
 
-**Bundling is the supported route.** `mmw bundle` writes one `.tar.zst` per
+**Bundling is the supported route.** `mmw bundle` writes one plain `.tar` per
 network containing exactly what `publish` would have written, plus a manifest
 and a stdlib-only `apply.py` that runs on the far side with no `mmw` install
-(Python 3.6+, `zstd` on `PATH`). Each re-bundle carries only what changed since
+(Python 3.6+, nothing else). Each re-bundle carries only what changed since
 the last one, and `apply.py` refuses to apply bundles out of order.
 
 ```bash
 uv run mmw bundle -n lab                    # delta since the last bundle
 uv run mmw bundle -n lab --full             # send everything
-# ...carry lab-20260906T143000Z.tar.zst across...
-tar -xf lab-20260906T143000Z.tar.zst .mmw/apply.py   # every bundle carries its own applier
-python3 .mmw/apply.py lab-20260906T143000Z.tar.zst --root /srv/www
+# ...carry lab-20260906T143000Z.tar across...
+tar -xf lab-20260906T143000Z.tar .mmw/apply.py   # every bundle carries its own applier
+python3 .mmw/apply.py lab-20260906T143000Z.tar --root /srv/www
 ```
 
 Use `apply.py` rather than plain `tar -x`: it stages each file and renames it

@@ -5,7 +5,9 @@ that produced it. That is what makes `apply.py --verify` meaningful and what
 makes a diverged site recoverable later.
 
 JSONL — a header line then one line per file — so the far side can stream it
-rather than hold millions of entries in memory. zstd-compressed on disk.
+rather than hold millions of entries in memory. Plain text: apply.py reads it
+with nothing but Python. Ledger files written before that are zstd
+(`.manifest.jsonl.zst`) and are still read here.
 
 Timestamps, not generation numbers: `20260906T143000Z`. Newest wins.
 """
@@ -16,10 +18,27 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-import zstandard
-
 TS_FORMAT = "%Y%m%dT%H%M%SZ"
-MANIFEST_SUFFIX = ".manifest.jsonl.zst"
+MANIFEST_SUFFIX = ".manifest.jsonl"
+_LEGACY_SUFFIX = ".manifest.jsonl.zst"      # ledger files from before plain manifests
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def is_manifest(name: str) -> bool:
+    return name.endswith((MANIFEST_SUFFIX, _LEGACY_SUFFIX))
+
+
+def _open_text(path: Path):
+    """The manifest's text, streamed — through zstd for a legacy ledger file."""
+    import io
+    raw = open(path, "rb")
+    if raw.read(4) != _ZSTD_MAGIC:
+        raw.seek(0)
+        return io.TextIOWrapper(raw, encoding="utf-8")
+    raw.seek(0)
+    import zstandard
+    return io.TextIOWrapper(zstandard.ZstdDecompressor().stream_reader(raw, closefd=True),
+                            encoding="utf-8")
 
 
 def now_stamp() -> str:
@@ -69,18 +88,17 @@ class ManifestHeader:
 
 def write_manifest(path: Path, header: ManifestHeader,
                    files: Iterable[tuple[str, str]]) -> None:
-    """Write header + one {"p":…,"c":…} line per file, zstd-compressed.
+    """Write header + one {"p":…,"c":…} line per file.
 
     Streams: `files` may be a generator over millions of rows.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    cctx = zstandard.ZstdCompressor(level=10)
     try:
-        with open(tmp, "wb") as raw, cctx.stream_writer(raw) as zw:
-            zw.write((json.dumps(asdict(header), sort_keys=True) + "\n").encode())
+        with open(tmp, "w", encoding="utf-8") as out:
+            out.write(json.dumps(asdict(header), sort_keys=True) + "\n")
             for rel, checksum in files:
-                zw.write((json.dumps({"p": rel, "c": checksum}) + "\n").encode())
+                out.write(json.dumps({"p": rel, "c": checksum}) + "\n")
         tmp.replace(path)
     finally:
         # A no-op after a successful replace() — tmp no longer exists there,
@@ -91,38 +109,15 @@ def write_manifest(path: Path, header: ManifestHeader,
 
 
 def read_manifest(path: Path) -> tuple[ManifestHeader, dict[str, str]]:
-    """Load a manifest fully.
-
-    Memory note: measured at roughly 1.5 GB peak for a 2M-file network, not
-    the ~600 MB once documented here — that figure only counted this dict;
-    `manifest_rows` + `BundleSink._send`/`_seen` cost another ~440 MB on top
-    of it during a bundle, and `--full` no longer skips this load at all (it
-    still needs `prev` to compute the delete set — see bundle.py). A
-    streaming refactor would fix this properly; deferred
-    "Next up". If it bites before then, the format is internal — swap JSONL
-    for a SQLite manifest without changing any caller.
-    """
-    dctx = zstandard.ZstdDecompressor()
-    files: dict[str, str] = {}
-    with open(path, "rb") as raw, dctx.stream_reader(raw) as zr:
-        text = zr.read().decode()
-    lines = text.splitlines()
-    header = ManifestHeader(**json.loads(lines[0]))
-    for line in lines[1:]:
-        if not line:
-            continue
-        row = json.loads(line)
-        files[row["p"]] = row["c"]
-    return header, files
+    """Load a manifest fully. (`iter_manifest` streams it.)"""
+    header, rows = iter_manifest(path)
+    return header, dict(rows)
 
 
 def iter_manifest(path: Path):
     """(header, rows) with `rows` a generator of (path, checksum) — streamed,
     so a 700k-file manifest never has to be held whole."""
-    import io
-    dctx = zstandard.ZstdDecompressor()
-    raw = open(path, "rb")
-    text = io.TextIOWrapper(dctx.stream_reader(raw), encoding="utf-8")
+    text = _open_text(path)
     header = ManifestHeader(**json.loads(text.readline()))
 
     def rows():
@@ -133,7 +128,6 @@ def iter_manifest(path: Path):
                     yield row["p"], row["c"]
         finally:
             text.close()
-            raw.close()
     return header, rows()
 
 
@@ -142,7 +136,7 @@ def latest_manifest_path(mirror_dir: Path, network: str) -> Path | None:
     d = ledger_dir(mirror_dir, network)
     if not d.is_dir():
         return None
-    stamps = sorted(p for p in d.iterdir() if p.name.endswith(MANIFEST_SUFFIX))
+    stamps = sorted(p for p in d.iterdir() if is_manifest(p.name))
     return stamps[-1] if stamps else None
 
 

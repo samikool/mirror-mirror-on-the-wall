@@ -411,6 +411,9 @@ class NetworkSelect(_StrictModel):
         return not (self.arches and mirror.arch and mirror.arch not in self.arches)
 
 
+_LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress"})
+
+
 class NetworkConfig(_StrictModel):
     """A named downselect of the mirror — what one site gets.
 
@@ -427,17 +430,20 @@ class NetworkConfig(_StrictModel):
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
     certs: bool = False       # TLS key/CSR; serve HTTPS wherever it lands — bundles carry cert + key
     nginx: bool = True        # generate conf.d-style nginx site files
-    bundle_compress: bool = True  # zstd-compress the bundle tarball
 
     @model_validator(mode="before")
     @classmethod
-    def _drop_legacy_bundle_tls(cls, data):
-        """`bundle_tls` once chose separately whether bundles carried the
-        cert and key. It is folded into `certs` now — a certs network is HTTPS
-        wherever it lands — so an old config's key is accepted and ignored
-        (unknown keys are otherwise errors) and gone after the next save."""
-        if isinstance(data, dict) and "bundle_tls" in data:
-            data = {k: v for k, v in data.items() if k != "bundle_tls"}
+    def _drop_legacy_keys(cls, data):
+        """Retired keys, accepted and ignored (unknown keys are otherwise
+        errors) and gone after the next save:
+
+        - `bundle_tls` once chose separately whether bundles carried the cert
+          and key. It is folded into `certs` now — a certs network is HTTPS
+          wherever it lands.
+        - `bundle_compress` zstd-compressed the bundle. Bundles are plain
+          tars now: the payload is packages, already compressed."""
+        if isinstance(data, dict) and _LEGACY_NETWORK_KEYS.intersection(data):
+            data = {k: v for k, v in data.items() if k not in _LEGACY_NETWORK_KEYS}
         return data
 
     @model_validator(mode="after")
@@ -751,7 +757,6 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"nginx": False} if not n.nginx else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
-            **({"bundle_compress": False} if not n.bundle_compress else {}),
         }
         for n in cfg.networks
     ]

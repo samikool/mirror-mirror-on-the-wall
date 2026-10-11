@@ -1,4 +1,8 @@
-"""Bundle a network into one .tar.zst for transfer across an airgap.
+"""Bundle a network into one plain .tar for transfer across an airgap.
+
+No compression: the payload is packages, already compressed, and zstd over
+terabytes on one disk only made it slower. Compress the tar yourself if a
+transfer medium wants it (apply.py then needs it decompressed first).
 
 Same pipeline as publish (`publisher/__init__.py:publish_network`): one
 refs⋈packages enumeration per mirror_base, ordered pkg → meta → release, the
@@ -40,7 +44,7 @@ def is_explicit_file_out(out: Path | None) -> bool:
       for the directory case, spun at 100% CPU forever the moment that file
       already existed.
     - One explicit file cannot hold several networks. `mmw bundle --out
-      x.tar.zst` with no `-n` had each network silently overwrite the last,
+      x.tar` with no `-n` had each network silently overwrite the last,
       leaving one tarball named for a network it mostly doesn't contain.
       Callers iterating networks must refuse that up front; this is the
       predicate to refuse on.
@@ -49,9 +53,9 @@ def is_explicit_file_out(out: Path | None) -> bool:
 
 
 def bundle_output_path(network: NetworkConfig, created: str,
-                       out: Path | None = None, compress: bool = True) -> Path:
+                       out: Path | None = None) -> Path:
     """Where this bundle lands. `out` may be a file or a directory."""
-    name = f"{network.name}-{created}.{'tar.zst' if compress else 'tar'}"
+    name = f"{network.name}-{created}.tar"
     if out is not None:
         return out if is_explicit_file_out(out) else out / name
     if network.bundle_dir is None:
@@ -69,7 +73,7 @@ def _write_checksum_file(target: Path) -> Path:
     """Write `{target}.sha256` beside the bundle, in `sha256sum -c` format.
 
     The far side can then tell a bad *transfer* from a bad *bundle* in seconds,
-    with no mmw installed — `sha256sum -c lab-….tar.zst.sha256` is enough. That
+    with no mmw installed — `sha256sum -c lab-….tar.sha256` is enough. That
     distinction matters because a tarball truncated on a member boundary still
     extracts cleanly, so without this the first sign of a bad copy is
     `apply.py --verify` an hour later, or nothing at all.
@@ -114,8 +118,8 @@ def _resolve_from(pool: Pool, network: str, from_ref):
     return find_snapshot(pool, network, from_ref)
 
 
-def _free_target(network, name: str, out_path, compress: bool) -> Path:
-    target = bundle_output_path(network, name, out_path, compress=compress)
+def _free_target(network, name: str, out_path) -> Path:
+    target = bundle_output_path(network, name, out_path)
     if is_explicit_file_out(out_path):
         if target.exists():
             raise ValueError(
@@ -124,7 +128,7 @@ def _free_target(network, name: str, out_path, compress: bool) -> Path:
         return target
     n = 2
     while target.exists():                      # the same pair bundled twice
-        target = bundle_output_path(network, f"{name}.{n}", out_path, compress=compress)
+        target = bundle_output_path(network, f"{name}.{n}", out_path)
         n += 1
     return target
 
@@ -135,16 +139,14 @@ def bundle_network(
     mirror_dir: Path,
     out_path: Path | None = None,
     full: bool = False,
-    level: int = 3,
     progress=None,
     stop_event=None,
     mirror_start_callback=None,
-    compress: bool = True,
     *,
     from_ref=_LAST,
     to_ref: str = "now",
 ) -> BundleResult:
-    """One `.tar.zst` that takes a far side from snapshot `from_ref` to
+    """One `.tar` that takes a far side from snapshot `from_ref` to
     snapshot `to_ref` — any two, forwards or backwards.
 
     - `to_ref`: a complete snapshot (stamp, label or id), or "now": a `bundle`
@@ -178,7 +180,7 @@ def bundle_network(
                     "starting point, never a destination")
     du_warnings: list[str] = []
     if to_ref == "now":
-        bundle_output_path(network, "x", out_path, compress=compress)   # destination check
+        bundle_output_path(network, "x", out_path)   # destination check
         dest = take_snapshot(network, cfg, mirror_dir, kind="bundle", stop_event=stop_event,
                              warnings=du_warnings)
     if start is not None and start.id == dest.id:
@@ -201,7 +203,7 @@ def bundle_network(
                      "mirror.key": tls_paths[1].read_bytes()}
 
     name = dest.stamp if start is None else f"{start.stamp}-to-{dest.stamp}"
-    target = _free_target(network, name, out_path, compress)
+    target = _free_target(network, name, out_path)
     header = ManifestHeader(network=network.name, created=dest.stamp,
                             previous=start.stamp if start else None, full=start is None,
                             previous_label=start.label if start else None,
@@ -223,8 +225,8 @@ def bundle_network(
             prev.update({rel: hashlib.sha256(data).hexdigest()
                          for rel, data in _far_nginx(start.settings, tls_files).items()})
         sink = BundleSink(target, header, prev, apply_script_bytes(),
-                          level=level, prune=network.prune, full=start is None,
-                          progress=progress, compress=compress, tls_files=tls_files)
+                          prune=network.prune, full=start is None,
+                          progress=progress, tls_files=tls_files)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
         current_base, seen_bases = None, 0

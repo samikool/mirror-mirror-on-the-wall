@@ -22,7 +22,7 @@ from pathlib import Path
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import BundleInfo, Pool, SnapshotInfo
 from mmw.core.publisher.manifest import (
-    MANIFEST_SUFFIX, bump_stamp, iter_manifest, ledger_dir, now_stamp,
+    bump_stamp, is_manifest, iter_manifest, ledger_dir, now_stamp,
 )
 from mmw.core.publisher.results import NetworkPublishResult
 
@@ -232,7 +232,7 @@ def import_ledger(pool: Pool, mirror_dir: Path, network: str) -> int:
     have = {s.stamp for s in pool.snapshots(network)}
     imported = 0
     for path in sorted(d.iterdir()):
-        if not path.name.endswith(MANIFEST_SUFFIX):
+        if not is_manifest(path.name):
             continue
         header, rows = iter_manifest(path)
         if header.created in have:

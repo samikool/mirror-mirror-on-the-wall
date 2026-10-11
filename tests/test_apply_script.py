@@ -3,7 +3,6 @@ import hashlib
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -18,7 +17,7 @@ SCRIPT = Path(__file__).parent.parent / "src" / "mmw" / "resources" / "apply.py"
 
 _STDLIB = {
     "argparse", "hashlib", "io", "json", "os", "posixpath", "shutil",
-    "subprocess", "sys", "tarfile", "tempfile", "threading",
+    "sys", "tarfile", "tempfile",
 }
 
 
@@ -101,32 +100,27 @@ def test_safe_paths_are_accepted(good):
 def _load_module():
     """Exec apply.py into a fresh namespace so its functions can be called
     (and, in the tests below, selectively monkeypatched) directly — no
-    subprocess, no real zstd needed for the outer stream."""
+    subprocess."""
     ns = {}
     exec(compile(SCRIPT.read_text(), str(SCRIPT), "exec"), ns)
     return ns
 
 
 def _fake_bundle_bytes(payload_name, payload_content, full=True, previous=None):
-    """A raw (uncompressed) tar byte stream shaped like a real mmw bundle:
-    the manifest member first, then one payload file. Uncompressed is fine
-    for the outer stream in these tests — `open_stream` is replaced, so
-    apply() never shells out to zstd to decompress it. The manifest member
-    itself still goes through a real zstd round-trip, matching what a real
-    bundle carries (`read_manifest_bytes` always shells out for it).
-    """
+    """A tar byte stream shaped like a real mmw bundle: the plain JSONL
+    manifest member first, then one payload file."""
     header = {"network": "lab", "created": "20260101T000000Z",
               "previous": previous, "full": full}
     checksum = hashlib.sha256(payload_content).hexdigest()
     lines = [json.dumps(header), json.dumps({"p": payload_name, "c": checksum})]
     manifest_jsonl = ("\n".join(lines) + "\n").encode()
-    manifest_zst = zstandard.ZstdCompressor().compress(manifest_jsonl)
+    manifest_bytes = manifest_jsonl
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
-        ti.size = len(manifest_zst)
-        tar.addfile(ti, io.BytesIO(manifest_zst))
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl")
+        ti.size = len(manifest_bytes)
+        tar.addfile(ti, io.BytesIO(manifest_bytes))
 
         ti = tarfile.TarInfo(payload_name)
         ti.size = len(payload_content)
@@ -134,15 +128,12 @@ def _fake_bundle_bytes(payload_name, payload_content, full=True, previous=None):
     return buf.getvalue()
 
 
-class _FakeProc:
-    """Stands in for the subprocess.Popen `open_stream` normally returns —
-    `.stdout` just needs to support .read(), exactly like a real pipe."""
-
-    def __init__(self, data):
-        self.stdout = io.BytesIO(data)
-
-    def wait(self):
-        return 0
+def _bundle_file(tmp_path, data: bytes) -> str:
+    """`data` as a bundle file apply() can open — a fresh name each call."""
+    n = len(list(tmp_path.glob("bundle-*.tar")))
+    path = tmp_path / ("bundle-%d.tar" % n)
+    path.write_bytes(data)
+    return str(path)
 
 
 def test_interrupted_write_leaves_nothing_servable(tmp_path, monkeypatch):
@@ -161,7 +152,7 @@ def test_interrupted_write_leaves_nothing_servable(tmp_path, monkeypatch):
     payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
     content = b"hello-package-content"
     bundle_bytes = _fake_bundle_bytes(payload_name, content)
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
     os_mod = ns["os"]  # the real os module — apply.py did a plain `import os`
     real_rename = os_mod.rename
@@ -174,7 +165,7 @@ def test_interrupted_write_leaves_nothing_servable(tmp_path, monkeypatch):
 
     with monkeypatch.context() as m:
         m.setattr(os_mod, "rename", flaky_rename)
-        rc = ns["apply"]("ignored", str(dest))
+        rc = ns["apply"](bundle, str(dest))
 
     assert rc != 0
 
@@ -210,9 +201,9 @@ def test_stale_tmp_is_swept_on_next_apply(tmp_path):
     payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
     content = b"hello-package-content"
     bundle_bytes = _fake_bundle_bytes(payload_name, content)
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc == 0
     assert not orphan.exists()
@@ -220,26 +211,19 @@ def test_stale_tmp_is_swept_on_next_apply(tmp_path):
 
 
 def test_truncated_manifest_is_detected(tmp_path):
-    """A truncated manifest that lands on a line boundary produces valid
-    JSON lines but is incomplete — a manifest is 200k+ lines, truncating to
-    100 lines is a valid JSONL file. Only the zstd return code can detect
-    this. On a garbage blob or truncated frame, zstd exits 1."""
+    """A manifest member that is not JSON at all is refused before any
+    payload is written."""
     ns = _load_module()
     dest = tmp_path / "far-side"
 
-    # A real manifest-like structure, but truncated before the zstd frame ends.
-    # We can't do byte-precise truncation (zstd compression is non-deterministic),
-    # so we test by providing garbage to the zstd decompression inside
-    # read_manifest_bytes — that is reached via the manifest member extraction.
     payload_name = "archive.ubuntu.com/ubuntu/dists/noble/InRelease"
     content = b"a" * 1000
 
     # Create a tar with manifest first, but the manifest blob will be garbage.
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        # Add a manifest member with garbage zstd data (not actually valid zstd).
-        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
-        garbage = b"not valid zstd data at all"
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl")
+        garbage = b"not json at all"
         ti.size = len(garbage)
         tar.addfile(ti, io.BytesIO(garbage))
 
@@ -248,58 +232,35 @@ def test_truncated_manifest_is_detected(tmp_path):
         tar.addfile(ti, io.BytesIO(content))
 
     bundle_bytes = buf.getvalue()
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
-    # Should fail because the manifest is corrupt (zstd will exit 1).
+    # Should fail because the manifest is corrupt.
     assert rc != 0
     # Nothing should be written.
     assert not (dest / payload_name).exists()
 
 
-def test_truncated_manifest_on_line_boundary(tmp_path):
-    """A manifest truncated exactly on a line boundary still has valid JSON
-    lines but is missing the tail. This should be detected by the zstd
-    return code. Simulate this by creating a valid manifest and truncating
-    the compressed form."""
+def test_an_older_bundles_compressed_manifest_is_refused(tmp_path, capsys):
+    """Bundles from before plain manifests carry `.mmw/manifest.jsonl.zst`;
+    each came with its own apply.py, which reads it. This one says so."""
     ns = _load_module()
     dest = tmp_path / "far-side"
-
-    # Build a multi-line manifest, compress it with zstd, then truncate it.
-    header = {"network": "lab", "created": "20260101T000000Z",
-              "previous": None, "full": True}
-    lines = [json.dumps(header)]
-    # Add enough lines to create a multi-block zstd stream.
-    for i in range(5000):
-        lines.append(json.dumps({"p": "archive.ubuntu.com/pool/p%d" % i,
-                                  "c": "c" * 64}))
-    manifest_jsonl = ("\n".join(lines) + "\n").encode()
-    full_compressed = zstandard.ZstdCompressor().compress(manifest_jsonl)
-
-    # Truncate the compressed manifest — remove last 100 bytes.
-    truncated = full_compressed[:-100]
-
     payload_name = "archive.ubuntu.com/ubuntu/dists/noble/InRelease"
-    content = b"content"
-
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
-        ti.size = len(truncated)
-        tar.addfile(ti, io.BytesIO(truncated))
+        for name, data in ((".mmw/manifest.jsonl.zst", b"\x28\xb5\x2f\xfd..."),
+                           (payload_name, b"content")):
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            tar.addfile(ti, io.BytesIO(data))
+    bundle = _bundle_file(tmp_path, buf.getvalue())
 
-        ti = tarfile.TarInfo(payload_name)
-        ti.size = len(content)
-        tar.addfile(ti, io.BytesIO(content))
+    rc = ns["apply"](bundle, str(dest))
 
-    bundle_bytes = buf.getvalue()
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
-
-    rc = ns["apply"]("ignored", str(dest))
-
-    # Should fail because zstd will exit 1 on truncated frame.
-    assert rc != 0
+    assert rc == ns["EXIT_TOOLING"]
+    assert "apply.py that came with it" in capsys.readouterr().err
     assert not (dest / payload_name).exists()
 
 
@@ -326,13 +287,13 @@ def _fake_bundle_bytes_multi(files, deletes=None, full=True, previous=None, file
         checksum = hashlib.sha256(content or b"").hexdigest()
         lines.append(json.dumps({"p": name, "c": checksum}))
     manifest_jsonl = ("\n".join(lines) + "\n").encode()
-    manifest_zst = zstandard.ZstdCompressor().compress(manifest_jsonl)
+    manifest_bytes = manifest_jsonl
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
-        ti.size = len(manifest_zst)
-        tar.addfile(ti, io.BytesIO(manifest_zst))
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl")
+        ti.size = len(manifest_bytes)
+        tar.addfile(ti, io.BytesIO(manifest_bytes))
 
         if deletes:
             body = ("\n".join(deletes) + "\n").encode()
@@ -376,9 +337,9 @@ def test_declared_file_count_mismatch_is_detected(tmp_path):
         [(have, b"release content"), (missing, None)],
         file_count=2,
     )
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc != 0
     assert (dest / have).exists(), "the file that WAS present should still land"
@@ -397,9 +358,9 @@ def test_declared_file_count_matching_written_succeeds(tmp_path):
         ("archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb", b"hello-bytes"),
     ]
     bundle_bytes = _fake_bundle_bytes_multi(files, file_count=len(files))
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc == 0
     for name, content in files:
@@ -419,9 +380,9 @@ def test_a_delta_bundles_smaller_declared_count_is_not_flagged(tmp_path):
     changed = "archive.ubuntu.com/ubuntu/dists/noble/InRelease"
     bundle_bytes = _fake_bundle_bytes_multi([(changed, b"new release content")],
                                             file_count=1)
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc == 0
     assert (dest / changed).read_bytes() == b"new release content"
@@ -440,9 +401,9 @@ def test_no_declared_file_count_skips_the_check(tmp_path):
         [(have, b"release content"), (missing, None)],
         # file_count omitted entirely
     )
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc == 0, "no declared count means nothing to compare against"
 
@@ -458,9 +419,9 @@ def test_a_complete_bundle_is_not_flagged_as_missing(tmp_path):
         ("archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb", b"hello-bytes"),
     ]
     bundle_bytes = _fake_bundle_bytes_multi(files)
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc == 0
     for name, content in files:
@@ -480,18 +441,18 @@ def test_missing_manifest_header_field(tmp_path):
     lines = [json.dumps(header)]
     lines.append(json.dumps({"p": "path", "c": "c" * 64}))
     manifest_jsonl = ("\n".join(lines) + "\n").encode()
-    manifest_zst = zstandard.ZstdCompressor().compress(manifest_jsonl)
+    manifest_bytes = manifest_jsonl
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        ti = tarfile.TarInfo(".mmw/manifest.jsonl.zst")
-        ti.size = len(manifest_zst)
-        tar.addfile(ti, io.BytesIO(manifest_zst))
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl")
+        ti.size = len(manifest_bytes)
+        tar.addfile(ti, io.BytesIO(manifest_bytes))
 
     bundle_bytes = buf.getvalue()
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     # Should fail because header is missing 'full' field.
     assert rc != 0
@@ -511,9 +472,9 @@ def test_permission_error_creating_tmp_dir(tmp_path):
         payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
         content = b"hello-package-content"
         bundle_bytes = _fake_bundle_bytes(payload_name, content)
-        ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+        bundle = _bundle_file(tmp_path, bundle_bytes)
 
-        rc = ns["apply"]("ignored", str(dest))
+        rc = ns["apply"](bundle, str(dest))
 
         # Should fail with EXIT_UNSAFE or EXIT_TOOLING, not a traceback.
         assert rc != 0
@@ -540,9 +501,9 @@ def test_symlink_in_mmw_tmp_is_refused(tmp_path):
     payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
     content = b"hello-package-content"
     bundle_bytes = _fake_bundle_bytes(payload_name, content)
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     # Should fail because tmp is a symlink.
     assert rc != 0
@@ -562,10 +523,10 @@ def test_apply_warns_if_placeholder_survives_substitution(tmp_path, capsys):
     payload_name = "nginx/sites/example.com.conf"
     content = ("root %s/example.com;\n" % ns["ROOT_PLACEHOLDER"]).encode()
     bundle_bytes = _fake_bundle_bytes(payload_name, content)
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
     ns["substitute_root"] = lambda root, path: None  # never actually substitutes
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc == 0  # a leftover placeholder warns; it does not fail the apply
     assert (dest / payload_name).read_bytes() == content  # still has it
@@ -590,9 +551,9 @@ def test_symlink_at_mmw_is_refused(tmp_path):
     payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
     content = b"hello-package-content"
     bundle_bytes = _fake_bundle_bytes(payload_name, content)
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     # Should fail because .mmw is a symlink.
     assert rc != 0
@@ -600,11 +561,7 @@ def test_symlink_at_mmw_is_refused(tmp_path):
     assert list(outside.iterdir()) == []
 
 
-# ── optional bundle compression: real open_stream/_is_zstd, not mocked ──────
-# Everything above overrides `open_stream` directly to inject fake tar bytes.
-# These exercise the real function — the actual magic-byte sniffing and the
-# real `zstd` binary / plain-file dispatch — since that's the part unique to
-# supporting an uncompressed bundle.
+# ── a bundle someone compressed for transfer ────────────────────────────────
 
 def test_is_zstd_detects_real_compressed_and_plain_files(tmp_path):
     ns = _load_module()
@@ -618,43 +575,21 @@ def test_is_zstd_detects_real_compressed_and_plain_files(tmp_path):
     assert ns["_is_zstd"](str(plain)) is False
 
 
-def test_open_stream_reads_a_real_plain_tar_without_zstd(tmp_path):
-    """The actual regression this feature is for: apply() must be able to
-    read a bundle mmw produced with compression turned off, via the real
-    (unmocked) open_stream — no `zstd` binary involved for the outer stream."""
+def test_a_compressed_bundle_is_refused_with_what_to_do(tmp_path, capsys):
+    """mmw writes plain tars. One compressed in transit must be decompressed
+    first — said plainly, nothing written."""
     ns = _load_module()
     dest = tmp_path / "far-side"
-
     payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
-    content = b"hello-package-content"
-    bundle_bytes = _fake_bundle_bytes(payload_name, content)
-    bundle_path = tmp_path / "lab.tar"   # no .zst — a genuinely plain tar
-    bundle_path.write_bytes(bundle_bytes)
-
-    rc = ns["apply"](str(bundle_path), str(dest))
-
-    assert rc == 0
-    assert (dest / payload_name).read_bytes() == content
-
-
-@pytest.mark.skipif(shutil.which("zstd") is None, reason="requires the zstd binary")
-def test_open_stream_reads_a_real_compressed_bundle_via_zstd(tmp_path):
-    """The other half of the same dispatch: a genuinely zstd-compressed
-    bundle still goes through the real `zstd -dc` subprocess, unmocked —
-    proving detection didn't just remove the compressed path."""
-    ns = _load_module()
-    dest = tmp_path / "far-side"
-
-    payload_name = "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello.deb"
-    content = b"hello-package-content"
-    bundle_bytes = _fake_bundle_bytes(payload_name, content)
     bundle_path = tmp_path / "lab.tar.zst"
-    bundle_path.write_bytes(zstandard.ZstdCompressor().compress(bundle_bytes))
+    bundle_path.write_bytes(zstandard.ZstdCompressor().compress(
+        _fake_bundle_bytes(payload_name, b"hello-package-content")))
 
     rc = ns["apply"](str(bundle_path), str(dest))
 
-    assert rc == 0
-    assert (dest / payload_name).read_bytes() == content
+    assert rc == ns["EXIT_TOOLING"]
+    assert "zstd -d" in capsys.readouterr().err
+    assert not (dest / payload_name).exists()
 
 
 def test_a_delete_list_cannot_escape_the_root(tmp_path):
@@ -673,9 +608,9 @@ def test_a_delete_list_cannot_escape_the_root(tmp_path):
         deletes=["../precious.conf"],
         file_count=1,
     )
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc == ns["EXIT_UNSAFE"], f"expected EXIT_UNSAFE, got {rc}"
     assert outsider.exists(), "a delete list escaped --root"
@@ -697,9 +632,9 @@ def test_deleting_the_last_file_prunes_the_empty_directory(tmp_path):
         deletes=["archive.ubuntu.com/ubuntu/dists/oldsuite/main/Packages"],
         file_count=1,
     )
-    ns["open_stream"] = lambda path: _FakeProc(bundle_bytes)
+    bundle = _bundle_file(tmp_path, bundle_bytes)
 
-    rc = ns["apply"]("ignored", str(dest))
+    rc = ns["apply"](bundle, str(dest))
 
     assert rc == 0, rc
     assert not stale.exists(), "empty directory left behind after its last file went"

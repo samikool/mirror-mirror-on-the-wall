@@ -70,7 +70,6 @@ prune = true
 dist_upgrade = true
 certs = true
 # nginx = false                   # default true: generate the site config
-# bundle_compress = false         # default true: plain .tar instead of .tar.zst
 
   # amd64 only for this site, every component we mirrored.
   [[networks.select]]
@@ -151,7 +150,6 @@ destination is unset says so rather than inventing one.
 | `dist_upgrade` | bool | `false` | Publish `changelogs.ubuntu.com/meta-release*` to the network root and write an `UPGRADE.md` with the DNS entries this network actually needs (derived from its own mirrors) and the LTS upgrade paths parsed out of the mirrored meta-release file. Needs `dist_upgrade = true` on the Ubuntu source too, or there is nothing to publish. |
 | `certs` | bool | `false` | Generate a 4096-bit TLS key and a CSR for this network's hostnames (plus `changelogs.ubuntu.com` with `dist_upgrade`) at `{mirror_dir}/certs/{name}/`, **deliberately outside `root`** so a misconfigured web server can never serve the private key. An existing `mirror.key` is never overwritten (that would invalidate an already-signed certificate); only the CSR is refreshed. Sign it with `mmw certs --ca CA.crt --ca-key CA.key`; once `mirror.crt` exists, publish serves every host over HTTPS as well as HTTP. Every bundle carries the signed certificate **and its private key** to `{root}/.mmw/tls/` on the far side (0600, in a 0700 directory no generated server block serves) and points the bundle's nginx config at them; a bundle refuses to start until `mirror.crt` is signed rather than ship HTTP-only. Keep it off for a network whose transfer media must not hold the key. (The old `bundle_tls` key is accepted and ignored.) |
 | `nginx` | bool | `true` | Write one `{root}/nginx/mirror.conf` with a server block per mirrored hostname, `server_name` derived from the real upstream hostname and `root` pointing at the published directory — plus `listen 443 ssl` once the network has a signed certificate. One file, so it works included, or dropped into `conf.d/` or `sites-enabled/`. Set `false` if you maintain your own configuration. See [How clients find the mirror](../README.md#how-clients-find-the-mirror). |
-| `bundle_compress` | bool | `true` | zstd-compress the bundle tarball. Set `false` to write a plain `.tar` — faster on a slow disk, larger file. `apply.py` sniffs the zstd magic bytes rather than trusting the filename, so either reads correctly. |
 
 
 ### `[[networks.select]]`

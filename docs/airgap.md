@@ -16,9 +16,9 @@ file.
  ──────────────                   ────────                ──────────────
  mmw sync      → pool
  mmw verify    → is the pool complete?
- mmw bundle    → lab-<stamp>.tar.zst  ──[ USB / disk ]──→  python3 apply.py
+ mmw bundle    → lab-<stamp>.tar  ──[ USB / disk ]──→  python3 apply.py
                  apply.py                                  → /srv/www
-                 lab-<stamp>.tar.zst.sha256                → nginx + DNS
+                 lab-<stamp>.tar.sha256                → nginx + DNS
 ```
 
 Each re-bundle carries only what changed since the previous one, so the first
@@ -46,8 +46,8 @@ It writes three files next to each other in the network's `bundle_dir`:
 
 | File | What it is |
 |---|---|
-| `lab-<stamp>.tar.zst` | the payload |
-| `lab-<stamp>.tar.zst.sha256` | `sha256sum -c` format, to check the transfer |
+| `lab-<stamp>.tar` | the payload |
+| `lab-<stamp>.tar.sha256` | `sha256sum -c` format, to check the transfer |
 | `apply.py` | the applier, stdlib-only Python 3.6+ |
 
 Useful flags:
@@ -88,12 +88,12 @@ snapshot a mirror is at, and a refused bundle names the exact
 
 Copy **the tarball, the `.sha256`, and `apply.py`** to your transfer media.
 Forgot `apply.py`? Every bundle carries its own copy as its third member:
-`tar -xf lab-20260906T143000Z.tar.zst .mmw/apply.py`.
+`tar -xf lab-20260906T143000Z.tar .mmw/apply.py`.
 
 On arrival, check the transfer before spending an hour on anything else:
 
 ```bash
-sha256sum -c lab-20260906T143000Z.tar.zst.sha256
+sha256sum -c lab-20260906T143000Z.tar.sha256
 ```
 
 A tarball truncated on a member boundary still extracts cleanly, so this is the
@@ -104,13 +104,16 @@ cheapest way to tell a bad copy from a bad bundle.
 ## 3. Apply it
 
 ```bash
-python3 apply.py lab-20260906T143000Z.tar.zst --root /srv/www
+python3 apply.py lab-20260906T143000Z.tar --root /srv/www
 # 20260901T090000Z -> 20260906T143000Z
 # 12,481 applied  3,902 removed
 ```
 
-Requirements on the far side: Python 3.6 or newer and the `zstd` binary on
-`PATH`. Nothing else — no `mmw`, no pip install, no network.
+Requirements on the far side: Python 3.6 or newer. Nothing else — no `mmw`,
+no pip install, no network. Bundles are plain tars: the payload is packages,
+which are already compressed. If your transfer medium wants compression,
+`zstd` the tar yourself and `zstd -d` it before applying — `apply.py` refuses a
+compressed file with exactly that message.
 
 | Flag | Effect |
 |---|---|
@@ -136,7 +139,7 @@ have already been removed.
 | 2 | unsafe or malformed bundle | do not retry; re-bundle on the connected side |
 | 3 | out of order | apply the missing bundle, or just take the next ordinary delta |
 | 4 | `--verify` found a mismatch | see below |
-| 5 | tooling problem (`zstd` missing, truncated archive) | check `zstd`, re-check the `.sha256` |
+| 5 | tooling problem (a compressed or truncated archive, an older bundle's manifest) | decompress it, re-check the `.sha256`, or use the `apply.py` that came with that bundle |
 
 ---
 

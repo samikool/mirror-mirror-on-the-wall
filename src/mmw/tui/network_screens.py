@@ -192,9 +192,6 @@ class NetworkForm(Vertical):
                                  "private key, and wait for the cert to be signed."),
                 ToggleField("nginx config", net.nginx if net else True, id="nginx-switch",
                             hint="One nginx/mirror.conf, a server block per host."),
-                ToggleField("Compress bundles", net.bundle_compress if net else True,
-                            id="compress-switch",
-                            hint="zstd; off writes a plain .tar — faster on slow disks, larger."),
             )
 
     def on_mount(self) -> None:
@@ -303,7 +300,6 @@ class NetworkForm(Vertical):
             "dist_upgrade": self._flag("du-switch"),
             "certs": self._flag("certs-switch"),
             "nginx": self._flag("nginx-switch"),
-            "bundle_compress": self._flag("compress-switch"),
         }), None, None
 
 

@@ -269,7 +269,7 @@ def test_certs_button_exists_and_is_wired(tmp_path):
 
 def test_edit_persists_every_networkconfig_field(tmp_path):
     """An edit replaces the whole NetworkConfig — no hand-written list of
-    fields to copy, so a field added to the model (as `bundle_compress` once
+    fields to copy, so a field added to the model (as `nginx` once
     was) can never be silently dropped by the editor. Every field set away
     from its default must survive the replace and a save/load round trip."""
     from mmw.tui import networks
@@ -278,7 +278,7 @@ def test_edit_persists_every_networkconfig_field(tmp_path):
         name="renamed", root=tmp_path / "srv", bundle_dir=tmp_path / "usb",
         select=[config.NetworkSelect(source="https://deb.example.com/debian")],
         prune=False, dist_upgrade=True, certs=True,
-        nginx=False, bundle_compress=False,
+        nginx=False,
     )
     defaults = config.NetworkConfig(name="x")
     unchanged = [f for f in config.NetworkConfig.model_fields

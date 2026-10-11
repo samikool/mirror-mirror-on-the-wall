@@ -95,3 +95,35 @@ def test_bump_stamp_advances_one_second():
 def test_bump_stamp_rolls_over_minute_and_day_boundaries():
     assert bump_stamp("20260906T143059Z") == "20260906T143100Z"
     assert bump_stamp("20260906T235959Z") == "20260907T000000Z"
+
+
+def test_a_manifest_is_plain_jsonl(tmp_path):
+    """apply.py reads it with nothing but Python."""
+    import json
+    p = tmp_path / "m.manifest.jsonl"
+    write_manifest(p, ManifestHeader(network="lab", created="20260906T143000Z",
+                                     previous=None, full=True), [("a/b.deb", "aa" * 32)])
+    lines = p.read_text().splitlines()
+    assert json.loads(lines[0])["network"] == "lab"
+    assert json.loads(lines[1]) == {"p": "a/b.deb", "c": "aa" * 32}
+
+
+def test_a_legacy_zstd_ledger_file_is_still_read(tmp_path):
+    """Ledger files from before plain manifests are zstd — bundle history
+    still imports as snapshots from them."""
+    import json
+
+    import zstandard
+    from mmw.core.publisher.manifest import iter_manifest
+    d = ledger_dir(tmp_path, "lab")
+    d.mkdir(parents=True)
+    body = (json.dumps({"network": "lab", "created": "20260901T000000Z",
+                        "previous": None, "full": True}) + "\n"
+            + json.dumps({"p": "a/b.deb", "c": "aa" * 32}) + "\n").encode()
+    legacy = d / "20260901T000000Z.manifest.jsonl.zst"
+    legacy.write_bytes(zstandard.ZstdCompressor().compress(body))
+
+    assert latest_manifest_path(tmp_path, "lab") == legacy
+    header, rows = iter_manifest(legacy)
+    assert header.created == "20260901T000000Z"
+    assert list(rows) == [("a/b.deb", "aa" * 32)]

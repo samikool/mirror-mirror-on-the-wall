@@ -72,9 +72,9 @@ def _run_bundle_scenario(tmp_path: Path, fake_bundle_network, monkeypatch):
 
 
 def test_execute_bundle_reports_success(tmp_path, monkeypatch):
-    out_path = tmp_path / "bundles" / "lab-x.tar.zst"
+    out_path = tmp_path / "bundles" / "lab-x.tar"
 
-    def fake(network, cfg, mirror_dir, out_path_arg, full, level, progress, stop_event, mirror_start_callback, compress=True, **_ends):
+    def fake(network, cfg, mirror_dir, out_path_arg=None, full=False, progress=None, stop_event=None, mirror_start_callback=None, **_ends):
         return BundleResult(network_name=network.name, out_path=out_path, sent=5, deleted=1)
 
     notifications = _run_bundle_scenario(tmp_path, fake, monkeypatch)
@@ -89,9 +89,9 @@ def test_execute_bundle_reports_success(tmp_path, monkeypatch):
 
 def test_execute_bundle_reports_stopped_not_success(tmp_path, monkeypatch):
     """A user-stopped bundle must never read as unqualified success."""
-    out_path = tmp_path / "bundles" / "lab-x.tar.zst"
+    out_path = tmp_path / "bundles" / "lab-x.tar"
 
-    def fake(network, cfg, mirror_dir, out_path_arg, full, level, progress, stop_event, mirror_start_callback, compress=True, **_ends):
+    def fake(network, cfg, mirror_dir, out_path_arg=None, full=False, progress=None, stop_event=None, mirror_start_callback=None, **_ends):
         stop_event.set()
         return BundleResult(
             network_name=network.name, out_path=out_path, sent=2,
@@ -111,9 +111,9 @@ def test_execute_bundle_reports_stopped_not_success(tmp_path, monkeypatch):
 def test_execute_bundle_reports_errors_not_success(tmp_path, monkeypatch):
     """A partially-failed bundle (e.g. a dist-upgrade failure) must not read
     as unqualified success even though the run was not stopped."""
-    out_path = tmp_path / "bundles" / "lab-x.tar.zst"
+    out_path = tmp_path / "bundles" / "lab-x.tar"
 
-    def fake(network, cfg, mirror_dir, out_path_arg, full, level, progress, stop_event, mirror_start_callback, compress=True, **_ends):
+    def fake(network, cfg, mirror_dir, out_path_arg=None, full=False, progress=None, stop_event=None, mirror_start_callback=None, **_ends):
         return BundleResult(
             network_name=network.name, out_path=out_path, sent=3,
             errors=["could not write UPGRADE.md: disk full"],

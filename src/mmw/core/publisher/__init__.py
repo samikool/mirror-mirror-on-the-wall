@@ -36,8 +36,8 @@ from mmw.core.publisher.sinks import TreeSink
 from mmw.core.publisher.stats import (
     dry_run_mirror,
     dry_run_network,
-    dst_stats_apt,
-    dst_stats_apt_flat,
+    dst_packages,
+    network_totals,
     publish_base,
 )
 
@@ -52,9 +52,9 @@ __all__ = [
     "dist_upgrade_info",
     "dry_run_mirror",
     "dry_run_network",
-    "dst_stats_apt",
-    "dst_stats_apt_flat",
+    "dst_packages",
     "hardlink_or_copy",
+    "network_totals",
     "is_package_file",
     "parse_meta_release_lts",
     "publish_base",

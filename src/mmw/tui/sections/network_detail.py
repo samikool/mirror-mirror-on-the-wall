@@ -96,9 +96,12 @@ class NetworkDetail(Widget):
 
     @staticmethod
     def _stat_tree(net, mirror_map) -> tuple:
-        from mmw.core.publisher import dst_stats_apt, dst_stats_apt_flat, publish_base
+        from mmw.core.publisher import publish_base
+        from mmw.core.publisher.stats import dst_packages, unique_packages
 
-        total_files = total_bytes = 0
+        # The totals count each file once — mirrors share files (arch `all`,
+        # `-security` inside `-updates`), so summing the rows overcounts.
+        published: dict[str, int] = {}
         last_mod: float | None = None
         per_mirror: list[tuple] = []
         for name, mirror in mirror_map.items():
@@ -110,19 +113,12 @@ class NetworkDetail(Widget):
                 mtime = dst_root.stat().st_mtime
             except OSError:
                 mtime = None
-            if mirror.provider == "apt":
-                files, size = dst_stats_apt(dst_root, mirror.suite or "",
-                                            mirror.component or "main", mirror.arch)
-            elif mirror.provider == "apt-flat":
-                files, size = dst_stats_apt_flat(dst_root)
-            else:
-                files, size = 0, 0
-            per_mirror.append((name, files, size, mtime, True))
-            total_files += files
-            total_bytes += size
+            pkgs = dst_packages(dst_root, mirror)
+            unique_packages(pkgs, published)
+            per_mirror.append((name, len(pkgs), sum(p.size for p in pkgs), mtime, True))
             if mtime is not None and (last_mod is None or mtime > last_mod):
                 last_mod = mtime
-        return total_files, total_bytes, last_mod, per_mirror
+        return len(published), sum(published.values()), last_mod, per_mirror
 
     def _on_loaded(self, gen: int, selected: list[str], stats: "tuple | None") -> None:
         if gen != self._detail_gen:

@@ -10,7 +10,7 @@ from mmw.core.config import Config, MirrorConfig, NetworkConfig
 from mmw.core.pool import Pool
 from mmw.providers.apt import _parse_packages, _parse_packages_flat
 
-from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
+from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult, NetworkTotals
 
 
 def publish_base(network: NetworkConfig, mirror: MirrorConfig) -> Path:
@@ -26,34 +26,45 @@ def publish_base(network: NetworkConfig, mirror: MirrorConfig) -> Path:
     return network.root / mirror.mirror_base
 
 
-def dst_stats_apt(dst_root: Path, suite: str, component: str, arch: str) -> tuple[int, int]:
-    """Count (files, bytes) from a published Packages.xz/gz at the destination."""
-    packages_base = dst_root / "dists" / suite / component / f"binary-{arch}" / "Packages"
+def _read_index(packages_base: Path, parse) -> list:
     for suffix in (".xz", ".gz", ""):
         p = Path(str(packages_base) + suffix)
         if p.exists():
             try:
                 text = decompress(p.read_bytes(), p.name).decode("utf-8", errors="replace")
-                pkgs = _parse_packages(text, "")
-                return len(pkgs), sum(pkg.size for pkg in pkgs)
+                return parse(text, "")
             except Exception:
                 break
-    return 0, 0
+    return []
 
 
-def dst_stats_apt_flat(dst_root: Path) -> tuple[int, int]:
-    """Count (files, bytes) from a published Packages.xz/gz at a flat repo destination."""
-    packages_base = dst_root / "Packages"
-    for suffix in (".xz", ".gz", ""):
-        p = Path(str(packages_base) + suffix)
-        if p.exists():
-            try:
-                text = decompress(p.read_bytes(), p.name).decode("utf-8", errors="replace")
-                pkgs = _parse_packages_flat(text, "")
-                return len(pkgs), sum(pkg.size for pkg in pkgs)
-            except Exception:
-                break
-    return 0, 0
+def dst_packages(dst_root: Path, mirror: MirrorConfig) -> list:
+    """The packages a published index at the destination lists (empty when
+    nothing is published yet, or for a provider with no index we read)."""
+    if mirror.provider == "apt":
+        return _read_index(dst_root / "dists" / (mirror.suite or "") /
+                           (mirror.component or "main") / f"binary-{mirror.arch}" / "Packages",
+                           _parse_packages)
+    if mirror.provider == "apt-flat":
+        return _read_index(dst_root / "Packages", _parse_packages_flat)
+    return []
+
+
+def unique_packages(pkgs, seen: dict[str, int]) -> None:
+    """Add `pkgs` to `seen` (checksum → size): a file several published
+    indexes list — or several mirrors share — is one entry."""
+    for pkg in pkgs:
+        seen[pkg.checksum or pkg.repo_path] = pkg.size
+
+
+def network_totals(mirror_names: list[str], pool: Pool,
+                   published: dict[str, int]) -> NetworkTotals:
+    """Network-wide dry-run numbers, each file once: the pool for what the
+    network holds, `published` (filled by `dry_run_mirror`) for what the
+    destination already has."""
+    files, size = pool.unique_stats(mirror_names)
+    return NetworkTotals(files=files, bytes=size, published_files=len(published),
+                         published_bytes=sum(published.values()))
 
 
 def dry_run_mirror(
@@ -61,11 +72,14 @@ def dry_run_mirror(
     network: NetworkConfig,
     mirror_dir: Path,
     pool: Pool,
+    published: dict[str, int] | None = None,
 ) -> MirrorPublishResult:
     """Estimate publish work from the pool DB and the destination's own index.
 
     These are estimates: pool refs and destination index counts measure
     slightly different sets (e.g. source packages with include_sources).
+    `published`, when given, collects what the destination already has
+    (checksum → size) for `network_totals`.
     """
     result = MirrorPublishResult(mirror_name=mirror.name)
 
@@ -81,15 +95,10 @@ def dry_run_mirror(
     already_files = 0
     already_bytes = 0
     if dst_root.exists():
-        if mirror.provider == "apt":
-            already_files, already_bytes = dst_stats_apt(
-                dst_root,
-                mirror.suite or "",
-                mirror.component or "main",
-                mirror.arch,
-            )
-        elif mirror.provider == "apt-flat":
-            already_files, already_bytes = dst_stats_apt_flat(dst_root)
+        pkgs = dst_packages(dst_root, mirror)
+        already_files, already_bytes = len(pkgs), sum(p.size for p in pkgs)
+        if published is not None:
+            unique_packages(pkgs, published)
 
     result.skipped = already_files
     result.skipped_bytes = already_bytes
@@ -125,6 +134,7 @@ def dry_run_network(
     mirror_map = {m.name: m for m in network_mirrors(network, cfg, mirror_dir)}
     selected_names = list(mirror_map)
 
+    published: dict[str, int] = {}
     with Pool(mirror_dir, read_only=True) as pool:
         for name in selected_names:
             mirror = mirror_map.get(name)
@@ -133,7 +143,8 @@ def dry_run_network(
                 r.errors.append(f"mirror '{name}' not found in config")
                 result.mirrors.append(r)
                 continue
-            result.mirrors.append(dry_run_mirror(mirror, network, mirror_dir, pool))
+            result.mirrors.append(dry_run_mirror(mirror, network, mirror_dir, pool, published))
+        result.totals = network_totals(selected_names, pool, published)
 
     if network.dist_upgrade:
         with Pool(mirror_dir, read_only=True) as pool:

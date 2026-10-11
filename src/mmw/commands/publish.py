@@ -17,6 +17,7 @@ from mmw.commands.common import eprint, interruptible, load_config_or_none, pref
 # module attributes (`publish.publish_network = ...`), and an import inside
 # the function body would bind a fresh reference to the real one every call,
 # silently defeating the patch.
+from mmw.core.format import fmt_size
 from mmw.core.publisher import dry_run_network, publish_network
 from mmw.commands.certs import generate_for
 
@@ -121,9 +122,11 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         if net.certs and not dry_run:
             generate_for(net, cfg)
 
+        sizes = (f" ({fmt_size(result.linked_bytes)} of {fmt_size(result.total_bytes)}; "
+                 f"each file counted once)" if dry_run else "")
         print(
             f"\n  Total: {result.linked} {'would link' if dry_run else 'linked'}, "
-            f"{result.skipped} already current"
+            f"{result.skipped} already current{sizes}"
             + (f", {len(result.errors)} error(s)" if result.errors else "")
         )
 

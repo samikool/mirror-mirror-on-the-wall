@@ -1116,31 +1116,39 @@ class Pool:
             conn.close()
 
     def group_unique_count(self, mirror_names: list[str]) -> int:
-        """Count unique packages referenced by any of the given mirrors.
+        """Count unique packages referenced by any of the given mirrors."""
+        return self.unique_stats(mirror_names)[0]
+
+    def unique_stats(self, mirror_names: list[str]) -> tuple[int, int]:
+        """(package_count, total_bytes) of the packages any of the given
+        mirrors reference, each counted once — mirrors share files (an
+        `Architecture: all` package is in every arch; `-security` packages are
+        in `-updates`), so summing `mirror_stats` overcounts badly.
 
         Uses a short-lived read-only connection so it never waits on self._lock
         (which write workers hold frequently).  WAL mode makes this safe.
         """
         if not mirror_names:
-            return 0
+            return 0, 0
         db_path = self.pool_dir / "mmw.db"
         if not db_path.exists():
-            return 0
+            return 0, 0
         placeholders = ",".join("?" * len(mirror_names))
         # Read-only URI: a plain connect would CREATE an empty db file if the
         # pool doesn't exist yet (e.g. publish prep before any sync).
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
         try:
             row = conn.execute(
-                f"SELECT COUNT(DISTINCT r.checksum) FROM refs r "
-                f"WHERE r.mirror_name IN ({placeholders}) {self._kind_filter}",
+                f"SELECT COUNT(*), COALESCE(SUM(p.size), 0) FROM packages p "
+                f"WHERE p.checksum IN (SELECT r.checksum FROM refs r "
+                f"WHERE r.mirror_name IN ({placeholders}) {self._kind_filter})",
                 mirror_names,
             ).fetchone()
         except sqlite3.OperationalError:
-            return 0  # schema missing — treat as empty pool
+            return 0, 0  # schema missing — treat as empty pool
         finally:
             conn.close()
-        return row[0] if row else 0
+        return (row[0], row[1]) if row else (0, 0)
 
     def mirror_stats(self, mirror_name: str) -> tuple[int, int]:
         """(package_count, total_bytes) for one mirror — index files excluded.

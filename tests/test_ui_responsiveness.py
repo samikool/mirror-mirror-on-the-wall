@@ -280,7 +280,7 @@ def test_a_failed_scan_releases_the_guard(tmp_path):
 def test_expensive_pool_aggregates_never_take_the_write_lock(tmp_path):
     """`stats()` and `mirror_stats()` must not queue behind 32 download workers
     holding `self._lock` — that made the scan and the workers block each other."""
-    for name in ("stats", "mirror_stats", "group_unique_count"):
+    for name in ("stats", "mirror_stats", "group_unique_count", "unique_stats"):
         assert "_lock" not in _attrs(getattr(Pool, name)), \
             f"Pool.{name} still takes the write lock"
 
@@ -1010,7 +1010,8 @@ _BLOCKING_CALLS = {
 _BLOCKING_NAMES = {"Pool", "open", "input"}
 _BLOCKING_ATTRS = {
     "save", "load", "delete", "wipe", "prune_orphans", "read_key", "find_keys",
-    "fetch_key", "probe", "probe_all", "probe_suite", "stats", "mirror_stats",
+    "fetch_key", "probe", "probe_all", "probe_suite", "stats", "mirror_stats", "unique_stats",
+    "network_totals", "dst_packages",
     "latest_manifest_path", "acquire_sync_lock", "exclusive_pool_lock",
     "shared_pool_lock", "pool_is_busy", "reconcile_refs", "flush_writes",
 }

@@ -41,6 +41,9 @@ class DryRunResultPage(Page):
             f"  ·  ≈{fmt(r.linked_bytes)} to add (estimated from index diff)",
             classes="totals",
         )
+        yield Label("[dim]Each file counted once — mirrors share files, so the rows add up to "
+                    "more. Publishing hardlinks from the pool: on the pool's filesystem it "
+                    "takes almost no new space.[/]", classes="totals-note")
         if r.errors:
             yield Label(f"[$mmw-error]{len(r.errors)} error(s) — see rows marked ✗[/]",
                         classes="error-row")

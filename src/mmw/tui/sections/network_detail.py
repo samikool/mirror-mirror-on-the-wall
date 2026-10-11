@@ -208,13 +208,25 @@ class NetworkDetail(Widget):
     def _load_bundle_age(self, gen: int, mirror_dir: Path, name: str) -> None:
         """When this network was last bundled. The directory and name are
         passed in, not read off `self`: the worker outlives the selection."""
-        from mmw.core.publisher.manifest import latest_manifest_path
+        import calendar
+        import time as _time
+
+        from mmw.core.pool import Pool
+        from mmw.core.publisher.manifest import TS_FORMAT, latest_manifest_path
         mtime = None
         try:
-            path = latest_manifest_path(mirror_dir, name)
-            if path is not None:
-                mtime = path.stat().st_mtime
-        except OSError:
+            # The bundle log first (it knows a backwards bundle is the latest);
+            # a network last bundled before snapshots existed has only its
+            # ledger file.
+            with Pool(mirror_dir, read_only=True) as pool:
+                log = pool.bundles(name)
+            if log:
+                mtime = calendar.timegm(_time.strptime(log[0].made, TS_FORMAT))
+            else:
+                path = latest_manifest_path(mirror_dir, name)
+                if path is not None:
+                    mtime = path.stat().st_mtime
+        except Exception:  # noqa: BLE001 — an unreadable pool: no age, not a crash
             mtime = None
         self.app.call_from_thread(self._on_bundle_age, gen, mtime)
 

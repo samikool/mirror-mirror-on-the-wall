@@ -77,7 +77,8 @@ def _free_stamp(pool: Pool, network: str) -> str:
 
 def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
                   label: str | None = None, kind: str = "manual",
-                  progress=None, stop_event=None) -> SnapshotInfo:
+                  progress=None, stop_event=None,
+                  warnings: "list[str] | None" = None) -> SnapshotInfo:
     """Record `network`'s complete tree as a new snapshot. **Blocking.**
 
     Raises if the walk reported errors (a key that could not be frozen, a
@@ -91,15 +92,20 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
         mirrors = walk_network(network, cfg, mirror_dir, sink, pool, result,
                                nginx_root=None, prune=False,
                                progress=progress, stop_event=stop_event)
+        if warnings is not None:
+            warnings.extend(result.dist_upgrade_warnings)     # reported, never dropped
         if stop_event is not None and stop_event.is_set():
             raise InterruptedError("snapshot stopped — nothing was recorded")
         problems = sink.errors + result.errors
         if problems:
             raise ValueError(f"snapshot of {network.name} not taken: " + "; ".join(problems[:5])
                              + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""))
+        from mmw.core.publisher.links import upstream_file_hosts, upstream_files
         settings = json.dumps({
             "network": network.model_dump(mode="json"),
             "mirrors": [m.model_dump(mode="json") for m in mirrors],
+            # nginx needs a server block per upstream-file host.
+            "upstream_hosts": upstream_file_hosts(upstream_files(mirror_dir, mirrors)),
         }, sort_keys=True)
         stamp = _free_stamp(pool, network.name)
         sid = pool.create_snapshot(network.name, stamp, kind=kind, label=label,

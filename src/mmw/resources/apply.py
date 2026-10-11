@@ -256,12 +256,30 @@ def _prune_empty_parents(root, start):
         current = os.path.dirname(current)
 
 
-def read_state(root):
+def _read_state_lines(root):
     path = os.path.join(root, STATE_FILE)
     if not os.path.exists(path):
-        return None
+        return []
     with open(path) as fh:
-        return fh.read().strip() or None
+        return [line.strip() for line in fh.read().splitlines()]
+
+
+def read_state(root):
+    """The snapshot this mirror is at: the state file's first line (an older
+    apply.py wrote only that line)."""
+    lines = _read_state_lines(root)
+    return (lines[0] or None) if lines else None
+
+
+def read_state_label(root):
+    lines = _read_state_lines(root)
+    return (lines[1] or None) if len(lines) > 1 else None
+
+
+def _named(stamp, label):
+    if not stamp:
+        return "(empty)"
+    return '%s "%s"' % (stamp, label) if label else stamp
 
 
 def substitute_root(root, path):
@@ -453,15 +471,23 @@ def apply(bundle, root, dry_run=False, verify=False):
                 want = header.get("previous")
                 if not header.get("full") and have != want:
                     sys.stderr.write(
-                        "this bundle expects the mirror to be at %s but it is at %s\n"
-                        "applying out of order would leave the tree silently "
-                        "incomplete. Apply the missing bundle first, or ask for a "
-                        "fresh bundle — a failed apply never advances %s, so the "
-                        "next normal bundle already covers what this one would "
-                        "have.\n" % (want or "(empty)", have or "(empty)", STATE_FILE)
+                        "out of order: this bundle goes %s -> %s, but this mirror "
+                        "is at %s.\n"
+                        "Applying it would leave the tree silently wrong. Ask for a "
+                        "bundle from where this mirror is:\n"
+                        "    mmw bundle -n %s --from %s --to %s\n"
+                        "(or a full bundle: --from none). A failed apply never "
+                        "advances %s.\n" % (
+                            _named(want, header.get("previous_label")),
+                            _named(header["created"], header.get("created_label")),
+                            _named(have, read_state_label(root)),
+                            header.get("network", "NETWORK"), have or "none",
+                            header["created"], STATE_FILE)
                     )
                     return EXIT_OUT_OF_ORDER
-                sys.stdout.write("%s -> %s\n" % (want or "(new)", header["created"]))
+                sys.stdout.write("%s -> %s\n" % (
+                    _named(want, header.get("previous_label")) if want else "(new)",
+                    _named(header["created"], header.get("created_label"))))
                 continue
 
             if name == DELETE_MEMBER:
@@ -621,7 +647,7 @@ def apply(bundle, root, dry_run=False, verify=False):
                                     "substitution\n" % (rel, ROOT_PLACEHOLDER))
             current = STATE_FILE
             with open(os.path.join(root, STATE_FILE), "w") as fh:
-                fh.write(header["created"] + "\n")
+                fh.write(header["created"] + "\n" + (header.get("created_label") or "") + "\n")
 
         if verify:
             return verify_tree(root, manifest)
@@ -737,13 +763,24 @@ def verify_tree(root, manifest):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Apply an mmw bundle.")
-    ap.add_argument("bundle")
+    ap.add_argument("bundle", nargs="?")
     ap.add_argument("--root", required=True,
                     help="directory the mirror is served from")
+    ap.add_argument("--status", action="store_true",
+                    help="print the snapshot this mirror is at, and exit")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--verify", action="store_true",
                     help="hash the whole tree against the manifest afterwards")
     args = ap.parse_args(argv)
+    if args.status:
+        at = read_state(args.root)
+        if at is None:
+            sys.stdout.write("no bundle applied yet at %s\n" % args.root)
+        else:
+            sys.stdout.write("at %s\n" % _named(at, read_state_label(args.root)))
+        return 0
+    if not args.bundle:
+        ap.error("a bundle to apply is required (or --status)")
     if not args.dry_run:
         os.makedirs(args.root, exist_ok=True)
     try:

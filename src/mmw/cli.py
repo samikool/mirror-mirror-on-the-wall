@@ -380,11 +380,20 @@ def cmd_bundle(
              "The gap is invisible in the bundle and surfaces as a 404 during "
              "`apt install` on the far side, so you are told exactly what is missing.",
     ),
+    from_ref: str = typer.Option(
+        None, "--from", help="Snapshot the far side is at (stamp, label or id), or 'none' "
+                             "for a full bundle. Default: where the last bundle went."),
+    to_ref: str = typer.Option(
+        None, "--to", help="Snapshot to bring it to (stamp, label or id). "
+                           "Default: a new snapshot of now."),
 ):
-    """Write a network's mirrors to a transferable bundle."""
+    """Write a network's mirrors to a transferable bundle — between any two
+    snapshots (see `mmw snapshot list`). By default: from where the last
+    bundle went, to a new snapshot of now."""
     from mmw.commands.bundle import run
     raise typer.Exit(run(_cfg_dir(), network=network, full=full, out=out,
-                         allow_incomplete=allow_incomplete))
+                         allow_incomplete=allow_incomplete,
+                         from_ref=from_ref, to_ref=to_ref))
 
 
 snapshot_app = typer.Typer(

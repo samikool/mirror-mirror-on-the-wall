@@ -126,6 +126,21 @@ CREATE TABLE IF NOT EXISTS snapshot_files (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_snapshot_files_blob ON snapshot_files(blob, snapshot);
 
+-- Every bundle made: where it started and ended. "Last bundled to" — the
+-- default starting point of the next bundle — is the newest row, which
+-- after a backwards bundle (5 -> 3) is 3, not the newest snapshot.
+CREATE TABLE IF NOT EXISTS bundles (
+    id          INTEGER PRIMARY KEY,
+    network     TEXT NOT NULL,
+    from_stamp  TEXT,                         -- NULL: a full bundle
+    to_stamp    TEXT NOT NULL,
+    out_path    TEXT NOT NULL,
+    sent        INTEGER NOT NULL DEFAULT 0,
+    sent_bytes  INTEGER NOT NULL DEFAULT 0,
+    removed     INTEGER NOT NULL DEFAULT 0,      -- paths the far side deletes
+    made        TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now'))
+);
+
 -- mirror_stats / group_unique_count / ref_map all filter on mirror_name;
 -- without this they full-scan refs on every detail-panel highlight.
 CREATE INDEX IF NOT EXISTS idx_refs_mirror ON refs(mirror_name, checksum);
@@ -522,6 +537,19 @@ class _DeferredWriter:
         self._q.put(self._SENTINEL)
         self._thread.join(timeout)
         return list(self._errors)
+
+
+@dataclass(frozen=True)
+class BundleInfo:
+    id: int
+    network: str
+    from_stamp: str | None
+    to_stamp: str
+    out_path: str
+    sent: int
+    sent_bytes: int
+    removed: int
+    made: str
 
 
 @dataclass(frozen=True)
@@ -1148,6 +1176,52 @@ class Pool:
             self._conn.execute("DELETE FROM snapshot_paths WHERE id NOT IN "
                                "(SELECT path FROM snapshot_files)")
             self._conn.commit()
+
+    def snapshot_blob_rows(self, snapshot_id: int):
+        """(path, checksum, pool_path, size) for every file of a snapshot, in
+        path order; pool_path is None for a file the pool no longer holds."""
+        self.flush_writes()
+        yield from self._stream(
+            "SELECT p.path, b.checksum, k.pool_path, k.size FROM snapshot_files f "
+            "JOIN snapshot_paths p ON p.id = f.path JOIN snapshot_blobs b ON b.id = f.blob "
+            "LEFT JOIN packages k ON k.checksum = b.checksum "
+            "WHERE f.snapshot = ? ORDER BY p.path", (snapshot_id,))
+
+    def snapshot_missing(self, snapshot_id: int) -> int:
+        """How many of a snapshot's files the pool no longer holds."""
+        self.flush_writes()
+        row = self._read_only(
+            "SELECT COUNT(*) FROM snapshot_files f JOIN snapshot_blobs b ON b.id = f.blob "
+            "WHERE f.snapshot = ? AND NOT EXISTS "
+            "(SELECT 1 FROM packages k WHERE k.checksum = b.checksum)", (snapshot_id,))
+        return row[0] if row else 0
+
+    def network_snapshot_paths(self, network: str):
+        """Every path any snapshot of `network` has listed — what a full
+        bundle reconciles a far side of unknown state against."""
+        self.flush_writes()
+        yield from (r[0] for r in self._stream(
+            "SELECT DISTINCT p.path FROM snapshots s "
+            "JOIN snapshot_files f ON f.snapshot = s.id "
+            "JOIN snapshot_paths p ON p.id = f.path WHERE s.network = ?", (network,)))
+
+    def record_bundle(self, network: str, from_stamp: str | None, to_stamp: str,
+                      out_path: str, sent: int, sent_bytes: int, removed: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO bundles (network, from_stamp, to_stamp, out_path, sent, "
+                "sent_bytes, removed) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (network, from_stamp, to_stamp, out_path, sent, sent_bytes, removed))
+            self._conn.commit()
+
+    def bundles(self, network: str) -> list[BundleInfo]:
+        """Newest first."""
+        with self._read() as c:
+            rows = c.execute(
+                "SELECT id, network, from_stamp, to_stamp, out_path, sent, sent_bytes, "
+                "removed, made FROM bundles WHERE network = ? ORDER BY id DESC",
+                (network,)).fetchall()
+        return [BundleInfo(*r) for r in rows]
 
     def snapshot_exclusive_bytes(self, snapshot_ids: "int | list[int]") -> int:
         """Bytes only these snapshots keep — what deleting them (then pruning)

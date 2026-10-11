@@ -61,6 +61,10 @@ class ManifestHeader:
     # on disk — written before this field existed — still parses; apply.py
     # treats its absence as "can't check this, don't try."
     file_count: int | None = None
+    # The snapshots' labels, for people: printed by apply.py and kept in its
+    # state file. Optional — older manifests and apply.py ignore them.
+    previous_label: str | None = None
+    created_label: str | None = None
 
 
 def write_manifest(path: Path, header: ManifestHeader,
@@ -140,45 +144,6 @@ def latest_manifest_path(mirror_dir: Path, network: str) -> Path | None:
         return None
     stamps = sorted(p for p in d.iterdir() if p.name.endswith(MANIFEST_SUFFIX))
     return stamps[-1] if stamps else None
-
-
-def union_manifests(mirror_dir: Path, network: str) -> dict[str, str]:
-    """Every path any retained ledger manifest ever claimed, newest winning.
-
-    `--full` means "send everything and reconcile what the far side has".
-    The delete set is `prev − keep`, and `prev` used to be the single latest
-    manifest — so a path dropped three bundles ago appears in NO delete list
-    ever again: manifest N-2 named it, N-1 and N do not, and only N is read.
-    A far side that missed those bundles (the exact situation `--full` is
-    reached for) keeps serving it forever.
-
-    Unioning every retained manifest is the best a producer can do without
-    far-side state: it recovers any divergence that happened within the
-    ledger's retention. A path removed before the OLDEST retained manifest
-    was written is still unrecoverable this way — carrying far-side state
-    back (`--since state.json`) is the only real fix and is not built.
-
-    Newest-wins on the checksum so the map still describes the far side's
-    most recently known content. Memory is the same ceiling `read_manifest`
-    documents, multiplied by the number of retained manifests — deliberate,
-    and only paid on `--full`.
-    """
-    d = ledger_dir(mirror_dir, network)
-    if not d.is_dir():
-        return {}
-    merged: dict[str, str] = {}
-    for path in sorted(p for p in d.iterdir() if p.name.endswith(MANIFEST_SUFFIX)):
-        try:
-            _hdr, files = read_manifest(path)
-        except Exception:
-            # Broad on purpose: a corrupt zstd frame, a truncated line, a
-            # header from a future version. A manifest we can no longer read
-            # is not a reason to abandon the delete set the readable ones
-            # give us — and this runs only to compute deletions, never to
-            # decide what to send.
-            continue
-        merged.update(files)
-    return merged
 
 
 def delta(prev: dict[str, str], cur: dict[str, str]) -> tuple[set[str], set[str]]:

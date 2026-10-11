@@ -1,4 +1,4 @@
-"""Regression coverage for `PublishProgressModal.record` — the Sink progress
+"""Regression coverage for `TransferView.record` (once `PublishProgressModal`'s) — the Sink progress
 callback contract (`core/publisher/sinks.py`) is sink-relative POSIX strings,
 never `Path`. `record` used to take `dst: Path` and call `dst.parts` before
 even looking at `status`, so the very first progress event of every TUI
@@ -9,11 +9,13 @@ called `record` at all, which is why it went unnoticed.
 `record` is documented as "pure counter + buffer update, no DOM work", so it
 is exercised directly without mounting a Textual app.
 """
-from mmw.tui.publish_modals import PublishProgressModal
+from mmw.tui.transfer import PUBLISH, TransferView
 
 
-def _modal() -> PublishProgressModal:
-    return PublishProgressModal("net", total=10, per_mirror_counts={"m": 10})
+def _modal() -> TransferView:
+    view = TransferView(PUBLISH, "net")
+    view._total, view._per_mirror_counts = 10, {"m": 10}
+    return view
 
 
 def test_record_accepts_sink_relative_strings_not_paths():
@@ -224,6 +226,7 @@ def test_large_file_progress_renders_on_its_own_line(tmp_path):
         app = _Host()
         async with app.run_test():
             modal = modal_holder["modal"]
+            modal.begin(10, {"m": 10})
             modal.record("", "archive-start:10:1000")
 
             from textual.widgets import Label
@@ -289,6 +292,7 @@ def test_archive_progress_repurposes_overall_bar_and_mirror_label(tmp_path):
         app = _Host()
         async with app.run_test():
             modal = modal_holder["modal"]
+            modal.begin(10, {"m": 10})
             modal.record("", "archive-start:10:1000")
             modal.record("", "archive-progress:4:400:100")
             modal._tick()

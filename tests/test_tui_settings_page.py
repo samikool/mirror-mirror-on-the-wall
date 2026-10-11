@@ -119,7 +119,7 @@ def test_theme_picker_follows_the_command_palette(tmp_path):
         await _settle(pilot)
         app.theme = "dracula"
         await _settle(pilot)
-        await pilot.press("4")
+        await pilot.press("5")
         await _settle(pilot)
         assert app.screen.query_one("#settings-theme", Select).value == "dracula"
     _run(tmp_path, check)

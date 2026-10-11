@@ -216,16 +216,28 @@ def test_bulk_review_pane_is_usable():
     _assert_usable(lambda: BulkReviewPage(drafts), ["#repo-list"], "BulkReviewPage")
 
 
-def test_dry_run_result_modal_is_usable():
+def _in_a_page(widget_factory):
+    """A widget the way the Publish section shows it: inside a Page."""
+    from mmw.tui.ui.page import Page
+
+    class _Host(Page):
+        SCROLLS = False
+
+        def compose_body(self):
+            yield widget_factory()
+    return _Host()
+
+
+def test_dry_run_report_is_usable():
     from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
-    from mmw.tui.publish_modals import DryRunResultPage
+    from mmw.tui.transfer import DryRunReport
 
     result = NetworkPublishResult(
         network_name="lab",
         mirrors=[MirrorPublishResult(mirror_name=f"m-{i}", linked=i) for i in range(8)],
     )
-    _assert_usable(lambda: DryRunResultPage("lab", result), ["#dry-run-table"],
-                   "DryRunResultPage")
+    _assert_usable(lambda: _in_a_page(lambda: DryRunReport(result)), ["#dry-run-table"],
+                   "DryRunReport")
 
 
 def test_certs_modal_is_usable():
@@ -238,19 +250,19 @@ def test_certs_modal_is_usable():
     )
 
 
-def test_transfer_progress_modal_log_is_usable():
+def test_transfer_panel_log_is_usable():
     """The log is where a publish or bundle reports what it is doing; a
     one-row log is indistinguishable from a hung transfer."""
-    from mmw.tui.publish_modals import PublishProgressModal
+    from mmw.tui.transfer import PUBLISH, TransferView
 
     # Three rows at 80x24, not four. This one is allowed a lower floor because
     # it degrades *proportionally* rather than collapsing — 18 rows at 80x40,
-    # 3 in a 21-row modal on a 24-row terminal — which is the correct behaviour
+    # 3 in a 21-row panel on a 24-row terminal — which is the correct behaviour
     # for a `1fr` pane absorbing whatever the fixed furniture leaves. The
     # default floor stays at 4 so it still catches the real failures this file
     # was written for: #axis-scroll at 1 row and #key-area at 0.
-    _assert_usable(lambda: PublishProgressModal("lab", 100), ["#pub-log"],
-                   "PublishProgressModal", min_rows=3)
+    _assert_usable(lambda: _in_a_page(lambda: TransferView(PUBLISH, "lab")), ["#pub-log"],
+                   "TransferView", min_rows=3)
 
 
 def _demo_config(tmp_path):

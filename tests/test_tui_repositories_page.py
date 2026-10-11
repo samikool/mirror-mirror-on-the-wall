@@ -113,7 +113,7 @@ def test_markup_in_names_is_shown_literally(tmp_path):
 def test_the_list_has_focus_so_section_keys_work(tmp_path):
     async def check(app, pilot):
         assert app.focused is app.screen.query_one("#repo-list")
-        await pilot.press("4")
+        await pilot.press("5")
         await _settle(pilot)
         assert app.current_mode == "settings"
     _run(tmp_path, check)
@@ -317,7 +317,7 @@ def test_the_list_follows_a_pool_directory_change_in_settings(tmp_path):
     async def check(app, pilot):
         new_dir = tmp_path / "elsewhere"
         await app.save_settings(mirror_dir=new_dir)
-        await pilot.press("4")
+        await pilot.press("5")
         await _settle(pilot)
         await pilot.press("1")
         await _done(app, pilot)

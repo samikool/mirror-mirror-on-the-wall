@@ -10,6 +10,7 @@ from textual.theme import Theme
 from mmw.core import config
 from mmw.tui.navigation import SECTION_MODES, SECTIONS
 from mmw.tui.sections.networks import NetworksPage
+from mmw.tui.sections.publish import PublishSection
 from mmw.tui.sections.repositories import RepositoriesPage
 from mmw.tui.sections.settings import SettingsPage
 from mmw.tui.sections.setup import SetupPage
@@ -23,6 +24,7 @@ class MmwApp(ThemedApp):
         "repositories": RepositoriesPage,
         "networks": NetworksPage,
         "sync": SyncSection,
+        "publish": PublishSection,
         "settings": SettingsPage,
         "setup": SetupPage,
     }
@@ -51,6 +53,9 @@ class MmwApp(ThemedApp):
         # from the current one inside it — otherwise a Save and a theme
         # change in flight together overwrite each other's field.
         self._save_lock = asyncio.Lock()
+        # Bumped as each publish / bundle finishes: Networks re-reads its
+        # detail pane when it sees a new value, so the stats are current.
+        self.transfers_finished = 0
         self.cfg = cfg
         self.cfg_dir = cfg_dir
         self._startup_notes = self.apply_config_theme(cfg, cfg_dir) if cfg is not None else []
@@ -166,6 +171,9 @@ class MmwApp(ThemedApp):
                                              or self.active_sync.draining):
             self.notify("Stop the running sync before re-initialising.", severity="warning")
             return
+        if self.active_transfer is not None and self.active_transfer.running:
+            self.notify("Stop the running publish before re-initialising.", severity="warning")
+            return
         if any(w.group == "page-flow" and w.is_running for w in self.workers):
             # Re-init tears every section down; a prune or a resolving sync
             # on one of them would be cut off mid-way with no one to report it.
@@ -187,6 +195,17 @@ class MmwApp(ThemedApp):
         await self._fresh_modes("repositories", "networks", "settings")
 
     # ── sync ────────────────────────────────────────────────────────────────
+
+    async def start_transfer(self, verb: str, net: config.NetworkConfig, *,
+                             full: bool = False) -> None:
+        """Publish, dry-run or bundle `net` in the Publish section. One at a
+        time — a sync may run beside it."""
+        if self.active_transfer is not None and self.active_transfer.running:
+            self.notify(f"Already working on {self.active_transfer.network_name} — see the "
+                        "Publish section.", severity="warning")
+            return
+        await self.switch_mode("publish")
+        await self.screen.start(verb, net, full=full)
 
     async def start_sync(self, selection) -> None:
         """Resolve `selection` (off the loop — it lists upstream), then run it
@@ -220,15 +239,21 @@ class MmwApp(ThemedApp):
         await self.screen.start(self.cfg, mirrors)
 
     def _sync_label(self) -> None:
-        """The sidebar's Sync link carries progress while a sync runs."""
+        """The sidebar's Sync and Publish links carry progress while they run."""
+        labels = {s.mode: f"{s.key} {s.label}" for s in SECTIONS}
         sync = self.active_sync
-        text = "3 Sync"
         if sync is not None and sync.running:
             done, total = sync.progress()
-            text = f"3 Sync ▸ {done}/{total}"
+            labels["sync"] += f" ▸ {done}/{total}"
+        transfer = self.active_transfer
+        if transfer is not None and transfer.running:
+            pct = transfer.progress()
+            labels["publish"] += (" ▸ ?" if transfer.awaiting_decision else
+                                  f" ▸ {pct}%" if pct is not None else " ▸ …")
         try:
             screen = self.screen
         except ScreenStackError:
             return      # mid switch_mode: the new mode's stack is not populated yet
-        for link in screen.query("#nav-sync"):
-            link.update(text)
+        for mode in ("sync", "publish"):
+            for link in screen.query(f"#nav-{mode}"):
+                link.update(labels[mode])

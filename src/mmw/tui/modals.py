@@ -1,4 +1,4 @@
-"""InfoModal and DeleteProgressModal — the progress/notice modals pages push."""
+"""DeleteProgressModal — the progress modal a delete runs behind."""
 import asyncio
 import os
 import threading
@@ -13,29 +13,6 @@ from textual.widgets import Label, ProgressBar
 
 from mmw.tui.ui.widgets import Button
 
-
-class InfoModal(ModalScreen):
-
-    BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False)]
-
-    def __init__(self, title: str, message: str):
-        super().__init__()
-        self._title = title
-        self._message = message
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(self._title, classes="modal-title")
-            yield Label(self._message)
-            with Horizontal():
-                yield Button("OK", variant="primary", id="ok", compact=True)
-
-    @on(Button.Pressed, "#ok")
-    def dismiss_modal(self):
-        self.dismiss()
-
-    def action_dismiss_modal(self) -> None:
-        self.dismiss()
 
 class DeleteProgressModal(ModalScreen[None]):
     BINDINGS = [Binding("escape", "noop", "", show=False)]

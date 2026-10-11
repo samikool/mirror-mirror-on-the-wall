@@ -1,5 +1,6 @@
 """Headless verify — `mmw verify`, the cron-safe door onto the same
-completeness check `PreparePublishModal` runs before every publish.
+completeness check the TUI runs before every publish (the Publish panel's
+verify stage).
 
 `pool.mirror_files()` — what both publish and bundle enumerate from — is
 `refs ⋈ packages`, so a ref whose blob the pool doesn't hold is *invisible* to
@@ -7,7 +8,7 @@ it: an incomplete mirror publishes (or bundles) a tree silently missing files
 rather than raising an error, and the gap only surfaces as a 404 during
 `apt install` on the far side of an airgap. `verify_mirror` is what catches
 this, but before this module it was reachable only by driving
-`PreparePublishModal` in the TUI — undoable from cron. This check is
+the TUI's verify stage — undoable from cron. This check is
 read-only: it never downloads anything.
 """
 from pathlib import Path

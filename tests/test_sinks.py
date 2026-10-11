@@ -106,7 +106,7 @@ def test_tree_sink_finalize_group_returns_this_groups_count(tmp_path):
 
 
 def test_tree_sink_finalize_group_progress_receives_rel_strings(tmp_path):
-    """`progress` is the Sink contract used by the TUI's PublishProgressModal,
+    """`progress` is the Sink contract used by the TUI's TransferView,
     which calls `dst.split("/")` — a Path here breaks that on the first
     event, not caught by anything that never drives this path."""
     root = tmp_path / "pub"
@@ -632,7 +632,7 @@ def test_bundle_sink_close_reports_archive_progress(pool, tmp_path):
     lists. Without a progress hook inside close() itself, a bundle's progress
     UI races to a "done"-looking count almost instantly and then sits silent
     for however long the archive actually takes to write — see the docstring
-    this test is locking in behaviour for (BundleProgressModal's archive
+    this test is locking in behaviour for (TransferView's archive
     phase)."""
     cs, src = _seed(pool, b"hello-package-bytes", "a.deb")
     out = tmp_path / "lab.tar.zst"

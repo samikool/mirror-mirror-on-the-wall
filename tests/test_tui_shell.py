@@ -54,7 +54,7 @@ def test_unknown_section_is_refused(tmp_path):
 
 def test_number_keys_switch_sections(tmp_path):
     async def check(app, pilot):
-        for key, mode in [("2", "networks"), ("3", "sync"), ("4", "settings"), ("1", "repositories")]:
+        for key, mode in [("2", "networks"), ("3", "sync"), ("4", "publish"), ("5", "settings"), ("1", "repositories")]:
             await pilot.press(key)
             await _settle(pilot)
             assert app.current_mode == mode
@@ -95,7 +95,7 @@ def test_each_section_keeps_its_own_stack(tmp_path):
         await _settle(pilot)
         await pilot.press("1")
         await _settle(pilot)
-        await pilot.press("4")
+        await pilot.press("5")
         await _settle(pilot)
         assert app.screen.TITLE == "lab"
     _run(check, tmp_path, section="settings")

@@ -262,3 +262,9 @@ def test_snapshot_mmw_sync_idle(snap_compare, tmp_path):
     from mmw.tui.app import MmwApp
     assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="sync"),
                         terminal_size=SNAP_SIZE)
+
+
+def test_snapshot_mmw_publish_idle(snap_compare, tmp_path):
+    from mmw.tui.app import MmwApp
+    assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="publish"),
+                        terminal_size=SNAP_SIZE)

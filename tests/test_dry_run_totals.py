@@ -93,8 +93,10 @@ def test_the_tui_dry_run_counts_shared_files_once(two_mirrors):
             mirrors = network_mirrors(net, cfg, mirror_dir)
 
             async def run():
+                from types import SimpleNamespace
+                quiet = SimpleNamespace(set_phase=lambda *a: None, mirror_done=lambda *a: None)
                 _, _, got["r"] = await flows._run_pre_publish(
-                    net, mirrors, mirror_dir, include_dry_run=True,
+                    net, mirrors, mirror_dir, quiet, include_dry_run=True,
                     include_file_counts=False, include_verify=False)
             await app.run_worker(run(), exit_on_error=False).wait()
             await pilot.pause()

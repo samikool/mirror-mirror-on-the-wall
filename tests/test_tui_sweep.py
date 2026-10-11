@@ -163,6 +163,18 @@ def _sweep(app_factory, label, size) -> list[str]:
     return problems
 
 
+def _in_a_page(widget_factory):
+    """A widget the way the Publish section shows it: inside a Page."""
+    from mmw.tui.ui.page import Page
+
+    class _Host(Page):
+        SCROLLS = False
+
+        def compose_body(self):
+            yield widget_factory()
+    return _Host()
+
+
 def _screens():
     """Every screen that can be mounted without network or pool access.
 
@@ -171,15 +183,14 @@ def _screens():
     """
     from mmw.tui.bulk_review import BulkReviewPage
     from mmw.tui.key_modal import KeyPage
-    from mmw.tui.modals import InfoModal
     from mmw.tui.ui.dialog import ConfirmDialog, HelpDialog
     from mmw.tui.network_screens import AddNetworkPage, EditNetworkPage
     from mmw.tui.path_pick import PathPickPage
     from mmw.tui.pick import PickPage
     from mmw.tui.publish_modals import (
-        BundleModeModal, CertsPage, DryRunResultPage, PreparePublishModal,
-        PublishProgressModal,
+        BundleModeModal, CertsPage,
     )
+    from mmw.tui.transfer import PUBLISH, DryRunReport, TransferView
     from mmw.tui.source_screens import EditSourcePage
 
     net = config.NetworkConfig(name="lab", select=[])
@@ -201,11 +212,9 @@ def _screens():
             [RepositoryDraft(url=f"https://repo{i}.example.com/ubuntu") for i in range(5)]),
         "BundleModeModal": lambda: BundleModeModal("lab"),
         "CertsPage": lambda: CertsPage("lab", [f"host{i}.example.com" for i in range(6)]),
-        "DryRunResultPage": lambda: DryRunResultPage("lab", result),
-        "PublishProgressModal": lambda: PublishProgressModal("lab", 100),
-        "PreparePublishModal": lambda: PreparePublishModal("lab"),
+        "DryRunReport": lambda: _in_a_page(lambda: DryRunReport(result)),
+        "TransferView": lambda: _in_a_page(lambda: TransferView(PUBLISH, "lab")),
         "PathPickPage": lambda: PathPickPage("Pick a directory", "sub", tempfile.mkdtemp()),
-        "InfoModal": lambda: InfoModal("Title", "A message body."),
         "ConfirmDialog": lambda: ConfirmDialog("Title", "Really do the thing?"),
         "HelpDialog": lambda: HelpDialog("Repositories", [(k, f"does {k}") for k in "asdpe"],
                                          "Notes about this page."),

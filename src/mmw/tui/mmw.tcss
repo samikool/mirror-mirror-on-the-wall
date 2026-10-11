@@ -273,10 +273,11 @@ NetworkDetail .empty-msg { color: $text-muted; }
 NetworkDetail #mirror-list { height: auto; margin-top: 1; }
 
 /* ── Publish reports and dialogs ─────────────────────────────────────── */
-DryRunResultPage #dry-run-table { width: 1fr; height: auto; max-height: 24; margin-bottom: 1; }
-DryRunResultPage .totals { width: 1fr; color: $primary; text-style: bold; }
-DryRunResultPage .totals-note { width: 1fr; }
-DryRunResultPage .du-line, CertsPage .host-entry, CertsPage .path-line {
+DryRunReport { height: auto; max-height: 60%; padding: 0 1; }
+DryRunReport #dry-run-table { width: 1fr; height: auto; max-height: 16; margin-bottom: 1; }
+DryRunReport .totals { width: 1fr; color: $primary; text-style: bold; }
+DryRunReport .totals-note { width: 1fr; }
+DryRunReport .du-line, CertsPage .host-entry, CertsPage .path-line {
     width: 1fr;
     height: 1;
     text-wrap: nowrap;
@@ -284,8 +285,8 @@ DryRunResultPage .du-line, CertsPage .host-entry, CertsPage .path-line {
 }
 CertsPage .success-line, CertsPage .error-line { margin-bottom: 1; }
 CertsPage .host-entry { padding-left: 2; }
-BundleModeModal, InfoModal { align: center middle; }
-BundleModeModal > Vertical, InfoModal > Vertical {
+BundleModeModal { align: center middle; }
+BundleModeModal > Vertical {
     width: 64;
     max-width: 90%;
     height: auto;
@@ -293,12 +294,10 @@ BundleModeModal > Vertical, InfoModal > Vertical {
     border: round $primary;
     background: $surface;
 }
-InfoModal > Vertical { border: round $warning; }
-BundleModeModal .title, InfoModal .modal-title { text-style: bold; margin-bottom: 1; }
-InfoModal .modal-title { color: $warning; }
-BundleModeModal Label, InfoModal Label { width: 1fr; }
-BundleModeModal Horizontal, InfoModal Horizontal { height: 1; align: right middle; margin-top: 1; }
-BundleModeModal Button, InfoModal Button { margin-left: 2; min-width: 0; width: auto; }
+BundleModeModal .title { text-style: bold; margin-bottom: 1; }
+BundleModeModal Label { width: 1fr; }
+BundleModeModal Horizontal { height: 1; align: right middle; margin-top: 1; }
+BundleModeModal Button { margin-left: 2; min-width: 0; width: auto; }
 
 /* ── Sync ────────────────────────────────────────────────────────────── */
 SyncView { height: 1fr; }
@@ -336,14 +335,9 @@ StatsFooter {
 }
 StatsFooter.complete { background: $mmw-ok 20%; }
 
-/* ── Transfer progress (publish / bundle) ────────────────────────────── */
-PublishProgressModal, BundleProgressModal { align: center middle; }
-PublishProgressModal > Vertical, BundleProgressModal > Vertical {
-    width: 95%;
-    height: 90%;
-    border: double $primary;
-    background: $surface;
-}
+/* ── Transfer panel (publish / bundle) ───────────────────────────────── */
+PublishSection #publish-idle { color: $text-muted; padding: 1 0; }
+TransferView { height: 1fr; }
 .xfer-title-bar {
     background: $primary-darken-3;
     padding: 0 2;
@@ -360,43 +354,7 @@ PublishProgressModal > Vertical, BundleProgressModal > Vertical {
 .xfer-stats { height: 1; color: $text; margin-top: 1; }
 .xfer-eta { height: 1; color: $text-muted; margin-bottom: 1; }
 .xfer-log { height: 1fr; border-top: solid $primary-darken-2; background: $background; }
-.xfer-controls {
-    height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
-    align: right middle;
-    padding: 0 2;
-    background: $primary-darken-3;
-    border-top: solid $primary-darken-1;
-    dock: bottom;
-}
-.xfer-footer-label { width: 1fr; color: $text-muted; content-align: left middle; }
-.xfer-controls #btn-stop { margin-left: 1; }
-
-/* ── PreparePublishModal ─────────────────────────────────────────────── */
-PreparePublishModal { align: center middle; }
-PreparePublishModal > Vertical {
-    width: 82;
-    max-width: 96%;
-    height: 26;
-    max-height: 90%;
-    border: double $primary;
-    background: $surface;
-}
-PreparePublishModal #pp-title {
-    height: 1;
-    background: $primary-darken-3;
-    padding: 0 2;
-    color: $text-muted;
-    text-style: bold;
-}
-PreparePublishModal #pp-phase-area { height: auto; padding: 1 2 0 2; }
-PreparePublishModal #pp-phase { color: $text; text-style: bold; margin-bottom: 1; }
-PreparePublishModal ProgressBar { margin-bottom: 0; }
-PreparePublishModal #pp-log {
-    height: 1fr;
-    border-top: solid $primary-darken-2;
-    background: $background;
-    margin-top: 1;
-}
+.xfer-footer-label { height: 1; width: 1fr; color: $text-muted; padding: 0 2; }
 
 /* ── DeleteProgressModal ─────────────────────────────────────────────── */
 DeleteProgressModal { align: center middle; }

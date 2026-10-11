@@ -112,6 +112,27 @@ def read_manifest(path: Path) -> tuple[ManifestHeader, dict[str, str]]:
     return header, files
 
 
+def iter_manifest(path: Path):
+    """(header, rows) with `rows` a generator of (path, checksum) — streamed,
+    so a 700k-file manifest never has to be held whole."""
+    import io
+    dctx = zstandard.ZstdDecompressor()
+    raw = open(path, "rb")
+    text = io.TextIOWrapper(dctx.stream_reader(raw), encoding="utf-8")
+    header = ManifestHeader(**json.loads(text.readline()))
+
+    def rows():
+        try:
+            for line in text:
+                if line.strip():
+                    row = json.loads(line)
+                    yield row["p"], row["c"]
+        finally:
+            text.close()
+            raw.close()
+    return header, rows()
+
+
 def latest_manifest_path(mirror_dir: Path, network: str) -> Path | None:
     """Newest manifest by timestamp, or None if this network was never bundled."""
     d = ledger_dir(mirror_dir, network)

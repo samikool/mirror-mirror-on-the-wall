@@ -387,6 +387,58 @@ def cmd_bundle(
                          allow_incomplete=allow_incomplete))
 
 
+snapshot_app = typer.Typer(
+    help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
+    no_args_is_help=True,
+)
+app.add_typer(snapshot_app, name="snapshot")
+_SNAP_NET = typer.Option(..., "--network", "-n", help="The network")
+
+
+@snapshot_app.command("take")
+def cmd_snapshot_take(network: str = _SNAP_NET,
+                      label: str = typer.Option(None, "--label", "-l",
+                                                help="A name for it, e.g. pre-upgrade")):
+    """Record the network's current state as a snapshot."""
+    from mmw.commands.snapshot import take
+    raise typer.Exit(take(_cfg_dir(), network, label))
+
+
+@snapshot_app.command("list")
+def cmd_snapshot_list(network: str = _SNAP_NET):
+    """List the network's snapshots, newest first, with the disk each alone holds."""
+    from mmw.commands.snapshot import list_
+    raise typer.Exit(list_(_cfg_dir(), network))
+
+
+@snapshot_app.command("rename")
+def cmd_snapshot_rename(ref: str = typer.Argument(..., help="Stamp, label or id"),
+                        label: str = typer.Argument(..., help="The new label"),
+                        network: str = _SNAP_NET):
+    """Label (or relabel) a snapshot."""
+    from mmw.commands.snapshot import rename
+    raise typer.Exit(rename(_cfg_dir(), network, ref, label))
+
+
+@snapshot_app.command("delete")
+def cmd_snapshot_delete(ref: str = typer.Argument(..., help="Stamp, label or id"),
+                        network: str = _SNAP_NET):
+    """Delete a snapshot. `mmw prune` then frees the files only it kept."""
+    from mmw.commands.snapshot import delete
+    raise typer.Exit(delete(_cfg_dir(), network, ref))
+
+
+@snapshot_app.command("clean")
+def cmd_snapshot_clean(network: str = _SNAP_NET,
+                       keep: int = typer.Option(..., "--keep", min=0,
+                                                help="How many of the newest to keep"),
+                       yes: bool = typer.Option(False, "--yes", "-y",
+                                                help="Delete — without it, only preview")):
+    """Delete all but the newest N snapshots (previews unless --yes)."""
+    from mmw.commands.snapshot import clean
+    raise typer.Exit(clean(_cfg_dir(), network, keep, yes))
+
+
 @app.command("verify")
 def cmd_verify(
     network: str = typer.Option(None, "--network", "-n", help="Verify only this network's mirrors"),

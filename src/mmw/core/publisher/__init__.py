@@ -91,6 +91,45 @@ def publish_network(
         result.mirrors.append(r)
         return result
 
+    from mmw.core.certs import servable_paths
+    # Served straight from cert_dir: a publish destination is on this
+    # machine, and the key never enters a served tree.
+    tls_paths = servable_paths(network, cfg) if network.nginx else None
+    tls = (str(tls_paths[0]), str(tls_paths[1])) if tls_paths else None
+    sink = TreeSink(network.root, progress=progress, stop_event=stop_event)
+    try:
+        with Pool(mirror_dir, read_only=True) as pool:
+            walk_network(network, cfg, mirror_dir, sink, pool, result,
+                         nginx_root=str(network.root), tls=tls, prune=network.prune,
+                         progress=progress, stop_event=stop_event,
+                         mirror_start_callback=mirror_start_callback)
+    finally:
+        sink.close()
+
+    return result
+
+
+def walk_network(
+    network: NetworkConfig,
+    cfg: Config,
+    mirror_dir: Path,
+    sink,
+    pool: Pool,
+    result: NetworkPublishResult,
+    *,
+    nginx_root: str | None,
+    tls: tuple[str, str] | None = None,
+    prune: bool = False,
+    progress=None,
+    stop_event=None,
+    mirror_start_callback=None,
+) -> list:
+    """Lay a network's complete tree into `sink` from `pool`: every group,
+    dist-upgrade, nginx (only with `nginx_root` — its config embeds the
+    destination), keys and mirrored upstream files. `publish_network` passes a
+    `TreeSink`; taking a snapshot passes a recording sink. Returns the mirrors
+    walked.
+    """
     mirror_map = {m.name: m for m in network_mirrors(network, cfg, mirror_dir)}
     selected_names = list(mirror_map)
 
@@ -113,76 +152,66 @@ def publish_network(
     # be in that group's `keep`, not pruned and relinked every publish.
     upstream_paths = upstream_files(mirror_dir, published_mirrors)
 
-    sink = TreeSink(network.root, progress=progress, stop_event=stop_event)
-    try:
-        with Pool(mirror_dir, read_only=True) as pool:
-            total_groups = len(groups)
-            for idx, (base, mirrors) in enumerate(groups.items()):
-                if stop_event and stop_event.is_set():
-                    break
-                if mirror_start_callback:
-                    mirror_start_callback(mirrors[0].name, idx + 1, total_groups)
-                nested = {b for b in all_bases if b != base and b.startswith(base + "/")}
-                result.mirrors.append(publish_group(
-                    mirrors, sink, pool,
-                    progress=progress, stop_event=stop_event,
-                    prune=network.prune, prune_exclude=nested,
-                    keep_extra=set(upstream_paths),
-                ))
+    total_groups = len(groups)
+    for idx, (base, mirrors) in enumerate(groups.items()):
+        if stop_event and stop_event.is_set():
+            break
+        if mirror_start_callback:
+            mirror_start_callback(mirrors[0].name, idx + 1, total_groups)
+        nested = {b for b in all_bases if b != base and b.startswith(base + "/")}
+        result.mirrors.append(publish_group(
+            mirrors, sink, pool,
+            progress=progress, stop_event=stop_event,
+            prune=prune, prune_exclude=nested,
+            keep_extra=set(upstream_paths),
+        ))
 
-            if network.dist_upgrade and not (stop_event and stop_event.is_set()):
-                paths, warnings = dist_upgrade_info(network, cfg, pool)
-                result.dist_upgrade_paths = paths
-                result.dist_upgrade_warnings = warnings
-                publish_changelogs(sink, pool, result)
-                write_upgrade_md(sink, network, pool, paths, result.dist_upgrade_warnings,
-                                 mirrors=[mirror_map[n] for n in selected_names
-                                          if n in mirror_map])
+    if network.dist_upgrade and not (stop_event and stop_event.is_set()):
+        paths, warnings = dist_upgrade_info(network, cfg, pool)
+        result.dist_upgrade_paths = paths
+        result.dist_upgrade_warnings = warnings
+        publish_changelogs(sink, pool, result)
+        write_upgrade_md(sink, network, pool, paths, result.dist_upgrade_warnings,
+                         mirrors=[mirror_map[n] for n in selected_names
+                                  if n in mirror_map])
 
-            # Must run before sink.close(): BundleSink (Task 6) finalizes the
-            # whole archive there, so anything written after close is dropped.
-            if not (stop_event and stop_event.is_set()):
-                nginx_rels: set[str] = set()
-                if network.nginx:
-                    from mmw.core.certs import CHANGELOGS_HOST, servable_paths
-                    from mmw.core.publisher.nginx import nginx_files
-                    # Served straight from cert_dir: a publish destination is
-                    # on this machine, and the key never enters a served tree.
-                    tls_paths = servable_paths(network, cfg)
-                    tls = (str(tls_paths[0]), str(tls_paths[1])) if tls_paths else None
-                    extra = upstream_file_hosts(upstream_paths)
-                    if network.dist_upgrade:
-                        extra.append(CHANGELOGS_HOST)
-                    for rel, data in nginx_files(published_mirrors, str(network.root),
-                                                 tls=tls, extra_hosts=extra).items():
-                        sink.write(rel, data)
-                        nginx_rels.add(rel)
+    # Must run before sink.close(): BundleSink (Task 6) finalizes the
+    # whole archive there, so anything written after close is dropped.
+    if not (stop_event and stop_event.is_set()):
+        nginx_rels: set[str] = set()
+        if network.nginx and nginx_root is not None:
+            from mmw.core.certs import CHANGELOGS_HOST
+            from mmw.core.publisher.nginx import nginx_files
+            extra = upstream_file_hosts(upstream_paths)
+            if network.dist_upgrade:
+                extra.append(CHANGELOGS_HOST)
+            for rel, data in nginx_files(published_mirrors, nginx_root,
+                                         tls=tls, extra_hosts=extra).items():
+                sink.write(rel, data)
+                nginx_rels.add(rel)
 
-                # `publish_keys` returns (errors, published_rels). Assigning the
-                # tuple to `key_errors` and extending a result's error list with
-                # it produced `[[], set()]` — two bogus "errors" on every clean
-                # publish, which is how this was caught.
-                key_errors, key_rels = publish_keys(sink, mirror_dir, published_mirrors)
-                key_errors += publish_upstream_files(sink, upstream_paths)
-                if key_errors:
-                    r = MirrorPublishResult(mirror_name="keys")
-                    r.errors.extend(key_errors)
-                    result.mirrors.append(r)
+        # `publish_keys` returns (errors, published_rels). Assigning the
+        # tuple to `key_errors` and extending a result's error list with
+        # it produced `[[], set()]` — two bogus "errors" on every clean
+        # publish, which is how this was caught.
+        key_errors, key_rels = publish_keys(sink, mirror_dir, published_mirrors)
+        key_errors += publish_upstream_files(sink, upstream_paths)
+        if key_errors:
+            r = MirrorPublishResult(mirror_name="keys")
+            r.errors.extend(key_errors)
+            result.mirrors.append(r)
 
-                # The same three reconciliations `bundle_network` performs, for
-                # the same reason: `nginx/` and `keys/` live outside every
-                # mirror_base, and a `mirror_base` that no group produced any
-                # more is never walked at all — so dropping a repository from a
-                # network left its whole stale subtree, its nginx site file and
-                # its keys being served indefinitely, with `prune = true` giving
-                # no warning. Publish and bundle must agree here or the two
-                # halves of the pair drift apart again.
-                if network.prune:
-                    reconcile_extra_prefix(sink, "nginx", nginx_rels)
-                    reconcile_extra_prefix(sink, "keys", key_rels)
-                    sink.prune_stale_bases(
-                        all_bases | upstream_file_live_dirs(upstream_paths, all_bases))
-    finally:
-        sink.close()
-
-    return result
+        # The same three reconciliations `bundle_network` performs, for
+        # the same reason: `nginx/` and `keys/` live outside every
+        # mirror_base, and a `mirror_base` that no group produced any
+        # more is never walked at all — so dropping a repository from a
+        # network left its whole stale subtree, its nginx site file and
+        # its keys being served indefinitely, with `prune = true` giving
+        # no warning. Publish and bundle must agree here or the two
+        # halves of the pair drift apart again.
+        if prune:
+            reconcile_extra_prefix(sink, "nginx", nginx_rels)
+            reconcile_extra_prefix(sink, "keys", key_rels)
+            sink.prune_stale_bases(
+                all_bases | upstream_file_live_dirs(upstream_paths, all_bases))
+    return published_mirrors

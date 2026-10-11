@@ -281,9 +281,10 @@ class PublishFlows:
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return
-        if net.certs and not view.stop_event.is_set() and not result.errors:
+        stopped = view.stop_event.is_set()     # the publish's own outcome
+        if net.certs and not stopped and not result.errors:
             await self._certs_after_publish(net, view)
-        view.mark_done(result)
+        view.mark_done(result, stopped=stopped)
 
     async def _certs_after_publish(self, net: "config.NetworkConfig", view) -> None:
         """What headless `mmw publish` does after a clean publish of a certs

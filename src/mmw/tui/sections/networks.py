@@ -63,8 +63,16 @@ class NetworksPage(Page):
         yield Button("Certs", id="btn-net-certs", compact=True)
 
     async def on_mount(self) -> None:
+        # A transfer finishing while this section is the one showing: re-read
+        # the detail now, not only on the next visit (on_screen_resume).
+        self.app.transfer_finished_signal.subscribe(self, self._transfer_finished)
         await self.refresh_rows()
         self.query_one("#net-list", ListView).focus()
+
+    def _transfer_finished(self, _: object) -> None:
+        if self.app.screen is self and self._seen_cfg is self.app.cfg:
+            self._seen_transfers = self.app.transfers_finished
+            self._show_detail()
 
     def on_screen_resume(self) -> None:
         super().on_screen_resume()
@@ -146,6 +154,13 @@ class NetworksPage(Page):
         self.start_flow(lambda: self._start_transfer(verb, net))
 
     async def _start_transfer(self, verb: str, net: "config.NetworkConfig") -> None:
+        busy = self.app.active_transfer
+        if busy is not None and busy.running:
+            # Before any question: picking delta/full only to be refused is
+            # worse than being refused. (start_transfer checks again.)
+            self.notify(f"Already working on {busy.network_name} — see the Publish section.",
+                        severity="warning")
+            return
         full = False
         if verb == "bundle":
             if net.bundle_dir is None:

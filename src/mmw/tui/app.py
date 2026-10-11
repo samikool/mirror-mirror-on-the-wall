@@ -5,6 +5,7 @@ from pathlib import Path
 
 from textual.app import ScreenStackError
 from textual.binding import Binding
+from textual.signal import Signal
 from textual.theme import Theme
 
 from mmw.core import config
@@ -56,6 +57,7 @@ class MmwApp(ThemedApp):
         # Bumped as each publish / bundle finishes: Networks re-reads its
         # detail pane when it sees a new value, so the stats are current.
         self.transfers_finished = 0
+        self.transfer_finished_signal: Signal[None] = Signal(self, "transfer-finished")
         self.cfg = cfg
         self.cfg_dir = cfg_dir
         self._startup_notes = self.apply_config_theme(cfg, cfg_dir) if cfg is not None else []

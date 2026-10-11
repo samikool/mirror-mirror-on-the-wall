@@ -7,6 +7,7 @@ transfer at a time; a finished one's panel stays until the next starts.
 """
 from textual import on
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.widgets import Static
 
 from mmw.core import config
@@ -25,6 +26,7 @@ VERBS = {"publish": PUBLISH, "dry_run": PUBLISH, "bundle": BUNDLE}
 class PublishSection(Page):
     TITLE = "Publish"
     SCROLLS = False
+    BINDINGS = [Binding("x", "stop", "Stop")]
 
     def __init__(self):
         super().__init__()
@@ -55,6 +57,7 @@ class PublishSection(Page):
         self.query_one("#publish-idle").display = False
         await self.query_one("#page-body").mount(self.view)
         self.query_one("#btn-transfer-stop", Button).disabled = False
+        self.refresh_bindings()                 # x Stop, while it runs
         what = {"publish": "Publishing", "dry_run": "Dry run of", "bundle": "Bundling"}[verb]
         self.set_status(f"{what} {net.name}…")
         if self._flows is None:
@@ -100,6 +103,7 @@ class PublishSection(Page):
         view = event.view
         self._decision_buttons(False)
         self.query_one("#btn-transfer-stop", Button).disabled = True
+        self.refresh_bindings()
         kind = {"information": "ok", "error": "error"}.get(view.severity, "info")
         self.set_status(view.summary(), kind)
         # A toast too: the user may be in another section, and an error or a
@@ -107,13 +111,30 @@ class PublishSection(Page):
         self.notify(view.summary(), severity=view.severity,
                     timeout=10 if view.severity == "information" else 20)
         self.app.transfers_finished += 1
+        self.app.transfer_finished_signal.publish(None)
 
     @on(Button.Pressed, "#btn-transfer-stop")
     def _stop_pressed(self) -> None:
+        self._ask_stop()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "stop":
+            # Offered (and shown in the footer) only while there is
+            # something to stop.
+            return self.view is not None and self.view.running
+        return super().check_action(action, parameters)
+
+    def action_stop(self) -> None:
+        if self.view is not None and self.view.running:
+            self._ask_stop()
+
+    def _ask_stop(self) -> None:
         def answer(yes: bool | None) -> None:
             if yes and self.view is not None and self.view.running:
                 self.view.stop()
                 self._decision_buttons(False)
+                self.query_one("#btn-transfer-stop", Button).disabled = True
+                self.refresh_bindings()
                 self.set_status("Stopping — the current file finishes first.")
         self.app.push_screen(ConfirmDialog(
             "Stop?", "Stop after the current file. What is already published stays.",

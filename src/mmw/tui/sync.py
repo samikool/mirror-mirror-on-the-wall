@@ -529,6 +529,11 @@ class SyncView(Vertical):
         self._sem: asyncio.Semaphore | None = None
         self._dry_run = dry_run
         self._complete_shown = False
+        # The end-of-run pool scan: "" (not yet), "queued" (waiting for an
+        # earlier scan to land) or "running"; `_final_scan_done` once the
+        # footer shows it and the tick has stopped.
+        self._final_scan = ""
+        self._final_scan_done = False
         # dry-run aggregate totals (accumulated as results arrive)
         self._dr_total = 0
         self._dr_in_pool = 0
@@ -573,7 +578,7 @@ class SyncView(Vertical):
         # package downloads in flight globally, competed for fairly.
         self._sem = asyncio.Semaphore(self._cfg.settings.max_connections)
         self._keys_coord = KeySyncCoordinator(self._cfg.settings.mirror_dir)
-        self.set_interval(1 / 60, self._tick)
+        self._ticker = self.set_interval(1 / 60, self._tick)
         # Opening the pool is disk work (mkdir, SQLite connect, schema script,
         # `_reap_stale_tmp()`), so it runs on a thread; `_tick` tolerates
         # `self._pool` being None, and no mirror starts before the pool exists.
@@ -696,6 +701,13 @@ class SyncView(Vertical):
             self._pool_stats = stats
         self._pool_stats_at = time.monotonic()   # spaced from completion
         self._pool_stats_inflight = False
+        if self._final_scan == "running":
+            self._render_footer()
+            self._end_ticker()
+        elif self._final_scan == "queued":
+            self._final_scan = "running"
+            self._pool_stats_inflight = True
+            self._pool_stats_worker()
 
     def _tick(self):
         now = time.monotonic()
@@ -719,6 +731,9 @@ class SyncView(Vertical):
                 self._maybe_refresh_pool_stats(now)
             except Exception:
                 self._pool_stats_inflight = False
+        self._render_footer()
+
+    def _render_footer(self) -> None:
         try:
             footer = self.query_one(StatsFooter)
             cards = list(self._cards.values())
@@ -775,6 +790,27 @@ class SyncView(Vertical):
         except Exception:
             pass                # unmounted while finishing (the app is exiting)
         self.post_message(self.Completed(self))
+        self._finish_ticking()
+
+    def _finish_ticking(self) -> None:
+        """Nothing moves once every card is done, so the 60 Hz tick stops —
+        but only after one last pool scan has reached the footer: its totals
+        are the run's final word, and the 5 s scan cadence can leave them
+        stale by a whole interval."""
+        if self._pool is None or self._dry_run:
+            self._render_footer()
+            self._end_ticker()
+            return
+        # The final scan must *start* after the end; one already in flight
+        # began before it, so the final one follows when that lands.
+        self._final_scan = "queued" if self._pool_stats_inflight else "running"
+        if self._final_scan == "running":
+            self._pool_stats_inflight = True
+            self._pool_stats_worker()       # lands in _on_pool_stats
+
+    def _end_ticker(self) -> None:
+        self._final_scan_done = True
+        self._ticker.stop()
 
     def summary(self) -> str:
         """One line for the hosting page once every mirror is done."""

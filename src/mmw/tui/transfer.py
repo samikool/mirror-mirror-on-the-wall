@@ -173,6 +173,10 @@ class TransferView(Vertical):
         self._result = None
         self._error_msg: str = ""
         self._note: str = ""
+        # Whether it was stopped, decided when the work itself returned — a
+        # Stop pressed afterwards (during certs, or unmounting a finished
+        # panel) must not turn a finished run into a stopped one.
+        self._stopped_at_end = False
         self._done_displayed: bool = False
         self._decision: "asyncio.Future[bool] | None" = None
 
@@ -208,7 +212,8 @@ class TransferView(Vertical):
         self._ticker = self.set_interval(1 / 60, self._tick)
 
     def on_unmount(self) -> None:
-        self.stop_event.set()
+        if self.running:
+            self.stop_event.set()           # its worker must not outlive it
         if self._decision is not None and not self._decision.done():
             self._decision.set_result(False)
         if getattr(self.app, "active_transfer", None) is self:
@@ -233,7 +238,7 @@ class TransferView(Vertical):
             return "error"
         if self._note:
             return "note"
-        return "stopped" if self.stop_event.is_set() else "ok"
+        return "stopped" if self._stopped_at_end else "ok"
 
     @property
     def result(self):
@@ -375,9 +380,12 @@ class TransferView(Vertical):
         self.query_one(f"#{self.ID_PREFIX}-title-bar", Static).update(
             f"  Stopping  {escape(self._network_name)}  [dim](finishing current file…)[/]")
 
-    def mark_done(self, result) -> None:
-        """From the transfer thread (or its await) when it completes."""
+    def mark_done(self, result, *, stopped: bool | None = None) -> None:
+        """From the transfer thread (or its await) when it completes.
+        `stopped`: whether the work was stopped, as of when it returned
+        (default: the stop event now)."""
         with self._lock:
+            self._stopped_at_end = self.stop_event.is_set() if stopped is None else stopped
             self._transfer_done = True
             self._result = result
 

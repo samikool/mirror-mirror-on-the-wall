@@ -718,3 +718,44 @@ def test_bundle_sink_close_progress_is_optional(pool, tmp_path):
     sink.link(src, "host/repo/pool/a.deb", 5, cs, KIND_PKG)
     sink.close()   # must not raise
     assert out.exists()
+
+
+def test_bundle_sink_sent_bytes_counts_duplicate_content_once(pool, tmp_path):
+    """A repeated checksum ships as a tar hardlink with no payload, so the
+    archive-start total must count its bytes once — otherwise the total is
+    the logical tree size and the progress bar stalls short of 100% (oak:
+    5.11 TB announced against a 4.65 TB tar)."""
+    content = b"arch-all-package-bytes"
+    cs, src = _seed(pool, content, "all.deb")
+    out = tmp_path / "lab.tar"
+    events: list[str] = []
+    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n",
+                      progress=lambda rel, status: events.append(status))
+    sink.link(src, "archive.example/ubuntu/pool/all.deb", len(content), cs, KIND_PKG)
+    sink.link(src, "ports.example/ubuntu/pool/all.deb", len(content), cs, KIND_PKG)
+    assert sink.sent == 2
+    assert sink.sent_bytes == len(content)
+
+    sink.close()
+    start = next(s for s in events if s.startswith("archive-start:"))
+    assert start == f"archive-start:2:{len(content)}"
+    m = _members(out)
+    assert m["archive.example/ubuntu/pool/all.deb"] == content
+    assert m["ports.example/ubuntu/pool/all.deb"] == b"->archive.example/ubuntu/pool/all.deb"
+
+
+def test_bundle_sink_sent_bytes_after_dropping_first_duplicate(pool, tmp_path):
+    """When the first occurrence of a checksum is dropped in close(), the
+    surviving duplicate is written in full — its bytes must still count."""
+    content = b"shared-bytes"
+    cs, src = _seed(pool, content, "s.deb")
+    out = tmp_path / "lab.tar"
+    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"")
+    # Recorded size disagrees with the blob on disk → dropped in close().
+    sink.link(src, "a.example/pool/s.deb", len(content) + 1, cs, KIND_PKG)
+    sink.link(src, "b.example/pool/s.deb", len(content), cs, KIND_PKG)
+    sink.close()
+
+    assert sink.sent == 1
+    assert sink.sent_bytes == len(content)
+    assert _members(out)["b.example/pool/s.deb"] == content

@@ -438,8 +438,6 @@ class BundleSink:
         self._generated: dict[str, bytes] = {}
         self._seen: set[str] = set()
         self.deleted: list[str] = []
-        self.sent = 0
-        self.sent_bytes = 0
         self.errors: list[str] = []
 
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
@@ -458,8 +456,6 @@ class BundleSink:
         if not self._full and self._prev.get(rel) == checksum and checksum:
             return "skipped"
         self._send.append((rel, src, size, checksum))
-        self.sent += 1
-        self.sent_bytes += size
         return "linked"
 
     def write(self, rel: str, data: bytes) -> None:
@@ -469,8 +465,30 @@ class BundleSink:
         if not self._full and self._prev.get(rel) == checksum:
             return
         self._generated[rel] = data
-        self.sent += 1
-        self.sent_bytes += len(data)
+
+    @property
+    def sent(self) -> int:
+        """Tar entries this bundle carries, hardlink entries included."""
+        return len(self._send) + len(self._generated)
+
+    @property
+    def sent_bytes(self) -> int:
+        """File bytes this bundle's tar actually carries. A repeated checksum
+        is written as a hardlink entry with no payload (see close()), so it
+        is counted once — summing every row reported the logical tree size,
+        ~10% over the real tar on oak (arch:all debs on both archive and
+        ports, CUDA debs shared across repos), and the archive progress bar
+        stalled at ~91% against it.
+        """
+        seen: set[str] = set()
+        total = sum(len(d) for d in self._generated.values())
+        for _rel, _src, size, checksum in self._send:
+            if checksum:
+                if checksum in seen:
+                    continue
+                seen.add(checksum)
+            total += size
+        return total
 
     def finalize_group(self, base: str, keep: set[str],
                        live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
@@ -617,10 +635,6 @@ class BundleSink:
         if dropped:
             self.manifest_rows = [(r, c) for r, c in self.manifest_rows
                                   if r not in dropped]
-            for rel, _src, size, _cs in self._send:
-                if rel in dropped:
-                    self.sent -= 1
-                    self.sent_bytes -= size
             self._send = send
 
         # `_send`/`_generated` are final the instant link()/write() stop being

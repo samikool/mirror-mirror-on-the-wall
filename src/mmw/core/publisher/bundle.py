@@ -26,7 +26,7 @@ from mmw.core.publisher.manifest import (
     ledger_dir,
     write_manifest,
 )
-from mmw.core.certs import cert_dir, servable_paths
+from mmw.core.certs import bundle_tls_files
 from mmw.core.publisher.nginx import ROOT_PLACEHOLDER, recorded_nginx_files
 from mmw.core.publisher.results import BundleResult
 from mmw.core.publisher.sinks import TLS_DIR, BundleSink
@@ -92,12 +92,13 @@ def _write_checksum_file(target: Path) -> Path:
     return dest
 
 
-def _far_nginx(settings: str, tls_files: dict[str, bytes]) -> dict[str, bytes]:
+def _far_nginx(settings: str, certs: bool) -> dict[str, bytes]:
     """The far side's nginx config for a snapshot, with the root left as a
-    placeholder (apply.py fills it in)."""
-    tls = ((f"{ROOT_PLACEHOLDER}/{TLS_DIR}/mirror.crt",
-            f"{ROOT_PLACEHOLDER}/{TLS_DIR}/mirror.key") if tls_files else None)
-    return recorded_nginx_files(settings, ROOT_PLACEHOLDER, tls=tls)
+    placeholder (apply.py fills it in). A certs network's server blocks
+    include `.mmw/tls/https*.conf`, which apply.py writes once a certificate
+    signed on the far side matches the key."""
+    include = f"{ROOT_PLACEHOLDER}/{TLS_DIR}/https*.conf" if certs else None
+    return recorded_nginx_files(settings, ROOT_PLACEHOLDER, tls_include=include)
 
 
 _LAST = object()        # from_ref default: where the last bundle of this network went
@@ -186,21 +187,10 @@ def bundle_network(
     if start is not None and start.id == dest.id:
         raise ValueError(f"from and to are the same snapshot ({dest.stamp}) — nothing to send")
 
-    # Checked before any work: a certs network's bundle that cannot carry its
-    # certificate must not quietly ship as HTTP-only after an hour of
-    # archiving. (The private key rides along: that is what `certs` on a
-    # bundled network means.)
-    tls_files: dict[str, bytes] = {}
-    if network.certs:
-        tls_paths = servable_paths(network, cfg)
-        if tls_paths is None:
-            raise ValueError(
-                f"network '{network.name}' has certs = true but no usable "
-                f"signed certificate in {cert_dir(network, cfg)} — "
-                f"run `mmw certs -n {network.name} --ca CA.crt --ca-key CA.key`"
-            )
-        tls_files = {"mirror.crt": tls_paths[0].read_bytes(),
-                     "mirror.key": tls_paths[1].read_bytes()}
+    # A certs network's key and signing request ride every bundle; the CA
+    # lives on the far side, which signs there (sign.py) — nothing has to come
+    # back. A certificate signed on this side rides along too.
+    tls_files = bundle_tls_files(network, cfg) if network.certs else {}
 
     name = dest.stamp if start is None else f"{start.stamp}-to-{dest.stamp}"
     target = _free_target(network, name, out_path)
@@ -223,7 +213,7 @@ def bundle_network(
             # start's is regenerated the same way: unchanged, it isn't resent;
             # gone, it is deleted by the ordinary rule below.
             prev.update({rel: hashlib.sha256(data).hexdigest()
-                         for rel, data in _far_nginx(start.settings, tls_files).items()})
+                         for rel, data in _far_nginx(start.settings, network.certs).items()})
         sink = BundleSink(target, header, prev, apply_script_bytes(),
                           prune=network.prune, full=start is None,
                           progress=progress, tls_files=tls_files)
@@ -243,7 +233,7 @@ def bundle_network(
             result.own_errors.append("stopped before the bundle was written")
             return result
 
-        for rel, data in _far_nginx(dest.settings, tls_files).items():
+        for rel, data in _far_nginx(dest.settings, network.certs).items():
             sink.write(rel, data)
             dest_paths.add(rel)
 
@@ -263,6 +253,8 @@ def bundle_network(
     manifest_path = ledger_dir(mirror_dir, network.name) / f"{dest.stamp}{MANIFEST_SUFFIX}"
     write_manifest(manifest_path, sink.written_header or header, sink.manifest_rows)
     (target.parent / "apply.py").write_bytes(apply_script_bytes())
+    if network.certs:
+        (target.parent / "sign.py").write_bytes(tls_files["sign.py"])
     result.checksum_path = _write_checksum_file(target)
     result.manifest_path = manifest_path
     result.sent = sink.sent

@@ -111,6 +111,7 @@ def _server_names(mirrors: list[MirrorConfig]) -> dict[str, str]:
 
 def nginx_files(mirrors: list[MirrorConfig], root: str, *,
                 tls: tuple[str, str] | None = None,
+                tls_include: str | None = None,
                 extra_hosts: list[str] | tuple[str, ...] = ()) -> dict[str, bytes]:
     """Sink-relative path → file content (always exactly `nginx/mirror.conf`).
 
@@ -120,6 +121,12 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
     `tls` is `(certificate, key)` paths; when given, every server block also
     listens on 443 with them. Plain HTTP stays on either way — a client whose
     sources say `http://` must keep working.
+
+    `tls_include` (a bundle's far side, whose certificate is signed there):
+    every server block includes this wildcard path instead. nginx ignores a
+    wildcard include that matches nothing, so the config loads before any
+    certificate exists; apply.py writes the matching file — `listen 443 ssl`
+    and the certificate paths — once a signed certificate fits the key.
 
     `extra_hosts` are directories published beside the mirrors that are also
     their own hostname — `changelogs.ubuntu.com` for a `dist_upgrade` network,
@@ -132,14 +139,17 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
         head, sep, tail = h.rpartition("_")
         server_names.setdefault(h, head if sep and tail.isdigit() else h)
     hosts = sorted(set(hostnames(mirrors)) | set(extra_hosts))
-    tls_block = _TLS.format(cert=tls[0], key=tls[1]) if tls else ""
+    tls_block = (_TLS.format(cert=tls[0], key=tls[1]) if tls
+                 else f"    include {tls_include};\n" if tls_include else "")
     sites = "\n".join(
         _SITE.format(host=host, root=root, server_name=server_names.get(host, host),
                      tls=tls_block)
         for host in hosts
     )
     tls_note = ("#\n# HTTPS: every host also listens on 443 with\n"
-                f"#   {tls[0]}\n") if tls else ""
+                f"#   {tls[0]}\n") if tls else (
+        "#\n# HTTPS: on once a signed certificate is installed — apply.py then\n"
+        f"# writes {tls_include.replace('*', '')}\n") if tls_include else ""
     return {
         "nginx/mirror.conf": _MAIN.format(
             root=root,
@@ -151,7 +161,8 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
 
 
 def recorded_nginx_files(settings: str, root: str, *,
-                         tls: tuple[str, str] | None = None) -> dict[str, bytes]:
+                         tls: tuple[str, str] | None = None,
+                         tls_include: str | None = None) -> dict[str, bytes]:
     """`nginx_files` for a snapshot, from the settings recorded with it (a
     snapshot never stores its nginx config — that embeds a root). Empty when
     that network state had nginx off."""
@@ -166,4 +177,4 @@ def recorded_nginx_files(settings: str, root: str, *,
     extra = list(recorded.get("upstream_hosts", []))
     if rec_net.get("dist_upgrade"):
         extra.append(CHANGELOGS_HOST)
-    return nginx_files(mirrors, root, tls=tls, extra_hosts=extra)
+    return nginx_files(mirrors, root, tls=tls, tls_include=tls_include, extra_hosts=extra)

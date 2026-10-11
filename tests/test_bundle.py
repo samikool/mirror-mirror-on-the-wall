@@ -206,8 +206,7 @@ def test_full_ignores_the_ledger(seeded, tmp_path):
 def test_the_certs_directory_never_travels(seeded, tmp_path):
     """Parity with publish, which keeps mirror.key outside network.root so a
     misconfigured server can never serve it. A certs network's bundle carries
-    the signed cert and key — but only into `.mmw/tls/`, never a served path,
-    and never the certs/ working directory (CSR, openssl config)."""
+    its TLS files — but only into `.mmw/tls/`, never a served path."""
     mirror_dir, cfg = seeded
     _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
 
@@ -217,7 +216,9 @@ def test_the_certs_directory_never_travels(seeded, tmp_path):
     applied = tmp_path / "applied-certs"
     _extract(result.out_path, applied)
     tree = _tree(applied)
-    assert not any("certs/" in k or k.endswith(".csr") or k.endswith(".cnf") for k in tree)
+    assert not any("certs/" in k for k in tree)
+    assert all(k.startswith(".mmw/tls/") for k in tree
+               if k.endswith((".key", ".csr", ".cnf", ".crt")))
     assert [k for k in tree if "mirror.key" in k] == [".mmw/tls/mirror.key"]
 
 
@@ -540,13 +541,21 @@ def test_dist_upgrade_network_serves_changelogs(seeded, tmp_path):
     assert f"root {root}/changelogs.ubuntu.com;" in conf
 
 
-def test_certs_without_a_signed_cert_refuses_to_bundle_up_front(seeded, tmp_path):
-    """Not a silently HTTP-only bundle the far side's clients would refuse."""
+def test_a_certs_bundle_needs_nothing_signed_here(seeded, tmp_path):
+    """The CA may live only on the far side: the bundle carries the key, the
+    request and sign.py, and its nginx config waits for a certificate."""
     mirror_dir, cfg = seeded
     net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=True)
-    with pytest.raises(ValueError, match="no usable signed certificate"):
-        bundle_network(net, cfg, mirror_dir)
-    assert not (tmp_path / "out").exists() or not list((tmp_path / "out").glob("*.tar*"))
+    result = bundle_network(net, cfg, mirror_dir)
+    assert not result.errors
+    applied = tmp_path / "applied"
+    _extract(result.out_path, applied)
+    tls = sorted(p.name for p in (applied / ".mmw" / "tls").iterdir())
+    assert tls == ["mirror.cnf", "mirror.csr", "mirror.key", "sign.py"]
+    conf = (applied / "nginx" / "mirror.conf").read_text()
+    assert "include __MMW_ROOT__/.mmw/tls/https*.conf;" in conf
+    assert "listen 443" not in conf
+    assert (tmp_path / "out" / "sign.py").exists()
 
 
 def test_certs_bundle_round_trip(seeded, tmp_path):
@@ -567,7 +576,8 @@ def test_certs_bundle_round_trip(seeded, tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "TLS: mirror.crt, mirror.key" in proc.stdout
+    assert "TLS: mirror.cnf, mirror.crt, mirror.csr, mirror.key, sign.py" in proc.stdout
+    assert "HTTPS on" in proc.stdout
 
     tls = dest / ".mmw" / "tls"
     assert (tls / "mirror.crt").read_bytes() == crt.read_bytes()
@@ -576,9 +586,11 @@ def test_certs_bundle_round_trip(seeded, tmp_path):
     assert stat.S_IMODE(os.stat(tls).st_mode) == 0o700
 
     conf = (dest / "nginx" / "mirror.conf").read_text()
-    assert f"ssl_certificate {tls}/mirror.crt;" in conf
-    assert f"ssl_certificate_key {tls}/mirror.key;" in conf
+    assert f"include {tls}/https*.conf;" in conf
     assert "__MMW_ROOT__" not in conf
+    https = (tls / "https.conf").read_text()
+    assert f"ssl_certificate {tls}/mirror.crt;" in https
+    assert f"ssl_certificate_key {tls}/mirror.key;" in https
 
 
 def test_certs_ride_every_delta(seeded, tmp_path):

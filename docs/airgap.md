@@ -284,34 +284,53 @@ Clients whose sources say `https://` — vendor repositories like NVIDIA's, and
 a stock Ubuntu client's release-upgrade check against
 `https://changelogs.ubuntu.com` — need the mirror to answer on 443 with a
 certificate they trust. No server-side trick can fake a public certificate;
-this works when every client trusts **your** CA.
+this works when every client trusts **your** CA, which on an airgapped network
+lives on the airgapped side. Nothing has to come back across.
 
-On the connected side, with `certs = true` on the network:
+With `certs = true` on the network, every bundle carries the mirror's private
+key, its certificate signing request (every hostname the network serves) and
+`sign.py`. `apply.py` installs them in `{root}/.mmw/tls/` (key 0600, directory
+0700 — no server block serves it) and, until there is a certificate, says:
+
+```
+HTTPS waits for a signed certificate: python3 sign.py --ca CA.crt --ca-key CA.key /srv/www/lab
+```
+
+On the airgapped side, sign every mirror at once — name mirror roots, a
+directory of them, or `.csr` files; `sign.py` sits beside each bundle (and in
+`{root}/.mmw/tls/`):
 
 ```bash
-mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key   # writes mirror.crt
+python3 sign.py --ca site-ca.crt --ca-key site-ca.key /srv/www   # every root under it
+# lab  signed (no certificate yet): 7 hostname(s), until Oct 11 14:10:00 2028 GMT
+# oak  signed (no certificate yet): 7 hostname(s), until Oct 11 14:10:00 2028 GMT
+python3 apply.py --tls --root /srv/www/lab                       # then reload nginx
 ```
 
-Every bundle from then on carries `mirror.crt` and `mirror.key`; `apply.py` installs them in
-`{root}/.mmw/tls/` (key 0600, directory 0700 — no server block serves it) and
-the bundle's `nginx/mirror.conf` already points at them:
+Each certificate lands beside its request as `mirror.crt`. `apply.py --tls`
+(and every later apply) turns HTTPS on in the generated config: each server
+block includes `{root}/.mmw/tls/https*.conf`, a wildcard nginx ignores while
+nothing matches, and `apply.py` writes `https.conf` — `listen 443 ssl` and the
+certificate paths — only once the certificate fits the key. So the config
+loads before, during and after; plain HTTP never stops. Later bundles never
+carry a certificate they do not have, so the far side's survives every apply.
 
-```
-TLS: mirror.crt, mirror.key -> /srv/www/.mmw/tls
-```
+Using Nginx Proxy Manager or your own config instead? `--out DIR` also collects
+`NAME.crt`, `NAME.key` and `ca.crt` per mirror to load from there.
 
-They ride **every** bundle, delta or full, near the front of the archive, so a
-re-signed certificate reaches the far side with the next ordinary delta.
+`sign.py` needs Python 3.6+ and the `openssl` binary (1.1.1 or 3.x). It asks
+for an encrypted CA key's passphrase once, refuses a CA key that is not the
+CA certificate's, and leaves alone a certificate that still fits its key,
+covers every hostname and is not expiring within 30 days (`--force` re-signs).
+When a new repository brings a hostname, the next apply says the certificate
+does not cover it; run `sign.py` again.
 
 This puts the private key on your transfer media. A network whose media must
-not hold it keeps `certs` off, and its far side is served over HTTP only. A
-certs network refuses to bundle until its certificate is signed, rather than
-ship an HTTP-only bundle its clients would refuse.
+not hold it keeps `certs` off, and its far side is served over HTTP only.
 
-`mmw certs` re-checks the certificate on each run: a network that gained a
-hostname since signing (with `dist_upgrade`, `changelogs.ubuntu.com` is one),
-a key that no longer matches, or an expiry within 30 days is reported on
-stderr. Re-run it with `--ca` to re-sign, then bundle.
+If your CA is reachable from the connected side instead,
+`mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs there and the
+certificate rides every bundle too.
 
 If you do not run a CA, turn off the client checks that use HTTPS instead —
 for the release-upgrade check, `Prompt=never` in

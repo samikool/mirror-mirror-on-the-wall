@@ -17,7 +17,7 @@ SCRIPT = Path(__file__).parent.parent / "src" / "mmw" / "resources" / "apply.py"
 
 _STDLIB = {
     "argparse", "hashlib", "io", "json", "os", "posixpath", "shutil",
-    "sys", "tarfile", "tempfile",
+    "ssl", "sys", "tarfile", "tempfile",
 }
 
 

@@ -24,7 +24,7 @@ from textual.widgets import Checkbox, Input, Select, TextArea
 
 from mmw.core import config
 from mmw.core.draft import DIMENSIONS, RepositoryDraft
-from mmw.tui.key_modal import KeyPage
+from mmw.tui.key_modal import KeyPage, apply_key, key_summary
 from mmw.tui.pick import PickPage
 from mmw.tui.repositories import edited_source, format_overrides, parse_overrides  # noqa: F401
 from mmw.tui.ui.form import (
@@ -200,13 +200,15 @@ class EditSourcePage(Page):
     # ── key ──────────────────────────────────────────────────────────────────
 
     def _refresh_key_status(self) -> None:
-        state = self._draft.key_state()
-        text = {
-            "have": "[$mmw-ok]key set[/]",
-            "needs": f"[$mmw-warn]needs {escape(self._draft.gpg_key_name or '')}[/]",
-            "none": "[dim]no key[/]",
-        }[state]
-        self.query_one("#field-btn-key", ActionField).set_summary(text)
+        # The Key URL field is what gets saved, so it is what this reads: a
+        # key configured only by URL is a key, not "no key".
+        url = self.query_one("#edit-source-key-url", Input).value.strip()
+        self.query_one("#field-btn-key", ActionField).set_summary(
+            key_summary(self._draft, url))
+
+    @on(Input.Changed, "#edit-source-key-url")
+    def _key_url_changed(self) -> None:
+        self._refresh_key_status()
 
     @on(Button.Pressed, "#btn-key")
     def _key_pressed(self, event: "Button.Pressed") -> None:
@@ -218,10 +220,17 @@ class EditSourcePage(Page):
         result = await self.app.push_screen_wait(KeyPage(
             self._draft.name, self._draft.gpg_key_name, self._draft.gpg_key,
         ))
-        if result is None:
+        if not apply_key(self._draft, result):
             return                                  # cancelled: leave it alone
-        armour, name = result
-        self._draft.set_key(armour or None, name=name, source="pasted" if armour else "")
+        _, _, url = result
+        key_url = self.query_one("#edit-source-key-url", Input)
+        if url:
+            # Shown, not hidden: sync mirrors the key at this path too.
+            key_url.value = url
+        elif not self._draft.gpg_key:
+            # Cleared. The URL is a key too: left in place, the next sync
+            # would fetch the key just cleared straight back.
+            key_url.value = ""
         self._refresh_key_status()
 
     # ── result ───────────────────────────────────────────────────────────────

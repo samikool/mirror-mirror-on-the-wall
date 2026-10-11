@@ -212,8 +212,8 @@ def test_the_key_modal_loads_a_scanned_file(tmp_path):
             app.screen.query_one("#btn-save", Button).press()
             await _settle(pilot)
 
-        armour, name = app.result
-        assert "BEGIN PGP PUBLIC KEY BLOCK" in armour and name == "a.gpg"
+        armour, name, url = app.result
+        assert "BEGIN PGP PUBLIC KEY BLOCK" in armour and name == "a.gpg" and url is None
 
     _run(scenario)
 
@@ -240,7 +240,7 @@ def test_the_key_modal_can_clear_a_key():
             app.screen.query_one("#btn-clear", Button).press()
             await _settle(pilot)
 
-        assert app.result == ("", None)
+        assert app.result == ("", None, None)
 
     _run(scenario)
 
@@ -311,10 +311,50 @@ def test_the_key_modal_can_fetch_from_a_url(monkeypatch):
             app.screen.query_one("#btn-save", Button).press()
             await _settle(pilot)
 
-        armour, name = app.result
+        armour, name, url = app.result
         assert armour == ARMOUR.strip()
+        # Kept, so sync mirrors the key at its own upstream path and a vendor's
+        # `curl …/gpgkey` install line works against the mirror.
+        assert url == "https://nvidia.example/gpgkey"
 
     _run(scenario)
+
+
+def test_editing_a_fetched_key_drops_its_url(monkeypatch):
+    """The URL describes what was fetched; once the box says something else
+    it would publish a key the repository is not configured with."""
+    from mmw.core import keys
+
+    monkeypatch.setattr(keys, "fetch_key", lambda url, client: ARMOUR)
+
+    async def scenario():
+        app = _Harness(KeyPage("repo-a", "a.gpg"))
+        async with app.run_test() as pilot:
+            await _settle(pilot)
+            app.screen.query_one("#key-url", Input).value = "https://nvidia.example/gpgkey"
+            app.screen.query_one("#btn-fetch", Button).press()
+            await _settle(pilot, 60)
+            other = ARMOUR.replace("mQINBG", "mQINBH") if "mQINBG" in ARMOUR else ARMOUR + "\n"
+            app.screen.query_one("#key-area", TextArea).text = other.strip() + " "
+            app.screen.query_one("#btn-save", Button).press()
+            await _settle(pilot)
+
+        assert app.result[2] is None
+
+    _run(scenario)
+
+
+def test_a_key_fetched_in_bulk_review_keeps_its_url_into_the_config():
+    from mmw.core.draft import RepositoryDraft
+
+    d = RepositoryDraft(url="https://nvidia.example/libnvidia-container/stable/deb/amd64",
+                        provider="apt-flat", name="nv")
+    d.set_key(ARMOUR, source="fetched", url="https://nvidia.example/libnvidia-container/gpgkey")
+    src = d.to_source()
+    assert src.gpg_key_url == "https://nvidia.example/libnvidia-container/gpgkey"
+    assert RepositoryDraft.from_source(src).gpg_key_url == src.gpg_key_url
+    d.set_key(ARMOUR, source="pasted")             # replaced by a paste: no URL any more
+    assert d.to_source().gpg_key_url is None
 
 
 def test_the_key_modal_reports_a_failed_fetch_and_does_not_advance(monkeypatch):
@@ -452,3 +492,79 @@ def test_bulk_review_page_rows_escape_markup_and_controls_are_one_row():
             assert "x[b]y" in str(app.screen.query_one(".repo-url").render())
             assert all(b.region.height == 1 for b in app.screen.query("Button"))
     asyncio.run(go())
+
+
+def test_a_key_fetched_while_editing_a_repository_sets_its_key_url(monkeypatch):
+    """The reported bug: nvidia.github.io re-added, key fetched from
+    …/libnvidia-container/gpgkey — saved as pasted text with no gpg_key_url, so
+    nothing was mirrored at the key's own path."""
+    from mmw.core import config, keys
+    from mmw.tui.source_screens import EditSourcePage
+
+    url = "https://nvidia.example/libnvidia-container/gpgkey"
+    monkeypatch.setattr(keys, "fetch_key", lambda u, client: ARMOUR)
+    src = config.SourceConfig(url="https://nvidia.example/libnvidia-container/stable/deb/amd64",
+                              provider="apt-flat", name="nv", label="nvidia")
+
+    async def scenario():
+        app = _Harness(EditSourcePage(src))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            app.screen.query_one("#btn-key", Button).press()
+            await _settle(pilot)
+            app.screen.query_one("#key-url", Input).value = url
+            app.screen.query_one("#btn-fetch", Button).press()
+            await _settle(pilot, 60)
+            app.screen.query_one("#btn-save", Button).press()          # key page
+            await _settle(pilot)
+            assert app.screen.query_one("#edit-source-key-url", Input).value == url
+            app.screen.query_one("#btn-save-source", Button).press()
+            await _settle(pilot)
+
+        assert app.result.gpg_key_url == url
+        assert app.result.gpg_key == ARMOUR.strip()     # and an offline copy
+
+    _run(scenario)
+
+
+def _edit_with_key_page(src, on_key_page):
+    from mmw.tui.source_screens import EditSourcePage
+
+    async def scenario():
+        app = _Harness(EditSourcePage(src))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            app.screen.query_one("#btn-key", Button).press()
+            await _settle(pilot)
+            on_key_page(app.screen)
+            await _settle(pilot)
+            app.screen.query_one("#btn-save-source", Button).press()
+            await _settle(pilot)
+        return app.result
+    return asyncio.run(scenario())
+
+
+def test_clearing_the_key_also_clears_its_url():
+    """The URL *is* a key: left in place, sync fetches it again and the key
+    the user just cleared comes straight back."""
+    from mmw.core import config
+    src = config.SourceConfig(url="https://nvidia.example/deb/amd64", provider="apt-flat",
+                              name="nv", label="nvidia", gpg_key=ARMOUR.strip(),
+                              gpg_key_url="https://nvidia.example/gpgkey")
+    result = _edit_with_key_page(src, lambda s: s.query_one("#btn-clear", Button).press())
+    assert result.gpg_key is None and result.gpg_key_url is None
+
+
+def test_a_key_configured_only_by_url_shows_as_set():
+    from mmw.core import config
+    from mmw.tui.source_screens import EditSourcePage
+    src = config.SourceConfig(url="https://nvidia.example/deb/amd64", provider="apt-flat",
+                              name="nv", label="nvidia", gpg_key_url="https://nvidia.example/gpgkey")
+
+    async def scenario():
+        app = _Harness(EditSourcePage(src))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            return str(app.screen.query_one("#key-status").render())
+    shown = asyncio.run(scenario())
+    assert "no key" not in shown and "gpgkey" in shown

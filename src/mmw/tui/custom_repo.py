@@ -27,6 +27,7 @@ from mmw.core.draft import (
     DIMENSIONS, RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders,
 )
 from mmw.tui.bulk_review import BulkReviewPage
+from mmw.tui.key_modal import KeyPage, apply_key, key_summary
 from mmw.tui.path_pick import PathPickPage
 from mmw.tui.pick import PickPage
 from mmw.tui.ui.form import ActionField, ChoiceField, Form, Heading, TextField
@@ -98,6 +99,11 @@ class StepCustom(WizardStep):
                 *[ActionField(title.capitalize(), "", "Choose…", id=f"btn-{dim}",
                               summary_id=f"{dim}-summary", field_id=f"{dim}-row")
                   for dim, title in _DIMENSIONS],
+                # The same key page editing uses: scan a directory, fetch a URL
+                # (kept as the key URL, so it is mirrored at its own path), or paste.
+                ActionField("Key", "", "Key…", id="btn-key", summary_id="key-status",
+                            hint="The repository's GPG key — fetched, pasted, or found "
+                                 "in a directory of keyrings."),
             )
 
     def on_mount(self) -> None:
@@ -171,6 +177,7 @@ class StepCustom(WizardStep):
         self.query_one("#bulk-row").display = False
         self.query_one("#fields-container").display = True
         self._refresh_dimensions()
+        self._refresh_key()
 
     def _refresh_dimensions(self) -> None:
         for dim, _ in _DIMENSIONS:
@@ -621,6 +628,29 @@ class StepCustom(WizardStep):
     def _on_suite_dimensions(self, draft: RepositoryDraft, gen: int) -> None:
         if gen == self._probe_gen and draft is self._draft:
             self._refresh_dimensions()
+
+    # ── key ──────────────────────────────────────────────────────────────────
+
+    def _refresh_key(self) -> None:
+        if self._draft is not None:
+            self.query_one("#field-btn-key", ActionField).set_summary(key_summary(self._draft))
+
+    @on(Button.Pressed, "#btn-key")
+    def _key_pressed(self, event: "Button.Pressed") -> None:
+        event.stop()
+        self._choose_key()
+
+    @work
+    async def _choose_key(self) -> None:
+        draft = self._draft
+        if draft is None:
+            return
+        result = await self.app.push_screen_wait(
+            KeyPage(draft.name, draft.gpg_key_name, draft.gpg_key))
+        # Only if this is still the repository on screen: a new probe while
+        # the key page was open replaced it.
+        if draft is self._draft and apply_key(draft, result):
+            self._refresh_key()
 
     # ── building the result ──────────────────────────────────────────────────
 

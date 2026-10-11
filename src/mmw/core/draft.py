@@ -25,6 +25,9 @@ class RepositoryDraft:
     name: str = ""
     gpg_key: str | None = None        # armoured key material
     gpg_key_name: str | None = None   # stem for the key files, from `Signed-By:`
+    # Where `gpg_key` was fetched from, when it was: sync then also mirrors
+    # it byte-for-byte at that path, so a vendor's `curl …/gpgkey` works.
+    gpg_key_url: str | None = None
     include_sources: bool = False
 
     # Per dimension: what the repository offers, what is ticked, and whether the
@@ -36,7 +39,7 @@ class RepositoryDraft:
     probed: bool = False
     error: str = ""
     # Where `gpg_key` came from, for the review pane: "inline" (the pasted
-    # config carried it), "pasted", or "dir" (matched in a scanned directory).
+    # config carried it), "pasted", "fetched", or "dir" (a scanned directory).
     key_source: str = ""
 
     def __post_init__(self) -> None:
@@ -191,8 +194,12 @@ class RepositoryDraft:
             return "needs"
         return "none"
 
-    def set_key(self, armour: str | None, *, name: str | None = None, source: str = "") -> None:
+    def set_key(self, armour: str | None, *, name: str | None = None, source: str = "",
+                url: str | None = None) -> None:
+        """A new key replaces the old one — and its URL: a key that was not
+        fetched from anywhere has none to mirror."""
         self.gpg_key = armour or None
+        self.gpg_key_url = url if armour else None
         self.key_source = source if armour else ""
         if name:
             self.gpg_key_name = name
@@ -211,6 +218,7 @@ class RepositoryDraft:
             include_sources=self.include_sources,
             gpg_key=self.gpg_key,
             gpg_key_name=self.gpg_key_name,
+            gpg_key_url=self.gpg_key_url,
         )
 
     @classmethod
@@ -232,8 +240,8 @@ class RepositoryDraft:
         "ticking everything collapses back to all" behaviour then applies,
         unchanged and intentionally so.
 
-        `dist_upgrade` and `gpg_key_url` have no `RepositoryDraft` field and are
-        dropped here; a consumer that needs them must carry them separately.
+        `dist_upgrade` has no `RepositoryDraft` field and is dropped here; a
+        consumer that needs it must carry it separately.
         """
         draft = cls(
             url=source.url,
@@ -241,6 +249,7 @@ class RepositoryDraft:
             name=source.name,
             gpg_key=source.gpg_key,
             gpg_key_name=source.gpg_key_name,
+            gpg_key_url=source.gpg_key_url,
             include_sources=source.include_sources,
         )
         if source.gpg_key:

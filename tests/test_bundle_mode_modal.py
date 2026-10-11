@@ -14,7 +14,7 @@ from textual.app import App
 
 from mmw.core import config
 from mmw.core.publisher.results import BundleResult
-from mmw.tui.publish_modals import BundleModeModal, BundleProgressModal
+from mmw.tui.publish_modals import BundleModeModal
 from mmw.tui.app import MmwApp
 from mmw.tui.ui.widgets import Button
 
@@ -110,8 +110,8 @@ def test_bundle_mode_modal_cancel_dismisses_none():
 
 
 def _run_do_bundle(tmp_path, monkeypatch, press_id):
-    """Drive the real `do_bundle` (button press, not a direct `_execute_bundle`
-    call) through the mode modal, and report what `bundle_network` was
+    """Drive the real Bundle button (not a direct `_execute_bundle` call)
+    through the mode modal and the Publish section, and report what `bundle_network` was
     actually called with."""
     calls = []
 
@@ -120,8 +120,6 @@ def _run_do_bundle(tmp_path, monkeypatch, press_id):
         calls.append(full)
         return BundleResult(network_name=network.name, out_path=tmp_path / "x.tar", sent=0)
 
-    monkeypatch.setattr(BundleProgressModal, "set_timer",
-                        lambda self, delay, callback: callback())
     monkeypatch.setattr("mmw.core.publisher.bundle.bundle_network", fake)
 
     cfg = _cfg(tmp_path)

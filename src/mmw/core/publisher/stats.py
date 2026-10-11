@@ -26,28 +26,40 @@ def publish_base(network: NetworkConfig, mirror: MirrorConfig) -> Path:
     return network.root / mirror.mirror_base
 
 
-def _read_index(packages_base: Path, parse) -> list:
+def _packages_base(dst_root: Path, mirror: MirrorConfig) -> Path | None:
+    if mirror.provider == "apt":
+        return (dst_root / "dists" / (mirror.suite or "") / (mirror.component or "main")
+                / f"binary-{mirror.arch}" / "Packages")
+    if mirror.provider == "apt-flat":
+        return dst_root / "Packages"
+    return None
+
+
+def dst_index_path(dst_root: Path, mirror: MirrorConfig) -> Path | None:
+    """The published index `dst_packages` reads for this mirror, if any —
+    its mtime says whether figures read from it are still current."""
+    base = _packages_base(dst_root, mirror)
+    if base is None:
+        return None
     for suffix in (".xz", ".gz", ""):
-        p = Path(str(packages_base) + suffix)
+        p = Path(str(base) + suffix)
         if p.exists():
-            try:
-                text = decompress(p.read_bytes(), p.name).decode("utf-8", errors="replace")
-                return parse(text, "")
-            except Exception:
-                break
-    return []
+            return p
+    return None
 
 
 def dst_packages(dst_root: Path, mirror: MirrorConfig) -> list:
     """The packages a published index at the destination lists (empty when
     nothing is published yet, or for a provider with no index we read)."""
-    if mirror.provider == "apt":
-        return _read_index(dst_root / "dists" / (mirror.suite or "") /
-                           (mirror.component or "main") / f"binary-{mirror.arch}" / "Packages",
-                           _parse_packages)
-    if mirror.provider == "apt-flat":
-        return _read_index(dst_root / "Packages", _parse_packages_flat)
-    return []
+    p = dst_index_path(dst_root, mirror)
+    if p is None:
+        return []
+    parse = _parse_packages if mirror.provider == "apt" else _parse_packages_flat
+    try:
+        text = decompress(p.read_bytes(), p.name).decode("utf-8", errors="replace")
+        return parse(text, "")
+    except Exception:
+        return []
 
 
 def unique_packages(pkgs, seen: dict[str, int]) -> None:

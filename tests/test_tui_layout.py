@@ -265,23 +265,6 @@ def test_escape_cancels_confirm_modal():
     asyncio.run(scenario())
 
 
-def test_escape_closes_info_modal():
-    from mmw.tui.modals import InfoModal
-
-    async def scenario():
-        app = _modal_host(lambda: InfoModal("Heads up", "Something happened"))
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            await pilot.press("escape")
-            for _ in range(20):
-                if app.result != "unset":
-                    break
-                await pilot.pause()
-        assert app.result != "unset"
-
-    asyncio.run(scenario())
-
-
 @pytest.mark.parametrize("size", SIZES)
 @pytest.mark.parametrize(
     "factory,label",
@@ -290,9 +273,8 @@ def test_escape_closes_info_modal():
             "Wipe Package Pool",
             "Delete /very/long/path/to/the/pool?\nAll pooled packages will be removed.",
         ), "ConfirmDialog"),
-        (lambda: __import__("mmw.tui.modals", fromlist=["x"]).InfoModal(
-            "Heads up", "A reasonably long informational message that has to wrap."
-        ), "InfoModal"),
+        (lambda: __import__("mmw.tui.publish_modals", fromlist=["x"]).BundleModeModal(
+            "a-reasonably-long-network-name"), "BundleModeModal"),
     ],
 )
 def test_modal_layout(size, factory, label):

@@ -5,7 +5,7 @@ same completeness gate `do_publish` runs before it will publish.
 `bundle_network` (bundle) enumerate from — is `refs ⋈ packages`. A ref the
 pool has no blob for is invisible to that join, so it lands in neither a
 published tree nor a bundle's tar/manifest. `do_publish` already refuses via
-`_run_pre_publish` -> `_show_incomplete` when `verify_mirror` finds
+`_run_pre_publish` -> `_stopped_incomplete` when `verify_mirror` finds
 `refs - packages`; `do_bundle` called `_execute_bundle` directly with no
 verify phase at all, so an incomplete mirror bundled cleanly, `apply.py
 --verify` passed on the far side, and the missing package only surfaced as a
@@ -98,15 +98,22 @@ def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
             # to reach the verify gate this test is actually about.
             app.screen.query_one("#delta", Button).press()
             await _settle(pilot)
-            # The InfoModal("Incomplete Mirrors") should now be on top --
-            # dismiss it the way a user would (its own Escape binding).
-            await pilot.press("escape")
-            await _settle(pilot)
-        return app.notifications
+            # The refusal is on the Publish panel now, not a pop-up.
+            from mmw.tui.transfer import TransferView
+            for _ in range(200):
+                views = app.screen.query(TransferView)
+                if views and views.first()._done_displayed:
+                    break
+                await pilot.pause(0.02)
+            view = app.screen.query_one(TransferView)
+            outcome = view.outcome
+            status = str(app.screen.query_one("#page-status").render())
+        return app.notifications, outcome, status
 
-    notifications = asyncio.run(scenario())
+    notifications, outcome, status = asyncio.run(scenario())
 
     # bundle_network must never have been called for an incomplete mirror.
     assert calls == []
     # And the refusal must actually have been shown, not silently swallowed.
     assert not any("Bundled" in msg for msg, _ in notifications)
+    assert outcome == "note" and "incomplete" in status

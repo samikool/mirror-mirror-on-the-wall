@@ -1,8 +1,8 @@
 """Networks — named downselects of the mirror, and where they are published.
 
 The logic lives in `tui/networks.py`; this page lists networks beside their
-detail and turns keys into flows. Publish, dry run, bundle and certs are
-`PublishFlows` (publish_flows.py).
+detail and turns keys into flows. Publish, dry run and bundle start in the
+Publish section (`app.start_transfer`); certs is a `PublishFlows` page flow.
 """
 import asyncio
 
@@ -17,6 +17,7 @@ from mmw.tui import networks
 from mmw.tui.modals import DeleteProgressModal
 from mmw.tui.network_screens import AddNetworkPage, EditNetworkPage
 from mmw.tui.publish_flows import PublishFlows
+from mmw.tui.publish_modals import BundleModeModal
 from mmw.tui.sections.network_detail import NetworkDetail
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.list_detail import ListDetail
@@ -29,7 +30,8 @@ class NetworksPage(Page):
     SCROLLS = False
     HELP = ("A network is what gets published, and where. Dry run counts what a publish\n"
             "would link without writing; bundle writes a transfer archive for an offline\n"
-            "network; certs generates the network's TLS key and CSR (and checks a signed cert).")
+            "network; certs generates the network's TLS key and CSR (and checks a signed cert).\n"
+            "Publish, dry run and bundle run in the Publish section (4) — keep browsing meanwhile.")
     BINDINGS = [
         Binding("a", "add", "Add"),
         Binding("e", "edit", "Edit"),
@@ -46,6 +48,7 @@ class NetworksPage(Page):
         self._seen_cfg = None
         self._rebuild_lock = asyncio.Lock()
         self._flows = None
+        self._seen_transfers = 0
 
     def compose_body(self) -> ComposeResult:
         yield ListDetail(ListView(id="net-list"), NetworkDetail(), id="net-panes")
@@ -60,11 +63,24 @@ class NetworksPage(Page):
         yield Button("Certs", id="btn-net-certs", compact=True)
 
     async def on_mount(self) -> None:
+        # A transfer finishing while this section is the one showing: re-read
+        # the detail now, not only on the next visit (on_screen_resume).
+        self.app.transfer_finished_signal.subscribe(self, self._transfer_finished)
         await self.refresh_rows()
         self.query_one("#net-list", ListView).focus()
 
+    def _transfer_finished(self, _: object) -> None:
+        if self.app.screen is self and self._seen_cfg is self.app.cfg:
+            self._seen_transfers = self.app.transfers_finished
+            self._show_detail(force=True)      # republished: re-check its figures
+
     def on_screen_resume(self) -> None:
         super().on_screen_resume()
+        if self._seen_transfers != self.app.transfers_finished:
+            # Something was published or bundled since: the detail is stale.
+            self._seen_transfers = self.app.transfers_finished
+            if self._seen_cfg is self.app.cfg:
+                self._show_detail(force=True)
         if self._seen_cfg is not None and self._seen_cfg is not self.app.cfg:
             self.run_worker(self.refresh_rows(), group="net-rows")
 
@@ -93,8 +109,8 @@ class NetworksPage(Page):
                          else (0 if self._names else None))
             self._show_detail()
 
-    def _show_detail(self) -> None:
-        self.query_one(NetworkDetail).show(self.highlighted(), self.app.cfg)
+    def _show_detail(self, *, force: bool = False) -> None:
+        self.query_one(NetworkDetail).show(self.highlighted(), self.app.cfg, force=force)
 
     @on(ListView.Highlighted, "#net-list")
     def _highlighted(self) -> None:
@@ -128,13 +144,34 @@ class NetworksPage(Page):
         if net is None:
             self.notify("Select a network first.", severity="warning")
             return
-        if self._flows is None:
-            self._flows = PublishFlows(self.app, lambda: self.app.cfg)
+        if verb == "certs":
+            if self._flows is None:
+                self._flows = PublishFlows(self.app, lambda: self.app.cfg)
+            self.start_flow(lambda: self._flows.certs(net))
+            return
+        # Publish, dry run and bundle run in the Publish section, which keeps
+        # them going while other sections are browsed.
+        self.start_flow(lambda: self._start_transfer(verb, net))
 
-        async def flow() -> None:
-            await getattr(self._flows, verb)(net)
-            self._show_detail()            # published / bundled: fresh stats
-        self.start_flow(flow)
+    async def _start_transfer(self, verb: str, net: "config.NetworkConfig") -> None:
+        busy = self.app.active_transfer
+        if busy is not None and busy.running:
+            # Before any question: picking delta/full only to be refused is
+            # worse than being refused. (start_transfer checks again.)
+            self.notify(f"Already working on {busy.network_name} — see the Publish section.",
+                        severity="warning")
+            return
+        full = False
+        if verb == "bundle":
+            if net.bundle_dir is None:
+                self.notify(f"Network '{net.name}' has no bundle directory — set one in Edit.",
+                            severity="warning")
+                return
+            # Asked here, where the user is, before the section switches.
+            full = await self.app.push_screen_wait(BundleModeModal(net.name))
+            if full is None:
+                return          # cancelled — never falls back to delta silently
+        await self.app.start_transfer(verb, net, full=full)
 
     @on(Button.Pressed, "#btn-net-publish")
     def _publish_pressed(self) -> None:

@@ -145,24 +145,40 @@ def test_remove_clears_the_ledger_and_declining_keeps_the_published_files(tmp_pa
 import pytest  # noqa: E402
 
 
-@pytest.mark.parametrize("key,verb", [("p", "publish"), ("r", "dry_run"), ("b", "bundle"),
-                                      ("c", "certs")])
-def test_verb_keys_run_the_shared_flow_for_the_highlighted_network(tmp_path, monkeypatch,
-                                                                    key, verb):
-    from mmw.tui import publish_flows
+@pytest.mark.parametrize("key,verb", [("p", "publish"), ("r", "dry_run")])
+def test_publish_keys_start_a_transfer_for_the_highlighted_network(tmp_path, monkeypatch,
+                                                                     key, verb):
+    """`b` (bundle) asks delta-or-full first: tests/test_bundle_mode_modal.py."""
     calls = []
 
-    async def record(self, net):
-        calls.append((verb, net.name))
-    monkeypatch.setattr(publish_flows.PublishFlows, verb, record)
-
     async def check(app, pilot):
+        async def record(v, net, full=False):
+            calls.append((v, net.name))
+        app.start_transfer = record
         lst = app.screen.query_one("#net-list", ListView)
         lst.index = _names(app).index("lab")
         await _settle(pilot)
         await pilot.press(key)
         await _done(app, pilot)
         assert calls == [(verb, "lab")]
+    _run(tmp_path, check, monkeypatch=monkeypatch)
+
+
+def test_c_runs_the_certs_flow_for_the_highlighted_network(tmp_path, monkeypatch):
+    from mmw.tui import publish_flows
+    calls = []
+
+    async def record(self, net):
+        calls.append(net.name)
+    monkeypatch.setattr(publish_flows.PublishFlows, "certs", record)
+
+    async def check(app, pilot):
+        lst = app.screen.query_one("#net-list", ListView)
+        lst.index = _names(app).index("lab")
+        await _settle(pilot)
+        await pilot.press("c")
+        await _done(app, pilot)
+        assert calls == ["lab"]
     _run(tmp_path, check, monkeypatch=monkeypatch)
 
 

@@ -12,7 +12,7 @@ crosses an airgap.
 every call is `progress(rel: str, status: str)` — a sink-relative POSIX
 string, never a `Path`. `BundleSink` has no destination path to hand back at
 all, so a contract that assumed one could not survive it. The one production
-consumer, `PublishProgressModal.record` (`tui/publish_modals.py`), expects a
+consumer, `TransferView.record` (`tui/transfer.py`), expects a
 `str` and will raise on a `Path`.
 """
 import contextlib

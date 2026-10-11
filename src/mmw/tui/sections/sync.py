@@ -6,6 +6,7 @@ mounts lives as long as the app does; switching sections only hides it.
 """
 from textual import on
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.widgets import Static
 
 from mmw.core import config
@@ -20,6 +21,7 @@ _IDLE = ("No sync running. Tick repositories in Repositories and press s — "
 
 class SyncSection(Page):
     TITLE = "Sync"
+    BINDINGS = [Binding("x", "stop", "Stop")]
     SCROLLS = False
 
     def __init__(self):
@@ -42,6 +44,7 @@ class SyncSection(Page):
         self.query_one("#sync-idle").display = False
         await self.query_one("#page-body").mount(self.view)
         self.query_one("#btn-sync-stop", Button).disabled = False
+        self.refresh_bindings()                 # x Stop, while it runs
         what = "Dry run of" if dry_run else "Syncing"
         self.set_status(f"{what} {len(mirrors)} mirror{'s' if len(mirrors) != 1 else ''}…")
         self.view.query_one("#cards").focus()
@@ -49,15 +52,31 @@ class SyncSection(Page):
     @on(SyncView.Completed)
     def _completed(self, event: SyncView.Completed) -> None:
         self.query_one("#btn-sync-stop", Button).disabled = True
+        self.refresh_bindings()
         stopped = event.view._stop_event.is_set()
         self.set_status(event.view.summary(), "info" if stopped else "ok")
 
     @on(Button.Pressed, "#btn-sync-stop")
     def _stop_pressed(self) -> None:
+        self._ask_stop()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "stop":
+            # Offered (and shown in the footer) only while there is
+            # something to stop.
+            return self.view is not None and self.view.running
+        return super().check_action(action, parameters)
+
+    def action_stop(self) -> None:
+        if self.view is not None and self.view.running:
+            self._ask_stop()
+
+    def _ask_stop(self) -> None:
         def answer(yes: bool | None) -> None:
             if yes and self.view is not None:
                 self.view.stop()
                 self.query_one("#btn-sync-stop", Button).disabled = True
+                self.refresh_bindings()
                 self.set_status("Stopping — downloads in flight finish, then the pool closes.")
         self.app.push_screen(ConfirmDialog(
             "Stop the sync?", "Downloads stop; files already in the pool are kept.",

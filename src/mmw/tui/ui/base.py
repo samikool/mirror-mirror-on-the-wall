@@ -19,6 +19,8 @@ class ThemedApp(App):
     HAS_SECTIONS = False    # MmwApp: pages show the section sidebar
     # The running SyncView, if any (it registers itself). Quitting asks first
     # while one runs, then stops it so workers finish before the pool closes.
+    # The running TransferView (publish / bundle), likewise.
+    active_transfer = None
     active_sync = None
 
     def __init__(self, *args, **kwargs):
@@ -49,18 +51,29 @@ class ThemedApp(App):
         return notes
 
     async def action_quit(self) -> None:
-        sync = self.active_sync
-        if sync is None or not sync.running:
+        running = [job for job in (self.active_sync, self.active_transfer)
+                   if job is not None and job.running]
+        if not running:
             self.exit()
             return
         from mmw.tui.ui.dialog import ConfirmDialog
 
         def answer(yes: bool | None) -> None:
             if yes:
-                sync.stop()
+                for job in running:
+                    job.stop()
                 self.exit()
-        self.push_screen(ConfirmDialog(
-            "Quit while syncing?",
-            "A sync is still running. Quit now? Downloads stop; files already in the pool "
-            "are kept, and the next sync picks up where this one left off.",
-            "Quit", "Keep syncing"), answer)
+        what = []
+        if self.active_sync in running:
+            what.append("A sync is still running: downloads stop, files already in the pool "
+                        "are kept, and the next sync picks up where this one left off.")
+        transfer = self.active_transfer
+        if transfer in running and getattr(transfer, "awaiting_decision", False):
+            what.append(f"The dry run of {transfer.network_name} is waiting for Publish now "
+                        "or Discard — quitting discards it; nothing is published.")
+        elif transfer in running:
+            what.append("A publish or bundle is still running: it stops after the current "
+                        "file, and what is already written stays — but a bundle already "
+                        "writing its archive finishes the archive first.")
+        self.push_screen(ConfirmDialog("Quit now?", "\n".join(what), "Quit", "Keep going"),
+                         answer)

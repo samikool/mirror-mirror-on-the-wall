@@ -41,8 +41,10 @@ from mmw.tui.ui.widgets import Button
 class KeyPage(Page):
     """Supply or clear one repository's key.
 
-    Dismisses with `(armour, name)`, `("", None)` to clear, or `None` when
-    cancelled — the same "None means leave it alone" convention as `PickPage`.
+    Dismisses with `(armour, name, url)` — `url` is where the key was fetched
+    from, while the box still holds exactly that key, else None — `("", None,
+    None)` to clear, or `None` when cancelled — the same "None means leave it
+    alone" convention as `PickPage`.
     """
 
     def __init__(self, repo_name: str, key_name: str | None = None,
@@ -56,6 +58,9 @@ class KeyPage(Page):
         self._key_dir = key_dir
         self._found: dict[str, Path] = {}
         self._names: list[str] = []
+        # (url, armour) of the last fetch: the URL is handed back with the key
+        # only while the box still holds exactly what it fetched.
+        self._fetched: tuple[str, str] | None = None
 
     def compose_body(self) -> ComposeResult:
         yield Heading("Search a directory for keyrings")
@@ -194,9 +199,10 @@ class KeyPage(Page):
         except Exception as e:
             self.app.call_from_thread(self._on_fetch_failed, e)
             return
-        self.app.call_from_thread(self._on_fetched, armour)
+        self.app.call_from_thread(self._on_fetched, url, armour)
 
-    def _on_fetched(self, armour: str) -> None:
+    def _on_fetched(self, url: str, armour: str) -> None:
+        self._fetched = (url, armour.strip())
         self.query_one("#key-area", TextArea).text = armour
         self.query_one("#key-status", Label).update(
             f"[$mmw-ok]✓ fetched[/] [dim]({len(armour)} bytes armoured)[/]"
@@ -215,7 +221,7 @@ class KeyPage(Page):
 
     @on(Button.Pressed, "#btn-clear")
     def _clear(self) -> None:
-        self.dismiss(("", None))
+        self.dismiss(("", None, None))
 
     @on(Button.Pressed, "#btn-save")
     def _save(self) -> None:
@@ -225,4 +231,5 @@ class KeyPage(Page):
                 "[$mmw-error]✗ That is not an armoured public key block.[/]"
             )
             return
-        self.dismiss((text, self._key_name))
+        url = self._fetched[0] if self._fetched and self._fetched[1] == text else None
+        self.dismiss((text, self._key_name, url))

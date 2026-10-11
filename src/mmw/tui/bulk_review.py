@@ -264,8 +264,9 @@ class BulkReviewPage(Page):
         )
         if result is None:
             return
-        armour, name = result
-        d.set_key(armour, name=name, source="pasted" if armour else "")
+        armour, name, url = result
+        d.set_key(armour, name=name, url=url,
+                  source="fetched" if url else "pasted" if armour else "")
         row.refresh_summary()
 
     # ── result ───────────────────────────────────────────────────────────────

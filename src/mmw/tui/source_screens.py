@@ -220,8 +220,12 @@ class EditSourcePage(Page):
         ))
         if result is None:
             return                                  # cancelled: leave it alone
-        armour, name = result
-        self._draft.set_key(armour or None, name=name, source="pasted" if armour else "")
+        armour, name, url = result
+        self._draft.set_key(armour or None, name=name, url=url,
+                            source="fetched" if url else "pasted" if armour else "")
+        if url:
+            # Shown, not hidden: sync mirrors the key at this path too.
+            self.query_one("#edit-source-key-url", Input).value = url
         self._refresh_key_status()
 
     # ── result ───────────────────────────────────────────────────────────────

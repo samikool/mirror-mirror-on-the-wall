@@ -197,11 +197,20 @@ expire.
 
 ## Bundled networks
 
-The far side's nginx needs the certificate and key too, so every bundle of a
-`certs = true` network carries both (to `{{root}}/.mmw/tls/`, which no
-generated server block serves). That puts the private key on your transfer
-media; a network whose media must not hold the key keeps `certs` off. A bundle
-refuses to start until the certificate is signed.
+Every bundle of a `certs = true` network carries `{key_path.name}`, `{csr_path.name}`
+and `{cnf_path.name}` to `{{root}}/.mmw/tls/` on the far side (no generated server
+block serves it), with `sign.py`. If your CA lives on the airgapped network,
+sign there — any number of mirrors at once:
+
+```bash
+python3 sign.py --ca ca.crt --ca-key ca.key /srv/www/lab /srv/www/oak
+```
+
+Each certificate lands beside its request; `python3 apply.py --tls --root DIR`
+then turns HTTPS on in the generated nginx config (reload nginx). `--out DIR`
+also collects `NAME.crt` + `NAME.key` for Nginx Proxy Manager. This puts the
+private key on your transfer media; a network whose media must not hold it
+keeps `certs` off.
 
 ## Regenerating the CSR
 
@@ -377,6 +386,21 @@ def check_cert(out_dir: Path, hostnames: list[str]) -> list[str]:
     elif left <= EXPIRY_WARNING:
         problems.append(f"certificate expires {leaf.not_valid_after_utc:%Y-%m-%d} — re-sign soon")
     return problems
+
+
+def bundle_tls_files(network: NetworkConfig, cfg: Config) -> dict[str, bytes]:
+    """What a certs network's bundle carries to `{root}/.mmw/tls/`: the key,
+    the signing request and its OpenSSL config (refreshed for the current
+    hostnames first), the far side's signing script, and the certificate
+    when one was signed on this side. **Blocking** (a first key is RSA-4096)."""
+    from mmw.resources import sign_script_bytes
+    _, key, cnf, csr, _ = generate_certs(network, cfg)
+    files = {"mirror.key": key.read_bytes(), "mirror.csr": csr.read_bytes(),
+             "mirror.cnf": cnf.read_bytes(), "sign.py": sign_script_bytes()}
+    paths = servable_paths(network, cfg)
+    if paths is not None:
+        files["mirror.crt"] = paths[0].read_bytes()
+    return files
 
 
 def signed_paths(network: NetworkConfig, cfg: Config) -> tuple[Path, Path] | None:

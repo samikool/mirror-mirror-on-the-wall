@@ -212,9 +212,10 @@ uv run mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key
 
 signs a certificate for every hostname the network serves, and from the next
 `publish` on, `mirror.conf` listens on 443 as well as 80. The private key stays
-in `{mirror_dir}/certs/`, outside every served tree. A bundled network's
-bundles carry the certificate and key across — see
-[docs/airgap.md](docs/airgap.md#https).
+in `{mirror_dir}/certs/`, outside every served tree. For a bundled network
+whose CA lives on the airgapped side, nothing is signed here: bundles carry the
+key and signing request, and `sign.py` signs every mirror's request over there
+in one go — see [docs/airgap.md](docs/airgap.md#https).
 
 ## Recommended operational order
 

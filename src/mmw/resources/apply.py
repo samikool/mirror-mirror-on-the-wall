@@ -29,6 +29,11 @@ import shutil
 import sys
 import tarfile
 
+try:
+    import ssl          # checks a certificate fits its key; optional
+except ImportError:     # a Python built without OpenSSL
+    ssl = None
+
 STATE_FILE = ".mmw-state"
 MMW_DIR = ".mmw"
 MANIFEST_MEMBER = ".mmw/manifest.jsonl"
@@ -40,6 +45,10 @@ DELETE_MEMBER = ".mmw/delete.list"
 # {root}/.mmw/tls/ — never a served path — and referenced from there by the
 # bundle's own nginx/mirror.conf.
 TLS_PREFIX = ".mmw/tls/"
+# Written in {root}/.mmw/tls/ once a signed certificate fits the key; every
+# server block of the bundle's nginx config includes `https*.conf` there, a
+# wildcard nginx ignores while nothing matches it.
+HTTPS_CONF = "https.conf"
 ROOT_PLACEHOLDER = "__MMW_ROOT__"
 
 # Exit codes. Not load-bearing for any caller today, but a script that always
@@ -324,6 +333,76 @@ def _install_tls(root, name, src):
         shutil.copyfileobj(src, out)
     os.chmod(tmp, mode)
     os.rename(tmp, dest)
+
+
+def _cnf_hosts(path):
+    """The hostnames a request's OpenSSL config asks for (`DNS.n = host`)."""
+    hosts = set()
+    with open(path) as fh:
+        for line in fh:
+            key, sep, value = line.partition("=")
+            if sep and key.strip().startswith("DNS."):
+                hosts.add(value.strip())
+    return hosts
+
+
+def _cert_hosts(crt):
+    """The certificate's DNS names, or None if this Python cannot read them."""
+    try:
+        decoded = ssl._ssl._test_decode_cert(crt)
+    except Exception:  # noqa: BLE001 — a private helper; absent means "can't tell"
+        return None
+    return {v for k, v in decoded.get("subjectAltName", ()) if k == "DNS"}
+
+
+def https_state(root):
+    """Turn HTTPS on or off in the bundle's nginx config, from what is in
+    {root}/.mmw/tls/: on when a certificate fits the key, off otherwise.
+    Returns the lines to tell the operator (empty for a network without TLS)."""
+    d = os.path.join(root, ".mmw", "tls")
+    if not os.path.isdir(d):
+        return []
+    crt, key = os.path.join(d, "mirror.crt"), os.path.join(d, "mirror.key")
+    conf = os.path.join(d, HTTPS_CONF)
+    sign = "python3 sign.py --ca CA.crt --ca-key CA.key %s" % root
+    want, notes = None, []
+    if os.path.isfile(crt) and os.path.isfile(key):
+        problem = None
+        if ssl is not None:
+            try:
+                ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(crt, key)
+            except (ssl.SSLError, OSError) as e:
+                problem = "mirror.crt does not fit mirror.key (%s)" % (e,)
+        if problem:
+            notes.append("HTTPS off: %s — re-sign: %s" % (problem, sign))
+        else:
+            want = ("# Written by apply.py: mirror.crt here fits mirror.key.\n"
+                    "listen 443 ssl;\nssl_certificate %s;\nssl_certificate_key %s;\n"
+                    % (crt, key))
+            cnf = os.path.join(d, "mirror.cnf")
+            have = _cert_hosts(crt)
+            if have is not None and os.path.isfile(cnf):
+                missing = sorted(_cnf_hosts(cnf) - have)
+                if missing:
+                    notes.append("the certificate does not cover %s — re-sign: %s"
+                                 % (", ".join(missing), sign))
+    elif os.path.isfile(os.path.join(d, "mirror.csr")):
+        notes.append("HTTPS waits for a signed certificate: %s" % sign)
+    current = None
+    if os.path.isfile(conf):
+        with open(conf) as fh:
+            current = fh.read()
+    if want != current:
+        if want is None:
+            os.unlink(conf)
+            notes.append("HTTPS off — reload nginx")
+        else:
+            tmp = conf + ".tmp"
+            with open(tmp, "w") as fh:
+                fh.write(want)
+            os.rename(tmp, conf)
+            notes.append("HTTPS on — reload nginx")
+    return notes
 
 
 def apply(bundle, root, dry_run=False, verify=False):
@@ -681,7 +760,15 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--verify", action="store_true",
                     help="hash the whole tree against the manifest afterwards")
+    ap.add_argument("--tls", action="store_true",
+                    help="turn HTTPS on (or off) from the certificate in ROOT/.mmw/tls/, "
+                         "and exit — after signing with sign.py")
     args = ap.parse_args(argv)
+    if args.tls:
+        notes = https_state(args.root) if os.path.isdir(args.root) else []
+        for line in notes or ["no TLS files in %s/.mmw/tls/" % args.root]:
+            sys.stdout.write("%s\n" % line)
+        return 0
     if args.status:
         at = read_state(args.root)
         if at is None:
@@ -693,7 +780,11 @@ def main(argv=None):
         ap.error("a bundle to apply is required (or --status)")
     if not args.dry_run:
         os.makedirs(args.root, exist_ok=True)
-    return apply(args.bundle, args.root, args.dry_run, args.verify)
+    rc = apply(args.bundle, args.root, args.dry_run, args.verify)
+    if rc == 0 and not args.dry_run:
+        for line in https_state(args.root):
+            sys.stdout.write("%s\n" % line)
+    return rc
 
 
 if __name__ == "__main__":

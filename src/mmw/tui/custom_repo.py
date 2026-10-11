@@ -22,7 +22,10 @@ from textual.widgets import (
 
 from mmw.commands.add import read_input
 from mmw.core import config, discover, probers
-from mmw.core.apt_sources import AptEntry, detect_arch_placeholder, parse_apt_sources
+from mmw.core.apt_sources import (
+    AptEntry, detect_arch_placeholder, is_sources_file_url, parse_apt_sources,
+    remember_sources_url,
+)
 from mmw.core.draft import (
     DIMENSIONS, RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders,
 )
@@ -46,7 +49,7 @@ _PASTE_DEBOUNCE = 0.5
 _DIMENSIONS = [(d, _DIM_TITLES[d]) for d in DIMENSIONS]
 
 _MODE_HINTS = [
-    "[dim]Paste a repository URL — we probe it and show what it publishes.[/]",
+    "[dim]A repository URL, or a .list / .sources file's URL — we probe it.[/]",
     "[dim]Paste a sources.list line or deb822 block — probed the same way, with "
     "the config's own values pre-selected. Several repositories open a review pane.[/]",
 ]
@@ -119,6 +122,9 @@ class StepCustom(WizardStep):
         # them in `_bundle` instead and hands them to the review pane.
         self._draft: RepositoryDraft | None = None
         self._bundle: list[RepositoryDraft] = []
+        # Set while the repositories shown came from a sources file fetched
+        # by URL (Probe URL on a `.list`): each keeps it as an extra file.
+        self._sources_url: str | None = None
         # True once a paste has named several repositories, so `get_sources()`
         # can tell "the bundle was emptied in the review pane" apart from
         # "nothing was ever pasted" — two states that produced the same
@@ -155,6 +161,7 @@ class StepCustom(WizardStep):
         self._reset()
 
     def _reset(self) -> None:
+        self._sources_url = None
         self._draft = None
         self._bundle = []
         self._had_bundle = False
@@ -203,6 +210,15 @@ class StepCustom(WizardStep):
         self.query_one("#bulk-row").display = False
         self._hide_browse()
         self._probe_gen += 1
+        self._sources_url = None
+
+        if is_sources_file_url(url):
+            # NVIDIA-style: the install docs `curl` a `.list`. It is a config,
+            # not a repository — read it exactly like a paste.
+            status.update("[dim]Reading the sources file…[/]")
+            status.display = True
+            self._sources_file_worker(url, self._probe_gen)
+            return
 
         placeholder = detect_arch_placeholder(url)
         if placeholder:
@@ -365,6 +381,22 @@ class StepCustom(WizardStep):
 
     def _paste_settled(self, text: str) -> None:
         self._paste_timer = None
+        self._sources_url = None                    # typed, not fetched
+        self._apply_paste(text)
+
+    @work(thread=True, exit_on_error=False)
+    def _sources_file_worker(self, url: str, gen: int) -> None:
+        try:
+            text = read_input(None, url)
+        except Exception as exc:
+            self.app.call_from_thread(self._worker_failed, "sources file", exc)
+            return
+        self.app.call_from_thread(self._on_sources_file, url, text, gen)
+
+    def _on_sources_file(self, url: str, text: str, gen: int) -> None:
+        if gen != self._probe_gen:
+            return                                  # a newer probe is in flight
+        self._sources_url = url
         self._apply_paste(text)
 
     def _apply_paste(self, raw: str) -> None:
@@ -432,6 +464,8 @@ class StepCustom(WizardStep):
         config-paste resolution, and the $(ARCH) URL-probe resolution, so none
         of the three can drift apart from the others."""
         status = self.query_one("#detect-status", Label)
+        if self._sources_url:
+            remember_sources_url(drafts, self._sources_url)
         keyed = sum(1 for d in drafts if d.gpg_key)
         key_note = f"  [dim]+ {keyed} GPG key(s)[/]" if keyed else ""
 

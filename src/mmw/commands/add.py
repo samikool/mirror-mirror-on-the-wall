@@ -11,7 +11,9 @@ import tomli_w
 
 from mmw.commands.common import eprint
 from mmw.core import config, discover, keys
-from mmw.core.apt_sources import AptEntry, entries_to_sources, expand_placeholder_entry, parse_apt_sources
+from mmw.core.apt_sources import (
+    AptEntry, entries_to_sources, expand_placeholder_entry, parse_apt_sources, remember_sources_url,
+)
 
 
 def read_input(files: "list[Path] | Path | None", url: str | None) -> str:
@@ -167,6 +169,8 @@ def run(
         return 1
 
     new_sources = entries_to_sources(entries, label=label, default_arch=arch)
+    if url:
+        remember_sources_url(new_sources, url)
 
     if keys_dir is not None:
         matched, missing = attach_keys(new_sources, keys_dir)

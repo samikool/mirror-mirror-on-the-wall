@@ -74,7 +74,7 @@ class PublishFlows:
         from mmw.core.verify import verify_mirror
         from mmw.core.pool import Pool
         from mmw.core.publisher import (
-            dry_run_mirror, NetworkPublishResult, dist_upgrade_info,
+            dry_run_mirror, NetworkPublishResult, dist_upgrade_info, network_totals,
         )
 
         modal = PreparePublishModal(net.name)
@@ -140,11 +140,16 @@ class PublishFlows:
                             ok = True
                         modal.mirror_done(n, m.name, detail, ok)
 
+                    # Filled from the worker threads: plain dict stores, each
+                    # atomic under the GIL, and a shared file is one key.
+                    published: dict[str, int] = {}
                     dry_result.mirrors = await _run_per_mirror(
                         selected_mirrors,
-                        lambda m: dry_run_mirror(m, net, mirror_dir, pool),
+                        lambda m: dry_run_mirror(m, net, mirror_dir, pool, published),
                         _report_dry,
                     )
+                    dry_result.totals = await asyncio.to_thread(
+                        network_totals, [m.name for m in selected_mirrors], pool, published)
                     if net.dist_upgrade:
                         dry_result.dist_upgrade_paths, dry_result.dist_upgrade_warnings = \
                             await asyncio.to_thread(dist_upgrade_info, net, self.cfg(), pool)

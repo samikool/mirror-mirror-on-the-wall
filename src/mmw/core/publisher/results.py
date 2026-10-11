@@ -59,6 +59,16 @@ class MirrorPublishResult:
         return self.linked_bytes + self.skipped_bytes
 
 
+@dataclass(frozen=True)
+class NetworkTotals:
+    """A dry run's network-wide numbers, each file counted once. Mirrors
+    share files, so these are not the sum of the per-mirror rows."""
+    files: int
+    bytes: int
+    published_files: int
+    published_bytes: int
+
+
 @dataclass
 class NetworkPublishResult:
     network_name: str
@@ -76,21 +86,32 @@ class NetworkPublishResult:
     # truth about what publish deleted.
     extra_pruned: int = 0
     extra_pruned_bytes: int = 0
+    # Set by a dry run: the totals below then count shared files once
+    # instead of summing the per-mirror estimates.
+    totals: NetworkTotals | None = None
 
     @property
     def linked(self) -> int:
+        if self.totals is not None:
+            return max(0, self.totals.files - self.totals.published_files)
         return sum(r.linked for r in self.mirrors)
 
     @property
     def linked_bytes(self) -> int:
+        if self.totals is not None:
+            return max(0, self.totals.bytes - self.totals.published_bytes)
         return sum(r.linked_bytes for r in self.mirrors)
 
     @property
     def skipped(self) -> int:
+        if self.totals is not None:
+            return min(self.totals.files, self.totals.published_files)
         return sum(r.skipped for r in self.mirrors)
 
     @property
     def skipped_bytes(self) -> int:
+        if self.totals is not None:
+            return min(self.totals.bytes, self.totals.published_bytes)
         return sum(r.skipped_bytes for r in self.mirrors)
 
     @property

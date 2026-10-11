@@ -275,6 +275,7 @@ NetworkDetail #mirror-list { height: auto; margin-top: 1; }
 /* ── Publish reports and dialogs ─────────────────────────────────────── */
 DryRunResultPage #dry-run-table { width: 1fr; height: auto; max-height: 24; margin-bottom: 1; }
 DryRunResultPage .totals { width: 1fr; color: $primary; text-style: bold; }
+DryRunResultPage .totals-note { width: 1fr; }
 DryRunResultPage .du-line, CertsPage .host-entry, CertsPage .path-line {
     width: 1fr;
     height: 1;

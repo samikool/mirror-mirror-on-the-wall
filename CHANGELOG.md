@@ -14,6 +14,58 @@ and the result is diffed against a directly-published tree, across a delta),
 but it has never run against a genuinely airgapped site. 1.0 is tagged after
 that, not before.
 
+## [0.10.1]
+
+### Added
+
+- Network snapshots: a network's exact published state, kept in the pool —
+  every package, index, key and mirrored upstream file it served (keys and
+  upstream files frozen into the pool). `mmw snapshot take|list|rename|delete|
+  clean --keep N -n NET`; `mmw prune` never deletes a file a snapshot lists and
+  frees it once the snapshot is deleted. Bundle history from before snapshots
+  is imported as history-only snapshots.
+- Bundles go between any two snapshots — forwards, backwards (5 → 3) or
+  skipping (1 → 5): `mmw bundle -n NET --from <snapshot|none> --to <snapshot>`.
+  By default from where the last bundle went to a new snapshot of now. The
+  delta is exact; a full bundle repairs a far side of unknown state.
+  `apply.py` prints both ends with their labels, `apply.py --status --root DIR`
+  says which snapshot a mirror is at, and an out-of-order bundle names the
+  exact `mmw bundle --from … --to …` to ask for.
+- Publish a snapshot: `mmw publish -n NET --snapshot <ref|live> [--root DIR]`
+  lays it out exactly — older packages come back, newer ones go — into the
+  network's root or another directory (its nginx config points there, same
+  hostnames). The pool records what each directory serves; a served snapshot
+  cannot be deleted, deleting the one the last bundle went to needs `--yes`,
+  and `clean` keeps both.
+- Snapshots in the TUI: a Snapshots button (or `n`) on a network opens its
+  Snapshots page — take (labelled, in the background), rename, delete, clean
+  up (keep N, with what a prune then frees). `p` asks what to publish (live or
+  a snapshot) and where; `b` asks From and To and estimates what the bundle
+  sends, replacing the delta/full question. The network detail shows how many
+  snapshots, what the root serves and the last bundle's ends.
+- `sign.py`, shipped with every bundle of a certs network: signs every
+  mirror's certificate request on the airgapped side, where the CA lives, in
+  one go — mirror roots, a directory of them, or `.csr` files. Certificates
+  land where the generated nginx config looks; `--out DIR` also collects
+  `NAME.crt`, `NAME.key` and `ca.crt` for Nginx Proxy Manager. Needs Python 3.6+
+  and `openssl` 1.1.1 or 3.x.
+
+### Changed
+
+- A certs network bundles without a certificate signed on the connected side;
+  nothing has to come back across the airgap. Bundles carry the key, the
+  signing request and `sign.py`. The generated nginx config includes
+  `{root}/.mmw/tls/https*.conf`, which `apply.py` writes once a certificate
+  fits the key (`apply.py --tls` right after signing), so HTTP keeps working
+  until then and HTTPS turns on by itself.
+- Bundles are plain `.tar` files — compression is gone, not optional. The
+  payload is packages, already compressed. The manifest inside is plain too, so
+  `apply.py` needs only Python: no `zstd` binary on the far side (mmw itself no
+  longer needs it either). Compress a bundle yourself for transfer if you
+  like; `apply.py` asks for it decompressed first. `bundle_compress` in
+  `mmw.toml` is ignored and dropped on the next save; older bundles apply with
+  the `apply.py` that came with them.
+
 ## [0.10.0]
 
 ### Added

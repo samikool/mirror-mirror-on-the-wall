@@ -148,3 +148,22 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
             sites=sites,
         ).encode()
     }
+
+
+def recorded_nginx_files(settings: str, root: str, *,
+                         tls: tuple[str, str] | None = None) -> dict[str, bytes]:
+    """`nginx_files` for a snapshot, from the settings recorded with it (a
+    snapshot never stores its nginx config — that embeds a root). Empty when
+    that network state had nginx off."""
+    import json
+
+    from mmw.core.certs import CHANGELOGS_HOST
+    recorded = json.loads(settings or "{}")
+    rec_net = recorded.get("network", {})
+    if not rec_net.get("nginx", True):
+        return {}
+    mirrors = [MirrorConfig.model_validate(m) for m in recorded.get("mirrors", [])]
+    extra = list(recorded.get("upstream_hosts", []))
+    if rec_net.get("dist_upgrade"):
+        extra.append(CHANGELOGS_HOST)
+    return nginx_files(mirrors, root, tls=tls, extra_hosts=extra)

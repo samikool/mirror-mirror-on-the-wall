@@ -285,19 +285,14 @@ DryRunReport .du-line, CertsPage .host-entry, CertsPage .path-line {
 }
 CertsPage .success-line, CertsPage .error-line { margin-bottom: 1; }
 CertsPage .host-entry { padding-left: 2; }
-BundleModeModal { align: center middle; }
-BundleModeModal > Vertical {
-    width: 64;
-    max-width: 90%;
+
+/* ── Snapshots and the publish / bundle pickers ─────────────────────── */
+SnapshotsPage #snap-table { height: 1fr; }
+PublishPickPage #pick-note, BundlePickPage #pick-estimate, CleanPage #clean-preview {
+    width: 1fr;
     height: auto;
-    padding: 1 2;
-    border: round $primary;
-    background: $surface;
+    margin-top: 1;
 }
-BundleModeModal .title { text-style: bold; margin-bottom: 1; }
-BundleModeModal Label { width: 1fr; }
-BundleModeModal Horizontal { height: 1; align: right middle; margin-top: 1; }
-BundleModeModal Button { margin-left: 2; min-width: 0; width: auto; }
 
 /* ── Sync ────────────────────────────────────────────────────────────── */
 SyncView { height: 1fr; }

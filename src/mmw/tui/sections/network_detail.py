@@ -42,6 +42,23 @@ def _on_off(flag: bool) -> str:
     return "[$mmw-ok]on[/]" if flag else "[dim]off[/]"
 
 
+def snapshot_line(status) -> str:
+    """"3 · serving live · last bundled A → B on <date>" (markup, escaped)."""
+    if not status.snapshots and status.serving is None and status.last_bundle is None:
+        return "[dim]none yet — n to take one[/]"
+    parts = [f"{len(status.snapshots)}"]
+    if status.serving is not None:
+        parts.append(f"serving {escape(status.name(status.serving))}")
+    if status.other_dirs:
+        parts.append(f"+{status.other_dirs} other dir{'s' if status.other_dirs > 1 else ''}")
+    b = status.last_bundle
+    if b is not None:
+        day = f"{b.made[:4]}-{b.made[4:6]}-{b.made[6:8]}"
+        parts.append(f"last bundled {escape(status.name(b.from_stamp))} → "
+                     f"{escape(status.name(b.to_stamp))} on {day}")
+    return " · ".join(parts)
+
+
 class _Superseded(Exception):
     """Another network is showing: stop reading this one's indexes."""
 
@@ -107,6 +124,7 @@ class NetworkDetail(Widget):
         self._error: str | None = None
         self._bundle_mtime: float | None = None
         self._bundle_loaded = False
+        self._snapshots: str | None = None        # the one-line summary, once loaded
         self._detail_gen = 0
         self._progress: tuple[int, int] | None = None      # indexes read / total
         # (network name, root) -> (index signature, stat_tree answer)
@@ -132,14 +150,14 @@ class NetworkDetail(Widget):
         self._error = None
         self._bundle_mtime = None
         self._bundle_loaded = False
+        self._snapshots = None
         self._progress = None
         self._detail_gen += 1
         self._rebuild()
         if network is None or cfg is None:
             return
         self._load(self._detail_gen, network, cfg)
-        if network.bundle_dir is not None:
-            self._load_bundle_age(self._detail_gen, cfg.settings.mirror_dir, network.name)
+        self._load_history(self._detail_gen, cfg.settings.mirror_dir, network)
 
     # ── loading (off the loop) ───────────────────────────────────────────────
 
@@ -205,24 +223,40 @@ class NetworkDetail(Widget):
         self._rebuild()
 
     @work(thread=True, exit_on_error=False, group="network-detail-bundle")
-    def _load_bundle_age(self, gen: int, mirror_dir: Path, name: str) -> None:
-        """When this network was last bundled. The directory and name are
-        passed in, not read off `self`: the worker outlives the selection."""
-        from mmw.core.publisher.manifest import latest_manifest_path
-        mtime = None
-        try:
-            path = latest_manifest_path(mirror_dir, name)
-            if path is not None:
-                mtime = path.stat().st_mtime
-        except OSError:
-            mtime = None
-        self.app.call_from_thread(self._on_bundle_age, gen, mtime)
+    def _load_history(self, gen: int, mirror_dir: Path, net: config.NetworkConfig) -> None:
+        """When this network was last bundled, and its snapshot line. The
+        directory and network are passed in, not read off `self`: the worker
+        outlives the selection."""
+        import calendar
+        import time as _time
 
-    def _on_bundle_age(self, gen: int, mtime: float | None) -> None:
+        from mmw.core.pool import Pool
+        from mmw.core.publisher.manifest import TS_FORMAT, latest_manifest_path
+        from mmw.core.snapshots import snapshot_status
+        mtime, line = None, None
+        try:
+            with Pool(mirror_dir, read_only=True) as pool:
+                status = snapshot_status(pool, net.name, net.root)
+            line = snapshot_line(status)
+            # The bundle log first (it knows a backwards bundle is the latest);
+            # a network last bundled before snapshots existed has only its
+            # ledger file.
+            if status.last_bundle is not None:
+                mtime = calendar.timegm(_time.strptime(status.last_bundle.made, TS_FORMAT))
+            else:
+                path = latest_manifest_path(mirror_dir, net.name)
+                if path is not None:
+                    mtime = path.stat().st_mtime
+        except Exception:  # noqa: BLE001 — an unreadable pool: no age, not a crash
+            pass
+        self.app.call_from_thread(self._on_history, gen, mtime, line)
+
+    def _on_history(self, gen: int, mtime: float | None, line: str | None) -> None:
         if gen != self._detail_gen:
             return
         self._bundle_mtime = mtime
         self._bundle_loaded = True
+        self._snapshots = line
         self._rebuild()
 
     # ── rendering ────────────────────────────────────────────────────────────
@@ -270,6 +304,8 @@ class NetworkDetail(Widget):
             else:
                 when = _fmt_age(self._bundle_mtime)
             self.mount(self._meta("Last bundle", when))
+        self.mount(self._meta("Snapshots", "…" if not self._bundle_loaded
+                              else self._snapshots or "[dim]unreadable[/]"))
         # What it selects — an empty dimension meaning "all" is exactly what a
         # reader needs told; the mirror list alone hides *why* it is that list.
         if not n.select:

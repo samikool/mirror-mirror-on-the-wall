@@ -6,6 +6,7 @@ from textual.widgets import Button, Input, Select
 
 from mmw.core import config
 from mmw.tui.app import MmwApp
+from waiting import until
 
 
 def _cfg():
@@ -137,13 +138,9 @@ def _slow_save(monkeypatch, delay=0.3):
     monkeypatch.setattr(config, "save", slow)
 
 
-async def _until(pilot, cond, tries=60):
-    for _ in range(tries):
-        if cond():
-            return
-        await pilot.pause(0.05)
-    raise AssertionError("condition never became true")
-
+async def _until(pilot, cond, tries=None):
+    """`tries` is ignored: see tests/waiting.py — wait for the thing, against a clock."""
+    await until(pilot, cond)
 
 def test_save_during_a_theme_write_keeps_both(tmp_path, monkeypatch):
     async def check(app, pilot):

@@ -79,7 +79,8 @@ def test_second_network_still_bundles_after_first_is_skipped(cfg_dir, monkeypatc
                            sent=3, sent_bytes=100, deleted=1)
     calls = []
 
-    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True):
+    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True,
+                            from_ref=None, to_ref="now"):
         calls.append((net.name, full, compress))
         return result
 
@@ -102,8 +103,11 @@ def test_successful_bundle_prints_path_and_forwards_full(cfg_dir, monkeypatch, c
                            sent=42, sent_bytes=12345, deleted=2)
     calls = []
 
-    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True):
-        calls.append({"network": net.name, "out_path": out_path, "full": full, "compress": compress})
+    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True,
+                            from_ref=None, to_ref="now"):
+        # --full reaches the builder as "start from nothing".
+        calls.append({"network": net.name, "out_path": out_path,
+                      "full": full or from_ref is None, "compress": compress})
         return result
 
     monkeypatch.setattr(bundle_cmd, "bundle_network", fake_bundle_network)
@@ -127,7 +131,8 @@ def test_exception_from_one_network_does_not_abort_the_run(cfg_dir, monkeypatch,
                              sent=1, sent_bytes=1, deleted=0)
     calls = []
 
-    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True):
+    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True,
+                            from_ref=None, to_ref="now"):
         calls.append(net.name)
         if net.name == "lab-a":
             raise RuntimeError("pool is locked")
@@ -156,7 +161,8 @@ def test_out_option_overrides_missing_bundle_dir(cfg_dir, monkeypatch):
     result = BundleResult(network_name="lab", out_path=Path("/tmp/explicit/lab.tar.zst"))
     calls = []
 
-    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True):
+    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True,
+                            from_ref=None, to_ref="now"):
         calls.append(out_path)
         return result
 

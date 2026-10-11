@@ -11,7 +11,7 @@ from textual.binding import Binding
 from textual.widgets import Static
 
 from mmw.core import config
-from mmw.tui.publish_flows import PublishFlows
+from mmw.tui.publish_flows import BundleChoice, PublishChoice, PublishFlows
 from mmw.tui.transfer import BUNDLE, PUBLISH, TransferView
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.page import Page
@@ -49,7 +49,8 @@ class PublishSection(Page):
         for bid in ("#btn-transfer-discard", "#btn-transfer-go"):
             self.query_one(bid, Button).display = show
 
-    async def start(self, verb: str, net: config.NetworkConfig, *, full: bool = False) -> None:
+    async def start(self, verb: str, net: config.NetworkConfig, *,
+                    choice: "PublishChoice | BundleChoice | None" = None) -> None:
         """Mount a new transfer and run its flow. The caller refused a second."""
         if self.view is not None:
             await self.view.remove()          # the finished one's panel
@@ -59,14 +60,16 @@ class PublishSection(Page):
         self.query_one("#btn-transfer-stop", Button).disabled = False
         self.refresh_bindings()                 # x Stop, while it runs
         what = {"publish": "Publishing", "dry_run": "Dry run of", "bundle": "Bundling"}[verb]
+        if isinstance(choice, PublishChoice) and choice.snapshot:
+            what = f"Publishing snapshot {choice.snapshot} of"
         self.set_status(f"{what} {net.name}…")
         if self._flows is None:
             self._flows = PublishFlows(self.app, lambda: self.app.cfg)
         view, flows = self.view, self._flows
         runner = {
-            "publish": lambda: flows.publish(net, view),
+            "publish": lambda: flows.publish(net, view, choice),
             "dry_run": lambda: flows.dry_run(net, view),
-            "bundle": lambda: flows.bundle(net, view, full=full),
+            "bundle": lambda: flows.bundle(net, view, choice),
         }[verb]
         self.start_flow(runner)
 

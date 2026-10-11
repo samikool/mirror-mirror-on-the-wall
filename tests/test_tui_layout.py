@@ -273,8 +273,6 @@ def test_escape_cancels_confirm_modal():
             "Wipe Package Pool",
             "Delete /very/long/path/to/the/pool?\nAll pooled packages will be removed.",
         ), "ConfirmDialog"),
-        (lambda: __import__("mmw.tui.publish_modals", fromlist=["x"]).BundleModeModal(
-            "a-reasonably-long-network-name"), "BundleModeModal"),
     ],
 )
 def test_modal_layout(size, factory, label):

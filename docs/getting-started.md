@@ -332,6 +332,29 @@ stderr tells you what broke.
 more. Published trees keep their own hardlinks, so pruning does not pull the
 rug out from under a served tree.
 
+### Snapshots: roll a network back
+
+A snapshot is a network's exact published state, kept in the pool: every
+package, index, key and mirrored file it served. Take one before anything you
+might want to undo:
+
+```bash
+mmw snapshot take -n lab --label pre-upgrade
+mmw snapshot list -n lab
+mmw publish -n lab --snapshot pre-upgrade         # serve that state again, exactly
+mmw publish -n lab --snapshot live                # back to the current state
+mmw publish -n lab --snapshot pre-upgrade --root /srv/www-old   # beside the live one
+```
+
+Publishing into another directory writes an nginx config for that directory
+with the same hostnames, so serve it on its own address. Every bundle also
+takes one (see [airgap](airgap.md#between-any-two-snapshots)).
+
+`mmw prune` never deletes a file a snapshot lists; `mmw snapshot delete` /
+`clean --keep N` let it go (the next prune frees it). A snapshot some directory
+serves cannot be deleted. In the TUI: `n` on a network opens its snapshots, and
+`p` asks what to publish and where.
+
 ---
 
 ## Next

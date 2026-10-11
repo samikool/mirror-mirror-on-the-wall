@@ -175,6 +175,16 @@ def _in_a_page(widget_factory):
     return _Host()
 
 
+def snapshot_status_demo():
+    """Three snapshots, one labelled, the root live, one bundle made."""
+    from mmw.core.pool import BundleInfo, SnapshotInfo
+    from mmw.core.snapshots import SnapshotStatus
+    snaps = [SnapshotInfo(i, "lab", f"2026101{i}T120000Z", "pre-upgrade" if i == 1 else None,
+                          "manual", True, "{}", 514_000 + i) for i in (3, 2, 1)]
+    return SnapshotStatus(snaps, "live", 0, BundleInfo(
+        1, "lab", None, snaps[-1].stamp, "/x", 1, 1, 0, "20261011T120000Z"))
+
+
 def _screens():
     """Every screen that can be mounted without network or pool access.
 
@@ -187,9 +197,8 @@ def _screens():
     from mmw.tui.network_screens import AddNetworkPage, EditNetworkPage
     from mmw.tui.path_pick import PathPickPage
     from mmw.tui.pick import PickPage
-    from mmw.tui.publish_modals import (
-        BundleModeModal, CertsPage,
-    )
+    from mmw.tui.publish_modals import CertsPage
+    from mmw.tui.snapshot_pages import BundlePickPage, CleanPage, LabelPage, PublishPickPage
     from mmw.tui.transfer import PUBLISH, DryRunReport, TransferView
     from mmw.tui.source_screens import EditSourcePage
 
@@ -210,7 +219,12 @@ def _screens():
         "PickPage": lambda: PickPage("Suites", "sub", [f"suite-{i}" for i in range(55)], []),
         "BulkReviewPage": lambda: BulkReviewPage(
             [RepositoryDraft(url=f"https://repo{i}.example.com/ubuntu") for i in range(5)]),
-        "BundleModeModal": lambda: BundleModeModal("lab"),
+        "PublishPickPage": lambda: PublishPickPage(
+            net.model_copy(update={"root": Path("/srv/mirror/lab")}), snapshot_status_demo()),
+        "BundlePickPage": lambda: BundlePickPage(net, snapshot_status_demo(),
+                                                 Path(tempfile.mkdtemp())),
+        "LabelPage": lambda: LabelPage("Take a snapshot of lab"),
+        "CleanPage": lambda: CleanPage(net, Path(tempfile.mkdtemp())),
         "CertsPage": lambda: CertsPage("lab", [f"host{i}.example.com" for i in range(6)]),
         "DryRunReport": lambda: _in_a_page(lambda: DryRunReport(result)),
         "TransferView": lambda: _in_a_page(lambda: TransferView(PUBLISH, "lab")),

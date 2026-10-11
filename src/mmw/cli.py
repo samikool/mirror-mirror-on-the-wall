@@ -271,15 +271,26 @@ def cmd_publish(
         help="Publish even if the pool cannot serve everything the indexes promise "
              "(you are still told what is missing).",
     ),
+    snapshot: str = typer.Option(
+        None, "--snapshot", "-s",
+        help="Publish this snapshot (stamp, label or id — see `mmw snapshot list`) "
+             "instead of the current state; 'live' is the current state. Needs -n."),
+    root: Path = typer.Option(
+        None, "--root",
+        help="Publish into this directory instead of the network's root. Its nginx "
+             "config points there with the same hostnames, so serve it on its own "
+             "address. Needs -n."),
 ):
-    """Publish mirrors to network targets. Without --quiet opens the TUI."""
+    """Publish mirrors to network targets. Without --quiet opens the TUI
+    (--snapshot / --root always run headless)."""
     cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
-    if quiet or dry_run:
+    if quiet or dry_run or snapshot or root:
         from mmw.commands.publish import run
         raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run,
-                             allow_incomplete=allow_incomplete))
+                             allow_incomplete=allow_incomplete,
+                             snapshot=snapshot, root=root))
 
     _run_tui(_open_app(cfg, cfg_dir, "networks"))
 
@@ -380,11 +391,76 @@ def cmd_bundle(
              "The gap is invisible in the bundle and surfaces as a 404 during "
              "`apt install` on the far side, so you are told exactly what is missing.",
     ),
+    from_ref: str = typer.Option(
+        None, "--from", help="Snapshot the far side is at (stamp, label or id), or 'none' "
+                             "for a full bundle. Default: where the last bundle went."),
+    to_ref: str = typer.Option(
+        None, "--to", help="Snapshot to bring it to (stamp, label or id). "
+                           "Default: a new snapshot of now."),
 ):
-    """Write a network's mirrors to a transferable bundle."""
+    """Write a network's mirrors to a transferable bundle — between any two
+    snapshots (see `mmw snapshot list`). By default: from where the last
+    bundle went, to a new snapshot of now."""
     from mmw.commands.bundle import run
     raise typer.Exit(run(_cfg_dir(), network=network, full=full, out=out,
-                         allow_incomplete=allow_incomplete))
+                         allow_incomplete=allow_incomplete,
+                         from_ref=from_ref, to_ref=to_ref))
+
+
+snapshot_app = typer.Typer(
+    help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
+    no_args_is_help=True,
+)
+app.add_typer(snapshot_app, name="snapshot")
+_SNAP_NET = typer.Option(..., "--network", "-n", help="The network")
+
+
+@snapshot_app.command("take")
+def cmd_snapshot_take(network: str = _SNAP_NET,
+                      label: str = typer.Option(None, "--label", "-l",
+                                                help="A name for it, e.g. pre-upgrade")):
+    """Record the network's current state as a snapshot."""
+    from mmw.commands.snapshot import take
+    raise typer.Exit(take(_cfg_dir(), network, label))
+
+
+@snapshot_app.command("list")
+def cmd_snapshot_list(network: str = _SNAP_NET):
+    """List the network's snapshots, newest first, with the disk each alone holds."""
+    from mmw.commands.snapshot import list_
+    raise typer.Exit(list_(_cfg_dir(), network))
+
+
+@snapshot_app.command("rename")
+def cmd_snapshot_rename(ref: str = typer.Argument(..., help="Stamp, label or id"),
+                        label: str = typer.Argument(..., help="The new label"),
+                        network: str = _SNAP_NET):
+    """Label (or relabel) a snapshot."""
+    from mmw.commands.snapshot import rename
+    raise typer.Exit(rename(_cfg_dir(), network, ref, label))
+
+
+@snapshot_app.command("delete")
+def cmd_snapshot_delete(ref: str = typer.Argument(..., help="Stamp, label or id"),
+                        network: str = _SNAP_NET,
+                        yes: bool = typer.Option(
+                            False, "--yes", "-y",
+                            help="Also when it is where the last bundle went")):
+    """Delete a snapshot. `mmw prune` then frees the files only it kept.
+    One a directory serves is refused: publish something else there first."""
+    from mmw.commands.snapshot import delete
+    raise typer.Exit(delete(_cfg_dir(), network, ref, yes))
+
+
+@snapshot_app.command("clean")
+def cmd_snapshot_clean(network: str = _SNAP_NET,
+                       keep: int = typer.Option(..., "--keep", min=0,
+                                                help="How many of the newest to keep"),
+                       yes: bool = typer.Option(False, "--yes", "-y",
+                                                help="Delete — without it, only preview")):
+    """Delete all but the newest N snapshots (previews unless --yes)."""
+    from mmw.commands.snapshot import clean
+    raise typer.Exit(clean(_cfg_dir(), network, keep, yes))
 
 
 @app.command("verify")

@@ -22,8 +22,13 @@ from mmw.core.publisher.bundle import bundle_network
 @interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None,
         full: bool = False, out: Path | None = None,
-        allow_incomplete: bool = False) -> int:
-    """Bundle one or all configured networks. Returns a process exit code."""
+        allow_incomplete: bool = False, from_ref: str | None = None,
+        to_ref: str | None = None) -> int:
+    """Bundle one or all configured networks. Returns a process exit code.
+
+    `from_ref` / `to_ref` name snapshots (stamp, label or id) of the one
+    network `-n` names; `from_ref="none"` is a full bundle. Unset: from where
+    the last bundle went, to a new snapshot of now."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
@@ -39,6 +44,11 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             eprint(f"Network '{network}' not found.")
             return 1
 
+    if (from_ref or to_ref) and not network:
+        eprint("--from / --to name a snapshot of one network — pass -n too.")
+        return 1
+    from mmw.core.publisher.bundle import _LAST
+    start = None if (full or from_ref == "none") else (from_ref or _LAST)
     mirror_dir = cfg.settings.mirror_dir
     ok = True
     for net in networks:
@@ -65,19 +75,24 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         # invisible to `pool.mirror_files()`, so it lands in neither the tar
         # nor the manifest, `apply.py --verify` passes, and the gap surfaces
         # as a 404 during `apt install` on the far side of an airgap.
-        if not preflight_ok("bundle", net, cfg, mirror_dir, allow_incomplete):
+        # Only "now" is checked here: an existing snapshot's own files are
+        # checked by the bundle itself (refused if any left the pool).
+        if not to_ref and not preflight_ok("bundle", net, cfg, mirror_dir, allow_incomplete):
             ok = False
             continue
 
         try:
-            result = bundle_network(net, cfg, mirror_dir, out_path=out, full=full,
-                                     compress=net.bundle_compress)
+            result = bundle_network(net, cfg, mirror_dir, out_path=out,
+                                    compress=net.bundle_compress,
+                                    from_ref=start, to_ref=to_ref or "now")
         except Exception as e:
             eprint(f"Network '{net.name}' failed: {e}")
             ok = False
             continue
 
-        print(f"{net.name}  →  {result.out_path}")
+        span = (f"{result.previous} → {result.created}" if result.previous
+                else f"full → {result.created}")
+        print(f"{net.name}  {span}  →  {result.out_path}")
         print(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
         # The checksum sidecar, when the pipeline produces one. `getattr`
         # rather than an attribute access: `BundleResult` gained this field

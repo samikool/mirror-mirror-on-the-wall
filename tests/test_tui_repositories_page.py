@@ -8,6 +8,7 @@ from mmw.tui import repositories as R
 from mmw.tui.app import MmwApp
 from mmw.tui.source_screens import EditSourcePage
 from mmw.tui.ui.dialog import ConfirmDialog
+from waiting import until
 
 
 def _cfg(tmp_path, n=3):
@@ -46,6 +47,9 @@ def _labels(app):
 
 def test_lists_repositories_grouped_by_host_one_row_each(tmp_path):
     async def check(app, pilot):
+        hosts = ["deb.example.com", "ppa.example.org"]
+        await until(pilot, lambda: [lbl.strip() for lbl in _labels(app) if "/" not in lbl]
+                    == hosts)
         labels = _labels(app)
         assert [lbl.strip() for lbl in labels if "/" not in lbl] == \
             ["deb.example.com", "ppa.example.org"]
@@ -291,25 +295,32 @@ def test_overlapping_list_rebuilds_do_not_collide(tmp_path):
 
 
 def test_a_second_action_is_refused_instead_of_cancelling_the_first(tmp_path, monkeypatch):
-    import time
+    import threading
 
     from mmw.tui.add_repository import AddRepositoryPage
 
-    def slow_prune(d, ids):
-        time.sleep(0.5)
+    # Held until the test has tried the second action — a timed sleep lost
+    # the race under parallel load (the prune finished first, so `a` was
+    # rightly allowed).
+    running, release = threading.Event(), threading.Event()
+
+    def held_prune(d, ids):
+        running.set()
+        release.wait(30)
         return (3, 1024)
-    monkeypatch.setattr(R, "prune_pool", slow_prune)
+    monkeypatch.setattr(R, "prune_pool", held_prune)
 
     async def check(app, pilot):
         await pilot.press("p")
         await _settle(pilot)
         app.screen.query_one("#confirm").press()
-        await _settle(pilot)
+        await until(pilot, running.is_set)
         await pilot.press("a")                       # while the prune runs
         await _settle(pilot)
         assert not isinstance(app.screen, AddRepositoryPage)
+        release.set()
         await _done(app, pilot)
-        assert "Removed 3" in _status(app)
+        await until(pilot, lambda: "Removed 3" in _status(app))
     _run(tmp_path, check)
 
 

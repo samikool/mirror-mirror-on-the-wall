@@ -18,16 +18,30 @@ from mmw.commands.common import eprint, interruptible, load_config_or_none, pref
 # the function body would bind a fresh reference to the real one every call,
 # silently defeating the patch.
 from mmw.core.format import fmt_size
-from mmw.core.publisher import dry_run_network, publish_network
+from mmw.core.publisher import dry_run_network, publish_network, publish_snapshot
 from mmw.commands.certs import generate_for
 
 
 @interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = False,
-        allow_incomplete: bool = False) -> int:
-    """Publish one or all configured networks. Returns a process exit code."""
+        allow_incomplete: bool = False, snapshot: str | None = None,
+        root: Path | None = None) -> int:
+    """Publish one or all configured networks. Returns a process exit code.
+
+    `snapshot`: publish that snapshot (stamp, label or id) instead of the
+    live state ("live" is the live state). `root`: into this directory
+    instead of the network's root — its nginx config points there, with the
+    same hostnames, so it needs its own address."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
+        return 1
+    if snapshot == "live":
+        snapshot = None
+    if (snapshot or root) and not network:
+        eprint("--snapshot and --root publish one network — name it with -n.")
+        return 1
+    if snapshot and dry_run:
+        eprint("--dry-run estimates the live state only — drop --snapshot.")
         return 1
 
     networks = cfg.networks
@@ -44,6 +58,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
     label = "[dry-run] " if dry_run else ""
     ok = True
     for net in networks:
+        if root is not None:
+            net = net.model_copy(update={"root": root})
         if net.root is None:
             # A bundle-only network — publish_base() has no destination to
             # derive, and printing `net.root` unconditionally below used to
@@ -67,14 +83,20 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         # so a ref whose blob the pool lacks is invisible to it — and the
         # destination **prune** then runs against that under-complete keep set
         # and deletes correct files out of a live tree.
-        if not preflight_ok("publish", net, cfg, cfg.settings.mirror_dir,
-                            allow_incomplete, warn_only=dry_run):
+        # A snapshot's files are checked by publish_snapshot itself: the gate
+        # below is about the live state's refs.
+        if not snapshot and not preflight_ok("publish", net, cfg, cfg.settings.mirror_dir,
+                                             allow_incomplete, warn_only=dry_run):
             ok = False
             continue
 
-        print(f"\n{label}Publishing network: {net.name}  →  {net.root}")
+        what = f"snapshot {snapshot} of " if snapshot else ""
+        print(f"\n{label}Publishing {what}network: {net.name}  →  {net.root}")
         try:
-            if dry_run:
+            if snapshot:
+                result = publish_snapshot(net, cfg, cfg.settings.mirror_dir, snapshot,
+                                          root=net.root)
+            elif dry_run:
                 result = dry_run_network(net, cfg, cfg.settings.mirror_dir)
             else:
                 result = publish_network(net, cfg, cfg.settings.mirror_dir)

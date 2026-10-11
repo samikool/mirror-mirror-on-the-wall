@@ -20,6 +20,7 @@ Sizes match `test_tui_geometry.py`: 80x24 is the POSIX default and the floor
 mmw should stay usable at.
 """
 from mmw.core import config
+from waiting import until
 
 # One representative size per screen rather than the geometry file's three.
 # Snapshots are for catching visual drift, and three baselines per screen
@@ -97,10 +98,13 @@ def test_snapshot_pick_modal(snap_compare):
     )
 
 
-def test_snapshot_bundle_mode_modal(snap_compare):
-    from mmw.tui.publish_modals import BundleModeModal
+def test_snapshot_bundle_picker(snap_compare, tmp_path):
+    from mmw.tui.snapshot_pages import BundlePickPage
+    from test_tui_sweep import snapshot_status_demo
 
-    assert snap_compare(_app(lambda: BundleModeModal("lab")), terminal_size=SNAP_SIZE)
+    net = config.NetworkConfig(name="lab", select=[])
+    assert snap_compare(_app(lambda: BundlePickPage(net, snapshot_status_demo(), tmp_path)),
+                        terminal_size=SNAP_SIZE)
 
 
 def test_snapshot_certs_modal(snap_compare):
@@ -180,14 +184,48 @@ def _repos_cfg(theme="mmw"):
     )
 
 
-async def _tick_first(pilot):
-    for _ in range(6):
-        await pilot.pause()
+@_pytest.fixture
+def snap_compare(snap_compare):
+    """Every capture ends with `_then_settle` (after the test's own
+    `run_before`, if any): no blinking cursor, and the screen given a moment
+    to finish rendering — a capture that depends on timing fails under the
+    parallel suite's load."""
+    def compare(app, *args, run_before=None, **kwargs):
+        async def before(pilot):
+            if run_before is not None:
+                await run_before(pilot)
+            await _then_settle(pilot)
+        return snap_compare(app, *args, run_before=before, **kwargs)
+    return compare
+
+
+async def _list_ready(pilot, list_id="#repo-list"):
+    """Wait for the list's rows themselves — pause counts were a guess that
+    lost under parallel load and screenshot a half-built screen."""
+    await until(pilot, lambda: len(pilot.app.screen.query(list_id)) == 1
+                and len(pilot.app.screen.query_one(list_id).children) >= 2)
     await pilot.app.workers.wait_for_complete()
+
+
+async def _then_settle(pilot, n=3):
+    # A blinking cursor makes the capture depend on timing: under load the
+    # screenshot landed in the "off" half of the blink. Not blinking, it shows.
+    from textual.widgets import Input, TextArea
+    for w in pilot.app.screen.query("Input, TextArea"):
+        if isinstance(w, (Input, TextArea)):
+            w.cursor_blink = False
+    for _ in range(n):
+        await pilot.pause()
+
+
+async def _tick_first(pilot):
+    await _list_ready(pilot)
     lst = pilot.app.screen.query_one("#repo-list")
     lst.focus()
     lst.index = 1
     await pilot.press("space")
+    await until(pilot, lambda: "✓" in str(lst.children[1].query_one("Label").render()))
+    await _then_settle(pilot)
 
 
 @_pytest.mark.parametrize("theme", ["mmw", "mmw-light"])
@@ -202,11 +240,11 @@ def test_snapshot_mmw_edit_source(snap_compare, tmp_path):
     from mmw.tui.source_screens import EditSourcePage
 
     async def open_edit(pilot):
-        for _ in range(4):
-            await pilot.pause()
+        await _list_ready(pilot)
         pilot.app.push_screen(EditSourcePage(_repos_cfg().sources[0]))
-        for _ in range(4):
-            await pilot.pause()
+        await until(pilot, lambda: isinstance(pilot.app.screen, EditSourcePage)
+                    and pilot.app.screen.query("#edit-source-url"))
+        await _then_settle(pilot)
 
     assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="repositories"),
                         terminal_size=(80, 24), run_before=open_edit)
@@ -216,13 +254,13 @@ def test_snapshot_mmw_add_repository(snap_compare, tmp_path):
     from mmw.tui.app import MmwApp
 
     async def open_add(pilot):
-        for _ in range(4):
-            await pilot.pause()
-        await pilot.app.workers.wait_for_complete()
+        from mmw.tui.add_repository import AddRepositoryPage
+        await _list_ready(pilot)
         pilot.app.screen.query_one("#repo-list").focus()
         await pilot.press("a")
-        for _ in range(4):
-            await pilot.pause()
+        await until(pilot, lambda: isinstance(pilot.app.screen, AddRepositoryPage)
+                    and pilot.app.screen.query("#mode-select"))
+        await _then_settle(pilot)
 
     assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="repositories"),
                         terminal_size=(80, 24), run_before=open_add)
@@ -241,11 +279,12 @@ def test_snapshot_mmw_networks(snap_compare, tmp_path, theme):
     from mmw.tui.app import MmwApp
 
     async def settle(pilot):
-        for _ in range(6):
-            await pilot.pause()
+        from mmw.tui.sections.network_detail import NetworkDetail
+        await _list_ready(pilot, "#net-list")
+        await until(pilot, lambda: pilot.app.screen.query(NetworkDetail)
+                    and pilot.app.screen.query_one(NetworkDetail)._selected is not None)
         await pilot.app.workers.wait_for_complete()
-        for _ in range(3):
-            await pilot.pause()
+        await _then_settle(pilot)
 
     assert snap_compare(MmwApp(_nets_cfg(theme), tmp_path, initial_section="networks"),
                         terminal_size=SNAP_SIZE, run_before=settle)

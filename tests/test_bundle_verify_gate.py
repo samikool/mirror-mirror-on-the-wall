@@ -94,9 +94,13 @@ def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
 
             app.screen.query_one("#btn-net-bundle", Button).press()
             await _settle(pilot)
-            # BundleModeModal (delta/full choice) is now on top -- pick one
-            # to reach the verify gate this test is actually about.
-            app.screen.query_one("#delta", Button).press()
+            # The from/to picker is now on top -- take its defaults to reach
+            # the verify gate this test is actually about.
+            for _ in range(200):
+                if app.screen.query("#btn-pick-go"):
+                    break
+                await pilot.pause(0.02)
+            app.screen.query_one("#btn-pick-go", Button).press()
             await _settle(pilot)
             # The refusal is on the Publish panel now, not a pop-up.
             from mmw.tui.transfer import TransferView

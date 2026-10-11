@@ -7,6 +7,7 @@ finishes. Certs is a short page flow started from Networks.
 """
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from textual.markup import escape
@@ -49,6 +50,23 @@ async def _run_per_mirror(mirrors, fn, on_done, stop_event=None):
 
     await asyncio.gather(*(_one(i, m) for i, m in enumerate(mirrors)))
     return results
+
+
+@dataclass(frozen=True)
+class PublishChoice:
+    """What `p` publishes: the live state or a snapshot (stamp), and where —
+    the network's root (None) or another directory."""
+    snapshot: str | None = None
+    root: Path | None = None
+
+
+@dataclass(frozen=True)
+class BundleChoice:
+    """What `b` bundles: from where the last bundle went (`from_last`), a
+    snapshot, or nothing (None: full); to a new snapshot of now or a snapshot."""
+    from_last: bool = True
+    from_ref: str | None = None
+    to_ref: str = "now"
 
 
 class PublishFlows:
@@ -205,7 +223,18 @@ class PublishFlows:
         except Exception as e:  # noqa: BLE001 — reported, never fatal
             view.mark_error(f"{what} error: {str(e) or type(e).__name__}")
 
-    async def publish(self, net: "config.NetworkConfig", view) -> None:
+    async def publish(self, net: "config.NetworkConfig", view,
+                      choice: PublishChoice | None = None) -> None:
+        choice = choice or PublishChoice()
+        if choice.root is not None:
+            net = net.model_copy(update={"root": choice.root})
+        if choice.snapshot is not None:
+            # A snapshot's files are checked by publish_snapshot itself: the
+            # verify below is about the live state's refs.
+            await self._guarded(view, "Publish",
+                                lambda: self._execute_snapshot_publish(net, choice.snapshot, view))
+            return
+
         async def flow():
             # A pool query — off the loop, and inside the guard: a locked pool
             # is reported like any other publish error.
@@ -244,22 +273,28 @@ class PublishFlows:
             await self._execute_publish(net, per_mirror, view)
         await self._guarded(view, "Publish", flow)
 
-    async def bundle(self, net: "config.NetworkConfig", view, full: bool = False) -> None:
+    async def bundle(self, net: "config.NetworkConfig", view,
+                     choice: BundleChoice | None = None) -> None:
         # Same completeness gate publish runs: a ref the pool holds no blob
         # for is invisible to `pool.mirror_files()` — which both publish and
         # bundle enumerate from — so it would land in neither a published tree
         # NOR a bundle. Skipping this let a bundle ship an index naming a .deb
         # that isn't there: `apply.py --verify` passes, and the 404 only shows
         # as `apt install` failing on the far side, where nobody can debug it.
+        # A snapshot destination was gated when it was taken; its files are
+        # checked by bundle_network itself.
+        choice = choice or BundleChoice()
+
         async def flow():
-            selected_mirrors = await asyncio.to_thread(self._selected_mirrors_for, net)
-            mirror_dir = self.cfg().settings.mirror_dir
-            verify_results, _, _ = await self._run_pre_publish(
-                net, selected_mirrors, mirror_dir, view, include_file_counts=False,
-            )
-            if self._ends_early(verify_results, view):
-                return
-            await self._execute_bundle(net, view, full=full)
+            if choice.to_ref == "now":
+                selected_mirrors = await asyncio.to_thread(self._selected_mirrors_for, net)
+                mirror_dir = self.cfg().settings.mirror_dir
+                verify_results, _, _ = await self._run_pre_publish(
+                    net, selected_mirrors, mirror_dir, view, include_file_counts=False,
+                )
+                if self._ends_early(verify_results, view):
+                    return
+            await self._execute_bundle(net, view, choice)
         await self._guarded(view, "Bundle", flow)
 
     @staticmethod
@@ -301,16 +336,44 @@ class PublishFlows:
         for path in paths:
             view.write(f"  [dim]#   {escape(str(path))}[/]")
 
-    async def _execute_bundle(self, net: "config.NetworkConfig", view, full: bool = False) -> None:
+    async def _execute_snapshot_publish(self, net: "config.NetworkConfig", stamp: str,
+                                        view) -> None:
+        from mmw.core.pool import Pool
+        from mmw.core.publisher import publish_snapshot
+
+        def files() -> int:
+            with Pool(self.cfg().settings.mirror_dir, read_only=True) as pool:
+                return next((s.files for s in pool.snapshots(net.name) if s.stamp == stamp), 0)
+        view.begin(await asyncio.to_thread(files))
+        try:
+            result = await asyncio.to_thread(
+                lambda: publish_snapshot(
+                    net, self.cfg(), self.cfg().settings.mirror_dir, stamp,
+                    progress=view.record, stop_event=view.stop_event,
+                    mirror_start_callback=view.notify_mirror_start))
+        except Exception as exc:  # noqa: BLE001 — shown on the panel
+            view.mark_error(str(exc) or type(exc).__name__)
+            return
+        stopped = view.stop_event.is_set()
+        if net.certs and not stopped and not result.errors:
+            await self._certs_after_publish(net, view)
+        view.mark_done(result, stopped=stopped)
+
+    async def _execute_bundle(self, net: "config.NetworkConfig", view,
+                              choice: BundleChoice | None = None) -> None:
         from mmw.core.publisher.bundle import bundle_network
 
+        choice = choice or BundleChoice()
+        ends = {"to_ref": choice.to_ref}
+        if not choice.from_last:
+            ends["from_ref"] = choice.from_ref
         view.begin()
         try:
             result = await asyncio.to_thread(
-                bundle_network, net, self.cfg(), self.cfg().settings.mirror_dir,
-                None, full, 3, view.record, view.stop_event,
-                view.notify_mirror_start, compress=net.bundle_compress,
-            )
+                lambda: bundle_network(
+                    net, self.cfg(), self.cfg().settings.mirror_dir,
+                    None, False, 3, view.record, view.stop_event,
+                    view.notify_mirror_start, compress=net.bundle_compress, **ends))
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return

@@ -17,7 +17,6 @@ from mmw.tui import networks
 from mmw.tui.modals import DeleteProgressModal
 from mmw.tui.network_screens import AddNetworkPage, EditNetworkPage
 from mmw.tui.publish_flows import PublishFlows
-from mmw.tui.publish_modals import BundleModeModal
 from mmw.tui.sections.network_detail import NetworkDetail
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.list_detail import ListDetail
@@ -31,7 +30,9 @@ class NetworksPage(Page):
     HELP = ("A network is what gets published, and where. Dry run counts what a publish\n"
             "would link without writing; bundle writes a transfer archive for an offline\n"
             "network; certs generates the network's TLS key and CSR (and checks a signed cert).\n"
-            "Publish, dry run and bundle run in the Publish section (4) — keep browsing meanwhile.")
+            "Publish, dry run and bundle run in the Publish section (4) — keep browsing meanwhile.\n"
+            "Publish asks what (live, or a snapshot) and where; bundle asks from and to.\n"
+            "Snapshots (n) keeps exact network states to bundle to or publish again.")
     BINDINGS = [
         Binding("a", "add", "Add"),
         Binding("e", "edit", "Edit"),
@@ -39,7 +40,10 @@ class NetworksPage(Page):
         Binding("p", "verb('publish')", "Publish"),
         Binding("r", "verb('dry_run')", "Dry run"),
         Binding("b", "verb('bundle')", "Bundle"),
-        Binding("c", "verb('certs')", "Certs"),
+        # Off the footer (it must fit 80 columns): a once-per-network job,
+        # still a button, and listed by ?.
+        Binding("c", "verb('certs')", "Certs", show=False),
+        Binding("n", "snapshots", "Snapshots"),
     ]
 
     def __init__(self):
@@ -57,6 +61,7 @@ class NetworksPage(Page):
         yield Button("Add", id="btn-net-add", compact=True)
         yield Button("Edit", id="btn-net-edit", compact=True)
         yield Button("Remove", id="btn-net-remove", variant="error", compact=True)
+        yield Button("Snapshots", id="btn-net-snapshots", compact=True)
         yield Button("Publish", id="btn-net-publish", variant="success", compact=True)
         yield Button("Dry run", id="btn-net-dry-run", compact=True)
         yield Button("Bundle", id="btn-net-bundle", compact=True)
@@ -161,17 +166,34 @@ class NetworksPage(Page):
             self.notify(f"Already working on {busy.network_name} — see the Publish section.",
                         severity="warning")
             return
-        full = False
-        if verb == "bundle":
-            if net.bundle_dir is None:
-                self.notify(f"Network '{net.name}' has no bundle directory — set one in Edit.",
-                            severity="warning")
-                return
+        choice = None
+        if verb == "bundle" and net.bundle_dir is None:
+            self.notify(f"Network '{net.name}' has no bundle directory — set one in Edit.",
+                        severity="warning")
+            return
+        if verb in ("publish", "bundle"):
             # Asked here, where the user is, before the section switches.
-            full = await self.app.push_screen_wait(BundleModeModal(net.name))
-            if full is None:
-                return          # cancelled — never falls back to delta silently
-        await self.app.start_transfer(verb, net, full=full)
+            from mmw.tui.snapshot_pages import BundlePickPage, PublishPickPage, load_status
+            mirror_dir = self.app.cfg.settings.mirror_dir
+            status = await asyncio.to_thread(load_status, mirror_dir, net)
+            page = (PublishPickPage(net, status) if verb == "publish"
+                    else BundlePickPage(net, status, mirror_dir))
+            choice = await self.app.push_screen_wait(page)
+            if choice is None:
+                return          # cancelled — never falls back to a default silently
+        await self.app.start_transfer(verb, net, choice=choice)
+
+    def action_snapshots(self) -> None:
+        net = self.highlighted()
+        if net is None:
+            self.notify("Select a network first.", severity="warning")
+            return
+        from mmw.tui.snapshot_pages import SnapshotsPage
+        self.app.push_screen(SnapshotsPage(net), lambda _: self._show_detail(force=True))
+
+    @on(Button.Pressed, "#btn-net-snapshots")
+    def _snapshots_pressed(self) -> None:
+        self.action_snapshots()
 
     @on(Button.Pressed, "#btn-net-publish")
     def _publish_pressed(self) -> None:

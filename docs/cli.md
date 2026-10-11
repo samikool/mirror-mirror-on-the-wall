@@ -2,7 +2,8 @@
 
 Every command and option, generated from the typer app itself.
 
-> **Generated file — do not hand-edit.**
+> **Generated file — do not hand-edit.** Regenerate after any CLI change:
+> `uv run python docs/tools/gen_cli_docs.py`
 >
 > Run any command with `--help` for the same information in the terminal.
 
@@ -38,13 +39,14 @@ codes — see [airgap.md](airgap.md#exit-codes).
 | Command | What it does |
 |---------|--------------|
 | [`mmw add`](#mmw-add) | Add sources from a sources.list or deb822 .sources file |
-| [`mmw bundle`](#mmw-bundle) | Write a network's mirrors to a transferable bundle |
+| [`mmw bundle`](#mmw-bundle) | Write a network's mirrors to a transferable bundle — between any two snapshots (see `mmw snapshot list`) |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
 | [`mmw init`](#mmw-init) | Setup wizard |
 | [`mmw manage`](#mmw-manage) | Manage configured mirrors (add, remove) |
 | [`mmw prune`](#mmw-prune) | Remove orphaned pool packages not referenced by any mirror |
 | [`mmw publish`](#mmw-publish) | Publish mirrors to network targets |
+| [`mmw snapshot`](#mmw-snapshot) | Network snapshots: a network's exact state, kept to bundle to or publish again |
 | [`mmw sync`](#mmw-sync) | Sync configured mirrors |
 | [`mmw verify`](#mmw-verify) | Check the pool holds every blob its mirrors' refs want (read-only) |
 
@@ -70,7 +72,9 @@ Everything is taken from the file — no discovery, no prompts:
 
 ### `mmw bundle`
 
-Write a network's mirrors to a transferable bundle.
+Write a network's mirrors to a transferable bundle — between any two
+snapshots (see `mmw snapshot list`). By default: from where the last
+bundle went, to a new snapshot of now.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -78,6 +82,8 @@ Write a network's mirrors to a transferable bundle.
 | `--full` |  | Send the whole network, not just the delta |
 | `--out`, `-o` |  | Write here instead of the network's bundle_dir |
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
+| `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for a full bundle. Default: where the last bundle went. |
+| `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |
 
 ### `mmw certs`
 
@@ -131,7 +137,8 @@ Remove orphaned pool packages not referenced by any mirror.
 
 ### `mmw publish`
 
-Publish mirrors to network targets. Without --quiet opens the TUI.
+Publish mirrors to network targets. Without --quiet opens the TUI
+(--snapshot / --root always run headless).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -139,6 +146,14 @@ Publish mirrors to network targets. Without --quiet opens the TUI.
 | `--network`, `-n` |  | Publish a specific network by name |
 | `--dry-run` |  | Show what would be linked without writing |
 | `--allow-incomplete` |  | Publish even if the pool cannot serve everything the indexes promise (you are still told what is missing). |
+| `--snapshot`, `-s` |  | Publish this snapshot (stamp, label or id — see `mmw snapshot list`) instead of the current state; 'live' is the current state. Needs -n. |
+| `--root` |  | Publish into this directory instead of the network's root. Its nginx config points there with the same hostnames, so serve it on its own address. Needs -n. |
+
+### `mmw snapshot`
+
+Network snapshots: a network's exact state, kept to bundle to or publish again.
+
+Takes no options.
 
 ### `mmw sync`
 

@@ -12,6 +12,7 @@ from mmw.tui.sync import SyncView
 from mmw.tui.ui.dialog import ConfirmDialog
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
+from pickers import press_publish
 from test_tui_publish_section import _finished, _run, _settle, _until
 
 SRC = "https://deb.example.com/debian"
@@ -68,7 +69,7 @@ def test_stop_during_certs_keeps_a_finished_publish_finished(two_mirrors, monkey
     monkeypatch.setattr(certs, "generate_certs", slow_certs)
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         await _until(pilot, lambda: app.active_transfer is not None)
         view = app.active_transfer
         await _until(pilot, entered.is_set)
@@ -81,7 +82,7 @@ def test_stop_during_certs_keeps_a_finished_publish_finished(two_mirrors, monkey
     _run(cfg, mirror_dir.parent, check, certs=True)
 
 
-# ── 3. b is refused before asking delta-or-full when a transfer runs ────────
+# ── 3. b is refused before asking from/to when a transfer runs ────────
 
 def test_b_is_refused_before_the_mode_question_while_busy(two_mirrors):  # noqa: F811
     cfg, net, mirror_dir = two_mirrors
@@ -91,7 +92,7 @@ def test_b_is_refused_before_the_mode_question_while_busy(two_mirrors):  # noqa:
                                               awaiting_decision=False, progress=lambda: None)
         await pilot.press("b")
         await _settle(pilot)
-        assert not app.screen.query("#delta"), "asked delta/full only to refuse after"
+        assert not app.screen.query("#btn-pick-go"), "asked from/to only to refuse after"
         assert any("Already working on other" in n for n in app.notes)
         app.active_transfer = None
     _run(cfg, mirror_dir.parent, check, bundle_dir=mirror_dir.parent / "usb")
@@ -115,7 +116,7 @@ def test_networks_detail_refreshes_when_a_transfer_ends_while_shown(two_mirrors,
                         lambda self, n, c, **k: (shows.append(n and n.name), real_show(self, n, c, **k))[1])
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         await _until(pilot, lambda: app.active_transfer is not None
                      and app.active_transfer._transferring)
         await pilot.press("2")                    # back to Networks, as a user would
@@ -144,7 +145,7 @@ def test_x_asks_to_stop_and_the_button_is_disabled_once_confirmed(two_mirrors, m
     monkeypatch.setattr(publisher, "publish_network", held)
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         await _until(pilot, lambda: app.active_transfer is not None
                      and app.active_transfer._transferring)
         section = app.screen

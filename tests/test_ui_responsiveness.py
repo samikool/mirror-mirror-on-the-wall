@@ -122,21 +122,6 @@ def test_batch_contains_does_not_hold_the_lock_across_chunks(tmp_path):
 
 # ── the sync footer must never scan the pool on the event loop ───────────────
 
-class _SlowPool:
-    """A pool whose `stats()` is as slow as a real one (measured: 9-14 s)."""
-
-    def __init__(self, delay: float = 0.4):
-        self.delay = delay
-        self.calls = 0
-        self.threads: set[str] = set()
-
-    def stats(self) -> dict:
-        self.calls += 1
-        self.threads.add(threading.current_thread().name)
-        time.sleep(self.delay)
-        return {"packages": 1, "total_size": 2}
-
-
 def _calls(func) -> set[str]:
     """Method names called in a function body. AST, not text: a docstring that
     *mentions* `pool.stats()` is documentation, not a call."""
@@ -173,41 +158,82 @@ def test_the_footer_renders_without_touching_the_pool():
         "the footer must not query the pool"
 
 
-def test_the_pool_scan_runs_off_the_event_loop(tmp_path):
-    """The freeze: a 9-14 s scan ran inside the tick callback, so the UI never
-    repainted and the 32 download workers blocked behind the pool lock."""
+class _GatedPool:
+    """A pool whose `stats()` blocks until the test opens `gate` — so "a scan
+    is in flight" is a fact the test controls, never a race with how fast a
+    loaded machine starts a thread. (Timed sleeps here failed a third of the
+    time under parallel load: the scan's thread had not even started.)"""
+
+    def __init__(self):
+        self.gate = threading.Event()
+        self.started = threading.Event()
+        self.calls = 0
+        self.threads: set[str] = set()
+
+    def stats(self) -> dict:
+        self.calls += 1
+        self.threads.add(threading.current_thread().name)
+        self.started.set()
+        self.gate.wait(30)
+        return {"packages": 1, "total_size": 2}
+
+    def close(self) -> None:        # the app's sync-cleanup thread closes its pool
+        pass
+
+
+async def _until(cond, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < deadline, "condition never became true"
+        await asyncio.sleep(0.01)
+
+
+async def _gate_the_pool(view, gated) -> None:
+    """Swap `gated` in once the view's own pool is open and idle: the view
+    opens its real pool on a thread at mount (which would overwrite an earlier
+    swap), and a scan it just finished would make the 5 s spacing skip ours."""
+    await _until(lambda: view._pool is not None and not view._pool_stats_inflight)
+    view._pool = gated
+    view._pool_stats_at = 0.0
+
+
+def _sync_host(tmp_path):
     from mmw.core import config
     from mmw.tui.app import MmwApp
-
-    slow = _SlowPool(delay=0.4)
     cfg = config.Config(
         settings=config.Settings(mirror_dir=tmp_path, max_connections=2), sources=[])
+    # The machinery lives on SyncView; its thread worker needs a running app,
+    # so the Sync section hosts it.
+    return MmwApp(cfg, tmp_path, initial_section="sync", start_sync_with=([], False))
+
+
+def test_the_pool_scan_runs_off_the_event_loop(tmp_path):
+    """The freeze: a 9-14 s scan ran inside the tick callback, so the UI never
+    repainted and the 32 download workers blocked behind the pool lock.
+
+    With the gate shut, a scan run on the loop would block the trigger until
+    the safety timer opens it (3 s) — so "returned at once" is the check."""
+    gated = _GatedPool()
 
     async def scenario():
-        # The machinery lives on SyncView; its thread worker needs a running
-        # app, so the Sync section hosts it.
-        host = MmwApp(cfg, tmp_path, initial_section="sync", start_sync_with=([], False))
+        host = _sync_host(tmp_path)
         async with host.run_test():
-            await _inner(host.active_sync)
-
-    async def _inner(app):
-        app._pool = slow
-        loop_name = threading.current_thread().name
-        app._maybe_refresh_pool_stats(time.monotonic())
-
-        # The call must return immediately — the scan is someone else's problem.
-        gaps = []
-        last = time.monotonic()
-        for _ in range(40):
-            await asyncio.sleep(0.02)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
-
-        assert max(gaps) < 0.25, f"event loop stalled for {max(gaps):.2f}s"
-        assert slow.calls == 1
-        assert slow.threads and loop_name not in slow.threads, \
-            f"stats() ran on the event loop thread ({slow.threads})"
+            view = host.active_sync
+            await _gate_the_pool(view, gated)
+            loop_name = threading.current_thread().name
+            safety = threading.Timer(3.0, gated.gate.set)
+            safety.start()
+            try:
+                t = time.monotonic()
+                view._maybe_refresh_pool_stats(time.monotonic())
+                returned_in = time.monotonic() - t
+                await _until(gated.started.is_set)
+            finally:
+                gated.gate.set()
+                safety.cancel()
+            assert returned_in < 1.0, f"the trigger blocked for {returned_in:.2f}s"
+            assert gated.threads and loop_name not in gated.threads, \
+                f"stats() ran on the event loop thread ({gated.threads})"
 
     asyncio.run(scenario())
 
@@ -215,26 +241,24 @@ def test_the_pool_scan_runs_off_the_event_loop(tmp_path):
 def test_only_one_pool_scan_is_ever_in_flight(tmp_path):
     """Ticks arrive at 60 Hz. Without the guard they queue scans faster than
     the scans complete."""
-    from mmw.core import config
-    from mmw.tui.app import MmwApp
-
-    slow = _SlowPool(delay=0.3)
-    cfg = config.Config(
-        settings=config.Settings(mirror_dir=tmp_path, max_connections=2), sources=[])
+    gated = _GatedPool()
 
     async def scenario():
-        host = MmwApp(cfg, tmp_path, initial_section="sync", start_sync_with=([], False))
+        host = _sync_host(tmp_path)
         async with host.run_test():
-            await _inner(host.active_sync)
-
-    async def _inner(app):
-        app._pool = slow
-        for _ in range(50):
-            app._maybe_refresh_pool_stats(time.monotonic())
-            await asyncio.sleep(0.005)
-        await asyncio.sleep(0.4)
-
-        assert slow.calls == 1, f"{slow.calls} concurrent scans queued up"
+            view = host.active_sync
+            await _gate_the_pool(view, gated)
+            try:
+                view._maybe_refresh_pool_stats(time.monotonic())
+                await _until(gated.started.is_set)          # one scan, provably in flight
+                for _ in range(50):
+                    view._maybe_refresh_pool_stats(time.monotonic())
+                    await asyncio.sleep(0.005)
+                assert gated.calls == 1, f"{gated.calls} concurrent scans queued up"
+            finally:
+                gated.gate.set()
+            await _until(lambda: not view._pool_stats_inflight)
+            assert gated.calls == 1
 
     asyncio.run(scenario())
 

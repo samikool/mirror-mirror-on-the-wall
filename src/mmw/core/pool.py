@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -88,6 +89,65 @@ CREATE TABLE IF NOT EXISTS refs (
     source       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (checksum, mirror_name, repo_path),
     FOREIGN KEY (checksum) REFERENCES packages(checksum)
+);
+
+-- Network snapshots: a network's complete published tree at a moment, kept
+-- so it can be bundled to or published again exactly. Every checksum here is
+-- a GC root, like `refs` — prune never deletes a file a snapshot still lists.
+-- `complete = 0`: imported from a bundle manifest written before snapshots
+-- existed; its file list is exact but some files may already be pruned, so
+-- it can be a bundle's starting point but never its destination.
+CREATE TABLE IF NOT EXISTS snapshots (
+    id        INTEGER PRIMARY KEY,
+    network   TEXT NOT NULL,
+    stamp     TEXT NOT NULL,                 -- 20261011T120000Z, as apply.py uses
+    label     TEXT,
+    kind      TEXT NOT NULL,                 -- 'manual' | 'bundle' | 'imported'
+    complete  INTEGER NOT NULL DEFAULT 1,
+    settings  TEXT NOT NULL DEFAULT '{}',    -- what regenerated files need (JSON)
+    UNIQUE (network, stamp)
+);
+-- Paths and checksums are stored once and shared: consecutive snapshots are
+-- nearly identical, so a row is three integers. With the text inline, one
+-- snapshot of a 514k-file network grew the database by 225 MB.
+CREATE TABLE IF NOT EXISTS snapshot_paths (
+    id    INTEGER PRIMARY KEY,
+    path  TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS snapshot_blobs (
+    id        INTEGER PRIMARY KEY,
+    checksum  TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS snapshot_files (
+    snapshot  INTEGER NOT NULL,
+    path      INTEGER NOT NULL,              -- snapshot_paths.id
+    blob      INTEGER NOT NULL,              -- snapshot_blobs.id
+    PRIMARY KEY (snapshot, path)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_snapshot_files_blob ON snapshot_files(blob, snapshot);
+
+-- Every bundle made: where it started and ended. "Last bundled to" — the
+-- default starting point of the next bundle — is the newest row, which
+-- after a backwards bundle (5 -> 3) is 3, not the newest snapshot.
+CREATE TABLE IF NOT EXISTS bundles (
+    id          INTEGER PRIMARY KEY,
+    network     TEXT NOT NULL,
+    from_stamp  TEXT,                         -- NULL: a full bundle
+    to_stamp    TEXT NOT NULL,
+    out_path    TEXT NOT NULL,
+    sent        INTEGER NOT NULL DEFAULT 0,
+    sent_bytes  INTEGER NOT NULL DEFAULT 0,
+    removed     INTEGER NOT NULL DEFAULT 0,      -- paths the far side deletes
+    made        TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now'))
+);
+
+-- What each publish destination serves: 'live' (the network's current state)
+-- or a snapshot's stamp. A snapshot some root serves cannot be deleted.
+CREATE TABLE IF NOT EXISTS published (
+    root     TEXT PRIMARY KEY,                -- absolute directory
+    network  TEXT NOT NULL,
+    target   TEXT NOT NULL,                   -- 'live' | snapshot stamp
+    made     TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now'))
 );
 
 -- mirror_stats / group_unique_count / ref_map all filter on mirror_name;
@@ -486,6 +546,39 @@ class _DeferredWriter:
         self._q.put(self._SENTINEL)
         self._thread.join(timeout)
         return list(self._errors)
+
+
+@dataclass(frozen=True)
+class BundleInfo:
+    id: int
+    network: str
+    from_stamp: str | None
+    to_stamp: str
+    out_path: str
+    sent: int
+    sent_bytes: int
+    removed: int
+    made: str
+
+
+@dataclass(frozen=True)
+class PublishedInfo:
+    root: str
+    network: str
+    target: str            # 'live' | snapshot stamp
+    made: str
+
+
+@dataclass(frozen=True)
+class SnapshotInfo:
+    id: int
+    network: str
+    stamp: str
+    label: str | None
+    kind: str
+    complete: bool
+    settings: str
+    files: int
 
 
 class Pool:
@@ -1000,6 +1093,205 @@ class Pool:
             ).fetchone()
         return Path(row[0]) if row else None
 
+    def add_copy(self, src: Path, checksum: str, filename: str, size: int) -> Path:
+        """`add` a COPY of `src` — `add` moves the file it is given, which is
+        right for a download's tmp file and wrong for anything that stays
+        where it is (a key, a mirrored upstream file)."""
+        self._tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self._tmp_dir / f"copy-{os.getpid()}-{threading.get_ident()}-{filename}"
+        shutil.copyfile(src, tmp)
+        return self.add(tmp, checksum, "sha256", filename, size)
+
+    # ── snapshots ────────────────────────────────────────────────────────────
+
+    def create_snapshot(self, network: str, stamp: str, *, kind: str,
+                        rows, label: str | None = None, complete: bool = True,
+                        settings: str = "{}") -> int:
+        """Record a snapshot and its (path, checksum) rows in one transaction.
+        `rows` may be a generator over hundreds of thousands of rows."""
+        self.flush_writes()
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO snapshots (network, stamp, label, kind, complete, settings) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (network, stamp, label, kind, int(complete), settings))
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                raise ValueError(f"network {network!r} already has a snapshot {stamp}")
+            sid = cur.lastrowid
+            try:
+                # Staged, then resolved to shared ids in three set-wise statements.
+                self._conn.execute("CREATE TEMP TABLE IF NOT EXISTS _snap_in "
+                                   "(path TEXT PRIMARY KEY, checksum TEXT NOT NULL)")
+                self._conn.execute("DELETE FROM _snap_in")
+                batch: list[tuple[str, str]] = []
+                for path, checksum in rows:
+                    batch.append((path, checksum))
+                    if len(batch) >= 10_000:
+                        self._conn.executemany(
+                            "INSERT OR REPLACE INTO _snap_in VALUES (?, ?)", batch)
+                        batch.clear()
+                if batch:
+                    self._conn.executemany("INSERT OR REPLACE INTO _snap_in VALUES (?, ?)", batch)
+                self._conn.execute("INSERT OR IGNORE INTO snapshot_paths (path) "
+                                   "SELECT path FROM _snap_in")
+                self._conn.execute("INSERT OR IGNORE INTO snapshot_blobs (checksum) "
+                                   "SELECT checksum FROM _snap_in")
+                self._conn.execute(
+                    "INSERT INTO snapshot_files (snapshot, path, blob) "
+                    "SELECT ?, p.id, b.id FROM _snap_in i "
+                    "JOIN snapshot_paths p ON p.path = i.path "
+                    "JOIN snapshot_blobs b ON b.checksum = i.checksum", (sid,))
+                self._conn.execute("DELETE FROM _snap_in")
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return sid
+
+    def snapshots(self, network: str | None = None) -> list[SnapshotInfo]:
+        """Newest first."""
+        where, args = ("WHERE s.network = ?", (network,)) if network else ("", ())
+        with self._read() as c:
+            rows = c.execute(
+                "SELECT s.id, s.network, s.stamp, s.label, s.kind, s.complete, s.settings, "
+                "(SELECT COUNT(*) FROM snapshot_files f WHERE f.snapshot = s.id) "
+                f"FROM snapshots s {where} ORDER BY s.stamp DESC", args).fetchall()
+        return [SnapshotInfo(r[0], r[1], r[2], r[3], r[4], bool(r[5]), r[6], r[7])
+                for r in rows]
+
+    def snapshot_files(self, snapshot_id: int):
+        """(path, checksum) rows, in path order — streamed on a connection of
+        its own, so a 700k-row walk never holds the shared reader."""
+        self.flush_writes()
+        yield from self._stream(
+            "SELECT p.path, b.checksum FROM snapshot_files f "
+            "JOIN snapshot_paths p ON p.id = f.path JOIN snapshot_blobs b ON b.id = f.blob "
+            "WHERE f.snapshot = ? ORDER BY p.path", (snapshot_id,))
+
+    def rename_snapshot(self, snapshot_id: int, label: str | None) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE snapshots SET label = ? WHERE id = ?",
+                               (label or None, snapshot_id))
+            self._conn.commit()
+
+    def delete_snapshot(self, snapshot_id: int) -> None:
+        """Drop the rows. Its files are freed by the next prune — if nothing
+        else (a live mirror, another snapshot) still references them."""
+        with self._lock:
+            self._conn.execute("DELETE FROM snapshot_files WHERE snapshot = ?", (snapshot_id,))
+            self._conn.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
+            # The shared tables hold exactly what some snapshot still lists —
+            # prune reads `snapshot_blobs` as the set of held checksums.
+            # NOT IN, not a correlated NOT EXISTS: `snapshot_files.path` has no
+            # index of its own, and the correlated form compared every path
+            # with every row (515k x 515k — it never finished on oak). NOT IN
+            # builds its lookup once.
+            self._conn.execute("DELETE FROM snapshot_blobs WHERE id NOT IN "
+                               "(SELECT blob FROM snapshot_files)")
+            self._conn.execute("DELETE FROM snapshot_paths WHERE id NOT IN "
+                               "(SELECT path FROM snapshot_files)")
+            self._conn.commit()
+
+    def snapshot_blob_rows(self, snapshot_id: int):
+        """(path, checksum, pool_path, size) for every file of a snapshot, in
+        path order; pool_path is None for a file the pool no longer holds."""
+        self.flush_writes()
+        yield from self._stream(
+            "SELECT p.path, b.checksum, k.pool_path, k.size FROM snapshot_files f "
+            "JOIN snapshot_paths p ON p.id = f.path JOIN snapshot_blobs b ON b.id = f.blob "
+            "LEFT JOIN packages k ON k.checksum = b.checksum "
+            "WHERE f.snapshot = ? ORDER BY p.path", (snapshot_id,))
+
+    def snapshot_missing(self, snapshot_id: int) -> int:
+        """How many of a snapshot's files the pool no longer holds."""
+        self.flush_writes()
+        row = self._read_only(
+            "SELECT COUNT(*) FROM snapshot_files f JOIN snapshot_blobs b ON b.id = f.blob "
+            "WHERE f.snapshot = ? AND NOT EXISTS "
+            "(SELECT 1 FROM packages k WHERE k.checksum = b.checksum)", (snapshot_id,))
+        return row[0] if row else 0
+
+    def network_snapshot_paths(self, network: str):
+        """Every path any snapshot of `network` has listed — what a full
+        bundle reconciles a far side of unknown state against."""
+        self.flush_writes()
+        yield from (r[0] for r in self._stream(
+            "SELECT DISTINCT p.path FROM snapshots s "
+            "JOIN snapshot_files f ON f.snapshot = s.id "
+            "JOIN snapshot_paths p ON p.id = f.path WHERE s.network = ?", (network,)))
+
+    def record_bundle(self, network: str, from_stamp: str | None, to_stamp: str,
+                      out_path: str, sent: int, sent_bytes: int, removed: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO bundles (network, from_stamp, to_stamp, out_path, sent, "
+                "sent_bytes, removed) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (network, from_stamp, to_stamp, out_path, sent, sent_bytes, removed))
+            self._conn.commit()
+
+    def bundles(self, network: str) -> list[BundleInfo]:
+        """Newest first."""
+        with self._read() as c:
+            rows = c.execute(
+                "SELECT id, network, from_stamp, to_stamp, out_path, sent, sent_bytes, "
+                "removed, made FROM bundles WHERE network = ? ORDER BY id DESC",
+                (network,)).fetchall()
+        return [BundleInfo(*r) for r in rows]
+
+    def snapshot_delta(self, from_id: int | None, to_id: int) -> tuple[int, int]:
+        """(files, bytes) a bundle from `from_id` (None: full) to `to_id`
+        sends: paths whose content differs, and the payload — each distinct
+        blob once, as the archive stores a repeat as a hardlink entry."""
+        self.flush_writes()
+        # (snapshot, path) is the primary key: one indexed probe per row.
+        changed = ("" if from_id is None else
+                   " AND NOT EXISTS (SELECT 1 FROM snapshot_files a WHERE a.snapshot = ? "
+                   "AND a.path = b.path AND a.blob = b.blob)")
+        args = (to_id,) if from_id is None else (to_id, from_id)
+        row = self._read_only(
+            f"WITH sent AS (SELECT b.blob FROM snapshot_files b WHERE b.snapshot = ?{changed}) "
+            "SELECT (SELECT COUNT(*) FROM sent), COALESCE(SUM(k.size), 0) "
+            "FROM snapshot_blobs sb JOIN packages k ON k.checksum = sb.checksum "
+            "WHERE sb.id IN (SELECT blob FROM sent)", args)
+        return (row[0], row[1]) if row else (0, 0)
+
+    def record_published(self, root: str, network: str, target: str) -> None:
+        """`root` now serves `target` ('live' or a snapshot stamp)."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO published (root, network, target) VALUES (?, ?, ?)",
+                (root, network, target))
+            self._conn.commit()
+
+    def published(self, network: str) -> list[PublishedInfo]:
+        """Every destination this network was published to, newest first."""
+        with self._read() as c:
+            rows = c.execute(
+                "SELECT root, network, target, made FROM published WHERE network = ? "
+                "ORDER BY made DESC, root", (network,)).fetchall()
+        return [PublishedInfo(*r) for r in rows]
+
+    def snapshot_exclusive_bytes(self, snapshot_ids: "int | list[int]") -> int:
+        """Bytes only these snapshots keep — what deleting them (then pruning)
+        frees: files no live mirror and no other snapshot references."""
+        ids = [snapshot_ids] if isinstance(snapshot_ids, int) else list(snapshot_ids)
+        if not ids:
+            return 0
+        self.flush_writes()
+        ph = ",".join("?" * len(ids))
+        row = self._read_only(
+            "SELECT COALESCE(SUM(p.size), 0) FROM snapshot_blobs b "
+            "JOIN packages p ON p.checksum = b.checksum "
+            f"WHERE EXISTS (SELECT 1 FROM snapshot_files f WHERE f.blob = b.id "
+            f"AND f.snapshot IN ({ph})) "
+            f"AND NOT EXISTS (SELECT 1 FROM snapshot_files o WHERE o.blob = b.id "
+            f"AND o.snapshot NOT IN ({ph})) "
+            "AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = b.checksum)",
+            tuple(ids) * 2)
+        return row[0] if row else 0
+
     def prune_orphans(self, configured_sources: list[str]) -> tuple[int, int]:
         """DB-driven prune: GC refs of unconfigured repositories, then delete
         pool files no remaining ref wants. Returns (files_removed, bytes_freed).
@@ -1039,7 +1331,9 @@ class Pool:
                 self._conn.execute("DELETE FROM refs WHERE source != ''")
             orphans = self._conn.execute(
                 "SELECT checksum, pool_path, size FROM packages "
-                "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum)"
+                "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum) "
+                "AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
+                "WHERE b.checksum = packages.checksum)"
             ).fetchall()
             self._conn.commit()
 
@@ -1093,6 +1387,19 @@ class Pool:
         row = self._read_only("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM packages")
         return {"packages": row[0], "total_size": row[1]} if row else {
             "packages": 0, "total_size": 0}
+
+    def _stream(self, sql: str, params: tuple = ()):
+        """Rows of one query from a short-lived read-only connection, closed
+        when the iteration ends (or the generator is dropped)."""
+        db_path = self.pool_dir / "mmw.db"
+        if not db_path.exists():
+            return
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
+        _tune_reads(conn)
+        try:
+            yield from conn.execute(sql, params)
+        finally:
+            conn.close()
 
     def _read_only(self, sql: str, params: tuple = ()) -> "tuple | None":
         """Run one query on a short-lived read-only connection.

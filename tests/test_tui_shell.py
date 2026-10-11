@@ -11,6 +11,7 @@ from mmw.tui.navigation import SECTION_MODES
 from mmw.tui.theme import MMW_THEMES
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.sidebar import SectionLink, Sidebar
+from waiting import until
 
 
 def _cfg():
@@ -374,6 +375,9 @@ def test_save_config_serialises_with_theme_writes(tmp_path, monkeypatch):
         await pilot.pause()
         src = config.SourceConfig(url="https://deb.example.com/debian", arches=["amd64"])
         await app.save_config(lambda c: c.model_copy(update={"sources": [*c.sources, src]}))
+        # The theme's own save starts from a signal handler: under load it
+        # may not have begun when wait_for_complete runs. Wait for the file.
+        await until(pilot, lambda: config.load(tmp_path).settings.theme == "nord")
         await app.workers.wait_for_complete()
         saved = config.load(tmp_path)
         assert saved.settings.theme == "nord"

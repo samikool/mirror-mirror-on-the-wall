@@ -343,14 +343,15 @@ def test_two_bundles_in_the_same_second_get_distinct_stamps(seeded, tmp_path, mo
     run's tarball AND its ledger manifest, destroying the record of what the
     far side was actually sent, and made `previous == created` -- a
     self-referential header."""
-    from mmw.core.publisher import bundle as bundle_mod
+    from mmw.core import snapshots as snapshots_mod
 
     mirror_dir, cfg = seeded
     net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
 
     # Force the collision deterministically rather than hoping two real
-    # calls land in the same wall-clock second.
-    monkeypatch.setattr(bundle_mod, "now_stamp", lambda: "20260906T143000Z")
+    # calls land in the same wall-clock second. A bundle's stamp is its
+    # destination snapshot's, taken at "now".
+    monkeypatch.setattr(snapshots_mod, "now_stamp", lambda: "20260906T143000Z")
 
     first = bundle_network(net, cfg, mirror_dir)
     second = bundle_network(net, cfg, mirror_dir)

@@ -75,13 +75,13 @@ def test_second_network_still_bundles_after_first_is_skipped(cfg_dir, monkeypatc
     net_ok = config.NetworkConfig(name="lab-b", bundle_dir=tmp)
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg(net_no_dest, net_ok))
 
-    result = BundleResult(network_name="lab-b", out_path=tmp / "lab-b-20260919T000000Z.tar.zst",
+    result = BundleResult(network_name="lab-b", out_path=tmp / "lab-b-20260919T000000Z.tar",
                            sent=3, sent_bytes=100, deleted=1)
     calls = []
 
-    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True,
+    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False,
                             from_ref=None, to_ref="now"):
-        calls.append((net.name, full, compress))
+        calls.append((net.name, full))
         return result
 
     monkeypatch.setattr(bundle_cmd, "bundle_network", fake_bundle_network)
@@ -89,7 +89,7 @@ def test_second_network_still_bundles_after_first_is_skipped(cfg_dir, monkeypatc
     code = bundle_cmd.run(cfg_dir)
 
     assert code == 0  # lab-a's skip is not a failure; lab-b still bundled
-    assert calls == [("lab-b", False, True)]
+    assert calls == [("lab-b", False)]
     out = capsys.readouterr().out
     assert "lab-a" in out
     assert str(result.out_path) in out
@@ -99,15 +99,15 @@ def test_successful_bundle_prints_path_and_forwards_full(cfg_dir, monkeypatch, c
     net = config.NetworkConfig(name="lab", bundle_dir=Path("/tmp/out"))
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg(net))
 
-    result = BundleResult(network_name="lab", out_path=Path("/tmp/out/lab-20260919T000000Z.tar.zst"),
+    result = BundleResult(network_name="lab", out_path=Path("/tmp/out/lab-20260919T000000Z.tar"),
                            sent=42, sent_bytes=12345, deleted=2)
     calls = []
 
-    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True,
+    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False,
                             from_ref=None, to_ref="now"):
         # --full reaches the builder as "start from nothing".
         calls.append({"network": net.name, "out_path": out_path,
-                      "full": full or from_ref is None, "compress": compress})
+                      "full": full or from_ref is None})
         return result
 
     monkeypatch.setattr(bundle_cmd, "bundle_network", fake_bundle_network)
@@ -115,7 +115,7 @@ def test_successful_bundle_prints_path_and_forwards_full(cfg_dir, monkeypatch, c
     code = bundle_cmd.run(cfg_dir, full=True)
 
     assert code == 0
-    assert calls == [{"network": "lab", "out_path": None, "full": True, "compress": True}]
+    assert calls == [{"network": "lab", "out_path": None, "full": True}]
     out = capsys.readouterr().out
     assert str(result.out_path) in out
     assert "sent=42" in out
@@ -127,11 +127,11 @@ def test_exception_from_one_network_does_not_abort_the_run(cfg_dir, monkeypatch,
     net_b = config.NetworkConfig(name="lab-b", bundle_dir=Path("/tmp/out"))
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg(net_a, net_b))
 
-    result_b = BundleResult(network_name="lab-b", out_path=Path("/tmp/out/lab-b.tar.zst"),
+    result_b = BundleResult(network_name="lab-b", out_path=Path("/tmp/out/lab-b.tar"),
                              sent=1, sent_bytes=1, deleted=0)
     calls = []
 
-    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True,
+    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False,
                             from_ref=None, to_ref="now"):
         calls.append(net.name)
         if net.name == "lab-a":
@@ -158,10 +158,10 @@ def test_out_option_overrides_missing_bundle_dir(cfg_dir, monkeypatch):
     net = config.NetworkConfig(name="lab")
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg(net))
 
-    result = BundleResult(network_name="lab", out_path=Path("/tmp/explicit/lab.tar.zst"))
+    result = BundleResult(network_name="lab", out_path=Path("/tmp/explicit/lab.tar"))
     calls = []
 
-    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False, compress=True,
+    def fake_bundle_network(net, cfg, mirror_dir, out_path=None, full=False,
                             from_ref=None, to_ref="now"):
         calls.append(out_path)
         return result

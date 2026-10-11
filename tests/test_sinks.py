@@ -1,11 +1,9 @@
 import hashlib
-import io
 import json
 import tarfile
 from pathlib import Path
 
 import pytest
-import zstandard
 
 from mmw.core import config
 from mmw.core.pool import KIND_META, KIND_PKG, Pool
@@ -129,16 +127,14 @@ def test_tree_sink_finalize_group_progress_receives_rel_strings(tmp_path):
 
 
 def _members(path: Path) -> dict[str, bytes]:
-    """Extract a .tar.zst into {name: content} for assertions."""
-    dctx = zstandard.ZstdDecompressor()
+    """Extract a bundle tar into {name: content} for assertions."""
     out: dict[str, bytes] = {}
-    with open(path, "rb") as raw, dctx.stream_reader(raw) as zr:
-        with tarfile.open(fileobj=zr, mode="r|") as tar:
-            for ti in tar:
-                if ti.isfile():
-                    out[ti.name] = tar.extractfile(ti).read()
-                elif ti.islnk():
-                    out[ti.name] = b"->" + ti.linkname.encode()
+    with tarfile.open(path, mode="r|") as tar:
+        for ti in tar:
+            if ti.isfile():
+                out[ti.name] = tar.extractfile(ti).read()
+            elif ti.islnk():
+                out[ti.name] = b"->" + ti.linkname.encode()
     return out
 
 
@@ -146,16 +142,8 @@ def _manifest_header(path: Path) -> dict:
     """The header line of a produced bundle's own manifest member — the
     close()-computed `file_count` only ever exists in the header actually
     written into the tar, never on a leftover file (the temp manifest is
-    unlinked in close()'s `finally`), so this reads it back the same way
-    apply.py's real read_manifest_bytes does."""
-    m = _members(path)
-    dctx = zstandard.ZstdDecompressor()
-    # stream_reader, not .decompress(): write_manifest's stream_writer
-    # doesn't embed a content-size header, matching the same omitted-size
-    # frame shape this project already handles elsewhere (core/compress.py).
-    with dctx.stream_reader(io.BytesIO(m[".mmw/manifest.jsonl.zst"])) as zr:
-        manifest_jsonl = zr.read()
-    return json.loads(manifest_jsonl.splitlines()[0])
+    unlinked in close()'s `finally`)."""
+    return json.loads(_members(path)[".mmw/manifest.jsonl"].splitlines()[0])
 
 
 def _hdr(previous=None, full=True):
@@ -165,57 +153,36 @@ def _hdr(previous=None, full=True):
 
 def test_bundle_sink_writes_manifest_first(pool, tmp_path):
     cs, src = _seed(pool, b"hello", "a.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n")
     sink.link(src, "host/repo/pool/a.deb", 5, cs, KIND_PKG)
     sink.close()
 
-    dctx = zstandard.ZstdDecompressor()
-    with open(out, "rb") as raw, dctx.stream_reader(raw) as zr:
-        with tarfile.open(fileobj=zr, mode="r|") as tar:
-            first = next(iter(tar))
-    assert first.name == ".mmw/manifest.jsonl.zst"
+    with tarfile.open(out, mode="r|") as tar:
+        first = next(iter(tar))
+    assert first.name == ".mmw/manifest.jsonl"
 
 
-def test_bundle_sink_can_skip_compression_entirely(pool, tmp_path):
-    """`compress=False` must produce a genuinely plain tar — not zstd at
-    level 0, which still carries frame overhead and isn't readable without
-    a zstd-aware tool. `tarfile.open()` with no explicit compression mode
-    (auto-detect) must be able to read it directly."""
+def test_bundle_sink_writes_a_plain_tar(pool, tmp_path):
+    """No compression anywhere: no zstd magic, `tarfile` reads it with no
+    mode, and the manifest member is plain JSONL — apply.py needs nothing
+    but Python."""
     cs, src = _seed(pool, b"hello", "a.deb")
     out = tmp_path / "lab.tar"
-    events: list[tuple[str, str]] = []
-    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n",
-                      progress=lambda rel, status: events.append((rel, status)),
-                      compress=False)
+    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n")
     sink.link(src, "host/repo/pool/a.deb", 5, cs, KIND_PKG)
     sink.close()
 
-    # No zstd magic at the start of the file.
     assert out.read_bytes()[:4] != b"\x28\xb5\x2f\xfd"
-
-    # tarfile can open it with no compression mode specified at all.
     with tarfile.open(out, mode="r") as tar:
-        names = {ti.name for ti in tar}
-        assert "host/repo/pool/a.deb" in names
-        # The manifest member's own bytes are still independently
-        # zstd-compressed, regardless of the outer container.
-        manifest_ti = tar.getmember(".mmw/manifest.jsonl.zst")
-        manifest_bytes = tar.extractfile(manifest_ti).read()
-        assert manifest_bytes[:4] == b"\x28\xb5\x2f\xfd"
-
-    # archive-done's raw and compressed byte counts should be close — no
-    # compression happened, so "compressed" is really just tar overhead on
-    # top of the same content, never dramatically smaller like a real
-    # zstd-compressed archive-progress test elsewhere in this file expects.
-    dones = [s for _, s in events if s.startswith("archive-done:")]
-    _, files_done, raw_bytes, compressed_bytes = dones[0].split(":")
-    assert int(compressed_bytes) >= int(raw_bytes)
+        assert "host/repo/pool/a.deb" in {ti.name for ti in tar}
+        manifest = tar.extractfile(".mmw/manifest.jsonl").read()
+    assert json.loads(manifest.splitlines()[0])["network"] == "lab"
 
 
 def test_bundle_sink_carries_payload_and_apply_script(pool, tmp_path):
     cs, src = _seed(pool, b"hello", "a.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n")
     sink.link(src, "host/repo/pool/a.deb", 5, cs, KIND_PKG)
     sink.write("UPGRADE.md", b"# guide\n")
@@ -232,7 +199,7 @@ def test_bundle_sink_delta_sends_only_changed(pool, tmp_path):
     cs_b, src_b = _seed(pool, b"brand new", "b.deb")
     prev = {"host/repo/pool/a.deb": cs_a}
 
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(previous="20260901T090000Z", full=False),
                       prev=prev, apply_script=b"")
     sink.link(src_a, "host/repo/pool/a.deb", 9, cs_a, KIND_PKG)
@@ -248,7 +215,7 @@ def test_bundle_sink_delta_sends_only_changed(pool, tmp_path):
 def test_bundle_sink_manifest_lists_the_whole_tree_not_the_delta(pool, tmp_path):
     cs_a, src_a = _seed(pool, b"unchanged", "a.deb")
     cs_b, src_b = _seed(pool, b"brand new", "b.deb")
-    sink = BundleSink(tmp_path / "lab.tar.zst",
+    sink = BundleSink(tmp_path / "lab.tar",
                       _hdr(previous="20260901T090000Z", full=False),
                       prev={"host/repo/pool/a.deb": cs_a}, apply_script=b"")
     sink.link(src_a, "host/repo/pool/a.deb", 9, cs_a, KIND_PKG)
@@ -270,7 +237,7 @@ def test_bundle_sink_declares_its_own_file_count_not_the_manifests(pool, tmp_pat
     the full manifest instead (see resources/apply.py)."""
     cs_a, src_a = _seed(pool, b"unchanged", "a.deb")
     cs_b, src_b = _seed(pool, b"brand new", "b.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(previous="20260901T090000Z", full=False),
                       prev={"host/repo/pool/a.deb": cs_a}, apply_script=b"")
     sink.link(src_a, "host/repo/pool/a.deb", 9, cs_a, KIND_PKG)
@@ -285,7 +252,7 @@ def test_bundle_sink_declares_its_own_file_count_not_the_manifests(pool, tmp_pat
 def test_bundle_sink_dedups_by_checksum_as_tar_hardlinks(pool, tmp_path):
     """An apt index file appears canonically and under by-hash/ — one copy."""
     cs, src = _seed(pool, b"Packages content", "Packages.gz")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"")
     sink.link(src, "h/r/dists/n/main/binary-amd64/Packages.gz", 16, cs, KIND_META)
     sink.link(src, f"h/r/dists/n/main/binary-amd64/by-hash/SHA256/{cs}", 16, cs, KIND_META)
@@ -304,7 +271,7 @@ def test_bundle_sink_full_resends_despite_matching_prev(pool, tmp_path):
     cs, src = _seed(pool, b"unchanged", "a.deb")
     prev = {"host/repo/pool/a.deb": cs}   # identical to what's being linked
 
-    out = tmp_path / "lab-full.tar.zst"
+    out = tmp_path / "lab-full.tar"
     sink = BundleSink(out, _hdr(full=True), prev=dict(prev), apply_script=b"",
                       full=True)
     status = sink.link(src, "host/repo/pool/a.deb", 9, cs, KIND_PKG)
@@ -322,7 +289,7 @@ def test_bundle_sink_full_still_computes_deletions_from_prev(pool, tmp_path):
     (the original implementation) computed zero deletions, permanently
     stranding files the far side no longer wants."""
     prev = {"host/repo/pool/gone.deb": "aa" * 32}
-    sink = BundleSink(tmp_path / "lab-full.tar.zst", _hdr(full=True),
+    sink = BundleSink(tmp_path / "lab-full.tar", _hdr(full=True),
                       prev=dict(prev), apply_script=b"", full=True)
 
     result = sink.finalize_group("host/repo", keep=set(), live_checksums=set(),
@@ -335,7 +302,7 @@ def test_bundle_sink_full_still_computes_deletions_from_prev(pool, tmp_path):
 def test_bundle_sink_delete_list_only_when_pruning(pool, tmp_path):
     prev = {"host/repo/pool/gone.deb": "aa" * 32}
     for prune, expected in ((True, True), (False, False)):
-        out = tmp_path / f"lab-{prune}.tar.zst"
+        out = tmp_path / f"lab-{prune}.tar"
         sink = BundleSink(out, _hdr(full=False), prev=dict(prev),
                           apply_script=b"", prune=prune)
         result = sink.finalize_group("host/repo", keep=set(), live_checksums=set(),
@@ -355,7 +322,7 @@ def test_bundle_sink_reports_error_on_size_mismatch_without_corrupting_archive(
     must be reported and skipped, never silently written as a short tar
     entry that would misalign every entry after it."""
     cs, src = _seed(pool, b"hello", "a.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"")
     # Claim a size larger than the actual 5-byte blob.
     sink.link(src, "host/repo/pool/a.deb", 999, cs, KIND_PKG)
@@ -405,7 +372,7 @@ def test_bundle_sink_delta_agrees_with_manifest_delta(pool, tmp_path):
 
     want_send, want_delete = delta(prev, cur)
 
-    sink = BundleSink(tmp_path / "lab.tar.zst", _hdr(previous="x", full=False),
+    sink = BundleSink(tmp_path / "lab.tar", _hdr(previous="x", full=False),
                       prev=dict(prev), apply_script=b"")
     got_send = set()
     for rel, src, content, cs in (
@@ -438,7 +405,7 @@ def test_bundle_sink_resends_empty_checksum_key_even_when_prev_matches(pool, tmp
     # construction (publish_keys always calls link() with checksum="").
     prev = {rel: ""}
 
-    out = tmp_path / "lab2.tar.zst"
+    out = tmp_path / "lab2.tar"
     sink = BundleSink(out, _hdr(previous="x", full=False), prev=dict(prev),
                       apply_script=b"")
     status = sink.link(src, rel, len(key_bytes), "", KIND_META)
@@ -468,7 +435,7 @@ def test_bundle_sink_by_hash_retention_differs_from_manifest_delta(pool, tmp_pat
     keep = {pkg_rel}  # only the canonical path, not by-hash
     live_checksums = {cs}  # but the checksum is still live upstream
 
-    sink = BundleSink(tmp_path / "lab.tar.zst", _hdr(previous="x", full=False),
+    sink = BundleSink(tmp_path / "lab.tar", _hdr(previous="x", full=False),
                       prev=dict(prev), apply_script=b"")
     sink.link(src, pkg_rel, 13, cs, KIND_META)
     sink.link(src, by_hash_rel, 13, cs, KIND_META)
@@ -495,7 +462,7 @@ def test_bundle_sink_by_hash_deletion_on_stale_checksum(pool, tmp_path):
         stale_rel: cs_stale,
     }
 
-    sink = BundleSink(tmp_path / "lab.tar.zst", _hdr(full=False), prev=dict(prev),
+    sink = BundleSink(tmp_path / "lab.tar", _hdr(full=False), prev=dict(prev),
                       apply_script=b"", prune=True)
     # Only link the live checksum; don't link stale at all.
     sink.finalize_group(base, keep=set(), live_checksums={cs_live}, exclude=set())
@@ -512,7 +479,7 @@ def test_bundle_sink_write_unchanged_does_not_increment_sent(pool, tmp_path):
     checksum = hashlib.sha256(data).hexdigest()
     prev = {"UPGRADE.md": checksum}
 
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(previous="x", full=False), prev=prev,
                       apply_script=b"")
     sink.write("UPGRADE.md", data)
@@ -538,7 +505,7 @@ def test_bundle_sink_finalize_group_exclude_parameter(tmp_path):
         f"{nested}/stale": "bb" * 32,
     }
 
-    sink = BundleSink(tmp_path / "lab.tar.zst", _hdr(full=False), prev=dict(prev),
+    sink = BundleSink(tmp_path / "lab.tar", _hdr(full=False), prev=dict(prev),
                       apply_script=b"", prune=True)
     # Nested base is excluded; even though it's not in keep, nothing under it
     # is added to deleted.
@@ -628,14 +595,14 @@ def test_write_upgrade_md_with_no_root_never_prints_none(tmp_path):
 
 def test_bundle_sink_close_reports_archive_progress(pool, tmp_path):
     """close() does all the real I/O (reading pool blobs, streaming them
-    through zstd into the tar) — link()/write() only ever append to in-memory
+    into the tar) — link()/write() only ever append to in-memory
     lists. Without a progress hook inside close() itself, a bundle's progress
     UI races to a "done"-looking count almost instantly and then sits silent
     for however long the archive actually takes to write — see the docstring
     this test is locking in behaviour for (TransferView's archive
     phase)."""
     cs, src = _seed(pool, b"hello-package-bytes", "a.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     events: list[tuple[str, str]] = []
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n",
                       progress=lambda rel, status: events.append((rel, status)))
@@ -656,34 +623,21 @@ def test_bundle_sink_close_reports_archive_progress(pool, tmp_path):
     assert int(total_files) == sink.sent == 2
     assert int(total_bytes) == sink.sent_bytes == len(b"hello-package-bytes") + len(b"# guide\n")
 
-    # archive-done carries files written, the uncompressed ("raw") bytes fed
-    # into the tar, AND the real compressed bytes written to the *.tar.zst on
-    # disk — comparing compressed-so-far against the uncompressed total from
-    # archive-start would compare different units and never cleanly reach
-    # 100%, so both are reported: raw for an apples-to-apples fraction and a
-    # compression ratio, compressed for what a viewer watching disk fill up
-    # (or a transfer budget) actually cares about.
-    _, files_written, raw_bytes, compressed_bytes = dones[0].split(":")
+    # archive-done carries files written and the file bytes fed into the tar
+    # — the same unit as archive-start's total, so the bar reaches 100%.
+    _, files_written, bytes_written = dones[0].split(":")
     assert int(files_written) >= 2   # payload + generated, plus .mmw/ control files
-    assert int(raw_bytes) >= sink.sent_bytes  # plus the .mmw/ control files' own bytes
-    assert 0 < int(compressed_bytes) <= out.stat().st_size
-    assert int(compressed_bytes) == out.stat().st_size
+    assert int(bytes_written) >= sink.sent_bytes  # plus the .mmw/ control files' own bytes
+    assert int(bytes_written) <= out.stat().st_size   # tar headers and padding on top
 
 
-def test_bundle_sink_archive_progress_tracks_raw_bytes_separately_from_compressed(
-    pool, tmp_path, monkeypatch
-):
-    """`archive-progress` must carry uncompressed ("raw") bytes fed into the
-    tar so far, not just the compressed bytes written to disk — a viewer
-    comparing compressed-so-far against the uncompressed total from
-    archive-start would be comparing different units and could never reach a
-    clean 100%. Highly compressible content (repeated bytes) makes the two
-    diverge sharply, so a test conflating them would pass by accident."""
+def test_bundle_sink_archive_progress_names_the_file_and_counts_bytes(pool, tmp_path,
+                                                                    monkeypatch):
     monkeypatch.setattr(sinks_mod, "_ARCHIVE_REPORT_INTERVAL", 0.0)  # report every file
 
-    payload = b"x" * 100_000  # highly compressible — raw and compressed diverge a lot
+    payload = b"x" * 100_000
     cs, src = _seed(pool, payload, "a.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     events: list[tuple[str, str]] = []
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n",
                       progress=lambda rel, status: events.append((rel, status)))
@@ -693,12 +647,8 @@ def test_bundle_sink_archive_progress_tracks_raw_bytes_separately_from_compresse
     progressed = [(rel, s) for rel, s in events if s.startswith("archive-progress:")]
     assert progressed, "at least one mid-archive report expected with the interval zeroed"
     rel, status = progressed[-1]
-    _, files, raw, compressed = status.split(":")
-    assert int(raw) >= len(payload)
-    # The whole point: raw (uncompressed) and compressed must NOT be forced
-    # equal — that was the bug. Highly compressible content makes the gap
-    # unmistakable rather than incidental.
-    assert int(compressed) < int(raw)
+    _, files, written = status.split(":")
+    assert int(written) >= len(payload)
     # The rel names the file that completed at the moment this (throttled)
     # report fired — a viewer wanting to show "currently archiving: X" needs
     # this, not an empty placeholder.
@@ -716,7 +666,7 @@ def test_large_files_get_an_immediate_unthrottled_announcement(pool, tmp_path, m
     small_cs, small_src = _seed(pool, b"tiny", "small.deb")
     big_payload = b"y" * 100
     big_cs, big_src = _seed(pool, big_payload, "big.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     events: list[tuple[str, str]] = []
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n",
                       progress=lambda rel, status: events.append((rel, status)))
@@ -739,7 +689,7 @@ def test_large_file_reports_incremental_progress_while_compressing(pool, tmp_pat
     payload = b"z" * 50_000  # large enough for tarfile's internal copy loop
     # to call .read() several times, so "incremental" is actually exercised.
     cs, src = _seed(pool, payload, "big.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     events: list[tuple[str, str]] = []
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n",
                       progress=lambda rel, status: events.append((rel, status)))
@@ -763,7 +713,7 @@ def test_bundle_sink_close_progress_is_optional(pool, tmp_path):
     """No `progress=` passed must behave exactly as before — close() cannot
     assume every caller wants archive events."""
     cs, src = _seed(pool, b"hello", "a.deb")
-    out = tmp_path / "lab.tar.zst"
+    out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n")
     sink.link(src, "host/repo/pool/a.deb", 5, cs, KIND_PKG)
     sink.close()   # must not raise

@@ -46,7 +46,6 @@ EDITORS = {
     ("NetworkConfig", "dist_upgrade"): ("network_screens.py", "du-switch"),
     ("NetworkConfig", "certs"): ("network_screens.py", "certs-switch"),
     ("NetworkConfig", "nginx"): ("network_screens.py", "nginx-switch"),
-    ("NetworkConfig", "bundle_compress"): ("network_screens.py", "compress-switch"),
 
     ("NetworkSelect", "source"): ("network_screens.py", "repo-checklist"),
     ("NetworkSelect", "suites"): ("network_screens.py", "axis-block"),

@@ -5,7 +5,6 @@ import tarfile
 from pathlib import Path
 
 import pytest
-import zstandard
 
 from mmw.core import config
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
@@ -46,18 +45,16 @@ def seeded(tmp_path):
 
 
 def _extract(bundle: Path, dest: Path) -> None:
-    dctx = zstandard.ZstdDecompressor()
     dest.mkdir(parents=True, exist_ok=True)
-    with open(bundle, "rb") as raw, dctx.stream_reader(raw) as zr:
-        with tarfile.open(fileobj=zr, mode="r|") as tar:
-            # filter="data" is the modern (3.12+) extraction filter: it
-            # rejects absolute paths, `..` traversal, device files, and
-            # strips owner/permission bits that could affect files outside
-            # the archive. Test-only convenience — apply.py (Task 8) ships to
-            # far sides as old as RHEL 8's Python 3.6, where `filter=` does
-            # not exist, so it must do its own path validation rather than
-            # lean on this.
-            tar.extractall(dest, filter="data")
+    with tarfile.open(bundle, mode="r|") as tar:
+        # filter="data" is the modern (3.12+) extraction filter: it
+        # rejects absolute paths, `..` traversal, device files, and
+        # strips owner/permission bits that could affect files outside
+        # the archive. Test-only convenience — apply.py (Task 8) ships to
+        # far sides as old as RHEL 8's Python 3.6, where `filter=` does
+        # not exist, so it must do its own path validation rather than
+        # lean on this.
+        tar.extractall(dest, filter="data")
 
 
 def _tree(root: Path) -> dict[str, bytes]:

@@ -13,25 +13,28 @@ raises, not just the conditions it checks for explicitly. A raw Python
 traceback on a machine nobody can attach a debugger to is exactly the
 "someone else's, months later" failure mode this file exists to avoid.
 
-    python3 apply.py lab-20260906T143000Z.tar.zst --root /srv/www
+    python3 apply.py lab-20260906T143000Z.tar --root /srv/www
 
-Requires the `zstd` binary on PATH. Nothing else — see
-test_apply_script_imports_only_stdlib for the enforced import allowlist.
+Needs nothing but Python — see test_apply_script_imports_only_stdlib for the
+enforced import allowlist. mmw writes plain tars; one compressed in transit
+(`zstd lab-….tar`) is refused with a message: decompress it first.
 """
 import argparse
 import hashlib
+import io
 import json
 import os
 import posixpath
 import shutil
-import subprocess
-import threading
 import sys
 import tarfile
 
 STATE_FILE = ".mmw-state"
 MMW_DIR = ".mmw"
-MANIFEST_MEMBER = ".mmw/manifest.jsonl.zst"
+MANIFEST_MEMBER = ".mmw/manifest.jsonl"
+# Bundles from before plain manifests carry it zstd-compressed — each came with
+# its own apply.py, which reads it.
+OLD_MANIFEST_MEMBER = ".mmw/manifest.jsonl.zst"
 DELETE_MEMBER = ".mmw/delete.list"
 # A `certs` network's certificate and private key. Installed under
 # {root}/.mmw/tls/ — never a served path — and referenced from there by the
@@ -110,61 +113,28 @@ _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
 def _is_zstd(path):
-    """Sniff the actual bytes rather than trust the filename — a bundle
-    copied across filesystems or renamed by hand shouldn't change how it's
-    read."""
+    """Sniff the actual bytes rather than trust the filename: a bundle
+    someone compressed for transfer must be decompressed before applying."""
     with open(path, "rb") as fh:
         return fh.read(4) == _ZSTD_MAGIC
 
 
-class _PlainStream(object):
-    """Stands in for the subprocess.Popen open_stream normally returns, for
-    a bundle mmw produced with compression turned off. apply() only ever
-    touches `.stdout` (to read) and `.wait()` (to check for a decompression
-    failure) on what this returns — both duck-typed identically here, so
-    nothing below this function needs to know or care which kind it got.
-    There is nothing to wait on for a plain tar: whatever integrity problem
-    it has, tarfile's own exceptions and the manifest-completeness check
-    below already cover it.
-    """
-
-    def __init__(self, path):
-        self.stdout = open(path, "rb")
-
-    def wait(self):
-        return 0
-
-
-def open_stream(path):
-    """A readable stream over the bundle's tar content, however it's stored.
-
-    zstd -dc <path> as a pipe when the bundle is actually zstd-compressed
-    (raises FileNotFoundError if the zstd binary itself is missing — main()
-    turns that into one clear line instead of a raw traceback, since "zstd
-    assumed present" is an assumption, not a guarantee, on a machine we've
-    never seen); the file itself, opened directly, when it isn't.
-    """
-    if _is_zstd(path):
-        return subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE)
-    return _PlainStream(path)
-
-
 def read_manifest_bytes(blob):
-    """(header dict, {path: checksum}) from a zstd-compressed JSONL blob.
+    """(header dict, {path: checksum}) from the JSONL manifest blob, read a
+    line at a time (no second full copy of a two-million-line manifest).
 
-    The manifest travels inside the tar already zstd-compressed
-    (manifest.py writes it that way before BundleSink ever adds it as a tar
-    member), so this is a second, independent zstd invocation from the one
-    unpacking the outer tar.zst stream. A corrupt or hand-truncated manifest
-    blob surfaces here as json.JSONDecodeError, or via subprocess return
-    code check — a truncation on a line boundary otherwise produces valid
-    JSON lines that are merely incomplete. The caller wraps this call; it
-    does not catch its own errors.
+    A corrupt or hand-truncated manifest surfaces as json.JSONDecodeError or
+    a KeyError for a missing header field; a truncation landing on a line
+    boundary parses, and is caught by the file_count check instead. The
+    caller wraps this call; it does not catch its own errors.
     """
     header = None
     files = {}
-    for lineno, line in enumerate(_manifest_lines(blob)):
-        if lineno == 0:
+    for raw in io.BytesIO(blob):
+        line = raw.decode("utf-8").strip()
+        if not line:
+            continue
+        if header is None:
             header = json.loads(line)
             # Require the header to carry the fields the script relies on, not
             # just valid JSON. A partially-truncated manifest might have a
@@ -178,58 +148,6 @@ def read_manifest_bytes(blob):
     if header is None:
         raise json.JSONDecodeError("empty manifest", "", 0)
     return header, files
-
-
-def _manifest_lines(blob):
-    """Yield the manifest's non-empty lines, decoded, one at a time.
-
-    `manifest.py`'s own docstring says the format is JSONL "so the far side
-    can stream it rather than hold millions of entries in memory" — and then
-    this function did `communicate()` (the whole decompressed output), then
-    `.decode().splitlines()` (a second full copy plus a list of every line),
-    before building the dict. At two million files that is roughly a gigabyte
-    of peak RSS in a Python process on a far side nobody here can debug.
-
-    Feeding the blob to zstd's stdin while reading its stdout needs a writer
-    thread to avoid deadlocking on a full pipe, and this script is stdlib-only
-    and must run on Python 3.6 — so it writes the blob to zstd via a thread and
-    reads lines off stdout as they appear.
-    """
-    proc = subprocess.Popen(["zstd", "-dc"], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE)
-
-    def _feed():
-        try:
-            proc.stdin.write(blob)
-        except (OSError, ValueError):
-            pass                      # zstd died; the return code below says so
-        finally:
-            try:
-                proc.stdin.close()
-            except (OSError, ValueError):
-                pass
-
-    writer = threading.Thread(target=_feed)
-    writer.daemon = True
-    writer.start()
-    try:
-        for raw in proc.stdout:
-            line = raw.decode("utf-8").strip()
-            if line:
-                yield line
-    finally:
-        proc.stdout.close()
-        proc.wait()
-        writer.join()
-    if proc.returncode != 0:
-        # zstd exits 1 on both truncated frames and garbage, and a truncation
-        # landing on a line boundary produces a shorter but perfectly
-        # well-formed JSONL file — every line parses, so only the return code
-        # can catch it. Raised after the loop so the reason is not masked by a
-        # JSON error from a half-written final line.
-        raise json.JSONDecodeError(
-            "zstd decompression failed (exit %d)" % proc.returncode, "", 0)
-
 
 
 def _prune_empty_parents(root, start):
@@ -429,8 +347,13 @@ def apply(bundle, root, dry_run=False, verify=False):
                 return EXIT_UNSAFE
             os.makedirs(_tmp_dir(root), exist_ok=True)
             _sweep_tmp(root)
-        proc = open_stream(bundle)
-        tar = tarfile.open(fileobj=proc.stdout, mode="r|")
+        if _is_zstd(bundle):
+            sys.stderr.write(
+                "%s is zstd-compressed — mmw bundles are plain tars. Decompress it "
+                "first (zstd -d %s) and apply the .tar.\n" % (bundle, bundle))
+            return EXIT_TOOLING
+        stream = open(bundle, "rb")
+        tar = tarfile.open(fileobj=stream, mode="r|")
         for member in tar:
             name = member.name
             current = name
@@ -465,6 +388,11 @@ def apply(bundle, root, dry_run=False, verify=False):
                     % (name, member.linkname))
                 return EXIT_UNSAFE
 
+            if name == OLD_MANIFEST_MEMBER:
+                sys.stderr.write(
+                    "this bundle was made by an older mmw (compressed manifest) — "
+                    "apply it with the apply.py that came with it\n")
+                return EXIT_TOOLING
             if name == MANIFEST_MEMBER:
                 header, manifest = read_manifest_bytes(tar.extractfile(member).read())
                 have = read_state(root)
@@ -550,19 +478,7 @@ def apply(bundle, root, dry_run=False, verify=False):
 
         current = None
         tar.close()
-        proc.stdout.close()
-        rc = proc.wait()
-        if rc != 0:
-            # tarfile only raises if the truncated stream lands mid-member;
-            # a zstd failure that happens to leave a byte-complete tar up to
-            # that point would otherwise look like a clean, if short, apply.
-            # Checked before any deletion or state write below, so a
-            # corrupt transfer never gets to claim success.
-            sys.stderr.write(
-                "zstd exited with status %d decompressing %r — the bundle is "
-                "truncated or corrupt; nothing after the last good entry was "
-                "applied\n" % (rc, bundle))
-            return EXIT_TOOLING
+        stream.close()
 
         # A first attempt at this compared `manifest` (the network's COMPLETE
         # expected tree — that's what makes --verify meaningful) against
@@ -677,12 +593,6 @@ def apply(bundle, root, dry_run=False, verify=False):
             % (e, " (while processing %r)" % current if current else ""))
         return EXIT_UNSAFE
     except OSError as e:
-        if isinstance(e, FileNotFoundError):
-            # Not a bundle problem — almost always the zstd binary itself
-            # missing from PATH. Re-raise so main()'s own handler reports
-            # that specifically, rather than folding it into the generic
-            # "filesystem error" message below.
-            raise
         sys.stderr.write(
             "filesystem error%s: %s\n"
             % (" while writing %r" % current if current else "", e))
@@ -783,15 +693,7 @@ def main(argv=None):
         ap.error("a bundle to apply is required (or --status)")
     if not args.dry_run:
         os.makedirs(args.root, exist_ok=True)
-    try:
-        return apply(args.bundle, args.root, args.dry_run, args.verify)
-    except FileNotFoundError as e:
-        # Almost always the zstd binary itself missing from PATH — the one
-        # external dependency this script has, and the one thing about a far
-        # side we cannot verify ahead of time. A raw traceback here reads
-        # like a bug in apply.py; this reads like what it is, a missing tool.
-        sys.stderr.write("required external tool not found: %s\n" % (e,))
-        return EXIT_TOOLING
+    return apply(args.bundle, args.root, args.dry_run, args.verify)
 
 
 if __name__ == "__main__":

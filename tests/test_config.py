@@ -160,7 +160,6 @@ def test_full_network_config_round_trip(tmp_path):
         dist_upgrade=True,
         certs=True,
         nginx=False,
-        bundle_compress=False,
     )
     cfg = config.Config(
         settings=config.Settings(mirror_dir=tmp_path / "mirror", max_connections=3),
@@ -183,7 +182,6 @@ def test_full_network_config_round_trip(tmp_path):
     assert got.dist_upgrade is True
     assert got.certs is True
     assert got.nginx is False
-    assert got.bundle_compress is False
 
 
 # ── merge must never narrow: empty means all on every dimension ──────────────
@@ -355,3 +353,15 @@ def test_a_network_name_cannot_be_dot_dot():
 def test_ordinary_network_names_still_validate():
     for name in ("lab", "dgx-site", "lab_2", "site.one", "A1"):
         assert config.NetworkConfig(name=name).name == name
+
+
+def test_a_retired_bundle_compress_key_loads_and_is_dropped_on_save(tmp_path):
+    """Bundles are plain tars now; a config that still says
+    `bundle_compress = false` must keep loading, and lose the key on save."""
+    (tmp_path / "mmw.toml").write_text(
+        '[settings]\nmirror_dir = "mirror"\n\n'
+        '[[networks]]\nname = "lab"\nbundle_compress = false\n')
+    cfg = config.load(tmp_path)
+    assert [n.name for n in cfg.networks] == ["lab"]
+    config.save(cfg, tmp_path)
+    assert "bundle_compress" not in (tmp_path / "mmw.toml").read_text()

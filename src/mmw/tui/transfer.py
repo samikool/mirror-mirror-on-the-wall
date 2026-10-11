@@ -150,14 +150,10 @@ class TransferView(Vertical):
         self._last_speed_time: float = 0.0
         self._last_speed_linked: int = 0
         # Archive-writing phase (BundleSink.close()): the real I/O of a bundle.
-        # Raw and compressed bytes are kept apart — the raw figure drives the
-        # completion fraction (comparable with `_archive_total_bytes`), the
-        # compressed one the write speed and the live ratio.
         self._archive_total_files: int = 0
         self._archive_total_bytes: int = 0
         self._archive_files_done: int = 0
-        self._archive_raw_bytes_done: int = 0
-        self._archive_compressed_bytes_done: int = 0
+        self._archive_bytes_done: int = 0
         self._archive_files_ema: float = 0.0
         self._archive_bps_ema: float = 0.0
         self._archive_last_sample_time: float = 0.0
@@ -249,7 +245,7 @@ class TransferView(Vertical):
         the file count is an estimate, and "112%" helps nobody."""
         with self._lock:
             if self._archive_total_bytes:
-                done, total = self._archive_raw_bytes_done, self._archive_total_bytes
+                done, total = self._archive_bytes_done, self._archive_total_bytes
             elif self._transferring and self._total:
                 done, total = self._linked + self._skipped, self._total
             else:
@@ -464,14 +460,14 @@ class TransferView(Vertical):
                 # Unthrottled and immediate, unlike the sampled per-file line
                 # below — a single multi-hundred-MB/GB file (driver/kernel
                 # packages this pool holds plenty of) can otherwise leave the
-                # log silent for however long it takes to compress, reading
+                # log silent for however long it takes to write, reading
                 # as a stall instead of real, in-progress work.
                 size = int(status.split(":", 1)[1])
                 self._current_large_file = dst
                 self._current_large_file_done = 0
                 self._current_large_file_size = size
                 self._log_pending.append(
-                    f"  [$accent]▶[/] compressing {short}  [dim]({_fmt_bytes(size)})[/]"
+                    f"  [$accent]▶[/] writing {short}  [dim]({_fmt_bytes(size)})[/]"
                 )
             elif status.startswith("archive-large-file-progress:"):
                 # No log line — this can fire many times a second for as long
@@ -491,10 +487,9 @@ class TransferView(Vertical):
                     f"{_fmt_bytes(int(total_bytes))}…[/]"
                 )
             elif status.startswith("archive-progress:"):
-                _, files_done, raw_done, compressed_done = status.split(":")
+                _, files_done, bytes_done = status.split(":")
                 self._archive_files_done = int(files_done)
-                self._archive_raw_bytes_done = int(raw_done)
-                self._archive_compressed_bytes_done = int(compressed_done)
+                self._archive_bytes_done = int(bytes_done)
                 # `dst` is whichever file happened to complete the instant
                 # this (throttled, see BundleSink._maybe_report_archive_
                 # progress) report fired — not every file, the same way the
@@ -512,18 +507,15 @@ class TransferView(Vertical):
                     self._current_large_file_done = 0
                     self._current_large_file_size = 0
             elif status.startswith("archive-done:"):
-                _, files_done, raw_done, compressed_done = status.split(":")
+                _, files_done, bytes_done = status.split(":")
                 self._archive_files_done = int(files_done)
-                self._archive_raw_bytes_done = int(raw_done)
-                self._archive_compressed_bytes_done = int(compressed_done)
+                self._archive_bytes_done = int(bytes_done)
                 self._current_large_file = ""
                 self._current_large_file_done = 0
                 self._current_large_file_size = 0
-                ratio = (int(raw_done) / int(compressed_done)) if int(compressed_done) else 0.0
                 self._log_pending.append(
                     f"  [dim]# archive written: {int(files_done):,} files, "
-                    f"{_fmt_bytes(int(compressed_done))} written "
-                    f"({ratio:.1f}x from {_fmt_bytes(int(raw_done))})[/]"
+                    f"{_fmt_bytes(int(bytes_done))}[/]"
                 )
 
     def _tick(self) -> None:
@@ -543,8 +535,7 @@ class TransferView(Vertical):
             archive_total_files = self._archive_total_files
             archive_total_bytes = self._archive_total_bytes
             archive_files_done = self._archive_files_done
-            archive_raw_bytes_done = self._archive_raw_bytes_done
-            archive_compressed_bytes_done = self._archive_compressed_bytes_done
+            archive_bytes_done = self._archive_bytes_done
             current_large_file = self._current_large_file
             current_large_file_done = self._current_large_file_done
             current_large_file_size = self._current_large_file_size
@@ -584,24 +575,21 @@ class TransferView(Vertical):
 
         # Archive-writing phase EMA — files/s and bytes/s, sampled every
         # 250 ms exactly like the enumeration-phase speed above. Only ticks
-        # once `archive-start` has fired (see record()). Bytes/s is deliberately
-        # sampled from the *compressed* counter — "how fast are we actually
-        # writing to disk" — not the raw/uncompressed one, which drives the
-        # completion fraction instead (see the field comments in __init__).
+        # once `archive-start` has fired (see record()).
         if archive_total_files:
             if self._archive_last_sample_time == 0.0:
                 self._archive_last_sample_time = now
                 self._archive_last_sample_files = archive_files_done
-                self._archive_last_sample_bytes = archive_compressed_bytes_done
+                self._archive_last_sample_bytes = archive_bytes_done
             adt = now - self._archive_last_sample_time
             if adt >= 0.25:
                 inst_files = (archive_files_done - self._archive_last_sample_files) / adt
-                inst_bytes = (archive_compressed_bytes_done - self._archive_last_sample_bytes) / adt
+                inst_bytes = (archive_bytes_done - self._archive_last_sample_bytes) / adt
                 self._archive_files_ema = 0.3 * inst_files + 0.7 * self._archive_files_ema
                 self._archive_bps_ema = 0.3 * inst_bytes + 0.7 * self._archive_bps_ema
                 self._archive_last_sample_time = now
                 self._archive_last_sample_files = archive_files_done
-                self._archive_last_sample_bytes = archive_compressed_bytes_done
+                self._archive_last_sample_bytes = archive_bytes_done
 
         # Overall progress bar — once the archive-writing phase has started,
         # it repurposes this bar: the enumeration phase it tracked before
@@ -614,7 +602,7 @@ class TransferView(Vertical):
             if archive_total_files:
                 bar = self.query_one(f"#{p}-pbar", ProgressBar)
                 bar.total = archive_total_bytes if archive_total_bytes else None
-                bar.progress = archive_raw_bytes_done
+                bar.progress = archive_bytes_done
             elif self._total:
                 self.query_one(f"#{p}-pbar", ProgressBar).progress = total_done
         except Exception:
@@ -641,26 +629,22 @@ class TransferView(Vertical):
         # without explicit color tags every segment renders as shades of one
         # hue. Each stat gets its own color here instead — matching the
         # palette record() already uses elsewhere (green for real progress,
-        # cyan for rates, dim for secondary/contextual numbers) — so the four
-        # different kinds of information (data progress, file count, speed,
-        # compressed output) read as visually distinct at a glance.
+        # cyan for rates, dim for secondary/contextual numbers) — so data
+        # progress, file count and speed read as visually distinct at a glance.
         try:
             if archive_total_files:
-                # Percentage is bytes-based (raw/uncompressed), same reasoning
+                # Percentage is bytes-based, same reasoning
                 # as the progress bar above — file count alone is misleading
                 # when a handful of multi-GB files dominate the actual work.
-                pct = (f" [dim]({100 * archive_raw_bytes_done / archive_total_bytes:.0f}%)[/]"
+                pct = (f" [dim]({100 * archive_bytes_done / archive_total_bytes:.0f}%)[/]"
                        if archive_total_bytes else "")
-                ratio = (archive_raw_bytes_done / archive_compressed_bytes_done
-                         if archive_compressed_bytes_done else 0.0)
-                ratio_str = f" [dim]({ratio:.1f}x)[/]" if archive_compressed_bytes_done else ""
                 # Split across three lines/widgets, not one long one: at
                 # realistic scale (multi-TB, six-figure file counts) the
                 # combined line ran past 130 columns before a filename was
                 # even added — well past any terminal width worth assuming.
                 self.query_one(f"#{p}-mirror-label", Label).update(
                     f"  [bold]Writing archive[/]"
-                    f"  [dim]·[/]  [$mmw-ok]{_fmt_bytes(archive_raw_bytes_done)} / "
+                    f"  [dim]·[/]  [$mmw-ok]{_fmt_bytes(archive_bytes_done)} / "
                     f"{_fmt_bytes(archive_total_bytes)}[/]{pct}"
                     f"  [dim]·[/]  [dim]{archive_files_done:,} / {archive_total_files:,} files[/]"
                 )
@@ -668,7 +652,6 @@ class TransferView(Vertical):
                 rate_label.update(
                     f"  [$mmw-running]{self._archive_files_ema:,.0f} files/s[/]"
                     f"  [dim]·[/]  [$mmw-running]{_fmt_speed(self._archive_bps_ema)}[/]"
-                    f"  [dim]·[/]  [$accent]{_fmt_bytes(archive_compressed_bytes_done)} written[/]{ratio_str}"
                 )
                 rate_label.display = True
                 # One big file's own progress, when there is one in flight —
@@ -677,7 +660,7 @@ class TransferView(Vertical):
                 if current_large_file and current_large_file_size:
                     file_pct = 100 * current_large_file_done / current_large_file_size
                     fname = current_large_file.rsplit("/", 1)[-1]
-                    file_label.update(f"  [$mmw-warn]▶ compressing {fname}: {file_pct:.0f}%[/]")
+                    file_label.update(f"  [$mmw-warn]▶ writing {fname}: {file_pct:.0f}%[/]")
                     file_label.display = True
                 else:
                     file_label.display = False

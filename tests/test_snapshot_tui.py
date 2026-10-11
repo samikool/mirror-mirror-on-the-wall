@@ -129,7 +129,7 @@ def test_b_bundles_between_two_snapshots_with_an_estimate(two_mirrors, tmp_path)
         assert app.active_transfer.outcome == "ok", app.notes
     _run(cfg, mirror_dir.parent, check)
     assert [p.name for p in out.glob("*.tar*") if not p.name.endswith(".sha256")] == [
-        f"oak-{s1.stamp}-to-{s2.stamp}.tar.zst"]
+        f"oak-{s1.stamp}-to-{s2.stamp}.tar"]
 
 
 def test_b_refuses_the_same_snapshot_at_both_ends(two_mirrors, tmp_path):  # noqa: F811

@@ -372,8 +372,8 @@ class PublishFlows:
             result = await asyncio.to_thread(
                 lambda: bundle_network(
                     net, self.cfg(), self.cfg().settings.mirror_dir,
-                    None, False, 3, view.record, view.stop_event,
-                    view.notify_mirror_start, compress=net.bundle_compress, **ends))
+                    progress=view.record, stop_event=view.stop_event,
+                    mirror_start_callback=view.notify_mirror_start, **ends))
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return

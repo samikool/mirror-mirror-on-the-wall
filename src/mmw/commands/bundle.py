@@ -2,7 +2,7 @@
 the Networks tab's Bundle button drives.
 
 Bundling is the one publish-shaped workflow that most wants a cron job: an
-airgapped site's operator wants a scheduled `.tar.zst` drop, not a TUI they
+airgapped site's operator wants a scheduled `.tar` drop, not a TUI they
 have to sit in front of. This module is a thin frontend over `bundle_network`
 — and deliberately the same shape, check for check, as `commands/publish.py`:
 the two verbs' only real difference is the sink.
@@ -83,7 +83,6 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
         try:
             result = bundle_network(net, cfg, mirror_dir, out_path=out,
-                                    compress=net.bundle_compress,
                                     from_ref=start, to_ref=to_ref or "now")
         except Exception as e:
             eprint(f"Network '{net.name}' failed: {e}")

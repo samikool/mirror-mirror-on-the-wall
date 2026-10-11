@@ -24,13 +24,6 @@ global config: the directory you are standing in *is* which mirror you are
 operating on. Every command below assumes you are in `/srv/mirrors`, and so
 should every cron entry.
 
-Check the `zstd` binary is present — compressed metadata and bundles both need
-it:
-
-```bash
-zstd --version || sudo apt install zstd
-```
-
 ---
 
 ## 1. Add your first repository

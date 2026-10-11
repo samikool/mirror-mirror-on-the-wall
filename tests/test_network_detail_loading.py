@@ -16,6 +16,7 @@ from mmw.tui.sections.network_detail import NetworkDetail
 from mmw.tui.ui.base import ThemedApp
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
+from waiting import until
 
 
 def _host(check):
@@ -30,13 +31,9 @@ def _host(check):
     asyncio.run(go())
 
 
-async def _until(pilot, cond, tries=400):
-    for _ in range(tries):
-        if cond():
-            return
-        await pilot.pause(0.02)
-    raise AssertionError("condition never became true")
-
+async def _until(pilot, cond, tries=None):
+    """`tries` is ignored: see tests/waiting.py — wait for the thing, against a clock."""
+    await until(pilot, cond)
 
 def _counting(monkeypatch, gate=None):
     reads = []

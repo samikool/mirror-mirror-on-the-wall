@@ -12,6 +12,7 @@ from mmw.tui.transfer import TransferView
 from mmw.tui.ui.dialog import ConfirmDialog
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
+from waiting import until
 
 
 async def _settle(pilot, n=6):
@@ -19,13 +20,9 @@ async def _settle(pilot, n=6):
         await pilot.pause()
 
 
-async def _until(pilot, cond, tries=300):
-    for _ in range(tries):
-        if cond():
-            return
-        await pilot.pause(0.02)
-    raise AssertionError("condition never became true")
-
+async def _until(pilot, cond, tries=None):
+    """`tries` is ignored: see tests/waiting.py — wait for the thing, against a clock."""
+    await until(pilot, cond)
 
 def _run(cfg, cfg_dir, check, **net_changes):
     if net_changes:
@@ -47,9 +44,17 @@ def _run(cfg, cfg_dir, check, **net_changes):
     asyncio.run(go())
 
 
+def _handled(view) -> bool:
+    """The section has handled the view's `Completed`: its status shows the
+    view's summary (set in the same handler as the buttons and the toast).
+    `_done_displayed` alone is set *before* Completed is even posted."""
+    return (view._done_displayed and view.screen is not None
+            and str(view.screen.query_one("#page-status").render()) == view.summary())
+
+
 async def _finished(pilot, view):
-    """Done, and the section has handled `Completed` (status, buttons)."""
-    await _until(pilot, lambda: view._done_displayed)
+    """Done, and the section has handled `Completed` (status, buttons, toast)."""
+    await _until(pilot, lambda: _handled(view))
     await _settle(pilot)
 
 
@@ -215,8 +220,7 @@ def test_a_failure_while_browsing_elsewhere_is_toasted(two_mirrors, monkeypatch)
         await pilot.press("p")
         view = await _wait_view(app, pilot)
         await app.switch_mode("repositories")
-        await _until(pilot, lambda: view._done_displayed)
-        await _settle(pilot)
+        await _until(pilot, lambda: _handled(view))
         assert view.outcome == "error"
         assert any("read-only" in n for n in app.notes), app.notes
     _run(cfg, mirror_dir.parent, check)

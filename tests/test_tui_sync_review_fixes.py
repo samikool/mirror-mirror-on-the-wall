@@ -8,6 +8,7 @@ from mmw.core import config
 from mmw.tui import sync as sync_mod
 from mmw.tui.app import MmwApp
 from mmw.tui.sync import SyncView
+from waiting import until
 
 SRC = "https://deb.example.com/debian"
 
@@ -36,13 +37,9 @@ def _mmw_sync(tmp_path):
                   start_sync_with=([_mirror()], False))
 
 
-async def _until(pilot, cond, tries=100):
-    for _ in range(tries):
-        if cond():
-            return
-        await pilot.pause(0.02)
-    raise AssertionError("condition never became true")
-
+async def _until(pilot, cond, tries=None):
+    """`tries` is ignored: see tests/waiting.py — wait for the thing, against a clock."""
+    await until(pilot, cond)
 
 def test_esc_in_mmw_sync_does_not_stop_it(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_mod, "sync_mirror", _fake_sync_mirror)
@@ -71,9 +68,13 @@ def test_a_stopped_sync_says_stopped_not_complete(tmp_path, monkeypatch):
             await _until(pilot, lambda: app.active_sync is not None and app.active_sync.running)
             page = app.screen
             app.active_sync.stop()
-            await _until(pilot, lambda: page.view._complete_shown)
-            status = str(page.query_one("#page-status").render())
-            assert "stopped" in status.lower() and "complete" not in status.lower()
+
+            def status() -> str:
+                return str(page.query_one("#page-status").render()).lower()
+            # The view sets `_complete_shown` and then *posts* Completed; the
+            # status changes when the section handles it — wait for that.
+            await _until(pilot, lambda: page.view._complete_shown and "syncing" not in status())
+            assert "stopped" in status() and "complete" not in status()
     asyncio.run(go())
 
 

@@ -72,7 +72,7 @@ class NetworksPage(Page):
     def _transfer_finished(self, _: object) -> None:
         if self.app.screen is self and self._seen_cfg is self.app.cfg:
             self._seen_transfers = self.app.transfers_finished
-            self._show_detail()
+            self._show_detail(force=True)      # republished: re-check its figures
 
     def on_screen_resume(self) -> None:
         super().on_screen_resume()
@@ -80,7 +80,7 @@ class NetworksPage(Page):
             # Something was published or bundled since: the detail is stale.
             self._seen_transfers = self.app.transfers_finished
             if self._seen_cfg is self.app.cfg:
-                self._show_detail()
+                self._show_detail(force=True)
         if self._seen_cfg is not None and self._seen_cfg is not self.app.cfg:
             self.run_worker(self.refresh_rows(), group="net-rows")
 
@@ -109,8 +109,8 @@ class NetworksPage(Page):
                          else (0 if self._names else None))
             self._show_detail()
 
-    def _show_detail(self) -> None:
-        self.query_one(NetworkDetail).show(self.highlighted(), self.app.cfg)
+    def _show_detail(self, *, force: bool = False) -> None:
+        self.query_one(NetworkDetail).show(self.highlighted(), self.app.cfg, force=force)
 
     @on(ListView.Highlighted, "#net-list")
     def _highlighted(self) -> None:

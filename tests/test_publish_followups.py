@@ -112,7 +112,7 @@ def test_networks_detail_refreshes_when_a_transfer_ends_while_shown(two_mirrors,
     shows = []
     real_show = NetworkDetail.show
     monkeypatch.setattr(NetworkDetail, "show",
-                        lambda self, n, c: (shows.append(n and n.name), real_show(self, n, c))[1])
+                        lambda self, n, c, **k: (shows.append(n and n.name), real_show(self, n, c, **k))[1])
 
     async def check(app, pilot):
         await pilot.press("p")

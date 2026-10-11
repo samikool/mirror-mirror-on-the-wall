@@ -107,11 +107,11 @@ def test_the_tui_dry_run_counts_shared_files_once(two_mirrors):
 
 def test_the_network_detail_published_size_counts_shared_files_once(two_mirrors):
     from mmw.core.resolve import network_mirrors
-    from mmw.tui.sections.network_detail import NetworkDetail
+    from mmw.tui.sections.network_detail import stat_tree
 
     cfg, net, mirror_dir = two_mirrors
     assert not publish_network(net, cfg, mirror_dir).errors
     mirror_map = {m.name: m for m in network_mirrors(net, cfg, mirror_dir)}
-    total_files, total_bytes, _, per_mirror = NetworkDetail._stat_tree(net, mirror_map)
+    total_files, total_bytes, _, per_mirror = stat_tree(net, mirror_map)
     assert (total_files, total_bytes) == (3, 1500)
     assert sorted(size for _, _, size, _, _ in per_mirror) == [1200, 1300]

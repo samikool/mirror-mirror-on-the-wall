@@ -220,3 +220,13 @@ def test_the_detail_pane_says_what_the_root_serves(two_mirrors):  # noqa: F811
                     if "Snapshots" in str(lbl.render()))
         assert "1 · serving" in line and "golden" in line
     _run(cfg, mirror_dir.parent, check)
+
+
+def test_the_snapshots_button_opens_the_page(two_mirrors):  # noqa: F811
+    cfg, net, mirror_dir = two_mirrors
+
+    async def check(app, pilot):
+        app.screen.query_one("#btn-net-snapshots").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage")
+        assert app.screen.subtitle == "oak"
+    _run(cfg, mirror_dir.parent, check)

@@ -61,6 +61,7 @@ class NetworksPage(Page):
         yield Button("Add", id="btn-net-add", compact=True)
         yield Button("Edit", id="btn-net-edit", compact=True)
         yield Button("Remove", id="btn-net-remove", variant="error", compact=True)
+        yield Button("Snapshots", id="btn-net-snapshots", compact=True)
         yield Button("Publish", id="btn-net-publish", variant="success", compact=True)
         yield Button("Dry run", id="btn-net-dry-run", compact=True)
         yield Button("Bundle", id="btn-net-bundle", compact=True)
@@ -189,6 +190,10 @@ class NetworksPage(Page):
             return
         from mmw.tui.snapshot_pages import SnapshotsPage
         self.app.push_screen(SnapshotsPage(net), lambda _: self._show_detail(force=True))
+
+    @on(Button.Pressed, "#btn-net-snapshots")
+    def _snapshots_pressed(self) -> None:
+        self.action_snapshots()
 
     @on(Button.Pressed, "#btn-net-publish")
     def _publish_pressed(self) -> None:

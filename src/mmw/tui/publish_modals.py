@@ -1,63 +1,16 @@
-"""The Networks verbs' dialogs: delta-or-full for a bundle, and the certs page.
+"""The certs page — the one Networks verb that is a page flow.
 
 Publish / dry run / bundle progress is `tui/transfer.py` (the Publish section)."""
 from pathlib import Path
 
 from textual import on
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
 from textual.markup import escape
-from textual.screen import ModalScreen
 from textual.widgets import Label
 
 from mmw.tui.ui.form import Heading
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
-
-
-class BundleModeModal(ModalScreen["bool | None"]):
-    """Delta or full, asked every time a bundle starts.
-
-    Returns `True` for full, `False` for delta, `None` on cancel (Escape or
-    the Cancel button) — three real outcomes, not two: declining this choice
-    must abort the bundle entirely, not silently fall back to delta the way
-    `ConfirmDialog`'s plain yes/no would if reused here.
-    """
-
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def __init__(self, network_name: str):
-        super().__init__()
-        self._network_name = network_name
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(f"Bundle — {escape(self._network_name)}", classes="title")
-            yield Label(
-                "Send only what changed since the last bundle, "
-                "or the whole network again?"
-            )
-            with Horizontal():
-                yield Button("Cancel", id="cancel", compact=True)
-                yield Button("Delta", variant="primary", id="delta", compact=True)
-                yield Button("Full", variant="warning", id="full", compact=True)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#delta")
-    def _delta(self) -> None:
-        self.dismiss(False)
-
-    @on(Button.Pressed, "#full")
-    def _full(self) -> None:
-        self.dismiss(True)
 
 
 class CertsPage(Page):

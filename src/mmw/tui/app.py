@@ -199,15 +199,17 @@ class MmwApp(ThemedApp):
     # ── sync ────────────────────────────────────────────────────────────────
 
     async def start_transfer(self, verb: str, net: config.NetworkConfig, *,
-                             full: bool = False) -> None:
+                             choice=None) -> None:
         """Publish, dry-run or bundle `net` in the Publish section. One at a
-        time — a sync may run beside it."""
+        time — a sync may run beside it. `choice`: a `PublishChoice` or
+        `BundleChoice` from the pickers (default: live into the root / from
+        the last bundle to now)."""
         if self.active_transfer is not None and self.active_transfer.running:
             self.notify(f"Already working on {self.active_transfer.network_name} — see the "
                         "Publish section.", severity="warning")
             return
         await self.switch_mode("publish")
-        await self.screen.start(verb, net, full=full)
+        await self.screen.start(verb, net, choice=choice)
 
     async def start_sync(self, selection) -> None:
         """Resolve `selection` (off the loop — it lists upstream), then run it

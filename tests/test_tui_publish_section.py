@@ -12,6 +12,7 @@ from mmw.tui.transfer import TransferView
 from mmw.tui.ui.dialog import ConfirmDialog
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
+from pickers import confirm_picker, press_bundle, press_publish
 from waiting import until
 
 
@@ -66,7 +67,7 @@ def test_p_publishes_in_the_publish_section(two_mirrors):  # noqa: F811
     cfg, net, mirror_dir = two_mirrors
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         await _until(pilot, lambda: app.current_mode == "publish"
                      and app.screen.query(TransferView))
         view = app.screen.query_one(TransferView)
@@ -109,15 +110,14 @@ def test_r_then_discard_publishes_nothing(two_mirrors):  # noqa: F811
     assert not net.root.exists()
 
 
-def test_b_asks_delta_or_full_on_networks_then_bundles(two_mirrors):  # noqa: F811
+def test_b_asks_from_and_to_on_networks_then_bundles(two_mirrors):  # noqa: F811
     cfg, net, mirror_dir = two_mirrors
     out = mirror_dir.parent / "usb"
 
     async def check(app, pilot):
         await pilot.press("b")
-        await _settle(pilot)
+        await confirm_picker(app, pilot, "BundlePickPage")
         assert app.current_mode == "networks"                 # asked where you are
-        app.screen.query_one("#delta").press()
         await _until(pilot, lambda: app.current_mode == "publish"
                      and app.screen.query(TransferView))
         view = app.screen.query_one(TransferView)
@@ -136,7 +136,7 @@ def test_incomplete_mirrors_end_it_without_publishing(two_mirrors, monkeypatch):
         mirror_name=m.name, error=None, complete=False, missing_count=1, total=3))
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         await _until(pilot, lambda: app.current_mode == "publish"
                      and app.screen.query(TransferView))
         view = app.screen.query_one(TransferView)
@@ -165,7 +165,7 @@ def test_browsing_keeps_it_running_and_the_sidebar_shows_it(two_mirrors, slow_pu
     cfg, net, mirror_dir = two_mirrors
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         await _until(pilot, lambda: app.active_transfer is not None
                      and app.active_transfer._transferring)
         await pilot.press("1")
@@ -187,7 +187,7 @@ def test_quit_while_publishing_asks_and_no_keeps_it(two_mirrors, slow_publish): 
     cfg, net, mirror_dir = two_mirrors
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         await _until(pilot, lambda: app.active_transfer is not None
                      and app.active_transfer._transferring)
         await pilot.press("q")
@@ -217,7 +217,7 @@ def test_a_failure_while_browsing_elsewhere_is_toasted(two_mirrors, monkeypatch)
     monkeypatch.setattr(publisher, "publish_network", boom)
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         view = await _wait_view(app, pilot)
         await app.switch_mode("repositories")
         await _until(pilot, lambda: _handled(view))
@@ -237,7 +237,7 @@ def test_incomplete_mirrors_are_toasted_and_escaped(two_mirrors, monkeypatch):  
         missing_count=0, total=0))
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         view = await _wait_view(app, pilot)
         await _finished(pilot, view)
         assert view.outcome == "note" and app.is_running
@@ -284,9 +284,7 @@ def test_finished_with_errors_never_reads_as_success(two_mirrors, monkeypatch): 
         errors=["a blob vanished mid-archive"]))
 
     async def check(app, pilot):
-        await pilot.press("b")
-        await _settle(pilot)
-        app.screen.query_one("#delta").press()
+        await press_bundle(app, pilot)
         view = await _wait_view(app, pilot)
         await _finished(pilot, view)
         title = str(view.query_one("#bun-title-bar").render())
@@ -314,7 +312,7 @@ def test_stop_while_preparing_stops_the_remaining_checks(two_mirrors, monkeypatc
     monkeypatch.setattr(flows_mod, "_PREPARE_WORKERS", 1)        # one at a time
 
     async def check(app, pilot):
-        await pilot.press("p")
+        await press_publish(app, pilot)
         view = await _wait_view(app, pilot)
         await _until(pilot, lambda: seen)
         view.stop()

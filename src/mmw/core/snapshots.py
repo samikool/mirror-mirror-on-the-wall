@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mmw.core.config import Config, NetworkConfig
-from mmw.core.pool import Pool, SnapshotInfo
+from mmw.core.pool import BundleInfo, Pool, SnapshotInfo
 from mmw.core.publisher.manifest import (
     MANIFEST_SUFFIX, bump_stamp, iter_manifest, ledger_dir, now_stamp,
 )
@@ -163,6 +163,32 @@ def delete_snapshot(pool: Pool, snap: SnapshotInfo) -> None:
                          f"publish something else there first (e.g. `mmw publish -n "
                          f"{snap.network} --snapshot live`)")
     pool.delete_snapshot(snap.id)
+
+
+@dataclass(frozen=True)
+class SnapshotStatus:
+    """One network's snapshot state, for a one-line summary."""
+    snapshots: list[SnapshotInfo]          # newest first
+    serving: str | None                    # what the network root serves: 'live' | stamp
+    other_dirs: int                        # other directories it was published to
+    last_bundle: BundleInfo | None
+
+    def name(self, stamp: str | None) -> str:
+        """A stamp with its label, if it has one."""
+        if stamp is None:
+            return "nothing (full)"
+        label = next((s.label for s in self.snapshots if s.stamp == stamp and s.label), None)
+        return f"{stamp} ({label})" if label else stamp
+
+
+def snapshot_status(pool: Pool, network: str, root: Path | None) -> SnapshotStatus:
+    published = pool.published(network)
+    root_key = str(Path(root).resolve()) if root is not None else None
+    serving = next((p.target for p in published if p.root == root_key), None)
+    log = pool.bundles(network)
+    return SnapshotStatus(pool.snapshots(network), serving,
+                          sum(1 for p in published if p.root != root_key),
+                          log[0] if log else None)
 
 
 @dataclass(frozen=True)

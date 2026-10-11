@@ -61,6 +61,27 @@ mmw bundle -n lab --allow-incomplete  # ship anyway, having been told what is mi
 `--full` still computes deletions. It means "send every file", not "forget what
 the far side has".
 
+### Between any two snapshots
+
+Every bundle goes from one [snapshot](getting-started.md#snapshots-roll-a-network-back)
+of the network to another. By default that is from where the last bundle went
+to a new snapshot of now, but any two work — forwards, backwards, or skipping
+some:
+
+```bash
+mmw snapshot list -n lab                        # stamps, labels, what each holds
+mmw bundle -n lab --from 20260901T090000Z --to pre-upgrade
+mmw bundle -n lab --from none --to pre-upgrade  # full, to an older state
+```
+
+Backwards (bringing the far side back to an older state) works because a snapshot keeps every file
+it lists in the pool until the snapshot is deleted. In the TUI, `b` on a network
+asks From and To and estimates what the bundle sends.
+
+On the far side, `python3 apply.py --status --root /srv/www` says which
+snapshot a mirror is at, and a refused bundle names the exact
+`mmw bundle --from … --to …` to ask for.
+
 ---
 
 ## 2. Carry it across
@@ -314,9 +335,9 @@ says the same thing.
 
 **`apply.py` exits 3 (out of order).**
 The far side is not where this bundle expects it to be. Either apply the bundle
-you skipped, or simply take the next ordinary delta — a failed apply never
-advanced `.mmw-state`, so the next bundle produced on the connected side
-already covers what was missed. `--full` also works and bypasses the check.
+you skipped, or ask for one from where the far side actually is — the refusal
+prints the exact `mmw bundle -n … --from … --to …` to run on the connected
+side. `--full` also works and bypasses the check.
 
 **`apply.py --verify` reports mismatches.**
 If it names files under `nginx/`, check that `--root` is the same directory you

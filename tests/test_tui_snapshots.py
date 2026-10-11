@@ -98,10 +98,13 @@ def test_snapshot_pick_modal(snap_compare):
     )
 
 
-def test_snapshot_bundle_mode_modal(snap_compare):
-    from mmw.tui.publish_modals import BundleModeModal
+def test_snapshot_bundle_picker(snap_compare, tmp_path):
+    from mmw.tui.snapshot_pages import BundlePickPage
+    from test_tui_sweep import snapshot_status_demo
 
-    assert snap_compare(_app(lambda: BundleModeModal("lab")), terminal_size=SNAP_SIZE)
+    net = config.NetworkConfig(name="lab", select=[])
+    assert snap_compare(_app(lambda: BundlePickPage(net, snapshot_status_demo(), tmp_path)),
+                        terminal_size=SNAP_SIZE)
 
 
 def test_snapshot_certs_modal(snap_compare):

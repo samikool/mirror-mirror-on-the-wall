@@ -148,20 +148,24 @@ import pytest  # noqa: E402
 @pytest.mark.parametrize("key,verb", [("p", "publish"), ("r", "dry_run")])
 def test_publish_keys_start_a_transfer_for_the_highlighted_network(tmp_path, monkeypatch,
                                                                      key, verb):
-    """`b` (bundle) asks delta-or-full first: tests/test_bundle_mode_modal.py."""
+    """`b` (bundle) asks from/to first: tests/test_snapshot_tui.py."""
+    from pickers import confirm_picker
     calls = []
 
     async def check(app, pilot):
-        async def record(v, net, full=False):
+        async def record(v, net, choice=None):
             calls.append((v, net.name))
         app.start_transfer = record
         lst = app.screen.query_one("#net-list", ListView)
         lst.index = _names(app).index("lab")
         await _settle(pilot)
         await pilot.press(key)
+        if key == "p":
+            await confirm_picker(app, pilot, "PublishPickPage")
         await _done(app, pilot)
         assert calls == [(verb, "lab")]
-    _run(tmp_path, check, monkeypatch=monkeypatch)
+    _run(tmp_path, check, cfg=_cfg(tmp_path, "lab", "dgx", root=tmp_path / "pub"),
+         monkeypatch=monkeypatch)
 
 
 def test_c_runs_the_certs_flow_for_the_highlighted_network(tmp_path, monkeypatch):
@@ -201,8 +205,10 @@ def test_a_pool_error_during_a_verb_is_reported_not_fatal(tmp_path, monkeypatch)
         lst = app.screen.query_one("#net-list", ListView)
         lst.index = _names(app).index("lab")
         await _settle(pilot)
-        await pilot.press("p")
+        from pickers import press_publish
+        await press_publish(app, pilot)
         await _done(app, pilot)
         assert app.is_running
         assert any("database is locked" in n for n in app.notes)
-    _run(tmp_path, check, monkeypatch=monkeypatch)
+    _run(tmp_path, check, cfg=_cfg(tmp_path, "lab", "dgx", root=tmp_path / "pub"),
+         monkeypatch=monkeypatch)

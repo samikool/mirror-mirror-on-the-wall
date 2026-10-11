@@ -1240,6 +1240,23 @@ class Pool:
                 (network,)).fetchall()
         return [BundleInfo(*r) for r in rows]
 
+    def snapshot_delta(self, from_id: int | None, to_id: int) -> tuple[int, int]:
+        """(files, bytes) a bundle from `from_id` (None: full) to `to_id`
+        sends: paths whose content differs, and the payload — each distinct
+        blob once, as the archive stores a repeat as a hardlink entry."""
+        self.flush_writes()
+        # (snapshot, path) is the primary key: one indexed probe per row.
+        changed = ("" if from_id is None else
+                   " AND NOT EXISTS (SELECT 1 FROM snapshot_files a WHERE a.snapshot = ? "
+                   "AND a.path = b.path AND a.blob = b.blob)")
+        args = (to_id,) if from_id is None else (to_id, from_id)
+        row = self._read_only(
+            f"WITH sent AS (SELECT b.blob FROM snapshot_files b WHERE b.snapshot = ?{changed}) "
+            "SELECT (SELECT COUNT(*) FROM sent), COALESCE(SUM(k.size), 0) "
+            "FROM snapshot_blobs sb JOIN packages k ON k.checksum = sb.checksum "
+            "WHERE sb.id IN (SELECT blob FROM sent)", args)
+        return (row[0], row[1]) if row else (0, 0)
+
     def record_published(self, root: str, network: str, target: str) -> None:
         """`root` now serves `target` ('live' or a snapshot stamp)."""
         with self._lock:

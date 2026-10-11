@@ -21,8 +21,7 @@ def available(cfg: config.Config) -> list[config.MirrorConfig]:
     return available_mirrors(cfg, cfg.settings.mirror_dir)
 
 
-def form_problems(*, name: str, existing_names: set[str], selects: list,
-                  certs: bool, bundle_tls: bool) -> str | None:
+def form_problems(*, name: str, existing_names: set[str], selects: list) -> str | None:
     """The first thing wrong with a network form, or None. Add and Edit share
     these checks — Add used to skip the name rule, which the model then
     enforced with a ValidationError instead of a message."""
@@ -30,8 +29,6 @@ def form_problems(*, name: str, existing_names: set[str], selects: list,
         return "Select at least one repository — nothing selected publishes nothing."
     if problem := name_problem(name, existing_names):
         return problem
-    if bundle_tls and not certs:
-        return "Carrying the cert in bundles needs TLS certs turned on too."
     return None
 
 

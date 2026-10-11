@@ -197,10 +197,11 @@ expire.
 
 ## Bundled networks
 
-The far side's nginx needs the certificate and key too. Set
-`bundle_tls = true` on the network to carry both inside every bundle (to
-`{{root}}/.mmw/tls/`, which no generated server block serves). That puts the
-private key on your transfer media — it is off unless you turn it on.
+The far side's nginx needs the certificate and key too, so every bundle of a
+`certs = true` network carries both (to `{{root}}/.mmw/tls/`, which no
+generated server block serves). That puts the private key on your transfer
+media; a network whose media must not hold the key keeps `certs` off. A bundle
+refuses to start until the certificate is signed.
 
 ## Regenerating the CSR
 

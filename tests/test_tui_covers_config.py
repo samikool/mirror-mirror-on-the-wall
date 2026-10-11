@@ -3,8 +3,8 @@
 Each config field is mapped to the screen file and widget id that edits it.
 A field added to a model without a mapping fails here, so the TUI cannot
 quietly fall behind the config file again (it had: settings, a repository's
-URL, label, key URL and suite overrides, and a network's name and
-bundle_tls were all reachable only by editing mmw.toml).
+URL, label, key URL and suite overrides, and a network's name were all
+reachable only by editing mmw.toml).
 """
 from pathlib import Path
 
@@ -47,7 +47,6 @@ EDITORS = {
     ("NetworkConfig", "certs"): ("network_screens.py", "certs-switch"),
     ("NetworkConfig", "nginx"): ("network_screens.py", "nginx-switch"),
     ("NetworkConfig", "bundle_compress"): ("network_screens.py", "compress-switch"),
-    ("NetworkConfig", "bundle_tls"): ("network_screens.py", "bundle-tls-switch"),
 
     ("NetworkSelect", "source"): ("network_screens.py", "repo-checklist"),
     ("NetworkSelect", "suites"): ("network_screens.py", "axis-block"),

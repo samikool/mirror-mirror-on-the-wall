@@ -186,15 +186,17 @@ def bundle_network(
         # the delete set widens.
         prev = {**union_manifests(mirror_dir, network.name), **prev}
 
-    # Checked before any work: an opted-in TLS bundle that cannot carry its
+    # Checked before any work: a certs network's bundle that cannot carry its
     # certificate must not quietly ship as HTTP-only after an hour of
     # archiving — the far side would only find out when clients refuse it.
+    # (The private key rides along: that is what `certs` on a bundled network
+    # means. A network that must not put a key on the media keeps certs off.)
     tls_files: dict[str, bytes] = {}
-    if network.bundle_tls:
+    if network.certs:
         tls_paths = servable_paths(network, cfg)
         if tls_paths is None:
             raise ValueError(
-                f"network '{network.name}' has bundle_tls = true but no usable "
+                f"network '{network.name}' has certs = true but no usable "
                 f"signed certificate in {cert_dir(network, cfg)} — "
                 f"run `mmw certs -n {network.name} --ca CA.crt --ca-key CA.key`"
             )
@@ -264,8 +266,8 @@ def bundle_network(
         if not (stop_event and stop_event.is_set()):
             nginx_rels: set[str] = set()
             if network.nginx:
-                # Only bundle_tls puts a certificate on the far side; a
-                # `certs` network without it is HTTP there, whatever it is here.
+                # Only a certs network puts a certificate on the far side;
+                # without one the far side is HTTP.
                 tls = ((f"{ROOT_PLACEHOLDER}/{TLS_DIR}/mirror.crt",
                         f"{ROOT_PLACEHOLDER}/{TLS_DIR}/mirror.key")
                        if tls_files else None)

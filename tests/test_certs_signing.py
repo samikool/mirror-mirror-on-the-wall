@@ -215,19 +215,19 @@ def test_without_dist_upgrade_changelogs_is_not_a_cert_name(monkeypatch):
 
 # --- config ----------------------------------------------------------------
 
-def test_bundle_tls_requires_certs():
-    with pytest.raises(ValueError, match="requires certs"):
-        config.NetworkConfig(name="lab", bundle_tls=True)
-    assert config.NetworkConfig(name="lab", certs=True, bundle_tls=True).bundle_tls
-
-
-def test_bundle_tls_survives_save_and_load(tmp_path):
-    cfg = config.Config(
-        settings=config.Settings(mirror_dir=tmp_path / "m"),
-        networks=[config.NetworkConfig(name="lab", certs=True, bundle_tls=True)],
-    )
+def test_a_legacy_bundle_tls_key_still_loads_and_is_dropped_on_save(tmp_path):
+    """`bundle_tls` was folded into `certs` (certs on = HTTPS wherever the
+    network lands, bundles included). Configs that still carry the key must
+    load — unknown keys are otherwise errors — and lose it on the next save."""
+    config.config_path(tmp_path).write_text(
+        f'[settings]\nmirror_dir = "{tmp_path / "m"}"\n\n'
+        '[[networks]]\nname = "lab"\ncerts = true\nbundle_tls = true\n\n'
+        '[[networks]]\nname = "old"\nbundle_tls = false\n')
+    cfg = config.load(tmp_path)
+    assert [(n.name, n.certs) for n in cfg.networks] == [("lab", True), ("old", False)]
+    assert "bundle_tls" not in config.NetworkConfig.model_fields
     config.save(cfg, tmp_path)
-    assert config.load(tmp_path).networks[0].bundle_tls is True
+    assert "bundle_tls =" not in config.config_path(tmp_path).read_text()
 
 
 # --- `mmw certs --ca` -------------------------------------------------------

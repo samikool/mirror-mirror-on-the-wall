@@ -277,7 +277,7 @@ def test_edit_persists_every_networkconfig_field(tmp_path):
     edited = config.NetworkConfig(
         name="renamed", root=tmp_path / "srv", bundle_dir=tmp_path / "usb",
         select=[config.NetworkSelect(source="https://deb.example.com/debian")],
-        prune=False, dist_upgrade=True, certs=True, bundle_tls=True,
+        prune=False, dist_upgrade=True, certs=True,
         nginx=False, bundle_compress=False,
     )
     defaults = config.NetworkConfig(name="x")
@@ -292,7 +292,7 @@ def test_edit_persists_every_networkconfig_field(tmp_path):
     assert config.load(tmp_path).networks == [edited]
 
 
-# --- every NetworkConfig field is editable: name and bundle_tls -------------
+# --- every NetworkConfig field is editable: name and certs -----------------
 
 def _edit_network(net, actions, existing_names=None):
     from textual.widgets import Button
@@ -335,25 +335,17 @@ def test_rename_to_an_unsafe_name_is_refused():
         s.query_one("#inp-net-name", Input), "value", "../x")) is None
 
 
-def test_bundle_tls_switch_is_saved():
+def test_certs_switch_is_saved_and_says_bundles_carry_the_key():
     from textual.widgets import Checkbox
 
     def act(screen):
+        assert not screen.query("#bundle-tls-switch")      # folded into certs
+        field = next(f for f in screen.query("ToggleField")
+                     if f.query("#certs-switch"))
+        assert "private key" in field.hint and "bundle" in field.hint.lower()
         screen.query_one("#certs-switch", Checkbox).value = True
-        screen.query_one("#bundle-tls-switch", Checkbox).value = True
     net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
-    result = _edit_network(net, act)
-    assert result.certs and result.bundle_tls
-
-
-def test_bundle_tls_without_certs_is_refused():
-    from textual.widgets import Checkbox
-
-    def act(screen):
-        screen.query_one("#certs-switch", Checkbox).value = False
-        screen.query_one("#bundle-tls-switch", Checkbox).value = True
-    net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
-    assert _edit_network(net, act) is None
+    assert _edit_network(net, act).certs
 
 
 def test_rename_moves_certs_and_ledger(tmp_path):

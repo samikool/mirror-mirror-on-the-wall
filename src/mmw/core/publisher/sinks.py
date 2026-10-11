@@ -54,7 +54,7 @@ _ANNOUNCE_LARGE_FILE_BYTES = 50 * 1024 * 1024
 # its ledger cursor — deleting either from a far side would be catastrophic.
 NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw"})
 
-# Where a `bundle_tls` network's certificate and key land on the far side:
+# Where a `certs` network's certificate and key land on the far side:
 # under `.mmw/`, which no generated server block serves (each one's root is a
 # hostname directory). Fixed control members like `.mmw/apply.py`, not
 # manifest payload — so they ride every bundle, delta or full, and sit near
@@ -435,7 +435,7 @@ class BundleSink:
                 tls_files: dict[str, bytes] | None = None):
         self.out_path = out_path
         # name → bytes, written as `{TLS_DIR}/{name}`; a name ending `.key`
-        # goes in 0600. Empty unless the network opted in with bundle_tls.
+        # goes in 0600. Empty unless the network has certs on.
         self._tls_files = dict(tls_files or {})
         self.header = header
         self._prev = prev

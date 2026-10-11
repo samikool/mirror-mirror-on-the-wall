@@ -188,10 +188,8 @@ class NetworkForm(Vertical):
                 ToggleField("dist-upgrade", net.dist_upgrade if net else False, id="du-switch",
                             hint="Serve changelogs.ubuntu.com meta-release files + UPGRADE.md."),
                 ToggleField("TLS certs", net.certs if net else False, id="certs-switch",
-                            hint="Generate a key + CSR covering all mirror hostnames."),
-                ToggleField("Certs in bundles", net.bundle_tls if net else False,
-                            id="bundle-tls-switch",
-                            hint="Puts the private key on the media; needs certs + a signed cert."),
+                            hint="HTTPS for every mirror hostname. Bundles carry the cert and its "
+                                 "private key, and wait for the cert to be signed."),
                 ToggleField("nginx config", net.nginx if net else True, id="nginx-switch",
                             hint="One nginx/mirror.conf, a server block per host."),
                 ToggleField("Compress bundles", net.bundle_compress if net else True,
@@ -290,13 +288,10 @@ class NetworkForm(Vertical):
     def result(self) -> "tuple[config.NetworkConfig | None, str | None, str | None]":
         """`(network, None, None)`, or `(None, problem, id of the field to focus)`."""
         selects = self.selects()
-        certs, bundle_tls = self._flag("certs-switch"), self._flag("bundle-tls-switch")
         problem = networks.form_problems(name=self.network_name(), existing_names=self._existing,
-                                         selects=selects, certs=certs, bundle_tls=bundle_tls)
+                                         selects=selects)
         if problem:
-            focus = ("repo-checklist" if not selects else
-                     "inp-net-name" if self.name_problem() else "bundle-tls-switch")
-            return None, problem, focus
+            return None, problem, "repo-checklist" if not selects else "inp-net-name"
         bundle = self._value("inp-bundle-dir")
         return config.NetworkConfig.model_validate({
             **(self._network.model_dump() if self._network else {}),
@@ -306,10 +301,9 @@ class NetworkForm(Vertical):
             "select": selects,
             "prune": self._flag("prune-switch"),
             "dist_upgrade": self._flag("du-switch"),
-            "certs": certs,
+            "certs": self._flag("certs-switch"),
             "nginx": self._flag("nginx-switch"),
             "bundle_compress": self._flag("compress-switch"),
-            "bundle_tls": bundle_tls,
         }), None, None
 
 

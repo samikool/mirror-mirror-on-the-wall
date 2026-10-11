@@ -33,7 +33,7 @@ STATE_FILE = ".mmw-state"
 MMW_DIR = ".mmw"
 MANIFEST_MEMBER = ".mmw/manifest.jsonl.zst"
 DELETE_MEMBER = ".mmw/delete.list"
-# A `bundle_tls` network's certificate and private key. Installed under
+# A `certs` network's certificate and private key. Installed under
 # {root}/.mmw/tls/ — never a served path — and referenced from there by the
 # bundle's own nginx/mirror.conf.
 TLS_PREFIX = ".mmw/tls/"

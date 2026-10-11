@@ -135,8 +135,8 @@ the `nginx/` folder. (Bundles from before 1.0 shipped a `sites/` folder beside
 it; Debian's `include sites-enabled/*` matches that folder too, and nginx
 refuses to start on "is a directory". Applying a newer bundle deletes it.)
 
-With `bundle_tls = true` (see [HTTPS](#https) below) every host also listens
-on 443. Set `nginx = false` on the network if you would rather write your own.
+With `certs = true` and a signed certificate (see [HTTPS](#https) below) every
+host also listens on 443. Set `nginx = false` on the network if you would rather write your own.
 
 ---
 
@@ -268,8 +268,7 @@ On the connected side, with `certs = true` on the network:
 mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key   # writes mirror.crt
 ```
 
-Then set `bundle_tls = true` on the network. Every bundle from then on
-carries `mirror.crt` and `mirror.key`; `apply.py` installs them in
+Every bundle from then on carries `mirror.crt` and `mirror.key`; `apply.py` installs them in
 `{root}/.mmw/tls/` (key 0600, directory 0700 — no server block serves it) and
 the bundle's `nginx/mirror.conf` already points at them:
 
@@ -280,8 +279,10 @@ TLS: mirror.crt, mirror.key -> /srv/www/.mmw/tls
 They ride **every** bundle, delta or full, near the front of the archive, so a
 re-signed certificate reaches the far side with the next ordinary delta.
 
-`bundle_tls` is off by default because it puts the private key on your
-transfer media. Without it, the far side is served over HTTP only.
+This puts the private key on your transfer media. A network whose media must
+not hold it keeps `certs` off, and its far side is served over HTTP only. A
+certs network refuses to bundle until its certificate is signed, rather than
+ship an HTTP-only bundle its clients would refuse.
 
 `mmw certs` re-checks the certificate on each run: a network that gained a
 hostname since signing (with `dist_upgrade`, `changelogs.ubuntu.com` is one),

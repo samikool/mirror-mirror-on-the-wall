@@ -425,20 +425,20 @@ class NetworkConfig(_StrictModel):
     select: list[NetworkSelect] = []  # empty = every mirrored repository
     prune: bool = True        # remove destination files no longer in source
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
-    certs: bool = False       # manage TLS key/CSR for this network
+    certs: bool = False       # TLS key/CSR; serve HTTPS wherever it lands — bundles carry cert + key
     nginx: bool = True        # generate conf.d-style nginx site files
     bundle_compress: bool = True  # zstd-compress the bundle tarball
-    bundle_tls: bool = False  # carry the signed cert AND private key in bundles
 
-    @model_validator(mode="after")
-    def _bundle_tls_needs_certs(self):
-        """`bundle_tls` ships what `certs` manages; without `certs` there is
-        never a key or certificate to ship, and the bundle would refuse."""
-        if self.bundle_tls and not self.certs:
-            raise ValueError(
-                f"network {self.name!r}: bundle_tls = true requires certs = true"
-            )
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_bundle_tls(cls, data):
+        """`bundle_tls` once chose separately whether bundles carried the
+        cert and key. It is folded into `certs` now — a certs network is HTTPS
+        wherever it lands — so an old config's key is accepted and ignored
+        (unknown keys are otherwise errors) and gone after the next save."""
+        if isinstance(data, dict) and "bundle_tls" in data:
+            data = {k: v for k, v in data.items() if k != "bundle_tls"}
+        return data
 
     @model_validator(mode="after")
     def _name_is_a_safe_path_segment(self):
@@ -752,7 +752,6 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
             **({"bundle_compress": False} if not n.bundle_compress else {}),
-            **({"bundle_tls": True} if n.bundle_tls else {}),
         }
         for n in cfg.networks
     ]

@@ -24,17 +24,15 @@ def _cfg(*names):
     (dict(name=".."), "letters, digits"),
     (dict(name=""), "letters, digits"),
     (dict(name="lab", existing_names={"lab"}), "already exists"),
-    (dict(bundle_tls=True, certs=False), "needs TLS certs"),
 ])
 def test_form_problems(kw, needle):
-    args = dict(name="lab", existing_names=set(), selects=[_sel()], certs=False, bundle_tls=False)
+    args = dict(name="lab", existing_names=set(), selects=[_sel()])
     args.update(kw)
     assert needle in N.form_problems(**args)
 
 
 def test_form_problems_none_when_fine():
-    assert N.form_problems(name="lab-2", existing_names={"lab"}, selects=[_sel()],
-                           certs=True, bundle_tls=True) is None
+    assert N.form_problems(name="lab-2", existing_names={"lab"}, selects=[_sel()]) is None
 
 
 def test_with_without_and_replace():

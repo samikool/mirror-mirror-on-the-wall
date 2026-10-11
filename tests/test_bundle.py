@@ -206,21 +206,22 @@ def test_full_ignores_the_ledger(seeded, tmp_path):
     assert again.full is True
 
 
-def test_certs_never_travel(seeded, tmp_path):
+def test_the_certs_directory_never_travels(seeded, tmp_path):
     """Parity with publish, which keeps mirror.key outside network.root so a
-    misconfigured server can never serve it. A private key on transfer media is
-    a worse exposure than the case that layout was designed to prevent."""
+    misconfigured server can never serve it. A certs network's bundle carries
+    the signed cert and key — but only into `.mmw/tls/`, never a served path,
+    and never the certs/ working directory (CSR, openssl config)."""
     mirror_dir, cfg = seeded
-    certs = mirror_dir / "certs" / "lab"
-    certs.mkdir(parents=True)
-    (certs / "mirror.key").write_bytes(b"-----BEGIN PRIVATE KEY-----\n")
+    _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
 
     net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=True)
     result = bundle_network(net, cfg, mirror_dir)
 
     applied = tmp_path / "applied-certs"
     _extract(result.out_path, applied)
-    assert not any("certs" in k or "mirror.key" in k for k in _tree(applied))
+    tree = _tree(applied)
+    assert not any("certs/" in k or k.endswith(".csr") or k.endswith(".cnf") for k in tree)
+    assert [k for k in tree if "mirror.key" in k] == [".mmw/tls/mirror.key"]
 
 
 def test_bundle_without_destination_is_an_error(seeded, tmp_path):
@@ -452,7 +453,7 @@ def test_bundle_matches_publish_across_two_rounds(seeded, tmp_path):
     assert not any("hello_1.0_amd64.deb" in k for k in other_applied)
 
 
-# --- TLS: publish serves it, bundle_tls carries it --------------------------
+# --- TLS: publish serves it, a certs network's bundles carry it ------------
 
 def _sign_lab_cert(tmp_path: Path, mirror_dir: Path, hostnames: list[str]) -> Path:
     """A throwaway CA signs a `lab` network key — EC, so it is fast."""
@@ -541,24 +542,23 @@ def test_dist_upgrade_network_serves_changelogs(seeded, tmp_path):
     assert f"root {root}/changelogs.ubuntu.com;" in conf
 
 
-def test_bundle_tls_without_a_signed_cert_refuses_up_front(seeded, tmp_path):
+def test_certs_without_a_signed_cert_refuses_to_bundle_up_front(seeded, tmp_path):
+    """Not a silently HTTP-only bundle the far side's clients would refuse."""
     mirror_dir, cfg = seeded
-    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out",
-                               certs=True, bundle_tls=True)
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=True)
     with pytest.raises(ValueError, match="no usable signed certificate"):
         bundle_network(net, cfg, mirror_dir)
     assert not (tmp_path / "out").exists() or not list((tmp_path / "out").glob("*.tar*"))
 
 
-def test_bundle_tls_round_trip(seeded, tmp_path):
+def test_certs_bundle_round_trip(seeded, tmp_path):
     """Signed here, carried in the bundle, installed 0600 on the far side,
     and named by the far side's own nginx config with the real root."""
     import os
     import stat
     mirror_dir, cfg = seeded
     crt = _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
-    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out",
-                               certs=True, bundle_tls=True)
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=True)
     result = bundle_network(net, cfg, mirror_dir)
     assert not result.errors
 
@@ -583,13 +583,12 @@ def test_bundle_tls_round_trip(seeded, tmp_path):
     assert "__MMW_ROOT__" not in conf
 
 
-def test_bundle_tls_rides_every_delta(seeded, tmp_path):
+def test_certs_ride_every_delta(seeded, tmp_path):
     """A delta that changes nothing still carries the TLS files — a re-signed
     certificate must reach the far side without a --full bundle."""
     mirror_dir, cfg = seeded
     _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
-    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out",
-                               certs=True, bundle_tls=True)
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=True)
     bundle_network(net, cfg, mirror_dir)
     second = bundle_network(net, cfg, mirror_dir)
     assert second.sent == 0
@@ -598,12 +597,12 @@ def test_bundle_tls_rides_every_delta(seeded, tmp_path):
     assert (applied / ".mmw" / "tls" / "mirror.key").exists()
 
 
-def test_certs_without_bundle_tls_bundles_http_only(seeded, tmp_path):
-    """A signed cert exists here, but the far side was not sent one — its
-    nginx must not point at files that are not there."""
+def test_without_certs_a_bundle_is_http_only_and_carries_no_key(seeded, tmp_path):
+    """A signed cert exists here, but the network has certs off — no key on
+    the media, and the far side's nginx points at no TLS files."""
     mirror_dir, cfg = seeded
     _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
-    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=True)
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=False)
     result = bundle_network(net, cfg, mirror_dir)
     applied = tmp_path / "applied"
     _extract(result.out_path, applied)

@@ -11,15 +11,14 @@ highlighting a node fills the box, and submitting the box re-roots the tree.
 """
 from pathlib import Path
 
-from rich.markup import escape as _escape
 from textual import on
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
+from textual.containers import Horizontal
+from textual.markup import escape
 from textual.widgets import DirectoryTree, Input, Label
 
-from mmw.tui.widgets import Button
+from mmw.tui.ui.page import Page
+from mmw.tui.ui.widgets import Button
 
 
 class _FilteredTree(DirectoryTree):
@@ -47,79 +46,35 @@ class _FilteredTree(DirectoryTree):
         return out
 
 
-class PathPickModal(ModalScreen):
+class PathPickPage(Page):
     """Pick a directory (or a file). Dismisses with the path as a string, or
     None when cancelled — the same "None means leave it alone" convention as
-    `PickModal`."""
+    `PickPage`."""
 
-    DEFAULT_CSS = """
-    PathPickModal { align: center middle; }
-    PathPickModal > Vertical {
-        width: 92;
-        max-width: 96%;
-        height: 84%;
-        max-height: 92%;
-        border: double $primary;
-        background: $surface;
-    }
-    PathPickModal #path-title {
-        height: 1;
-        background: $primary-darken-3;
-        padding: 0 2;
-        color: $text;
-        text-style: bold;
-    }
-    PathPickModal #path-subtitle {
-        height: 1;
-        padding: 0 2;
-        color: $text-muted;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    PathPickModal #path-row { height: 3; padding: 0 2; }
-    PathPickModal #path-row Input { width: 1fr; }
-    PathPickModal #path-row Button { width: auto; min-width: 6; margin-left: 1; }
-    PathPickModal DirectoryTree { height: 1fr; margin: 0 2; border: solid $primary-darken-2; }
-    PathPickModal #path-status { height: 1; padding: 0 2; color: $text-muted; }
-    PathPickModal #path-bar {
-        height: auto;
-        align: right middle;
-        padding: 0 2;
-        background: $surface;
-        border-top: solid $primary-darken-2;
-        overflow-x: auto;
-    }
-    PathPickModal #path-bar Button { margin-left: 1; min-width: 0; width: auto; }
-    PathPickModal #path-bar .spacer { width: 1fr; height: 1; }
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    SCROLLS = False
 
     def __init__(self, title: str, subtitle: str = "", start: str = "", *,
                  dirs_only: bool = True, suffixes: "tuple[str, ...]" = ()):
         super().__init__()
-        self._title = title
-        self._subtitle = subtitle
+        self.TITLE = title
+        self.subtitle = subtitle or "browse, or type a path and press enter"
         self._dirs_only = dirs_only
         self._suffixes = suffixes
         self._root, self._selected = _resolve_start(start)
 
-    def compose(self) -> ComposeResult:
-        hint = "browse, or type a path and press enter"
-        with Vertical():
-            yield Label(f"  {_escape(self._title)}", id="path-title")
-            yield Label(f"  {_escape(self._subtitle or hint)}", id="path-subtitle")
-            with Horizontal(id="path-row"):
-                yield Input(value=str(self._selected), placeholder="/path/to/…", id="path-input")
-                yield Button("↑ Up", id="btn-up", variant="default")
-            yield _FilteredTree(
-                self._root, dirs_only=self._dirs_only, suffixes=self._suffixes, id="path-tree",
-            )
-            yield Label("", id="path-status")
-            with Horizontal(id="path-bar"):
-                yield Label("", classes="spacer")
-                yield Button("Cancel", id="btn-cancel", variant="default")
-                yield Button("Use this", id="btn-use", variant="primary")
+    def compose_body(self) -> ComposeResult:
+        with Horizontal(id="path-row"):
+            yield Input(value=str(self._selected), placeholder="/path/to/…",
+                        id="path-input", compact=True)
+            yield Button("↑ Up", id="btn-up", compact=True)
+        yield _FilteredTree(
+            self._root, dirs_only=self._dirs_only, suffixes=self._suffixes, id="path-tree",
+        )
+        yield Label("", id="path-status")
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Cancel", id="btn-cancel", compact=True)
+        yield Button("Use this", id="btn-use", variant="primary", compact=True)
 
     def on_mount(self) -> None:
         self.query_one("#path-tree", DirectoryTree).focus()
@@ -157,7 +112,7 @@ class PathPickModal(ModalScreen):
         path = Path(raw).expanduser()
         if not path.exists():
             self.query_one("#path-status", Label).update(
-                f"  [red]✗ {_escape(str(path))} does not exist[/]"
+                f"[$mmw-error]✗ {escape(str(path))} does not exist[/]"
             )
             return
         self.query_one("#path-status", Label).update("")
@@ -177,9 +132,6 @@ class PathPickModal(ModalScreen):
 
     # ── result ───────────────────────────────────────────────────────────────
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
     @on(Button.Pressed, "#btn-cancel")
     def _cancel(self, event: "Button.Pressed") -> None:
         event.stop()
@@ -192,7 +144,7 @@ class PathPickModal(ModalScreen):
         path = Path(raw).expanduser() if raw else self._selected
         if not path.exists():
             self.query_one("#path-status", Label).update(
-                f"  [red]✗ {_escape(str(path))} does not exist[/]"
+                f"[$mmw-error]✗ {escape(str(path))} does not exist[/]"
             )
             return
         if self._dirs_only and not path.is_dir():

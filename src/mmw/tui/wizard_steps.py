@@ -1,4 +1,4 @@
-"""Wizard step widgets shared by InitWizardApp and AddMirrorScreen.
+"""Wizard step widgets shared by SetupPage and AddRepositoryPage.
 
 The distro catalog is gone, so the
 version/arch/repo discovery steps that drove it went with it. What remains is
@@ -9,10 +9,12 @@ import os
 from pathlib import Path
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.widgets import Input, Label, Static, Switch
+from textual.containers import ScrollableContainer, Vertical
+from textual.markup import escape
+from textual.widgets import Checkbox, Input, Label, Static
 
 from mmw.core import config
+from mmw.tui.ui.form import Heading
 
 
 class WizardStep(Static):
@@ -23,7 +25,7 @@ class WizardStep(Static):
 def _unresolved(src: config.SourceConfig) -> bool:
     """True when this source's mirror count cannot be known offline.
 
-    The same rule `manage.ManageApp._unresolved` applies to the list rows,
+    The same rule `RepositoryList.unresolved` applies to the list rows,
     minus the pool half — nothing has been synced yet at Confirm time.
     """
     if not src.arches:
@@ -32,12 +34,6 @@ def _unresolved(src: config.SourceConfig) -> bool:
 
 
 class StepSettings(WizardStep):
-    DEFAULT_CSS = """
-    StepSettings { padding: 1 2; }
-    StepSettings Label { margin-bottom: 1; }
-    StepSettings .field-label { color: $text-muted; margin-top: 1; }
-    StepSettings Input { margin-bottom: 1; }
-    """
 
     def __init__(self, mirror_dir: str = "./mirror", max_connections: int | None = None):
         super().__init__()
@@ -48,11 +44,13 @@ class StepSettings(WizardStep):
         # Not "Step 4": the catalog wizard that had four steps is gone, and
         # `_INIT_STEPS` renders this as step 1 of 2. The step indicator above
         # already says where we are.
-        yield Label("[bold]Settings[/]")
-        yield Label("  [dim]Mirror storage directory[/]", classes="field-label")
-        yield Input(placeholder="/data/repos", id="mirror-dir", value=self._mirror_dir)
-        yield Label("  [dim]Max concurrent connections[/]", classes="field-label")
-        yield Input(placeholder="10", id="max-connections", value=str(self._max_connections))
+        yield Heading("Settings")
+        yield Label("Mirror storage directory", classes="field-label")
+        yield Input(placeholder="/data/repos", id="mirror-dir", value=self._mirror_dir,
+                    compact=True)
+        yield Label("Max concurrent connections", classes="field-label")
+        yield Input(placeholder="10", id="max-connections", value=str(self._max_connections),
+                    compact=True)
 
     def get_settings(self) -> tuple[Path, int]:
         mirror_dir = Path(self.query_one("#mirror-dir", Input).value or "./mirror")
@@ -63,32 +61,22 @@ class StepSettings(WizardStep):
         return mirror_dir, conns
 
 class StepConfirm(WizardStep):
-    DEFAULT_CSS = """
-    StepConfirm { padding: 1 2; }
-    StepConfirm Label { margin-bottom: 1; }
-    StepConfirm .mirror-entry { color: $primary; }
-    StepConfirm #apt-options {
-        height: auto;
-        border-top: solid $primary-darken-2;
-        margin-top: 1;
-        padding-top: 1;
-    }
-    StepConfirm #apt-options Label { margin: 0 0 0 1; }
-    StepConfirm #apt-options .opt-hint { color: $text-muted; margin-left: 2; }
-    StepConfirm #src-row { height: 3; align: left middle; }
-    """
 
     def __init__(
         self,
         sources: list[config.SourceConfig],
         mirror_dir: Path | None = None,
         max_connections: int | None = None,
+        *,
+        ask_sources: bool = True,
     ):
+        """`ask_sources=False`: each add already decided deb-src for its own
+        repositories (Setup) — one box here would overwrite them all."""
         super().__init__()
         self._sources = sources
         self._mirror_dir = mirror_dir
         self._max_connections = max_connections
-        self._has_apt = any(s.provider in ("apt", "apt-flat") for s in sources)
+        self._has_apt = ask_sources and any(s.provider in ("apt", "apt-flat") for s in sources)
         self._total_mirrors = sum(len(s.to_mirrors()) for s in sources)
         # `to_mirrors()` is pure and offline: with `components = []` or
         # `arches = []` — the documented "empty means all", and the ordinary
@@ -107,34 +95,32 @@ class StepConfirm(WizardStep):
         return f"{total} repo{'s' if total != 1 else ''}"
 
     def compose(self) -> ComposeResult:
-        yield Label("[bold]Confirm[/]")
+        yield Heading("Confirm")
         if self._mirror_dir is not None:
-            yield Label(f"  Mirror directory: [cyan]{self._mirror_dir}[/]")
-            yield Label(f"  Connections:      [cyan]{self._max_connections}[/]")
+            yield Label(f"Mirror directory: [$accent]{escape(str(self._mirror_dir))}[/]")
+            yield Label(f"Connections:      [$accent]{self._max_connections}[/]")
         yield Label(
-            f"  Sources to add:   [cyan]{len(self._sources)}[/]  "
+            f"Sources to add:   [$accent]{len(self._sources)}[/]  "
             f"([dim]{self._repo_count(self._total_mirrors, self._unresolved)}[/dim])"
         )
-        yield Label("")
-        with ScrollableContainer():
+        with ScrollableContainer(id="confirm-list"):
             for s in self._sources:
                 arches = ", ".join(s.arches) if s.arches else "all arches"
+                src = "  [dim]+ deb-src[/]" if s.include_sources else ""
                 yield Label(
-                    f"  [primary]●[/] {s.name}  [cyan]{arches}[/]  [dim]{s.url}[/dim]",
+                    f"[$primary]●[/] {escape(s.name)}  [$accent]{escape(arches)}[/]{src}  "
+                    f"[dim]{escape(s.url)}[/dim]",
                     classes="mirror-entry",
                 )
         if self._has_apt:
             with Vertical(id="apt-options"):
-                yield Label("[bold]APT options[/]")
-                with Horizontal(id="src-row"):
-                    # Default from what arrived: a pasted config carrying
-                    # `deb-src` had this on, and forcing the switch to off would
-                    # silently drop it on the way through Confirm.
-                    yield Switch(
-                        value=any(s.include_sources for s in self._sources),
-                        id="src-switch",
-                    )
-                    yield Label("Include source packages (deb-src)")
+                yield Heading("APT options")
+                # Default from what arrived: a pasted config carrying
+                # `deb-src` had this on, and forcing it off would silently
+                # drop it on the way through Confirm.
+                yield Checkbox("Include source packages (deb-src)",
+                               value=any(s.include_sources for s in self._sources),
+                               id="src-switch", compact=True)
                 yield Label(
                     "Downloads .dsc, .orig.tar.*, .debian.tar.* for every package. "
                     "Typically 3–10× larger than binaries alone.",
@@ -145,6 +131,6 @@ class StepConfirm(WizardStep):
         if not self._has_apt:
             return False
         try:
-            return self.query_one("#src-switch", Switch).value
+            return self.query_one("#src-switch", Checkbox).value
         except Exception:
             return False

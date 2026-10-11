@@ -1,4 +1,4 @@
-"""A focused multi-select modal for one repository dimension.
+"""A focused multi-select page for one repository dimension.
 
 Suites are the dimension that needs room: archive.ubuntu.com publishes 55 of
 them, and picking from that inline alongside four other fields is miserable. It
@@ -7,12 +7,11 @@ also needs range selection, which `SelectionList` does not provide.
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
 from textual.widgets import Label, SelectionList
 from textual.widgets.selection_list import Selection
 
-from mmw.tui.widgets import Button, JumpSelectionList
+from mmw.tui.ui.page import Page
+from mmw.tui.ui.widgets import Button, JumpSelectionList
 
 
 class RangeSelectionList(JumpSelectionList):
@@ -107,94 +106,34 @@ class RangeSelectionList(JumpSelectionList):
         self._anchor = event.selection_index
 
 
-class PickModal(ModalScreen):
+class PickPage(Page):
     """Pick any number of values from a list. Dismisses with the chosen list,
-    or None when cancelled."""
+    or None when cancelled (Esc or Cancel)."""
 
-    DEFAULT_CSS = """
-    PickModal { align: center middle; }
-    PickModal > Vertical {
-        width: 78;
-        max-width: 92%;
-        height: 80%;
-        max-height: 90%;
-        border: double $primary;
-        background: $surface;
-    }
-    PickModal #pick-title {
-        height: 1;
-        background: $primary-darken-3;
-        padding: 0 2;
-        color: $text;
-        text-style: bold;
-    }
-    PickModal #pick-subtitle {
-        height: 1;
-        padding: 0 2;
-        color: $text-muted;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    PickModal #pick-hint {
-        height: 1;
-        padding: 0 2;
-        color: $text-muted;
-        width: 1fr;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    PickModal RangeSelectionList { height: 1fr; margin: 1 2 0 2; }
-    PickModal #pick-count {
-        height: 1;
-        padding: 0 2;
-        color: $accent;
-    }
-    PickModal #pick-bar {
-        height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
-        align: right middle;
-        padding: 0 2;
-        background: $surface;
-        border-top: solid $primary-darken-2;
-        overflow-x: auto;
-    }
-    PickModal #pick-bar Button { margin-left: 1; min-width: 0; width: auto; }
-    PickModal #pick-bar .spacer { width: 1fr; height: 1; }
-    """
-
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
-    ]
+    SCROLLS = False
 
     def __init__(self, title: str, subtitle: str, options: list[str],
                  selected: list[str] | None = None):
         super().__init__()
-        self._title = title
-        self._subtitle = subtitle
+        self.TITLE = title
+        self.subtitle = subtitle
         self._options = options
         self._selected = set(selected or ())
 
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(f"  {self._title}", id="pick-title")
-            yield Label(f"  {self._subtitle}", id="pick-subtitle")
-            yield Label(
-                "  click/space toggles · shift+click or shift+space takes the range",
-                id="pick-hint",
-            )
-            yield RangeSelectionList(
-                *[
-                    Selection(o, o, o in self._selected)
-                    for o in self._options
-                ],
-                id="pick-list",
-            )
-            yield Label("", id="pick-count")
-            with Horizontal(id="pick-bar"):
-                yield Button("Select all", id="btn-all", variant="default")
-                yield Button("Clear", id="btn-none", variant="default")
-                yield Label("", classes="spacer")
-                yield Button("Cancel", id="btn-cancel", variant="default")
-                yield Button("Done", id="btn-done", variant="primary")
+    def compose_body(self) -> ComposeResult:
+        yield Label("click/space toggles · shift+click or shift+space takes the range · "
+                    "type to jump", id="pick-hint")
+        yield RangeSelectionList(
+            *[Selection(o, o, o in self._selected) for o in self._options],
+            id="pick-list",
+        )
+        yield Label("", id="pick-count")
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Select all", id="btn-all", compact=True)
+        yield Button("Clear", id="btn-none", compact=True)
+        yield Button("Cancel", id="btn-cancel", compact=True)
+        yield Button("Done", id="btn-done", variant="primary", compact=True)
 
     def on_mount(self) -> None:
         self.query_one("#pick-list", SelectionList).focus()
@@ -203,7 +142,7 @@ class PickModal(ModalScreen):
     def _update_count(self) -> None:
         n = len(self.query_one("#pick-list", SelectionList).selected)
         total = len(self._options)
-        self.query_one("#pick-count", Label).update(f"  {n} of {total} selected")
+        self.query_one("#pick-count", Label).update(f"{n} of {total} selected")
 
     @on(SelectionList.SelectedChanged, "#pick-list")
     def _changed(self) -> None:
@@ -216,9 +155,6 @@ class PickModal(ModalScreen):
     @on(Button.Pressed, "#btn-none")
     def _none(self) -> None:
         self.query_one("#pick-list", SelectionList).deselect_all()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
     @on(Button.Pressed, "#btn-cancel")
     def _cancel(self) -> None:

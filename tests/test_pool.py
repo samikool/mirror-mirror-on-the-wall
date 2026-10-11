@@ -135,7 +135,7 @@ def test_close_truncates_wal(mirror_dir):
 # See pool.py's `_read()`: verify/dry-run/publish/bundle all open
 # `Pool(read_only=True)`, and used to fall back to the bare, untuned `_conn`
 # under the same lock a writer would use — so `_PREPARE_WORKERS`-many
-# concurrent per-mirror reads (publish_panel._run_per_mirror) serialized on
+# concurrent per-mirror reads (publish_flows._run_per_mirror) serialized on
 # one lock with a 2 MB default cache instead of running concurrently against
 # a 64 MB-cache, mmap'd reader, the way a writable pool's reads already did.
 

@@ -12,10 +12,10 @@ row per repository.
 """
 from pathlib import Path
 
-from rich.markup import escape as _escape
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.markup import escape
 from textual.widgets import (
     Input, Label, OptionList, RadioButton, RadioSet, Select, TextArea,
 )
@@ -26,10 +26,11 @@ from mmw.core.apt_sources import AptEntry, detect_arch_placeholder, parse_apt_so
 from mmw.core.draft import (
     DIMENSIONS, RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders,
 )
-from mmw.tui.bulk_review import BulkReviewScreen
-from mmw.tui.path_pick import PathPickModal
-from mmw.tui.pick import PickModal
-from mmw.tui.widgets import Button
+from mmw.tui.bulk_review import BulkReviewPage
+from mmw.tui.path_pick import PathPickPage
+from mmw.tui.pick import PickPage
+from mmw.tui.ui.form import ActionField, ChoiceField, Form, Heading, TextField
+from mmw.tui.ui.widgets import Button
 from mmw.tui.wizard_steps import WizardStep
 
 _URL_PLACEHOLDER = "https://packages.microsoft.com/repos/code"
@@ -51,54 +52,6 @@ _MODE_HINTS = [
 
 
 class StepCustom(WizardStep):
-    DEFAULT_CSS = """
-    StepCustom { padding: 1 2; height: auto; }
-    StepCustom Label { margin-bottom: 0; }
-    StepCustom .field-label { color: $text-muted; margin-top: 1; }
-    StepCustom Input { margin-bottom: 0; }
-    StepCustom Select { margin-bottom: 0; }
-    StepCustom RadioSet { height: auto; margin: 1 0; }
-    StepCustom #mode-hint { margin-bottom: 1; }
-    StepCustom #url-row { height: 3; margin-bottom: 0; }
-    StepCustom #url-row Input { width: 1fr; }
-    StepCustom #url-row Button { width: auto; min-width: 16; margin-left: 1; }
-    StepCustom #paste-area { height: 10; margin-bottom: 0; }
-    StepCustom #load-row { height: 3; }
-    StepCustom #load-row Button { width: auto; min-width: 18; }
-    StepCustom #load-row .load-hint {
-        width: 1fr;
-        /* height: auto — NOT a fixed height alongside a top padding.
-           Textual boxes are border-box, so the padding is subtracted from
-           the declared height: `height: 1` with `padding-top: 1` leaves
-           zero rows and the label renders nothing at all while still
-           reporting itself present, displayed and visible. */
-        height: auto;
-        padding: 1 0 0 2;
-        color: $text-muted;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    StepCustom #detect-status { margin-top: 1; }
-    StepCustom #browse-label { margin-top: 1; }
-    StepCustom #browse-list { height: auto; max-height: 10; border: solid $primary-darken-2; }
-    StepCustom #bulk-row { height: 3; margin-top: 1; }
-    StepCustom #bulk-row Button { width: auto; min-width: 24; }
-    StepCustom .dim-row { height: auto; margin-bottom: 0; }
-    StepCustom .dim-row Button { min-width: 0; width: auto; }
-    StepCustom .dim-summary {
-        /* height: auto — NOT a fixed height alongside a top padding. Textual
-           boxes are border-box, so the padding is subtracted from the declared
-           height: `height: 1` with `padding-top: 1` leaves zero rows, and the
-           label renders nothing while still reporting itself present,
-           displayed, visible and 58 columns wide. */
-        padding: 1 0 0 2;
-        color: $accent;
-        width: 1fr;
-        height: auto;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    """
 
     def __init__(self, existing_urls: "set[str] | None" = None):
         super().__init__()
@@ -107,50 +60,45 @@ class StepCustom(WizardStep):
         self._existing_urls = existing_urls or set()
 
     def compose(self) -> ComposeResult:
-        yield Label("[bold]Add repository[/]")
-        with RadioSet(id="mode-select"):
+        yield Heading("Add a repository")
+        with RadioSet(id="mode-select", compact=True):
             yield RadioButton("Probe URL", value=True, id="mode-url")
             yield RadioButton("Paste config", id="mode-paste")
         yield Label(_MODE_HINTS[0], id="mode-hint")
-        yield Label("  [dim]Repository URL[/]", classes="field-label", id="url-label")
+        yield Label("Repository URL", id="url-label")
         with Horizontal(id="url-row"):
-            yield Input(placeholder=_URL_PLACEHOLDER, id="custom-url")
-            yield Button("Probe", id="btn-detect", variant="primary")
-        yield TextArea(id="paste-area", show_line_numbers=False)
+            yield Input(placeholder=_URL_PLACEHOLDER, id="custom-url", compact=True)
+            yield Button("Probe", id="btn-detect", variant="primary", compact=True)
+        yield TextArea(id="paste-area", show_line_numbers=False, compact=True)
         # Reading the files ourselves beats a hand-rolled `cat`: mmw joins them
         # with blank lines, so records can never run together (see
         # `commands.add.read_input`).
         with Horizontal(id="load-row"):
-            yield Button("Load from files…", id="btn-load", variant="default")
+            yield Button("Load from files…", id="btn-load", compact=True)
             yield Label("[dim]a .sources/.list file, or a whole sources.list.d[/]",
                         classes="load-hint")
         yield Label("", id="detect-status")
         # Shown when the URL is a host root rather than a repository:
         # archive.ubuntu.com/ holds ubuntu/, packages.microsoft.com/ holds
         # dozens. Picking one descends into it and probes again.
-        yield Label("  [dim]Not a repository — pick one to open[/]", id="browse-label")
-        yield OptionList(id="browse-list")
+        yield Label("[dim]Not a repository — pick one to open[/]", id="browse-label")
+        yield OptionList(id="browse-list", compact=True)
         # Several repositories in one paste: the pickers below can only express
-        # one, so the bundle goes to its own pane.
+        # one, so the bundle goes to its own page.
         with Horizontal(id="bulk-row"):
-            yield Button("Review repositories…", id="btn-bulk", variant="primary")
+            yield Button("Review repositories…", id="btn-bulk", variant="primary", compact=True)
         with Vertical(id="fields-container"):
-            yield Label("  [dim]Name[/]", classes="field-label")
-            yield Input(placeholder="derived from the URL", id="custom-name")
-            yield Label("  [dim]Provider[/]", classes="field-label")
-            yield Select(
-                [
+            yield Form(
+                TextField("Name", "", id="custom-name", placeholder="derived from the URL"),
+                ChoiceField("Provider", [
                     ("APT  (InRelease / Packages)", "apt"),
                     ("APT flat  (Packages at root, no dists/)", "apt-flat"),
-                ],
-                id="custom-provider",
-                value="apt",
-                allow_blank=False,
+                ], "apt", id="custom-provider"),
+                # field_id keeps the `#{dim}-row` ids the logic below toggles.
+                *[ActionField(title.capitalize(), "", "Choose…", id=f"btn-{dim}",
+                              summary_id=f"{dim}-summary", field_id=f"{dim}-row")
+                  for dim, title in _DIMENSIONS],
             )
-            for dim, title in _DIMENSIONS:
-                with Horizontal(id=f"{dim}-row", classes="dim-row"):
-                    yield Button(f"Choose {title}…", id=f"btn-{dim}", variant="primary")
-                    yield Label("", id=f"{dim}-summary", classes="dim-summary")
 
     def on_mount(self) -> None:
         self._probe_gen = 0
@@ -258,12 +206,12 @@ class StepCustom(WizardStep):
             # (probers.py deliberately doesn't generalize this), and can turn
             # one URL into several repositories, so it bypasses the ordinary
             # single-DetectResult dispatch entirely.
-            status.update("  [dim]Resolving $(ARCH)…[/]")
+            status.update("[dim]Resolving $(ARCH)…[/]")
             status.display = True
             self._resolve_url_placeholder_worker(url, placeholder, self._probe_gen)
             return
 
-        status.update("  [dim]Probing…[/]")
+        status.update("[dim]Probing…[/]")
         status.display = True
         self._detect_worker(url, self._probe_gen)
 
@@ -290,7 +238,7 @@ class StepCustom(WizardStep):
         name = type(exc).__name__
         detail = str(exc).strip() or name
         status = self.query_one("#detect-status", Label)
-        status.update(f"  [red]✗ {where} failed:[/] {detail}")
+        status.update(f"[$mmw-error]✗ {where} failed:[/] {escape(str(detail))}")
         status.display = True
         self._set_busy(False)
         self._bulk_probe_done()
@@ -330,7 +278,7 @@ class StepCustom(WizardStep):
             self._bundle = []
             status = self.query_one("#detect-status", Label)
             status.update(
-                "  [red]✗ $(ARCH) resolved to no architecture — repository unreachable?[/]"
+                "[$mmw-error]✗ $(ARCH) resolved to no architecture — repository unreachable?[/]"
             )
             status.display = True
             return
@@ -343,16 +291,16 @@ class StepCustom(WizardStep):
         if result.provider is None:
             if result.candidates:
                 status.update(
-                    f"  [yellow]Not a repository — {len(result.candidates)} "
+                    f"[$mmw-warn]Not a repository — {len(result.candidates)} "
                     "director(y/ies) here[/]"
                 )
                 self._show_browse(result.candidates)
                 return
-            status.update(f"  [red]✗ Not an apt repository ({_escape(result.error)})[/]")
+            status.update(f"[$mmw-error]✗ Not an apt repository ({escape(result.error)})[/]")
             return
 
         self._hide_browse()
-        status.update(f"  [green]✓ {_escape(result.signal)}[/]")
+        status.update(f"[$mmw-ok]✓ {escape(result.signal)}[/]")
         draft = RepositoryDraft(url=url, provider=result.provider)
         if result.provider == "apt":
             # Nothing preselected: archive.ubuntu.com publishes 55 suites, and
@@ -369,7 +317,7 @@ class StepCustom(WizardStep):
 
     @work
     async def _load_files(self) -> None:
-        picked = await self.app.push_screen_wait(PathPickModal(
+        picked = await self.app.push_screen_wait(PathPickPage(
             "Load apt configuration",
             "pick a .sources / .list file, or a directory of them",
             "/etc/apt/sources.list.d",
@@ -422,7 +370,7 @@ class StepCustom(WizardStep):
         if not entries:
             if sum(1 for ln in text.splitlines() if ln.strip()) >= 2:
                 status.update(
-                    "  [dim]Not recognized — expected a sources.list line or deb822 block.[/]"
+                    "[dim]Not recognized — expected a sources.list line or deb822 block.[/]"
                 )
                 status.display = True
             self.query_one("#fields-container").display = False
@@ -435,7 +383,7 @@ class StepCustom(WizardStep):
             # on here (see core/apt_sources.py's arch_placeholder) — resolving
             # it means probing each known architecture, which is network I/O
             # and must not run on this (UI) thread.
-            status.update("  [dim]Resolving $(ARCH)…[/]")
+            status.update("[dim]Resolving $(ARCH)…[/]")
             status.display = True
             self.query_one("#fields-container").display = False
             self.query_one("#bulk-row").display = False
@@ -463,7 +411,7 @@ class StepCustom(WizardStep):
             self._bundle = []
             status = self.query_one("#detect-status", Label)
             status.update(
-                "  [dim]$(ARCH) resolved to no architecture — repository unreachable?[/]"
+                "[dim]$(ARCH) resolved to no architecture — repository unreachable?[/]"
             )
             status.display = True
             self.query_one("#fields-container").display = False
@@ -486,7 +434,7 @@ class StepCustom(WizardStep):
             for dim, _ in _DIMENSIONS:
                 self.query_one(f"#{dim}-row").display = False
             status.update(
-                f"  [green]✓ {entry_count} entries across {len(drafts)} repositories[/]"
+                f"[$mmw-ok]✓ {entry_count} entries across {len(drafts)} repositories[/]"
                 f"{key_note}  [dim]probing…[/]"
             )
             status.display = True
@@ -496,7 +444,7 @@ class StepCustom(WizardStep):
             return
 
         draft = drafts[0]
-        status.update(f"  [green]✓ {draft.provider.upper()} — {_escape(draft.url)}[/]{key_note}")
+        status.update(f"[$mmw-ok]✓ {draft.provider.upper()} — {escape(draft.url)}[/]{key_note}")
         status.display = True
         # The config's values are a *pre-selection*: show them at once, then
         # probe so everything the repository publishes becomes visible without
@@ -570,9 +518,9 @@ class StepCustom(WizardStep):
         if gen != self._probe_gen or drafts is not self._bundle:
             return
         ok = sum(1 for d in drafts if not d.error)
-        note = "" if ok == len(drafts) else f"  [yellow]{len(drafts) - ok} could not be probed[/]"
+        note = "" if ok == len(drafts) else f"  [$mmw-warn]{len(drafts) - ok} could not be probed[/]"
         self.query_one("#detect-status", Label).update(
-            f"  [green]✓ {len(drafts)} repositories ready to review[/]{note}"
+            f"[$mmw-ok]✓ {len(drafts)} repositories ready to review[/]{note}"
         )
 
     @on(Button.Pressed, "#btn-bulk")
@@ -584,12 +532,12 @@ class StepCustom(WizardStep):
 
     @work
     async def _open_review(self) -> None:
-        kept = await self.app.push_screen_wait(BulkReviewScreen(self._bundle, self._existing_urls))
+        kept = await self.app.push_screen_wait(BulkReviewPage(self._bundle, self._existing_urls))
         if kept is None:
             return                                  # cancelled: leave it alone
         self._bundle = kept
         self.query_one("#detect-status", Label).update(
-            f"  [green]✓ {len(kept)} repositor{'y' if len(kept) == 1 else 'ies'} selected[/]"
+            f"[$mmw-ok]✓ {len(kept)} repositor{'y' if len(kept) == 1 else 'ies'} selected[/]"
         )
 
     # ── browsing a host that is not itself a repository ──────────────────────
@@ -628,9 +576,9 @@ class StepCustom(WizardStep):
         elif len(chosen) == len(available):
             text = f"[italic]all[/] [dim]({len(available)})[/]"
         elif len(chosen) <= 4:
-            text = f"{', '.join(chosen)}  [dim]of {len(available)}[/]"
+            text = f"{escape(', '.join(chosen))}  [dim]of {len(available)}[/]"
         else:
-            text = f"{', '.join(chosen[:4])}  [dim]+{len(chosen) - 4} of {len(available)}[/]"
+            text = f"{escape(', '.join(chosen[:4]))}  [dim]+{len(chosen) - 4} of {len(available)}[/]"
         self.query_one(f"#{dim}-summary", Label).update(text)
 
     @work
@@ -638,7 +586,7 @@ class StepCustom(WizardStep):
         draft = self._draft
         if draft is None:
             return
-        picked = await self.app.push_screen_wait(PickModal(
+        picked = await self.app.push_screen_wait(PickPage(
             f"Choose {title}", draft.url, draft.available[dim], draft.chosen[dim],
         ))
         if picked is None:

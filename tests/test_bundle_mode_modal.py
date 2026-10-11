@@ -10,13 +10,13 @@ behave like declining down to the delta default.
 import asyncio
 from pathlib import Path
 
-from textual.app import App, ComposeResult
+from textual.app import App
 
 from mmw.core import config
 from mmw.core.publisher.results import BundleResult
 from mmw.tui.publish_modals import BundleModeModal, BundleProgressModal
-from mmw.tui.publish_panel import NetworkPanel
-from mmw.tui.widgets import Button
+from mmw.tui.app import MmwApp
+from mmw.tui.ui.widgets import Button
 
 
 def _cfg(tmp_path: Path) -> config.Config:
@@ -26,14 +26,10 @@ def _cfg(tmp_path: Path) -> config.Config:
     )
 
 
-class _App(App):
-    def __init__(self, cfg: config.Config, cfg_dir: Path):
-        super().__init__()
-        self._cfg = cfg
-        self._cfg_dir = cfg_dir
-
-    def compose(self) -> ComposeResult:
-        yield NetworkPanel(self._cfg, self._cfg_dir)
+def _App(cfg: config.Config, cfg_dir: Path):
+    """The Networks section of the one app, on a saved copy of `cfg`."""
+    config.save(cfg, cfg_dir)
+    return MmwApp(cfg, cfg_dir, initial_section="networks")
 
 
 async def _settle(pilot, tries: int = 40):
@@ -134,15 +130,14 @@ def _run_do_bundle(tmp_path, monkeypatch, press_id):
         app = _App(cfg, tmp_path)
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            panel = app.query_one(NetworkPanel)
             from textual.widgets import ListView
-            panel.query_one("#pub-list", ListView).index = 0
+            app.screen.query_one("#net-list", ListView).index = 0
             await _settle(pilot)
 
-            panel.query_one("#btn-bundle", Button).press()
+            app.screen.query_one("#btn-net-bundle", Button).press()
             await _settle(pilot)
             if press_id is not None:
-                panel.app.screen.query_one(f"#{press_id}", Button).press()
+                app.screen.query_one(f"#{press_id}", Button).press()
             else:
                 await pilot.press("escape")
             await _settle(pilot, 80)

@@ -399,7 +399,7 @@ def _parse_one_line_body(rest: str) -> AptEntry | None:
                 arches = _split_list(opt[5:])
         # The same handle the deb822 door records. Docker and Kubernetes still
         # publish one-liners, and `gpg_key_name` is what `mmw add --keys-dir`,
-        # the review pane's directory scan and KeyModal all match a supplied
+        # the review pane's directory scan and KeyPage all match a supplied
         # keyring on — so dropping it made the whole supply-the-key-later
         # workflow unreachable for every one-line config.
         marker = options.find("signed-by=")

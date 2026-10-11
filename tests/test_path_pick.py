@@ -1,4 +1,4 @@
-"""`PathPickModal` — browsing for a path instead of typing it.
+"""`PathPickPage` — browsing for a path instead of typing it.
 
 Every path this TUI asks for lives somewhere the user has to go and look, and a
 typo surfaces only as "no key files found". These drive the modal headlessly.
@@ -8,7 +8,7 @@ import asyncio
 from textual.app import App, ComposeResult
 from textual.widgets import Button, DirectoryTree, Input, Label
 
-from mmw.tui.path_pick import PathPickModal, _resolve_start
+from mmw.tui.path_pick import PathPickPage, _resolve_start
 
 
 class _Harness(App):
@@ -68,7 +68,7 @@ def test_directories_are_shown_and_dotfiles_are_not(tmp_path):
     _tree(tmp_path)
 
     async def scenario():
-        app = _Harness(PathPickModal("Pick", start=str(tmp_path)))
+        app = _Harness(PathPickPage("Pick", start=str(tmp_path)))
         async with app.run_test() as pilot:
             await _settle(pilot)
             names = [str(n.label) for n in app.screen.query_one(DirectoryTree).root.children]
@@ -84,7 +84,7 @@ def test_files_of_interest_are_shown_when_asked(tmp_path):
     _tree(tmp_path)
 
     async def scenario():
-        app = _Harness(PathPickModal(
+        app = _Harness(PathPickPage(
             "Pick", start=str(tmp_path), dirs_only=False, suffixes=(".sources",)))
         async with app.run_test() as pilot:
             await _settle(pilot)
@@ -100,7 +100,7 @@ def test_typing_a_path_reroots_the_tree(tmp_path):
     _tree(tmp_path)
 
     async def scenario():
-        app = _Harness(PathPickModal("Pick", start=str(tmp_path)))
+        app = _Harness(PathPickPage("Pick", start=str(tmp_path)))
         async with app.run_test() as pilot:
             await _settle(pilot)
             inp = app.screen.query_one("#path-input", Input)
@@ -118,7 +118,7 @@ def test_typing_a_path_reroots_the_tree(tmp_path):
 
 def test_a_typed_path_that_does_not_exist_is_reported_not_crashed(tmp_path):
     async def scenario():
-        app = _Harness(PathPickModal("Pick", start=str(tmp_path)))
+        app = _Harness(PathPickPage("Pick", start=str(tmp_path)))
         async with app.run_test() as pilot:
             await _settle(pilot)
             inp = app.screen.query_one("#path-input", Input)
@@ -136,7 +136,7 @@ def test_up_reroots_to_the_parent(tmp_path):
     _tree(tmp_path)
 
     async def scenario():
-        app = _Harness(PathPickModal("Pick", start=str(tmp_path / "keys")))
+        app = _Harness(PathPickPage("Pick", start=str(tmp_path / "keys")))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#btn-up", Button).press()
@@ -153,7 +153,7 @@ def test_use_this_returns_the_current_path(tmp_path):
     _tree(tmp_path)
 
     async def scenario():
-        app = _Harness(PathPickModal("Pick", start=str(tmp_path)))
+        app = _Harness(PathPickPage("Pick", start=str(tmp_path)))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#path-input", Input).value = str(tmp_path / "keys")
@@ -169,7 +169,7 @@ def test_use_this_on_a_file_returns_its_directory_in_dirs_only_mode(tmp_path):
     _tree(tmp_path)
 
     async def scenario():
-        app = _Harness(PathPickModal("Pick", start=str(tmp_path)))
+        app = _Harness(PathPickPage("Pick", start=str(tmp_path)))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#path-input", Input).value = str(tmp_path / "notes.txt")
@@ -183,7 +183,7 @@ def test_use_this_on_a_file_returns_its_directory_in_dirs_only_mode(tmp_path):
 
 def test_cancelling_returns_none(tmp_path):
     async def scenario():
-        app = _Harness(PathPickModal("Pick", start=str(tmp_path)))
+        app = _Harness(PathPickPage("Pick", start=str(tmp_path)))
         async with app.run_test() as pilot:
             await _settle(pilot)
             app.screen.query_one("#btn-cancel", Button).press()
@@ -192,3 +192,9 @@ def test_cancelling_returns_none(tmp_path):
         assert app.result is None
 
     _run(scenario)
+
+
+def test_path_pick_page_is_a_page():
+    from mmw.tui.path_pick import PathPickPage
+    from mmw.tui.ui.page import Page
+    assert issubclass(PathPickPage, Page) and PathPickPage.SCROLLS is False

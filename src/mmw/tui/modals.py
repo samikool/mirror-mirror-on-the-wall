@@ -1,4 +1,4 @@
-"""Generic modal dialogs shared across the manage TUI."""
+"""InfoModal and DeleteProgressModal — the progress/notice modals pages push."""
 import asyncio
 import os
 import threading
@@ -11,24 +11,10 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, ProgressBar
 
-from mmw.tui.widgets import Button
+from mmw.tui.ui.widgets import Button
 
 
 class InfoModal(ModalScreen):
-    DEFAULT_CSS = """
-    InfoModal { align: center middle; }
-    InfoModal > Vertical {
-        width: 70;
-        max-width: 90%;
-        height: auto;
-        border: double $warning;
-        background: $surface;
-        padding: 1 2;
-    }
-    InfoModal Label { width: 100%; margin-bottom: 1; }
-    InfoModal .modal-title { text-style: bold; color: $warning; }
-    InfoModal Horizontal { align: center middle; height: auto; margin-top: 1; }
-    """
 
     BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False)]
 
@@ -42,7 +28,7 @@ class InfoModal(ModalScreen):
             yield Label(self._title, classes="modal-title")
             yield Label(self._message)
             with Horizontal():
-                yield Button("OK", variant="primary", id="ok")
+                yield Button("OK", variant="primary", id="ok", compact=True)
 
     @on(Button.Pressed, "#ok")
     def dismiss_modal(self):
@@ -51,152 +37,7 @@ class InfoModal(ModalScreen):
     def action_dismiss_modal(self) -> None:
         self.dismiss()
 
-class HelpModal(ModalScreen[None]):
-    """What the keys do.
-
-    There was no help anywhere in the app: multi-select, the `/` filter, the
-    difference between prune and wipe and the fact that editing is the only
-    route that can *narrow* a repository were all things you had to be told.
-    The footer shows a handful of bindings and hides the rest.
-    """
-
-    DEFAULT_CSS = """
-    HelpModal { align: center middle; }
-    HelpModal > Vertical {
-        width: 82;
-        max-width: 96%;
-        height: 80%;
-        max-height: 92%;
-        border: double $primary;
-        background: $surface;
-    }
-    HelpModal #help-title {
-        height: 1;
-        background: $primary-darken-3;
-        padding: 0 2;
-        color: $text;
-        text-style: bold;
-    }
-    HelpModal #help-body { height: 1fr; padding: 1 2; }
-    HelpModal #help-bar {
-        height: auto;
-        align: right middle;
-        padding: 0 2;
-        background: $surface;
-        border-top: solid $primary-darken-2;
-    }
-    """
-
-    BINDINGS = [
-        Binding("escape", "dismiss_modal", "Close"),
-        Binding("question_mark", "dismiss_modal", "Close", show=False),
-    ]
-
-    def __init__(self, title: str, body: str):
-        super().__init__()
-        self._title = title
-        self._body = body
-
-    def compose(self) -> ComposeResult:
-        from textual.containers import VerticalScroll
-
-        with Vertical():
-            yield Label(f"  {self._title} — keys", id="help-title")
-            with VerticalScroll(id="help-body"):
-                yield Label(self._body)
-            with Horizontal(id="help-bar"):
-                yield Button("Close", id="btn-help-close", variant="primary")
-
-    def action_dismiss_modal(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#btn-help-close")
-    def _close_help(self) -> None:
-        self.dismiss(None)
-
-
-class ConfirmModal(ModalScreen[bool]):
-    DEFAULT_CSS = """
-    ConfirmModal {
-        align: center middle;
-    }
-    ConfirmModal > Vertical {
-        width: 60;
-        max-width: 90%;
-        height: auto;
-        border: double $error;
-        background: $surface;
-        padding: 1 2;
-    }
-    ConfirmModal Label {
-        width: 100%;
-        text-align: center;
-        margin-bottom: 1;
-    }
-    ConfirmModal .warn {
-        color: $error;
-        text-style: bold;
-    }
-    ConfirmModal Horizontal {
-        align: center middle;
-        height: auto;
-        margin-top: 1;
-    }
-    ConfirmModal Button {
-        margin: 0 2;
-    }
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    def __init__(self, title: str, message: str,
-                 confirm_label: str = "Confirm", cancel_label: str = "Cancel",
-                 confirm_variant: str = "error", cancel_variant: str = "primary"):
-        super().__init__()
-        self._title = title
-        self._message = message
-        self._confirm_label = confirm_label
-        self._cancel_label = cancel_label
-        self._confirm_variant = confirm_variant
-        self._cancel_variant = cancel_variant
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(self._title, classes="warn")
-            yield Label(self._message)
-            with Horizontal():
-                yield Button(self._cancel_label, variant=self._cancel_variant, id="cancel")
-                yield Button(self._confirm_label, variant=self._confirm_variant, id="confirm")
-
-    @on(Button.Pressed, "#cancel")
-    def cancel(self):
-        self.dismiss(False)
-
-    def action_cancel(self) -> None:
-        """Escape declines — it must never trigger the destructive branch."""
-        self.dismiss(False)
-
-    @on(Button.Pressed, "#confirm")
-    def confirm(self):
-        self.dismiss(True)
-
 class DeleteProgressModal(ModalScreen[None]):
-    DEFAULT_CSS = """
-    DeleteProgressModal { align: center middle; }
-    DeleteProgressModal > Vertical {
-        width: 72;
-        max-width: 90%;
-        height: auto;
-        border: double $primary;
-        background: $surface;
-        padding: 1 2;
-    }
-    DeleteProgressModal .modal-title { text-style: bold; color: $primary; margin-bottom: 1; }
-    DeleteProgressModal ProgressBar  { margin: 1 0; }
-    DeleteProgressModal #count       { color: $text-muted; }
-    DeleteProgressModal Horizontal   { align: center middle; height: auto; margin-top: 1; }
-    """
-
     BINDINGS = [Binding("escape", "noop", "", show=False)]
 
     def __init__(self, title: str, dirs: list[Path]):

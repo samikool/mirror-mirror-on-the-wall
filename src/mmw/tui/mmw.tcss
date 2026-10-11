@@ -1,0 +1,413 @@
+/* mmw — the whole visual system for the TUI.
+ *
+ * Colours: theme variables only. Textual's base roles ($primary, $surface,
+ * $text-muted, …) and mmw's own ($mmw-ok, $mmw-error, … — see tui/theme.py).
+ * A raw colour anywhere here fails tests/test_tui_style_lint.py.
+ * Spacing: 0, 1 or 2 cells. Every control is one row.
+ * Text beside a control truncates with … — it never wraps.
+ */
+
+/* ── Forms: one row per field; the focused field's hint is #page-hint ── */
+Form { height: auto; }
+Field { height: auto; }
+Field .field-row { height: auto; }
+Field .field-label {
+    width: 30%;
+    max-width: 32;
+    height: 1;
+    padding-right: 1;
+    color: $text-muted;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+Field .field-control { width: 1fr; }
+/* Headings also start groups outside a Form (key page, bulk review, add). */
+.form-heading {
+    height: 1;
+    margin-top: 1;
+    color: $primary;
+    text-style: bold;
+}
+.form-heading:first-child { margin-top: 0; }
+
+/* ── Page frame ─────────────────────────────────────────────────────── */
+Page { layout: vertical; background: $background; }
+Page #page-frame { height: 1fr; }
+Page #page-main { width: 1fr; height: 1fr; }
+Page #breadcrumb {
+    height: 1;
+    padding: 0 2;
+    background: $surface;
+    color: $text-muted;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+Page #page-subtitle {
+    height: 1;
+    padding: 0 2;
+    background: $surface;
+    color: $mmw-path;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+Page #page-body { height: 1fr; padding: 1 2; }
+Page #page-hint {
+    height: 1;
+    padding: 0 2;
+    color: $text-muted;
+    text-style: italic;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+Page #page-actions { height: 1; padding: 0 2; background: $surface; }
+/* As wide as the label: Button's default min-width (16) put a fifth button
+   off the edge of an 80-column action bar. */
+Page #page-actions Button { margin-left: 1; min-width: 0; width: auto; }
+Page #page-status {
+    width: 1fr;
+    height: 1;
+    color: $text-muted;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+Page #page-status.-ok { color: $mmw-ok; }
+Page #page-status.-error { color: $mmw-error; }
+Page .muted { color: $text-muted; }
+
+/* ── Sidebar; a one-row tab strip below NARROW_WIDTH ────────────────── */
+Sidebar { width: 18; height: 1fr; padding: 1 0; background: $panel; }
+Sidebar .section-link {
+    width: 1fr;
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+Sidebar .section-link:hover { background: $boost; }
+Sidebar .section-link.-active {
+    color: $foreground;
+    background: $primary 25%;
+    text-style: bold;
+}
+Page.-narrow #page-frame { layout: vertical; }
+Page.-narrow Sidebar { width: 1fr; height: 1; padding: 0; layout: horizontal; }
+Page.-narrow Sidebar .section-link { width: auto; }
+
+/* ── More fields ─────────────────────────────────────────────────────── */
+Field .field-summary {
+    width: 1fr;
+    height: 1;
+    color: $accent;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+Field .field-row Button { margin-left: 1; min-width: 0; width: auto; }
+Field .field-textarea { height: 4; }
+
+/* ── ConfirmDialog ───────────────────────────────────────────────────── */
+ConfirmDialog { align: center middle; }
+ConfirmDialog #confirm-box {
+    width: 64;
+    max-width: 90%;
+    height: auto;
+    padding: 1 2;
+    border: round $error;
+    background: $surface;
+}
+ConfirmDialog #confirm-title { width: 1fr; color: $error; text-style: bold; }
+ConfirmDialog #confirm-message { width: 1fr; margin: 1 0; }
+ConfirmDialog #confirm-bar { height: 1; align: right middle; }
+ConfirmDialog #confirm-bar Button { margin-left: 2; }
+
+/* ── HelpDialog ──────────────────────────────────────────────────────── */
+HelpDialog { align: center middle; }
+HelpDialog #help-box {
+    width: 72;
+    max-width: 94%;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    border: round $primary;
+    background: $surface;
+}
+HelpDialog #help-title { width: 1fr; color: $primary; text-style: bold; }
+HelpDialog #help-body { height: auto; max-height: 24; margin: 1 0; }
+HelpDialog #help-notes { width: 1fr; margin-top: 1; color: $text-muted; }
+HelpDialog #help-bar { height: 1; align: right middle; }
+
+/* ── Pickers ─────────────────────────────────────────────────────────── */
+PickPage #pick-hint, PickPage #pick-count, PathPickPage #path-status {
+    width: 1fr;
+    height: 1;
+    color: $text-muted;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+PickPage #pick-count { color: $accent; }
+PickPage #pick-list { height: 1fr; margin: 1 0; }
+PathPickPage #path-row { height: 1; margin-bottom: 1; }
+PathPickPage #path-row Input { width: 1fr; }
+PathPickPage #path-row Button { margin-left: 1; min-width: 0; width: auto; }
+PathPickPage #path-tree { height: 1fr; }
+
+/* ── Key page ────────────────────────────────────────────────────────── */
+KeyPage #dir-row, KeyPage #url-row { height: 1; }
+KeyPage #dir-row Input, KeyPage #url-row Input { width: 1fr; }
+KeyPage #dir-row Button, KeyPage #url-row Button { margin-left: 1; min-width: 0; width: auto; }
+KeyPage #key-found { height: auto; max-height: 6; }
+KeyPage #key-area { height: 8; }
+KeyPage #key-status { width: 1fr; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+
+/* ── List · detail ───────────────────────────────────────────────────── */
+ListDetail { height: 1fr; }
+ListDetail .list-pane { width: 50%; height: 1fr; border-right: vkey $panel; }
+ListDetail .detail-pane { width: 1fr; height: 1fr; padding: 0 2; }
+ListDetail ListView { height: 1fr; background: $background; }
+ListDetail ListItem { height: 1; }
+ListDetail ListItem Label { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
+ListDetail ListItem.-ticked { background: $mmw-selected 15%; }
+ListDetail ListItem.host-row { color: $text-muted; }
+
+/* ── Repositories ────────────────────────────────────────────────────── */
+RepositoriesPage #repo-filter { margin-bottom: 1; }
+
+/* ── Wizard ──────────────────────────────────────────────────────────── */
+Wizard #wizard-steps { height: 1; margin-bottom: 1; color: $text-muted; }
+
+/* ── Add repository (StepCustom) ─────────────────────────────────────── */
+StepCustom { height: auto; }
+StepCustom #mode-select { height: auto; margin-bottom: 1; }
+StepCustom #mode-hint, StepCustom #url-label { color: $text-muted; }
+StepCustom #url-row, StepCustom #load-row, StepCustom #bulk-row { height: 1; margin-top: 1; }
+StepCustom #url-row Input { width: 1fr; }
+StepCustom #url-row Button { margin-left: 1; min-width: 0; width: auto; }
+StepCustom #load-row Button, StepCustom #bulk-row Button { min-width: 0; width: auto; }
+StepCustom #load-row .load-hint {
+    width: 1fr;
+    height: 1;
+    padding-left: 2;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+StepCustom #paste-area { height: 10; }
+StepCustom #detect-status { margin-top: 1; height: auto; }
+StepCustom #browse-list { height: auto; max-height: 10; }
+StepCustom #fields-container { height: auto; margin-top: 1; }
+
+/* ── Bulk review ─────────────────────────────────────────────────────── */
+BulkReviewPage #keydir-row { height: 1; }
+BulkReviewPage #keydir-row Input { width: 1fr; }
+BulkReviewPage #keydir-row Button { margin-left: 1; min-width: 0; width: auto; }
+BulkReviewPage #keydir-status { height: 1; color: $text-muted; }
+BulkReviewPage #repo-list { height: 1fr; margin-top: 1; }
+RepoRow { height: auto; border: round $panel; margin-bottom: 1; padding: 0 1; }
+RepoRow.excluded { opacity: 60%; }
+RepoRow .head, RepoRow .dims { height: 1; }
+RepoRow Checkbox { width: auto; }
+RepoRow .repo-name { width: auto; text-style: bold; padding: 0 1; }
+RepoRow .repo-tag { width: auto; padding: 0 1; }
+RepoRow .repo-url {
+    width: 1fr;
+    height: 1;
+    color: $mmw-path;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+RepoRow .dims Button { margin-right: 1; min-width: 0; width: auto; }
+RepoRow .dim-text {
+    width: 1fr;
+    height: 1;
+    color: $accent;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* ── Wizard steps ────────────────────────────────────────────────────── */
+StepConfirm, StepSettings { height: auto; }
+StepConfirm #confirm-list { height: auto; max-height: 12; margin: 1 0; }
+StepConfirm .mirror-entry { height: 1; width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
+StepConfirm #apt-options { height: auto; }
+StepConfirm .opt-hint, StepSettings .field-label { color: $text-muted; }
+StepSettings Input { margin-bottom: 1; }
+AddRepositoryPage #confirm-slot { height: auto; }
+
+/* ── Networks: add / edit form ───────────────────────────────────────── */
+NetworkForm { height: auto; }
+NetworkForm #nf-where, NetworkForm #nf-repos, NetworkForm #nf-dims, NetworkForm #nf-options {
+    height: auto;
+    margin-bottom: 1;
+}
+NetworkForm #preview { height: 1; color: $primary; text-wrap: nowrap; text-overflow: ellipsis; }
+NetworkForm #repo-checklist { height: auto; max-height: 10; }
+/* `height: auto`, never `1fr` — see the note in network_screens.py. */
+NetworkForm #axis-scroll { height: auto; }
+NetworkForm .axis-block { height: auto; }
+NetworkForm .axis-title {
+    width: 1fr;
+    height: 1;
+    margin-top: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+NetworkForm .axis-dim { height: 1; }
+NetworkForm .axis-list { height: auto; max-height: 8; }
+NetworkForm #nf-summary { height: auto; margin-bottom: 1; }
+
+/* ── Networks ────────────────────────────────────────────────────────── */
+/* Network names are short (`lab`, `dgx`); the detail pane needs the room. */
+NetworksPage ListDetail .list-pane { width: 30%; min-width: 16; max-width: 40; }
+
+/* ── Network detail ──────────────────────────────────────────────────── */
+NetworkDetail { height: 1fr; overflow-y: auto; }
+NetworkDetail .detail-title { margin-bottom: 1; }
+NetworkDetail .detail-meta, NetworkDetail .mirror-entry {
+    width: 1fr;
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+NetworkDetail .section-hdr { margin-top: 1; color: $primary; text-style: bold; }
+NetworkDetail .stats-line { margin-top: 1; }
+NetworkDetail .empty-msg { color: $text-muted; }
+/* `auto`, not `1fr`: the pane already scrolls; a 1fr child once resolved
+   against the visible height and showed one row of five mirrors. */
+NetworkDetail #mirror-list { height: auto; margin-top: 1; }
+
+/* ── Publish reports and dialogs ─────────────────────────────────────── */
+DryRunResultPage #dry-run-table { width: 1fr; height: auto; max-height: 24; margin-bottom: 1; }
+DryRunResultPage .totals { width: 1fr; color: $primary; text-style: bold; }
+DryRunResultPage .du-line, CertsPage .host-entry, CertsPage .path-line {
+    width: 1fr;
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+CertsPage .success-line, CertsPage .error-line { margin-bottom: 1; }
+CertsPage .host-entry { padding-left: 2; }
+BundleModeModal, InfoModal { align: center middle; }
+BundleModeModal > Vertical, InfoModal > Vertical {
+    width: 64;
+    max-width: 90%;
+    height: auto;
+    padding: 1 2;
+    border: round $primary;
+    background: $surface;
+}
+InfoModal > Vertical { border: round $warning; }
+BundleModeModal .title, InfoModal .modal-title { text-style: bold; margin-bottom: 1; }
+InfoModal .modal-title { color: $warning; }
+BundleModeModal Label, InfoModal Label { width: 1fr; }
+BundleModeModal Horizontal, InfoModal Horizontal { height: 1; align: right middle; margin-top: 1; }
+BundleModeModal Button, InfoModal Button { margin-left: 2; min-width: 0; width: auto; }
+
+/* ── Sync ────────────────────────────────────────────────────────────── */
+SyncView { height: 1fr; }
+SyncView #cards { height: 1fr; }
+MirrorCard {
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    border: round $panel;
+}
+MirrorCard:focus { border: round $accent; }
+MirrorCard.done { border: round $mmw-ok; }
+MirrorCard.warn { border: round $mmw-warn; }
+MirrorCard.error { border: round $mmw-error; }
+MirrorCard .card-header { height: 1; text-style: bold; }
+MirrorCard ProgressBar { margin: 0; padding: 0; }
+MirrorCard .card-stats, MirrorCard .card-pkg, MirrorCard .card-inflight {
+    width: 1fr;
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+MirrorCard .card-pkg { color: $text-muted; text-style: italic; }
+MirrorCard .card-waiting { height: 1; color: $text-muted; }
+MirrorCard #expand-panel { height: auto; }
+MirrorCard .card-inflight { color: $accent; margin-top: 1; }
+/* 10 rows, never 20: one expanded card must not outgrow an 80x24 terminal. */
+MirrorCard .card-log { height: 10; max-height: 40vh; border: round $panel; background: $background; }
+StatsFooter {
+    height: 1;
+    padding: 0 1;
+    background: $surface;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+StatsFooter.complete { background: $mmw-ok 20%; }
+
+/* ── Transfer progress (publish / bundle) ────────────────────────────── */
+PublishProgressModal, BundleProgressModal { align: center middle; }
+PublishProgressModal > Vertical, BundleProgressModal > Vertical {
+    width: 95%;
+    height: 90%;
+    border: double $primary;
+    background: $surface;
+}
+.xfer-title-bar {
+    background: $primary-darken-3;
+    padding: 0 2;
+    height: 1;
+    color: $text;
+    text-style: bold;
+}
+.xfer-progress-area { height: auto; padding: 1 2 0 2; }
+.xfer-progress-area ProgressBar { margin: 0 0 1 0; }
+.xfer-section-label { height: 1; color: $text-muted; text-style: bold; }
+.xfer-mirror-label { height: 1; color: $accent; margin-top: 1; }
+.xfer-archive-rate-label { height: 1; color: $accent; }
+.xfer-archive-file-label { height: 1; color: $warning; }
+.xfer-stats { height: 1; color: $text; margin-top: 1; }
+.xfer-eta { height: 1; color: $text-muted; margin-bottom: 1; }
+.xfer-log { height: 1fr; border-top: solid $primary-darken-2; background: $background; }
+.xfer-controls {
+    height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
+    align: right middle;
+    padding: 0 2;
+    background: $primary-darken-3;
+    border-top: solid $primary-darken-1;
+    dock: bottom;
+}
+.xfer-footer-label { width: 1fr; color: $text-muted; content-align: left middle; }
+.xfer-controls #btn-stop { margin-left: 1; }
+
+/* ── PreparePublishModal ─────────────────────────────────────────────── */
+PreparePublishModal { align: center middle; }
+PreparePublishModal > Vertical {
+    width: 82;
+    max-width: 96%;
+    height: 26;
+    max-height: 90%;
+    border: double $primary;
+    background: $surface;
+}
+PreparePublishModal #pp-title {
+    height: 1;
+    background: $primary-darken-3;
+    padding: 0 2;
+    color: $text-muted;
+    text-style: bold;
+}
+PreparePublishModal #pp-phase-area { height: auto; padding: 1 2 0 2; }
+PreparePublishModal #pp-phase { color: $text; text-style: bold; margin-bottom: 1; }
+PreparePublishModal ProgressBar { margin-bottom: 0; }
+PreparePublishModal #pp-log {
+    height: 1fr;
+    border-top: solid $primary-darken-2;
+    background: $background;
+    margin-top: 1;
+}
+
+/* ── DeleteProgressModal ─────────────────────────────────────────────── */
+DeleteProgressModal { align: center middle; }
+DeleteProgressModal > Vertical {
+    width: 72;
+    max-width: 90%;
+    height: auto;
+    border: double $primary;
+    background: $surface;
+    padding: 1 2;
+}
+DeleteProgressModal .modal-title { text-style: bold; color: $primary; margin-bottom: 1; }
+DeleteProgressModal ProgressBar { margin: 1 0; }
+DeleteProgressModal #count { color: $text-muted; }
+DeleteProgressModal Horizontal { align: center middle; height: auto; margin-top: 1; }

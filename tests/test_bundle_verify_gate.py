@@ -16,11 +16,10 @@ import asyncio
 import gzip
 import hashlib
 
-from textual.app import App, ComposeResult
 
 from mmw.core import config
 from mmw.core.pool import KIND_META, KIND_PKG, Pool
-from mmw.tui.publish_panel import NetworkPanel
+from mmw.tui.app import MmwApp
 
 
 def _cfg_with_incomplete_mirror(tmp_path) -> config.Config:
@@ -57,18 +56,14 @@ def _cfg_with_incomplete_mirror(tmp_path) -> config.Config:
     )
 
 
-class _RecordingApp(App):
-    """Hosts a real `NetworkPanel` against a real (incomplete) pool; records
+class _RecordingApp(MmwApp):
+    """The Networks section against a real (incomplete) pool; records
     `notify()` instead of rendering a toast."""
 
     def __init__(self, cfg: config.Config, cfg_dir):
-        super().__init__()
-        self._cfg = cfg
-        self._cfg_dir = cfg_dir
+        config.save(cfg, cfg_dir)
+        super().__init__(cfg, cfg_dir, initial_section="networks")
         self.notifications: list[tuple[str, str]] = []
-
-    def compose(self) -> ComposeResult:
-        yield NetworkPanel(self._cfg, self._cfg_dir)
 
     def notify(self, message, *, title="", severity="information", timeout=None, markup=True) -> None:
         self.notifications.append((message, severity))
@@ -94,15 +89,14 @@ def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
         app = _RecordingApp(cfg, tmp_path)
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            panel = app.query_one(NetworkPanel)
-            panel.query_one("#pub-list", ListView).index = 0
+            app.screen.query_one("#net-list", ListView).index = 0
             await _settle(pilot)
 
-            panel.query_one("#btn-bundle", Button).press()
+            app.screen.query_one("#btn-net-bundle", Button).press()
             await _settle(pilot)
             # BundleModeModal (delta/full choice) is now on top -- pick one
             # to reach the verify gate this test is actually about.
-            panel.app.screen.query_one("#delta", Button).press()
+            app.screen.query_one("#delta", Button).press()
             await _settle(pilot)
             # The InfoModal("Incomplete Mirrors") should now be on top --
             # dismiss it the way a user would (its own Escape binding).

@@ -1,293 +1,33 @@
-"""Add/edit network wizard screens."""
+"""Add and edit a network — one `NetworkForm`, two pages.
+
+`EditNetworkPage` shows every section of the form at once; `AddNetworkPage`
+walks the same sections one per wizard step. Same fields, same checks
+(`networks.form_problems`), so the two can no longer drift: Add used to skip
+the network-name rule that Edit enforced.
+
+The one deliberate difference is what the publish root means, and it is a
+form *mode*, not a second implementation: Add picks the directory the network
+is published **under** (the network name is created inside it); Edit shows and
+saves the directory it publishes **into**, verbatim.
+"""
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from textual import on, work
+from textual import on
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.screen import ModalScreen
-from textual.widget import Widget
-from textual.widgets import Input, Label, SelectionList, Static, Switch
+from textual.containers import Vertical
+from textual.markup import escape
+from textual.widgets import Checkbox, Input, Label, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
 from mmw.core import config
-from mmw.tui.path_pick import PathPickModal
-from mmw.tui.widgets import Button, JumpSelectionList
+from mmw.tui import networks
+from mmw.tui.ui.form import Form, PathField, TextField, ToggleField
+from mmw.tui.ui.page import Page
+from mmw.tui.ui.wizard import Wizard
+from mmw.tui.ui.widgets import Button, JumpSelectionList
 
-
-class _StepNetworkPath(Widget):
-    """A network is a downselect of the mirror; `root` and `bundle_dir` are
-    remembered destinations belonging to the publish/bundle verbs, not to the
-    network itself. Both are optional and independent — a network may have
-    neither, one, or both."""
-
-    DEFAULT_CSS = """
-    _StepNetworkPath { padding: 1 2; height: auto; }
-    _StepNetworkPath .field-label { color: $text-muted; margin-bottom: 0; }
-    _StepNetworkPath Input { margin-bottom: 1; }
-    _StepNetworkPath #root-row, _StepNetworkPath #bundle-row { height: 3; }
-    _StepNetworkPath #root-row Input, _StepNetworkPath #bundle-row Input { width: 1fr; margin-bottom: 0; }
-    _StepNetworkPath #root-row Button, _StepNetworkPath #bundle-row Button { width: auto; min-width: 12; margin-left: 1; }
-    _StepNetworkPath #preview {
-        height: 3;
-        color: $primary;
-        border: solid $primary-darken-2;
-        padding: 0 1;
-        content-align: left middle;
-        margin-top: 1;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Label("Publish root (optional)", classes="field-label")
-        with Horizontal(id="root-row"):
-            yield Input(id="inp-root")
-            yield Button("Browse…", id="btn-browse-root", variant="default")
-        yield Label("Bundle output directory (optional)", classes="field-label")
-        with Horizontal(id="bundle-row"):
-            yield Input(id="inp-bundle-dir")
-            yield Button("Browse…", id="btn-browse-bundle", variant="default")
-        yield Label("Network name", classes="field-label")
-        yield Input(id="inp-name")
-        yield Label("", id="preview")
-
-    def _update_preview(self) -> None:
-        root = self.query_one("#inp-root", Input).value.strip()
-        bundle_dir = self.query_one("#inp-bundle-dir", Input).value.strip()
-        name = self.query_one("#inp-name", Input).value.strip()
-        lines = []
-        if root:
-            lines.append(f"publish → [bold]{root}/{name or '…'}[/]")
-        if bundle_dir:
-            lines.append(f"bundle → [bold]{bundle_dir}[/]")
-        if lines:
-            self.query_one("#preview", Label).update("  [dim]→[/] " + "   ".join(lines))
-        elif name:
-            self.query_one("#preview", Label).update(
-                "  [dim]no destination — this network can be edited and synced, not published[/]"
-            )
-        else:
-            self.query_one("#preview", Label).update("")
-
-    @on(Input.Changed)
-    def _any_changed(self, event: Input.Changed) -> None:
-        self._update_preview()
-
-    @on(Button.Pressed, "#btn-browse-root")
-    def _browse_root_pressed(self, event: "Button.Pressed") -> None:
-        event.stop()
-        self._browse_root()
-
-    @on(Button.Pressed, "#btn-browse-bundle")
-    def _browse_bundle_pressed(self, event: "Button.Pressed") -> None:
-        event.stop()
-        self._browse_bundle()
-
-    @work
-    async def _browse_root(self) -> None:
-        """Pick the base path rather than typing it.
-
-        Directories only, and the *base* is what gets picked — the network name
-        below it is created by the publish, so it must not have to exist yet.
-        """
-        picked = await self.app.push_screen_wait(PathPickModal(
-            "Where should this network publish?",
-            "pick the base path — the network name is created inside it",
-            self.query_one("#inp-root", Input).value.strip(),
-        ))
-        if picked is None:
-            return                                  # cancelled: leave it alone
-        self.query_one("#inp-root", Input).value = picked
-        self._update_preview()
-
-    @work
-    async def _browse_bundle(self) -> None:
-        """Same rule as the publish root: only the base is picked, and it must
-        neither be required to exist nor be created by picking it — the bundle
-        verb creates its own output file inside this directory."""
-        picked = await self.app.push_screen_wait(PathPickModal(
-            "Where should bundles for this network be written?",
-            "pick the output directory — nothing is created by picking it",
-            self.query_one("#inp-bundle-dir", Input).value.strip(),
-        ))
-        if picked is None:
-            return                                  # cancelled: leave it alone
-        self.query_one("#inp-bundle-dir", Input).value = picked
-        self._update_preview()
-
-    def get_values(self) -> tuple[str, str, str]:
-        return (
-            self.query_one("#inp-root", Input).value.strip(),
-            self.query_one("#inp-bundle-dir", Input).value.strip(),
-            self.query_one("#inp-name", Input).value.strip(),
-        )
-
-    def restore(self, root: str, bundle_dir: str, name: str) -> None:
-        self.query_one("#inp-root", Input).value = root
-        self.query_one("#inp-bundle-dir", Input).value = bundle_dir
-        self.query_one("#inp-name", Input).value = name
-
-class _StepNetworkRepos(Widget):
-    """Pick which repositories this network publishes at all, before seeing
-    any suite/component/arch pickers. Without this step every repository's
-    dimensions render pre-ticked and a user who wants only one repository has
-    to hunt through the rest to uncheck them — see the docstring on
-    AddNetworkScreen for the bug report this fixed."""
-
-    DEFAULT_CSS = """
-    _StepNetworkRepos { padding: 1 2; height: 1fr; }
-    _StepNetworkRepos Label { margin-bottom: 0; }
-    _StepNetworkRepos #repo-list { height: 1fr; margin-top: 1; }
-    """
-
-    def __init__(self, mirrors: list[config.MirrorConfig], selected: "set[str] | None" = None):
-        super().__init__()
-        self._axes = build_axes(mirrors, None)
-        self._selected = selected or set()
-
-    def compose(self) -> ComposeResult:
-        yield Label("[bold]Which repositories should this network publish?[/]")
-        yield Label("[dim]Nothing selected yet — tick the ones you want. ctrl+a toggles all[/]")
-        yield JumpSelectionList(
-            *[
-                Selection(f"{a.label}  {a.source}", a.source, a.source in self._selected)
-                for a in self._axes
-            ],
-            id="repo-list",
-        )
-
-    def get_axes(self) -> "list[_Axis]":
-        return self._axes
-
-    def get_selected_sources(self) -> "set[str]":
-        return set(self.query_one("#repo-list", SelectionList).selected)
-
-class _StepNetworkMirrors(Widget):
-    """Pick what the network publishes, by dimension, for the repositories
-    already chosen in the preceding _StepNetworkRepos step."""
-
-    DEFAULT_CSS = """
-    _StepNetworkMirrors { padding: 1 2; height: 1fr; overflow-y: auto; }
-    _StepNetworkMirrors Label { margin-bottom: 0; }
-    _StepNetworkMirrors .axis-title {
-        color: $primary; text-style: bold; margin-top: 1;
-        width: 1fr; height: 1; text-wrap: nowrap; text-overflow: ellipsis;
-    }
-    _StepNetworkMirrors .axis-dim  { color: $text-muted; }
-    _StepNetworkMirrors .axis-list { height: auto; max-height: 6; }
-    """
-
-    def __init__(self, axes: "list[_Axis]"):
-        super().__init__()
-        self._axes = axes
-
-    def compose(self) -> ComposeResult:
-        yield Label("[bold]Choose what to publish[/]")
-        yield Label("[dim]All selected  ·  ctrl+a toggles a list[/]")
-        for axis in self._axes:
-            yield from axis.compose_widgets()
-
-    def get_selection(self) -> "list[config.NetworkSelect]":
-        return [s for s in (a.to_select(self) for a in self._axes) if s is not None]
-
-class _StepNetworkConfirm(Widget):
-    DEFAULT_CSS = """
-    _StepNetworkConfirm { padding: 1 2; height: auto; }
-    /* Single-spaced: a blank row under every summary line pushed the switch
-       rows — the only interactive part of this step — below the fold. */
-    _StepNetworkConfirm #confirm-title { margin-bottom: 1; }
-    _StepNetworkConfirm .mirror-entry { color: $primary; }
-    _StepNetworkConfirm #du-row, _StepNetworkConfirm #certs-row, _StepNetworkConfirm #nginx-row,
-    _StepNetworkConfirm #compress-row, _StepNetworkConfirm #bundle-tls-row {
-        height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
-        align: left middle;
-        border-top: solid $primary-darken-2;
-    }
-    _StepNetworkConfirm #du-row Label, _StepNetworkConfirm #certs-row Label,
-    _StepNetworkConfirm #nginx-row Label, _StepNetworkConfirm #compress-row Label,
-    _StepNetworkConfirm #bundle-tls-row Label { margin: 0 0 0 1; height: 3; content-align: left middle; }
-    """
-
-    def __init__(
-        self, name: str, root: Path | None, bundle_dir: Path | None,
-        selects: "list[config.NetworkSelect]",
-    ):
-        super().__init__()
-        self._name = name
-        self._root = root
-        self._bundle_dir = bundle_dir
-        self._selects = selects
-
-    def compose(self) -> ComposeResult:
-        yield Label("[bold]Confirm[/]", id="confirm-title")
-        yield Label(f"  Network name:  [cyan]{self._name}[/]")
-        if self._root is not None:
-            yield Label(f"  Publish root:  [cyan]{self._root}[/]")
-        if self._bundle_dir is not None:
-            yield Label(f"  Bundle to:     [cyan]{self._bundle_dir}[/]")
-        if self._root is None and self._bundle_dir is None:
-            yield Label(
-                "  [dim]no destination — this network can be edited and synced, not published[/]"
-            )
-        yield Label(f"  Repositories:  [cyan]{len(self._selects)}[/]")
-        yield Label("")
-        for s in self._selects:
-            dims = "  ".join(
-                f"{name}: {', '.join(vals) if vals else 'all'}"
-                for name, vals in (
-                    ("suites", s.suites), ("components", s.components), ("arches", s.arches)
-                )
-            )
-            yield Label(f"  [primary]●[/] {s.source}", classes="mirror-entry")
-            yield Label(f"      [dim]{dims}[/]", classes="mirror-entry")
-        with Horizontal(id="du-row"):
-            yield Switch(value=False, id="du-switch")
-            yield Label("Enable Ubuntu dist-upgrade support (serves changelogs.ubuntu.com)")
-        with Horizontal(id="certs-row"):
-            yield Switch(value=False, id="certs-switch")
-            yield Label("Manage TLS certs for this network (generate key + CSR)")
-        with Horizontal(id="nginx-row"):
-            yield Switch(value=True, id="nginx-switch")
-            yield Label("Generate nginx config (one nginx/mirror.conf, a server block per host)")
-        if self._bundle_dir is not None:
-            with Horizontal(id="compress-row"):
-                yield Switch(value=True, id="compress-switch")
-                yield Label("Compress bundle tarballs (zstd; off writes a plain .tar)")
-            with Horizontal(id="bundle-tls-row"):
-                yield Switch(value=False, id="bundle-tls-switch")
-                yield Label("Carry cert + key in bundles (needs TLS certs)")
-
-    def get_dist_upgrade(self) -> bool:
-        try:
-            return self.query_one("#du-switch", Switch).value
-        except Exception:
-            return False
-
-    def get_certs(self) -> bool:
-        try:
-            return self.query_one("#certs-switch", Switch).value
-        except Exception:
-            return False
-
-    def get_nginx(self) -> bool:
-        try:
-            return self.query_one("#nginx-switch", Switch).value
-        except Exception:
-            return True   # matches NetworkConfig.nginx's own default
-
-    def get_compress(self) -> bool:
-        try:
-            return self.query_one("#compress-switch", Switch).value
-        except Exception:
-            return True   # matches NetworkConfig.bundle_compress's own default
-
-    def get_bundle_tls(self) -> bool:
-        try:
-            return self.query_one("#bundle-tls-switch", Switch).value
-        except Exception:
-            return False  # matches NetworkConfig.bundle_tls's own default
 
 @dataclass
 class _Axis:
@@ -313,7 +53,8 @@ class _Axis:
         return set(stored) if stored else set(available)
 
     def compose_widgets(self):
-        yield Label(f"  [bold]{self.label}[/]  [dim]{self.source}[/]", classes="axis-title")
+        yield Label(f"[b]{escape(self.label)}[/]  [dim]{escape(self.source)}[/]",
+                    classes="axis-title")
         for dim, values in (
             ("suites", self.suites),
             ("components", self.components),
@@ -322,14 +63,15 @@ class _Axis:
             if not values:
                 continue
             picked = self._picked(dim, values)
-            yield Label(f"    [dim]{dim}[/]", classes="axis-dim")
+            yield Label(f"[dim]{dim}[/]", classes="axis-dim")
             yield JumpSelectionList(
                 *[Selection(v, v, v in picked) for v in values],
                 id=self._id(dim),
                 classes="axis-list",
+                compact=True,
             )
 
-    def to_select(self, screen) -> "config.NetworkSelect | None":
+    def to_select(self, node) -> "config.NetworkSelect | None":
         """None when nothing in this repository is ticked — it is left out."""
         picked = {}
         for dim, values in (
@@ -340,7 +82,7 @@ class _Axis:
             if not values:
                 continue
             try:
-                sl = screen.query_one("#" + self._id(dim), SelectionList)
+                sl = node.query_one("#" + self._id(dim), SelectionList)
             except Exception:
                 continue
             chosen = list(sl.selected)
@@ -372,398 +114,101 @@ def build_axes(mirrors, existing_select) -> "list[_Axis]":
     return axes
 
 
-class AddNetworkScreen(ModalScreen[config.NetworkConfig | None]):
-    """4-step wizard: path & name → repositories → dimensions → confirm.
+class NetworkForm(Vertical):
+    """Every field of a network, in four sections the Add wizard steps through:
+    `#nf-where`, `#nf-repos`, `#nf-dims`, `#nf-options`."""
 
-    Repository selection is its own step, ahead of the per-repository
-    suite/component/arch pickers, and starts with nothing ticked: a repo
-    checklist first means excluding a repository is one click, not unticking
-    every dimension it exposes. Dimensions default to "all" once a
-    repository is picked, since narrowing what an already-wanted repository
-    serves is comparatively rare."""
-
-    DEFAULT_CSS = """
-    AddNetworkScreen { align: center middle; }
-    AddNetworkScreen > Vertical {
-        width: 90%;
-        height: 90%;
-        border: double $primary;
-        background: $surface;
-    }
-    AddNetworkScreen #step-indicator {
-        height: 1;
-        background: $primary-darken-3;
-        padding: 0 2;
-        color: $text-muted;
-    }
-    AddNetworkScreen #step-container {
-        height: 1fr;
-        border: solid $primary-darken-2;
-        margin: 1 2 0 2;
-    }
-    AddNetworkScreen #nav-bar {
-        height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
-        align: right middle;
-        padding: 0 2;
-        background: $surface;
-        border-top: solid $primary-darken-2;
-    }
-    AddNetworkScreen #nav-bar Button { margin-left: 1; }
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, mirrors: list[config.MirrorConfig], existing: set[str] | None = None):
-        super().__init__()
-        self._mirrors = mirrors
-        self._existing = existing or set()
-        self._step_idx = 0
-        self._root = ""
-        self._bundle_dir = ""
-        self._name = ""
-        self._selected_sources: "set[str]" = set()
-        self._axes: "list[_Axis]" = []
-        self._selected_mirrors: "list[config.NetworkSelect]" = []
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self._indicator_text(), id="step-indicator")
-            with ScrollableContainer(id="step-container"):
-                yield _StepNetworkPath()
-            with Horizontal(id="nav-bar"):
-                yield Button("Cancel", id="btn-cancel", variant="default")
-                yield Button("Back", id="btn-back", variant="default", disabled=True)
-                yield Button("Next →", id="btn-next", variant="primary")
-
-    def on_mount(self) -> None:
-        self._focus_step()
-
-    def _indicator_text(self) -> str:
-        labels = ["Path & Name", "Repositories", "Dimensions", "Confirm"]
-        parts = []
-        for i, label in enumerate(labels):
-            if i == self._step_idx:
-                parts.append(f"[bold white] {label} [/]")
-            elif i < self._step_idx:
-                parts.append(f"[dim] ✓ {label} [/]")
-            else:
-                parts.append(f"[dim]  {label} [/]")
-        return "  ".join(parts)
-
-    def _update_indicator(self) -> None:
-        self.query_one("#step-indicator", Static).update(self._indicator_text())
-
-    def _focus_step(self) -> None:
-        try:
-            inp = self.query_one("#step-container Input")
-            inp.focus()
-            return
-        except Exception:
-            pass
-        try:
-            self.query_one("#step-container SelectionList").focus()
-        except Exception:
-            pass
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#btn-cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#btn-next")
-    async def _next_step(self) -> None:
-        container = self.query_one("#step-container", ScrollableContainer)
-
-        if self._step_idx == 0:
-            root, bundle_dir, name = container.query_one(_StepNetworkPath).get_values()
-            if not name:
-                self.notify("Network name is required.", severity="warning")
-                return
-            if name in self._existing:
-                self.notify(f"Network '{name}' already exists.", severity="warning")
-                return
-            self._root, self._bundle_dir, self._name = root, bundle_dir, name
-            self._step_idx = 1
-            self._update_indicator()
-            container.remove_children()
-            await container.mount(_StepNetworkRepos(self._mirrors, self._selected_sources))
-
-        elif self._step_idx == 1:
-            repos_step = container.query_one(_StepNetworkRepos)
-            selected = repos_step.get_selected_sources()
-            if not selected:
-                self.notify(
-                    "Select at least one repository — nothing selected publishes nothing.",
-                    severity="warning",
-                )
-                return
-            self._selected_sources = selected
-            self._axes = [a for a in repos_step.get_axes() if a.source in selected]
-            self._step_idx = 2
-            self._update_indicator()
-            container.remove_children()
-            await container.mount(_StepNetworkMirrors(self._axes))
-
-        elif self._step_idx == 2:
-            selection = container.query_one(_StepNetworkMirrors).get_selection()
-            if not selection:
-                self.notify(
-                    "Select at least one suite/component/arch — nothing selected publishes nothing.",
-                    severity="warning",
-                )
-                return
-            self._selected_mirrors = selection
-            self._step_idx = 3
-            self._update_indicator()
-            container.remove_children()
-            root = Path(self._root) / self._name if self._root else None
-            bundle_dir = Path(self._bundle_dir) if self._bundle_dir else None
-            await container.mount(
-                _StepNetworkConfirm(self._name, root, bundle_dir, self._selected_mirrors)
-            )
-            self.query_one("#btn-next", Button).label = "Add Network ✓"
-
-        elif self._step_idx == 3:
-            confirm = container.query_one(_StepNetworkConfirm)
-            if confirm.get_bundle_tls() and not confirm.get_certs():
-                self.notify("Carrying the cert in bundles needs TLS certs turned on too.",
-                            severity="warning")
-                return
-            self.dismiss(
-                config.NetworkConfig(
-                    name=self._name,
-                    root=Path(self._root) / self._name if self._root else None,
-                    bundle_dir=Path(self._bundle_dir) if self._bundle_dir else None,
-                    select=self._selected_mirrors,
-                    dist_upgrade=confirm.get_dist_upgrade(),
-                    certs=confirm.get_certs(),
-                    nginx=confirm.get_nginx(),
-                    bundle_compress=confirm.get_compress(),
-                    bundle_tls=confirm.get_bundle_tls(),
-                )
-            )
-            return
-
-        self.query_one("#btn-back", Button).disabled = False
-        self.call_after_refresh(self._focus_step)
-
-    @on(Button.Pressed, "#btn-back")
-    async def _prev_step(self) -> None:
-        if self._step_idx == 0:
-            return
-        container = self.query_one("#step-container", ScrollableContainer)
-        container.remove_children()
-        self.query_one("#btn-next", Button).label = "Next →"
-
-        if self._step_idx == 1:
-            self._step_idx = 0
-            step = _StepNetworkPath()
-            await container.mount(step)
-            self.call_after_refresh(lambda: step.restore(self._root, self._bundle_dir, self._name))
-        elif self._step_idx == 2:
-            self._step_idx = 1
-            await container.mount(_StepNetworkRepos(self._mirrors, self._selected_sources))
-        elif self._step_idx == 3:
-            self._step_idx = 2
-            await container.mount(_StepNetworkMirrors(self._axes))
-
-        self._update_indicator()
-        self.query_one("#btn-back", Button).disabled = self._step_idx == 0
-        self.call_after_refresh(self._focus_step)
-
-class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
-    """Edit the mirror list and settings for an existing network."""
-
-    DEFAULT_CSS = """
-    EditNetworkScreen { align: center middle; }
-    EditNetworkScreen > Vertical {
-        width: 90%;
-        height: 90%;
-        border: double $primary;
-        background: $surface;
-    }
-    EditNetworkScreen #edit-title {
-        height: 1;
-        background: $primary-darken-3;
-        padding: 0 2;
-        color: $text-muted;
-    }
-    EditNetworkScreen #edit-container {
-        height: 1fr;
-        overflow-y: auto;   /* mirror list + 3 switch rows exceed a short screen */
-        padding: 1 2;
-    }
-    EditNetworkScreen Label { margin-bottom: 1; }
-    EditNetworkScreen SelectionList { height: 1fr; }
-    EditNetworkScreen #prune-row, EditNetworkScreen #du-row, EditNetworkScreen #certs-row,
-    EditNetworkScreen #nginx-row, EditNetworkScreen #compress-row, EditNetworkScreen #bundle-tls-row {
-        height: auto;
-        height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
-        align: left middle;
-        border-top: solid $primary-darken-2;
-    }
-    EditNetworkScreen #prune-row Label, EditNetworkScreen #du-row Label, EditNetworkScreen #certs-row Label,
-    EditNetworkScreen #nginx-row Label, EditNetworkScreen #compress-row Label,
-    EditNetworkScreen #bundle-tls-row Label {
-        margin: 0 0 0 1;
-        color: $text;
-    }
-    /* These hints ran off the right edge at 80/100 columns. `width: 1fr` alone
-       fixed that but let them WRAP, and beside a switch in a narrow row the
-       column got so thin the row grew to 60+ rows. Take the remaining width and
-       truncate — a hint is expendable, the layout is not. */
-    EditNetworkScreen #prune-row .prune-hint, EditNetworkScreen #du-row .du-hint, EditNetworkScreen #certs-row .certs-hint,
-    EditNetworkScreen #nginx-row .nginx-hint, EditNetworkScreen #compress-row .compress-hint,
-    EditNetworkScreen #bundle-tls-row .tls-hint {
-        color: $text-muted;
-        margin: 0 0 0 2;
-        width: 1fr;
-        height: 1;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    /* Carries the full repository URI, which overruns 80 columns — truncate
-       rather than wrap, as with the switch hints below. */
-    EditNetworkScreen .axis-title {
-        color: $primary;
-        text-style: bold;
-        margin-top: 1;
-        width: 1fr;
-        height: 1;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    EditNetworkScreen .axis-dim   { color: $text-muted; }
-    EditNetworkScreen .axis-list  { height: auto; max-height: 8; margin-bottom: 0; }
-    /* `height: auto`, never `1fr`. This sits inside `#edit-container`, which
-       is itself `1fr` with `overflow-y: auto` — so a `1fr` here resolves
-       against the container's *visible* height rather than its content
-       height, and the fixed-height siblings (two path rows, the repo
-       checklist, five 3-row switch rows, ~30 rows in total) leave it
-       nothing. Measured: it rendered at **1 row** at both 80x24 and 80x40,
-       while each axis block wants 17 — the one region that is the whole
-       point of this screen was a single-row sliver at every realistic
-       terminal size, and no test caught it because a 1-row region is
-       technically still on screen. At `auto` the blocks render full height
-       and `#edit-container`'s existing scrollbar does the work. */
-    EditNetworkScreen #axis-scroll { height: auto; }
-    EditNetworkScreen #repo-checklist { height: auto; max-height: 8; margin-bottom: 1; }
-    EditNetworkScreen .axis-block { height: auto; }
-    EditNetworkScreen .field-label { color: $text-muted; margin-bottom: 0; }
-    EditNetworkScreen #root-row, EditNetworkScreen #bundle-row { height: 3; }
-    EditNetworkScreen #root-row Input, EditNetworkScreen #bundle-row Input { width: 1fr; margin-bottom: 0; }
-    EditNetworkScreen #root-row Button, EditNetworkScreen #bundle-row Button { width: auto; min-width: 12; margin-left: 1; }
-    EditNetworkScreen #nav-bar {
-        height: auto;   /* +1 row for border-top; 3-row buttons need 3 content rows */
-        align: right middle;
-        padding: 0 2;
-        background: $surface;
-        border-top: solid $primary-darken-2;
-        dock: bottom;
-    }
-    EditNetworkScreen #nav-bar Button { margin-left: 1; }
-    """
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, network: config.NetworkConfig, all_mirrors: list[config.MirrorConfig],
+    def __init__(self, mirrors: list[config.MirrorConfig], *, mode: str,
+                 network: "config.NetworkConfig | None" = None,
                  existing_names: "set[str] | None" = None):
-        super().__init__()
+        super().__init__(id="network-form")
+        self.mode = mode
         self._network = network
-        # The other networks' names: a rename onto one of them would write a
-        # config the loader refuses (`_names_must_be_unique`).
-        self._existing_names = set(existing_names or ()) - {network.name}
-        self._all_mirrors = all_mirrors
-        self._axes = build_axes(all_mirrors, network.select)
-        # No `select` at all means "every mirrored repository" (see mmw.toml
-        # docs), so every repo starts checked in that case; otherwise only a
-        # repo already named in `select` is currently included.
-        self._checked_sources: "set[str]" = (
-            {a.source for a in self._axes} if not network.select
-            else {a.source for a in self._axes if a.chosen is not None}
-        )
+        self._existing = set(existing_names or ()) - ({network.name} if network else set())
+        self._axes = build_axes(mirrors, network.select if network else None)
+        if network is None:
+            # Add starts with nothing ticked: excluding a repository is then
+            # one click, not unticking every dimension it exposes.
+            self._checked_sources: set[str] = set()
+        elif not network.select:
+            # No `select` means every mirrored repository.
+            self._checked_sources = {a.source for a in self._axes}
+        else:
+            self._checked_sources = {a.source for a in self._axes if a.chosen is not None}
 
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(f"  Editing  [bold]{self._network.name}[/]", id="edit-title")
-            with Vertical(id="edit-container"):
-                yield Label("Name", classes="field-label")
-                yield Input(self._network.name, id="inp-net-name")
-                yield Label("Publish root (optional)", classes="field-label")
-                with Horizontal(id="root-row"):
-                    yield Input(str(self._network.root) if self._network.root else "", id="inp-root")
-                    yield Button("Browse…", id="btn-browse-root", variant="default")
-                yield Label("Bundle output directory (optional)", classes="field-label")
-                with Horizontal(id="bundle-row"):
-                    yield Input(
-                        str(self._network.bundle_dir) if self._network.bundle_dir else "",
-                        id="inp-bundle-dir",
-                    )
-                    yield Button("Browse…", id="btn-browse-bundle", variant="default")
-                yield Label("[dim]Which repositories to include  ·  ctrl+a toggles all[/]")
-                yield JumpSelectionList(
-                    *[
-                        Selection(f"{a.label}  {a.source}", a.source, a.source in self._checked_sources)
-                        for a in self._axes
-                    ],
-                    id="repo-checklist",
-                )
-                yield Label("[dim]What this network publishes  ·  ctrl+a toggles a list[/]")
-                # A plain Vertical, not a ScrollableContainer: `#edit-container`
-                # above already scrolls, and nesting a second scroll region
-                # inside it makes the wheel ambiguous for no benefit now that
-                # this sizes to its content.
-                with Vertical(id="axis-scroll"):
-                    for axis in self._axes:
-                        with Vertical(id=axis.block_id(), classes="axis-block"):
-                            yield from axis.compose_widgets()
-                with Horizontal(id="prune-row"):
-                    yield Switch(value=self._network.prune, id="prune-switch")
-                    yield Label("Prune stale files on publish")
-                    yield Label("(remove destination files no longer in the mirror source)", classes="prune-hint")
-                with Horizontal(id="du-row"):
-                    yield Switch(value=self._network.dist_upgrade, id="du-switch")
-                    yield Label("Enable Ubuntu dist-upgrade support")
-                    yield Label("(serves changelogs.ubuntu.com meta-release files + UPGRADE.md)", classes="du-hint")
-                with Horizontal(id="certs-row"):
-                    yield Switch(value=self._network.certs, id="certs-switch")
-                    yield Label("Manage TLS certs for this network")
-                    yield Label("(generate key + CSR covering all mirror hostnames)", classes="certs-hint")
-                with Horizontal(id="bundle-tls-row"):
-                    yield Switch(value=self._network.bundle_tls, id="bundle-tls-switch")
-                    yield Label("Carry cert + key in bundles")
-                    yield Label("(puts the private key on the media; needs certs + a signed cert)",
-                                classes="tls-hint")
-                with Horizontal(id="nginx-row"):
-                    yield Switch(value=self._network.nginx, id="nginx-switch")
-                    yield Label("Generate nginx site files")
-                    yield Label("(one nginx/mirror.conf, a server block per host)", classes="nginx-hint")
-                with Horizontal(id="compress-row"):
-                    yield Switch(value=self._network.bundle_compress, id="compress-switch")
-                    yield Label("Compress bundle tarballs")
-                    yield Label("(zstd; off writes a plain .tar — faster on slow disks, larger files)", classes="compress-hint")
-            with Horizontal(id="nav-bar"):
-                yield Button("Cancel", id="btn-cancel", variant="default")
-                yield Button("Save", id="btn-save", variant="primary")
+        net = self._network
+        add = self.mode == "add"
+        with Vertical(id="nf-where"):
+            yield Form(
+                TextField("Name", net.name if net else "", id="inp-net-name",
+                          hint="Letters, digits, '.', '_' and '-' — it names directories."),
+                PathField(
+                    "Publish under" if add else "Publish root",
+                    str(net.root) if net and net.root else "", id="inp-root",
+                    browse_id="btn-browse-root",
+                    browse_title="Where should this network publish?",
+                    browse_subtitle=("pick the base path — the network name is created inside it"
+                                     if add else
+                                     "pick the directory this network publishes into"),
+                    hint=("Optional. The network name is created inside it." if add else
+                          "Optional. Saved exactly as shown — nothing is appended."),
+                ),
+                PathField(
+                    "Bundle output", str(net.bundle_dir) if net and net.bundle_dir else "",
+                    id="inp-bundle-dir", browse_id="btn-browse-bundle",
+                    browse_title="Where should bundles for this network be written?",
+                    browse_subtitle="pick the output directory — nothing is created by picking it",
+                    hint="Optional. Where `mmw bundle` writes this network's tarballs.",
+                ),
+            )
+            if add:
+                yield Label("", id="preview")
+        with Vertical(id="nf-repos"):
+            yield Label("[dim]Which repositories to include · ctrl+a toggles all[/]")
+            yield JumpSelectionList(
+                *[Selection(f"{a.label}  {a.source}", a.source, a.source in self._checked_sources)
+                  for a in self._axes],
+                id="repo-checklist",
+                compact=True,
+            )
+        with Vertical(id="nf-dims"):
+            yield Label("[dim]What this network publishes · ctrl+a toggles a list[/]")
+            # `height: auto`, never `1fr` (mmw.tcss): a 1fr region here once
+            # resolved against the visible height and rendered at one row.
+            with Vertical(id="axis-scroll"):
+                for axis in self._axes:
+                    with Vertical(id=axis.block_id(), classes="axis-block"):
+                        yield from axis.compose_widgets()
+        with Vertical(id="nf-options"):
+            yield Static("", id="nf-summary")
+            yield Form(
+                ToggleField("Prune", net.prune if net else True, id="prune-switch",
+                            hint="Remove destination files no longer in the mirror on publish."),
+                ToggleField("dist-upgrade", net.dist_upgrade if net else False, id="du-switch",
+                            hint="Serve changelogs.ubuntu.com meta-release files + UPGRADE.md."),
+                ToggleField("TLS certs", net.certs if net else False, id="certs-switch",
+                            hint="Generate a key + CSR covering all mirror hostnames."),
+                ToggleField("Certs in bundles", net.bundle_tls if net else False,
+                            id="bundle-tls-switch",
+                            hint="Puts the private key on the media; needs certs + a signed cert."),
+                ToggleField("nginx config", net.nginx if net else True, id="nginx-switch",
+                            hint="One nginx/mirror.conf, a server block per host."),
+                ToggleField("Compress bundles", net.bundle_compress if net else True,
+                            id="compress-switch",
+                            hint="zstd; off writes a plain .tar — faster on slow disks, larger."),
+            )
 
     def on_mount(self) -> None:
         self._apply_repo_visibility()
-        try:
-            self.query_one(SelectionList).focus()
-        except Exception:
-            pass
-        # Focusing the list can nudge the form down a row — on some Python
-        # versions and not others, which made the approved snapshot flaky —
-        # hiding the "Name" label. Open at the top, deterministically.
-        container = self.query_one("#edit-container")
-        self.call_after_refresh(container.scroll_home, animate=False)
+        self._update_preview()
+
+    # ── repositories ↔ dimension blocks ──────────────────────────────────────
 
     def _apply_repo_visibility(self) -> None:
-        """Show only the dimension pickers for a currently-checked repo. A
-        block is hidden, never unmounted, so unchecking then rechecking a
-        repo keeps whatever suite/component/arch ticks were already made."""
+        """Show only the dimension pickers for a currently-checked repository.
+        A block is hidden, never unmounted, so unchecking then rechecking keeps
+        whatever suite/component/arch ticks were already made."""
         for axis in self._axes:
             try:
                 self.query_one("#" + axis.block_id()).display = axis.source in self._checked_sources
@@ -775,106 +220,199 @@ class EditNetworkScreen(ModalScreen["config.NetworkConfig | None"]):
         self._checked_sources = set(self.query_one("#repo-checklist", SelectionList).selected)
         self._apply_repo_visibility()
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+    def checked_axes(self) -> "list[_Axis]":
+        return [a for a in self._axes if a.source in self._checked_sources]
+
+    def selects(self) -> "list[config.NetworkSelect]":
+        return [s for s in (a.to_select(self) for a in self.checked_axes()) if s is not None]
+
+    # ── values ───────────────────────────────────────────────────────────────
+
+    def _value(self, id: str) -> str:
+        return self.query_one(f"#{id}", Input).value.strip()
+
+    def _flag(self, id: str) -> bool:
+        return self.query_one(f"#{id}", Checkbox).value
+
+    def network_name(self) -> str:
+        return self._value("inp-net-name")
+
+    def name_problem(self) -> str | None:
+        return networks.name_problem(self.network_name(), self._existing)
+
+    def _root(self) -> "Path | None":
+        root = self._value("inp-root")
+        if not root:
+            return None
+        return Path(root) / self.network_name() if self.mode == "add" else Path(root)
+
+    @on(Input.Changed)
+    def _update_preview(self, event: "Input.Changed | None" = None) -> None:
+        if self.mode != "add":
+            return
+        try:
+            preview = self.query_one("#preview", Label)
+        except Exception:
+            return
+        root, bundle, name = (self._value("inp-root"), self._value("inp-bundle-dir"),
+                              self.network_name())
+        parts = []
+        if root:
+            parts.append(f"publish → [b]{escape(root)}/{escape(name) or '…'}[/]")
+        if bundle:
+            parts.append(f"bundle → [b]{escape(bundle)}[/]")
+        if parts:
+            preview.update("   ".join(parts))
+        elif name:
+            preview.update("[dim]no destination — this network can be edited and synced, "
+                           "not published[/]")
+        else:
+            preview.update("")
+
+    def summary(self) -> str:
+        root = self._root()
+        bundle = self._value("inp-bundle-dir")
+        lines = [f"Network  [$accent]{escape(self.network_name())}[/]"]
+        if root is not None:
+            lines.append(f"Publish  [$mmw-path]{escape(str(root))}[/]")
+        if bundle:
+            lines.append(f"Bundle   [$mmw-path]{escape(bundle)}[/]")
+        if root is None and not bundle:
+            lines.append("[dim]no destination — this network can be edited and synced, "
+                         "not published[/]")
+        for s in self.selects():
+            dims = "  ".join(f"{d}: {', '.join(v) if v else 'all'}"
+                             for d, v in (("suites", s.suites), ("components", s.components),
+                                          ("arches", s.arches)))
+            lines.append(f"[$primary]●[/] {escape(s.source)}  [dim]{escape(dims)}[/]")
+        return "\n".join(lines)
+
+    def result(self) -> "tuple[config.NetworkConfig | None, str | None, str | None]":
+        """`(network, None, None)`, or `(None, problem, id of the field to focus)`."""
+        selects = self.selects()
+        certs, bundle_tls = self._flag("certs-switch"), self._flag("bundle-tls-switch")
+        problem = networks.form_problems(name=self.network_name(), existing_names=self._existing,
+                                         selects=selects, certs=certs, bundle_tls=bundle_tls)
+        if problem:
+            focus = ("repo-checklist" if not selects else
+                     "inp-net-name" if self.name_problem() else "bundle-tls-switch")
+            return None, problem, focus
+        bundle = self._value("inp-bundle-dir")
+        return config.NetworkConfig.model_validate({
+            **(self._network.model_dump() if self._network else {}),
+            "name": self.network_name(),
+            "root": self._root(),
+            "bundle_dir": Path(bundle) if bundle else None,
+            "select": selects,
+            "prune": self._flag("prune-switch"),
+            "dist_upgrade": self._flag("du-switch"),
+            "certs": certs,
+            "nginx": self._flag("nginx-switch"),
+            "bundle_compress": self._flag("compress-switch"),
+            "bundle_tls": bundle_tls,
+        }), None, None
+
+
+class EditNetworkPage(Page):
+    """Edit an existing network. Dismisses the edited NetworkConfig, or None."""
+
+    def __init__(self, network: config.NetworkConfig, all_mirrors: list[config.MirrorConfig],
+                 existing_names: "set[str] | None" = None):
+        super().__init__()
+        self.TITLE = network.name
+        self._network = network
+        self.form = NetworkForm(all_mirrors, mode="edit", network=network,
+                                existing_names=existing_names)
+
+    # Views kept for callers and tests that read the editor's state.
+    _axes = property(lambda self: self.form._axes)
+    _checked_sources = property(lambda self: self.form._checked_sources)
+
+    def compose_body(self) -> ComposeResult:
+        yield self.form
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Cancel", id="btn-cancel", compact=True)
+        yield Button("Save", id="btn-save", variant="primary", compact=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#repo-checklist").focus()
+        self.call_after_refresh(self.query_one("#page-body").scroll_home, animate=False)
 
     @on(Button.Pressed, "#btn-cancel")
     def _cancel(self) -> None:
         self.dismiss(None)
 
-    @on(Button.Pressed, "#btn-browse-root")
-    def _browse_root_pressed(self, event: "Button.Pressed") -> None:
-        event.stop()
-        self._browse_root()
-
-    @on(Button.Pressed, "#btn-browse-bundle")
-    def _browse_bundle_pressed(self, event: "Button.Pressed") -> None:
-        event.stop()
-        self._browse_bundle()
-
-    @work
-    async def _browse_root(self) -> None:
-        """Unlike `_StepNetworkPath._browse_root` (Add), Edit shows and saves
-        the full path verbatim — it never appends the network name (`_save`
-        below does `root = Path(root_str)`, no join). The hint must describe
-        that, not Add's behaviour: describing Add's rule here told an
-        operator to pick the *base* and the network name would be added
-        inside it, which is false for Edit — picking `/srv` when the network
-        already publishes to `/srv/lab` silently changed its publish root to
-        `/srv`, and with `prune = True` (the default) two networks edited
-        that way each pruned the other's files out of a live-served tree."""
-        picked = await self.app.push_screen_wait(PathPickModal(
-            "Where should this network publish?",
-            "pick the directory this network publishes into",
-            self.query_one("#inp-root", Input).value.strip(),
-        ))
-        if picked is None:
-            return                                  # cancelled: leave it alone
-        self.query_one("#inp-root", Input).value = picked
-
-    @work
-    async def _browse_bundle(self) -> None:
-        """Directory only, nothing required to exist — see
-        `_StepNetworkPath._browse_bundle`."""
-        picked = await self.app.push_screen_wait(PathPickModal(
-            "Where should bundles for this network be written?",
-            "pick the output directory — nothing is created by picking it",
-            self.query_one("#inp-bundle-dir", Input).value.strip(),
-        ))
-        if picked is None:
-            return                                  # cancelled: leave it alone
-        self.query_one("#inp-bundle-dir", Input).value = picked
-
     @on(Button.Pressed, "#btn-save")
     def _save(self) -> None:
-        checked = set(self.query_one("#repo-checklist", SelectionList).selected)
-        selects = [
-            s for s in (a.to_select(self) for a in self._axes if a.source in checked)
-            if s is not None
-        ]
-        if not selects:
-            self.notify(
-                "Select at least one repository — nothing selected publishes nothing.",
-                severity="warning",
-            )
+        net, problem, focus = self.form.result()
+        if net is None:
+            self.set_status(problem, "error")
+            self.notify(problem, severity="warning")
+            self.query_one(f"#{focus}").focus()
             return
-        name = self.query_one("#inp-net-name", Input).value.strip()
-        if not config.NETWORK_NAME_RE.fullmatch(name) or name in (".", ".."):
-            self.notify("Network name: letters, digits, '.', '_' and '-' only — it is "
-                        "used as a directory name.", severity="warning")
-            self.query_one("#inp-net-name", Input).focus()
-            return
-        if name in self._existing_names:
-            self.notify(f"A network called '{name}' already exists.", severity="warning")
-            self.query_one("#inp-net-name", Input).focus()
-            return
-        prune = self.query_one("#prune-switch", Switch).value
-        dist_upgrade = self.query_one("#du-switch", Switch).value
-        certs = self.query_one("#certs-switch", Switch).value
-        bundle_tls = self.query_one("#bundle-tls-switch", Switch).value
-        if bundle_tls and not certs:
-            self.notify("Carrying the cert in bundles needs TLS certs turned on too.",
-                        severity="warning")
-            return
-        nginx = self.query_one("#nginx-switch", Switch).value
-        compress = self.query_one("#compress-switch", Switch).value
-        root_str = self.query_one("#inp-root", Input).value.strip()
-        bundle_str = self.query_one("#inp-bundle-dir", Input).value.strip()
-        root = Path(root_str) if root_str else None
-        bundle_dir = Path(bundle_str) if bundle_str else None
-        # Built from the network being edited, not from scratch, so a field
-        # this screen does not show yet survives an edit unchanged.
-        # model_validate re-runs the validators model_copy(update=) skips.
-        self.dismiss(config.NetworkConfig.model_validate({
-            **self._network.model_dump(),
-            "name": name,
-            "root": root,
-            "bundle_dir": bundle_dir,
-            "select": selects,
-            "prune": prune,
-            "dist_upgrade": dist_upgrade,
-            "certs": certs,
-            "nginx": nginx,
-            "bundle_compress": compress,
-            "bundle_tls": bundle_tls,
-        }))
+        self.dismiss(net)
+
+
+class AddNetworkPage(Wizard):
+    """Where → Repositories → What to publish → Options.
+
+    Repository selection is its own step, ahead of the per-repository
+    suite/component/arch pickers, and starts with nothing ticked. Dimensions
+    default to "all" once a repository is picked, since narrowing what an
+    already-wanted repository serves is comparatively rare."""
+
+    TITLE = "Add network"
+    STEPS = ("Where", "Repositories", "What to publish", "Options")
+    FINISH_LABEL = "Add network ✓"
+    _SECTIONS = ("nf-where", "nf-repos", "nf-dims", "nf-options")
+    _FIRST = ("inp-net-name", "repo-checklist", None, "prune-switch")
+
+    def __init__(self, mirrors: list[config.MirrorConfig], existing: "set[str] | None" = None):
+        super().__init__()
+        self.form = NetworkForm(mirrors, mode="add", existing_names=existing)
+
+    _axes = property(lambda self: self.form._axes)
+    _checked_sources = property(lambda self: self.form._checked_sources)
+
+    def compose_body(self) -> ComposeResult:
+        yield from super().compose_body()
+        yield self.form
+
+    async def enter(self, step: int) -> None:
+        for i, section in enumerate(self._SECTIONS):
+            self.query_one(f"#{section}").display = i == step
+        if step == 3:
+            self.query_one("#nf-summary", Static).update(self.form.summary())
+        first = self._FIRST[step]
+        if first is None:
+            # The first dimension list of a ticked repository.
+            lists = [w for w in self.query("#nf-dims SelectionList")
+                     if all(a.display for a in w.ancestors_with_self)]
+            if lists:
+                lists[0].focus()
+        else:
+            self.query_one(f"#{first}").focus()
+
+    async def leave(self, step: int) -> bool:
+        if step == 0:
+            problem = self.form.name_problem()
+        elif step == 1:
+            problem = (None if self.form.checked_axes() else
+                       "Select at least one repository — nothing selected publishes nothing.")
+        elif step == 2:
+            problem = (None if self.form.selects() else
+                       "Select at least one suite/component/arch — nothing selected "
+                       "publishes nothing.")
+        else:
+            _, problem, _ = self.form.result()
+        if problem:
+            self.set_status(problem, "error")
+            self.notify(problem, severity="warning")
+            return False
+        self.set_status("")
+        return True
+
+    def result(self) -> config.NetworkConfig:
+        net, _, _ = self.form.result()
+        return net

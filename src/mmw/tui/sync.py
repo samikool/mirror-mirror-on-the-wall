@@ -4,14 +4,13 @@ import threading
 import time
 from collections import deque
 
-from rich.markup import escape as _escape
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import ScrollableContainer, Vertical
+from textual.markup import escape
 from textual.message import Message
-from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Label, ProgressBar, RichLog, Static
+from textual.widgets import Label, ProgressBar, Static
 
 from mmw.core import config
 from mmw.core.format import (
@@ -23,6 +22,7 @@ from mmw.core.format import (
 from mmw.core.downloader import Status
 from mmw.core.pool import Pool
 from mmw.core.sync_engine import KeySyncCoordinator, SyncEvents, classify_mirror, sync_mirror
+from mmw.tui.ui.widgets import ThemedLog
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -77,74 +77,12 @@ class MirrorDryRunResult(Message):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-_PROVIDER_COLOR = {"apt": "magenta", "apt-flat": "cyan"}
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 # ── Mirror card ───────────────────────────────────────────────────────────────
 
 class MirrorCard(Static, can_focus=True):
-    DEFAULT_CSS = """
-    MirrorCard {
-        border: solid $primary-darken-2;
-        margin: 0 1 1 1;
-        padding: 0 1;
-        height: auto;
-    }
-    MirrorCard:focus {
-        border: solid $accent;
-    }
-    MirrorCard.done {
-        border: solid $success-darken-2;
-    }
-    MirrorCard.warn {
-        border: solid $warning;
-    }
-    MirrorCard.error {
-        border: solid $error;
-    }
-    MirrorCard .card-header {
-        text-style: bold;
-        height: 1;
-        padding: 0;
-    }
-    MirrorCard ProgressBar {
-        margin: 0;
-        padding: 0;
-    }
-    MirrorCard .card-stats {
-        height: 1;
-        color: $text;
-    }
-    MirrorCard .card-pkg {
-        height: 1;
-        color: $text-muted;
-        text-style: italic;
-    }
-    MirrorCard .card-waiting {
-        height: 3;
-        color: $text-muted;
-        content-align: left middle;
-        padding: 1;
-    }
-    MirrorCard #expand-panel {
-        height: auto;
-    }
-    MirrorCard .card-inflight {
-        height: 1;
-        color: $accent;
-        margin-top: 1;
-    }
-    MirrorCard .card-log {
-        /* 20 fixed rows made one expanded card taller than an 80x24 terminal,
-           so the card header scrolled out of view with its own log. */
-        height: 10;
-        max-height: 40vh;
-        border: solid $primary-darken-3;
-        margin-top: 0;
-        background: $background;
-    }
-    """
 
     BINDINGS = [
         Binding("up", "prev_card", show=False),
@@ -176,7 +114,7 @@ class MirrorCard(Static, can_focus=True):
         # In-flight tracking — incremented by start_callback, decremented on completion
         self._in_flight: int = 0
         self._in_flight_lock = threading.Lock()
-        # Package event log — written at completion rate, flushed to RichLog at 60 Hz
+        # Package event log — written at completion rate, flushed to the log at 60 Hz
         self._log_pending: list[str] = []
         self._log_history: deque[str] = deque(maxlen=200)
         self._spinner_idx: int = 0
@@ -189,9 +127,8 @@ class MirrorCard(Static, can_focus=True):
         self._pending_pkg: str = ""
 
     def compose(self) -> ComposeResult:
-        color = _PROVIDER_COLOR.get(self._mirror.provider, "white")
         yield Label(
-            f" ● {self._mirror.name}  [{color}]{self._mirror.provider}[/]",
+            f"● {escape(self._mirror.name)}  [$secondary]{escape(self._mirror.provider)}[/]",
             classes="card-header",
         )
         yield Label("  Fetching metadata...", classes="card-waiting", id="waiting-msg")
@@ -216,7 +153,7 @@ class MirrorCard(Static, can_focus=True):
         # first package event, and must show the current phase, not a stale one.
         self._status_text = status
         try:
-            self.query_one("#pkg", Label).update(f"  [dim]{status}[/]")
+            self.query_one("#pkg", Label).update(f"  [dim]{escape(status)}[/]")
         except Exception:
             pass
 
@@ -246,7 +183,7 @@ class MirrorCard(Static, can_focus=True):
                 self._in_flight = max(0, self._in_flight - 1)
             if pkg_name:
                 self._log_pending.append(
-                    f"  [green]↓[/] {pkg_name}  [dim]{_fmt_size(bytes_xfr)}[/]"
+                    f"  [$mmw-ok]↓[/] {escape(pkg_name)}  [dim]{_fmt_size(bytes_xfr)}[/]"
                 )
         elif status == Status.POOLED:
             self._pending_pooled += 1
@@ -255,7 +192,7 @@ class MirrorCard(Static, can_focus=True):
             with self._in_flight_lock:
                 self._in_flight = max(0, self._in_flight - 1)
             if pkg_name:
-                self._log_pending.append(f"  [red]✗[/] {pkg_name}")
+                self._log_pending.append(f"  [$mmw-error]✗[/] {escape(pkg_name)}")
         elif status == Status.SKIPPED:
             self._pending_skipped += 1
         if pkg_name:
@@ -291,17 +228,17 @@ class MirrorCard(Static, can_focus=True):
             try:
                 self.query_one("#pbar", ProgressBar).advance(n)
                 if last_pkg:
-                    self.query_one("#pkg", Label).update(f"  → {last_pkg}")
+                    self.query_one("#pkg", Label).update(f"  → {escape(last_pkg)}")
             except Exception:
                 pass
 
-        # Drain log entries into history (always) and RichLog (if expanded)
+        # Drain log entries into history (always) and the log (if expanded)
         if self._log_pending:
             for entry in self._log_pending:
                 self._log_history.append(entry)
             if self._expanded:
                 try:
-                    log = self.query_one("#pkg-log", RichLog)
+                    log = self.query_one("#pkg-log", ThemedLog)
                     for entry in self._log_pending:
                         log.write(entry)
                 except Exception:
@@ -313,7 +250,7 @@ class MirrorCard(Static, can_focus=True):
                 with self._in_flight_lock:
                     n_flight = self._in_flight
                 self.query_one("#in-flight", Label).update(
-                    f"  [bold accent]↗ {n_flight}[/] in flight"
+                    f"  [b $accent]↗ {n_flight}[/] in flight"
                 )
             except Exception:
                 pass
@@ -327,7 +264,7 @@ class MirrorCard(Static, can_focus=True):
         ) == 0
         if no_progress and not self._done:
             try:
-                self.query_one("#pkg", Label).update(f"  [dim]{spin} {self._status_text}[/]")
+                self.query_one("#pkg", Label).update(f"  [dim]{spin} {escape(self._status_text)}[/]")
             except Exception:
                 pass
 
@@ -349,7 +286,7 @@ class MirrorCard(Static, can_focus=True):
         self._done = True
         elapsed = time.monotonic() - (self._start or time.monotonic())
         for err in metadata_errors:
-            self._log_history.append(f"  [yellow]⚠ {_escape(err)}[/]")
+            self._log_history.append(f"  [$mmw-warn]⚠ {escape(err)}[/]")
         if resnapshotted and metadata_ok:
             # Upstream republished while packages were downloading and we picked
             # up the newer index — normal operation, not something to alarm about.
@@ -382,12 +319,12 @@ class MirrorCard(Static, can_focus=True):
         pct_pool  = f"{in_pool  / total * 100:.0f}%" if total else "0%"
         pct_fetch = f"{to_fetch / total * 100:.0f}%" if total else "0%"
         size_str  = _fmt_size(fetch_size) if not has_unknown else f"~{_fmt_size(fetch_size)}+"
-        unknown_note = "  [yellow]⚠ some sizes unknown[/]" if has_unknown else ""
+        unknown_note = "  [$mmw-warn]⚠ some sizes unknown[/]" if has_unknown else ""
         try:
             self.mount(Label(
                 f"  [dim]{total:,} packages[/]"
-                f"  [cyan]= {in_pool:,}[/] in pool ({pct_pool})"
-                f"  [green]↓ {to_fetch:,}[/] to fetch ({pct_fetch})"
+                f"  [$secondary]= {in_pool:,}[/] in pool ({pct_pool})"
+                f"  [$mmw-ok]↓ {to_fetch:,}[/] to fetch ({pct_fetch})"
                 f"  [bold]{size_str}[/]"
                 + unknown_note,
                 classes="card-stats",
@@ -400,8 +337,8 @@ class MirrorCard(Static, can_focus=True):
         self._done = True
         self.add_class("error")
         # Escape markup characters so error text renders literally
-        safe = _escape(error)
-        entry = f"  [red]✗ {safe}[/]"
+        safe = escape(error)
+        entry = f"  [$mmw-error]✗ {safe}[/]"
         self._log_history.append(entry)
         for widget_id in ("#waiting-msg", "#pkg"):
             try:
@@ -411,7 +348,7 @@ class MirrorCard(Static, can_focus=True):
                 continue
         if self._expanded:
             try:
-                self.query_one("#pkg-log", RichLog).write(entry)
+                self.query_one("#pkg-log", ThemedLog).write(entry)
             except Exception:
                 pass
 
@@ -437,7 +374,7 @@ class MirrorCard(Static, can_focus=True):
                 pass
         else:
             self._expanded = True
-            log = RichLog(id="pkg-log", classes="card-log", highlight=False, markup=True, wrap=False, max_lines=500)
+            log = ThemedLog(id="pkg-log", classes="card-log", highlight=False, markup=True, wrap=False, max_lines=500)
             log.can_focus = False
             panel = Vertical(
                 Label("  ↗ 0 in flight", id="in-flight", classes="card-inflight"),
@@ -483,9 +420,9 @@ class MirrorCard(Static, can_focus=True):
 
         already = self._pooled + self._skipped
         stats = (
-            f"  [green]↓ {self._downloaded:,}[/] downloaded"
-            f"  [cyan]= {already:,}[/] pooled"
-            f"  [red]✗ {self._failed}[/] failed"
+            f"  [$mmw-ok]↓ {self._downloaded:,}[/] downloaded"
+            f"  [$secondary]= {already:,}[/] pooled"
+            f"  [$mmw-error]✗ {self._failed}[/] failed"
             f"  [dim]•[/]  [bold]{_fmt_speed(speed)}[/]"
             f"  [dim]ETA {_fmt_eta(eta)}[/]"
             f"  [dim]{completed:,}/{self._total:,}[/]"
@@ -515,77 +452,7 @@ class MirrorCard(Static, can_focus=True):
 
 # ── Footer stats bar ──────────────────────────────────────────────────────────
 
-class SyncCompleteModal(ModalScreen):
-    DEFAULT_CSS = """
-    SyncCompleteModal {
-        align: center middle;
-    }
-    SyncCompleteModal > Vertical {
-        width: 44;
-        max-width: 90%;
-        height: auto;
-        padding: 2 3;
-        background: $surface;
-        border: solid $success;
-    }
-    SyncCompleteModal Label {
-        width: 1fr;
-        content-align: center middle;
-        padding-bottom: 1;
-    }
-    SyncCompleteModal .buttons {
-        layout: horizontal;
-        height: auto;
-        align: center middle;
-        padding-top: 1;
-    }
-    SyncCompleteModal Button {
-        margin: 0 1;
-    }
-    """
-
-    def __init__(self, dry_run: bool = False, dr_total: int = 0, dr_in_pool: int = 0,
-                 dr_to_fetch: int = 0, dr_fetch_size: int = 0):
-        super().__init__()
-        self._dry_run = dry_run
-        self._dr_total = dr_total
-        self._dr_in_pool = dr_in_pool
-        self._dr_to_fetch = dr_to_fetch
-        self._dr_fetch_size = dr_fetch_size
-
-    def compose(self) -> ComposeResult:
-        title = "Dry Run Complete" if self._dry_run else "Sync Complete"
-        with Vertical():
-            yield Label(f"[bold green]{title}[/]")
-            if self._dry_run and self._dr_total:
-                pct_pool  = f"{self._dr_in_pool  / self._dr_total * 100:.0f}%"
-                pct_fetch = f"{self._dr_to_fetch / self._dr_total * 100:.0f}%"
-                yield Label(f"[dim]{self._dr_total:,} packages total[/]")
-                yield Label(f"[cyan]{self._dr_in_pool:,}[/] already in pool  [dim]({pct_pool})[/]")
-                yield Label(f"[green]{self._dr_to_fetch:,}[/] to download  [dim]({pct_fetch})[/]")
-                yield Label(f"[bold]{_fmt_size(self._dr_fetch_size)}[/] estimated")
-            with Vertical(classes="buttons"):
-                yield Button("Back to Manage", id="back", variant="primary")
-                yield Button("Quit", id="quit", variant="default")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id)
-
-
 class StatsFooter(Static):
-    DEFAULT_CSS = """
-    StatsFooter {
-        height: 2;
-        background: $primary-darken-3;
-        border-top: solid $primary-darken-1;
-        padding: 0 2;
-        color: $text;
-    }
-    StatsFooter.complete {
-        background: $success-darken-2;
-        border-top: solid $success-darken-1;
-    }
-    """
 
     def __init__(self):
         super().__init__("")
@@ -597,8 +464,8 @@ class StatsFooter(Static):
         self.update(
             f"[bold]Dry Run[/]  {done}/{n_cards} mirrors checked  [dim]│[/]  "
             f"[bold]Packages[/]  {total:,} total  "
-            f"[cyan]{in_pool:,}[/] in pool  "
-            f"[green]{to_fetch:,}[/] to fetch  "
+            f"[$secondary]{in_pool:,}[/] in pool  "
+            f"[$mmw-ok]{to_fetch:,}[/] to fetch  "
             f"[bold]{_fmt_size(fetch_size)}[/] estimated"
         )
 
@@ -607,7 +474,7 @@ class StatsFooter(Static):
 
         **This must never query the pool.** `pool.stats()` is a full table scan
         measured at 9-14 s on a real pool; running it here — on the Textual
-        event loop, from a 60 Hz timer — froze the entire UI. `SyncApp` fetches
+        event loop, from a 60 Hz timer — froze the entire UI. `SyncView` fetches
         it on a thread and hands the result in.
         """
         total_bytes = sum(c.bytes_transferred for c in cards)
@@ -624,33 +491,35 @@ class StatsFooter(Static):
 
 # ── Main sync app ─────────────────────────────────────────────────────────────
 
-class SyncApp(App):
-    TITLE = "mirror-mirror-on-the-wall"
-    SUB_TITLE = "sync"  # overridden to "sync (dry-run)" when dry_run=True
+class SyncView(Vertical):
+    """One sync session: the cards, the footer, and everything that drives
+    them — pool, executor, download semaphore, key coordinator, stop event,
+    the pool-stats scan and the 60 Hz tick.
 
-    DEFAULT_CSS = """
-    Screen { layout: vertical; }
-
-    #cards {
-        height: 1fr;
-        padding: 1 0 0 0;
-    }
+    The session lives inside MmwApp's Sync section (where it keeps running
+    while other sections are shown), whether started from Repositories or by
+    `mmw sync`. Posts `Completed` when every card is done.
     """
 
-    BINDINGS = [
-        Binding("tab", "focus_next", show=False),
-        Binding("shift+tab", "focus_previous", show=False),
-        Binding("q", "quit", "Quit"),
-    ]
+    class Completed(Message):
+        def __init__(self, view: "SyncView"):
+            self.view = view
+            super().__init__()
 
-    def __init__(self, cfg: config.Config, mirrors: list[config.MirrorConfig] | None = None, dry_run: bool = False):
-        super().__init__()
+    def __init__(self, cfg: config.Config, mirrors: list[config.MirrorConfig] | None = None,
+                 dry_run: bool = False):
+        super().__init__(id="sync-view")
         self._cfg = cfg
-        self._mirrors = sorted(mirrors if mirrors is not None else cfg.mirrors, key=lambda m: m.name.lower())
+        self._mirrors = sorted(mirrors if mirrors is not None else cfg.mirrors,
+                               key=lambda m: m.name.lower())
         self._pool: Pool | None = None
         self._cards: dict[str, MirrorCard] = {}
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._stop_event = threading.Event()
+        # Set while nothing is draining: cleared by stop(), set again once the
+        # cleanup thread has waited out the workers and closed the pool.
+        self._drained = threading.Event()
+        self._drained.set()
         self._last_footer_update = 0.0
         # Snapshot of the last completed pool scan, plus its guards. The scan
         # runs on a thread; the footer only ever renders what landed here.
@@ -666,19 +535,34 @@ class SyncApp(App):
         self._dr_to_fetch = 0
         self._dr_fetch_size = 0
 
+    @property
+    def dry_run(self) -> bool:
+        return self._dry_run
+
+    @property
+    def running(self) -> bool:
+        """True while any mirror is still syncing and nobody has stopped it."""
+        return (not self._stop_event.is_set()
+                and bool(self._cards) and not all(c._done for c in self._cards.values()))
+
+    @property
+    def draining(self) -> bool:
+        """Stopped, but workers may still be finishing and the pool is open."""
+        return not self._drained.is_set()
+
+    def progress(self) -> tuple[int, int]:
+        """(mirrors done, mirrors total)."""
+        return sum(1 for c in self._cards.values() if c._done), len(self._cards)
+
     def compose(self) -> ComposeResult:
-        yield Header()
         with ScrollableContainer(id="cards"):
             for mirror in self._mirrors:
                 card = MirrorCard(mirror)
                 self._cards[mirror.name] = card
                 yield card
         yield StatsFooter()
-        yield Footer()
 
-    def on_mount(self):
-        if self._dry_run:
-            self.sub_title = "sync (dry-run)"
+    def on_mount(self) -> None:
         # Everything here is allocation, not I/O: the executor creates its
         # threads lazily, the semaphore is an object, and KeySyncCoordinator
         # just holds a path and a lock.
@@ -690,14 +574,14 @@ class SyncApp(App):
         self._sem = asyncio.Semaphore(self._cfg.settings.max_connections)
         self._keys_coord = KeySyncCoordinator(self._cfg.settings.mirror_dir)
         self.set_interval(1 / 60, self._tick)
-        # Opening the pool is disk work — a mkdir, a SQLite connect, the schema
-        # script, and `_reap_stale_tmp()` walking `.pool/tmp/` — and `on_mount`
-        # runs on the event loop, so the app painted nothing until it finished.
-        # On a spinning disk with a large tmp directory that is a visible stall
-        # before the first frame. Deferred to a thread: `_tick` already
-        # tolerates `self._pool` being None, and no mirror can start before the
-        # pool exists anyway.
+        # Opening the pool is disk work (mkdir, SQLite connect, schema script,
+        # `_reap_stale_tmp()`), so it runs on a thread; `_tick` tolerates
+        # `self._pool` being None, and no mirror starts before the pool exists.
         self._open_pool_and_start()
+        try:
+            self.app.active_sync = self
+        except Exception:
+            pass
 
     @work(exit_on_error=False)
     async def _open_pool_and_start(self) -> None:
@@ -716,38 +600,64 @@ class SyncApp(App):
             # there is, and it deserves a sentence.
             self.notify(f"Could not open the pool at {mirror_dir}: {e}",
                         severity="error", timeout=20)
+            # No mirror can start without the pool — say so on every card, so
+            # the session completes instead of sitting on "Fetching metadata…".
+            for card in self._cards.values():
+                card.mark_error(f"could not open the pool: {e}")
+            self._check_all_done()
             return
         if self._stop_event.is_set():
             # Unmounted while the pool was opening — nothing will ever use it,
             # and `on_unmount` has already captured a None and moved on, so
             # closing it here is the only thing that will.
             await asyncio.to_thread(pool.close)
+            # Stopped before any mirror started: finish the cards as stopped,
+            # or the session never completes ("Stopping…" forever).
+            for card in self._cards.values():
+                if not card._done:
+                    card.finish(stopped=True)
+            self._check_all_done()
             return
         self._pool = pool
         for mirror in self._mirrors:
             self._sync_mirror(mirror)
 
-    def on_unmount(self):
+    def stop(self) -> None:
+        """Stop the session. Idempotent.
+
+        Workers check the stop event per 64 KB chunk, but may still be inside
+        pool.add — closing the DB under them raises in the worker. So cleanup
+        goes to a daemon thread: wait for workers, then close the pool, without
+        blocking on a stalled socket."""
         self._stop_event.set()
-        # Workers check the stop event per 64 KB chunk, but may still be inside
-        # pool.add — closing the DB under them raises in the worker.
-        # Hand cleanup to a daemon thread: wait for workers, then close the pool,
-        # without blocking app exit on a stalled socket.
         executor, pool = self._executor, self._pool
         self._executor = self._pool = None
 
         def _cleanup():
-            if executor:
-                executor.shutdown(wait=True, cancel_futures=True)
-            if pool:
-                pool.close()
-
-        threading.Thread(target=_cleanup, daemon=True, name="sync-cleanup").start()
-
-    def watch_focused(self, focused) -> None:
-        if isinstance(focused, MirrorCard):
             try:
-                self.query_one("#cards", ScrollableContainer).scroll_to_widget(focused, animate=True)
+                if executor:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                if pool:
+                    pool.close()
+            finally:
+                self._drained.set()
+        if executor or pool:
+            self._drained.clear()
+            threading.Thread(target=_cleanup, daemon=True, name="sync-cleanup").start()
+
+    def on_unmount(self) -> None:
+        self.stop()
+        try:
+            if getattr(self.app, "active_sync", None) is self:
+                self.app.active_sync = None
+        except Exception:
+            pass
+
+    def on_descendant_focus(self, event) -> None:
+        if isinstance(event.widget, MirrorCard):
+            try:
+                self.query_one("#cards", ScrollableContainer).scroll_to_widget(
+                    event.widget, animate=True)
             except Exception:
                 pass
 
@@ -768,7 +678,7 @@ class SyncApp(App):
         self._pool_stats_inflight = True
         self._pool_stats_worker()
 
-    @work(thread=True, exit_on_error=False)
+    @work(thread=True, exit_on_error=False, group="sync-pool-stats")
     def _pool_stats_worker(self) -> None:
         """Full pool scan, off the event loop and off the pool's write lock."""
         try:
@@ -776,7 +686,7 @@ class SyncApp(App):
         except Exception:
             stats = None
         try:
-            self.call_from_thread(self._on_pool_stats, stats)
+            self.app.call_from_thread(self._on_pool_stats, stats)
         except Exception:
             # App is shutting down — release the guard so nothing wedges.
             self._pool_stats_inflight = False
@@ -838,20 +748,6 @@ class SyncApp(App):
                         stopped=msg.stopped, resnapshotted=msg.resnapshotted)
         self._check_all_done()
 
-    def _show_sync_complete_modal(self):
-        def _on_dismiss(result) -> None:
-            if result == "back":
-                self.exit(result="manage")
-            else:
-                self.exit()
-        self.push_screen(SyncCompleteModal(
-            dry_run=self._dry_run,
-            dr_total=self._dr_total,
-            dr_in_pool=self._dr_in_pool,
-            dr_to_fetch=self._dr_to_fetch,
-            dr_fetch_size=self._dr_fetch_size,
-        ), _on_dismiss)
-
     @on(MirrorError)
     def on_mirror_error(self, msg: MirrorError):
         if card := self._cards.get(msg.mirror_name):
@@ -874,8 +770,26 @@ class SyncApp(App):
         if not all(c._done for c in self._cards.values()):
             return
         self._complete_shown = True
-        self.query_one(StatsFooter).add_class("complete")
-        self.call_after_refresh(self._show_sync_complete_modal)
+        try:
+            self.query_one(StatsFooter).add_class("complete")
+        except Exception:
+            pass                # unmounted while finishing (the app is exiting)
+        self.post_message(self.Completed(self))
+
+    def summary(self) -> str:
+        """One line for the hosting page once every mirror is done."""
+        if not self._dry_run:
+            done, total = self.progress()
+            if self._stop_event.is_set():
+                return f"Sync stopped — {done}/{total} mirrors finished or stopped."
+            return f"Sync complete — {done}/{total} mirrors."
+        if not self._dr_total:
+            return "Dry run complete."
+        pct_pool = f"{self._dr_in_pool / self._dr_total * 100:.0f}%"
+        pct_fetch = f"{self._dr_to_fetch / self._dr_total * 100:.0f}%"
+        return (f"Dry run complete — {self._dr_total:,} packages: {self._dr_in_pool:,} in pool "
+                f"({pct_pool}), {self._dr_to_fetch:,} to download ({pct_fetch}), "
+                f"{_fmt_size(self._dr_fetch_size)} estimated.")
 
     @work(exit_on_error=False)
     async def _sync_mirror(self, mirror: config.MirrorConfig):
@@ -935,7 +849,7 @@ class SyncApp(App):
 
         if summary.key_errors and card:
             for f in summary.key_errors:
-                card._log_history.append(f"  [yellow]⚠ GPG key: {_escape(f)}[/]")
+                card._log_history.append(f"  [$mmw-warn]⚠ GPG key: {escape(f)}[/]")
 
         elapsed = time.monotonic() - start
         self.post_message(MirrorFinished(

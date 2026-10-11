@@ -9,11 +9,11 @@ import asyncio
 
 from textual import work
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Input, Label, RadioButton, SelectionList, Switch, TextArea
+from textual.widgets import Button, Input, Label, RadioButton, SelectionList, Checkbox, TextArea
 
 from mmw.core import config, discover
 from mmw.tui.custom_repo import StepCustom
-from mmw.tui.init_wizard import AddMirrorScreen
+from mmw.tui.add_repository import AddRepositoryPage
 from mmw.tui.wizard_steps import StepConfirm, WizardStep
 
 URL = "http://archive.example.com/ubuntu"
@@ -64,7 +64,7 @@ class _Harness(App):
 
     @work
     async def _pick(self):
-        self.result = await self.push_screen_wait(AddMirrorScreen())
+        self.result = await self.push_screen_wait(AddRepositoryPage())
 
 
 def _stub(monkeypatch, suites=("noble", "jammy"), components=("main", "universe"),
@@ -88,7 +88,7 @@ def _stub_nothing(monkeypatch):
 
 async def _await_step(pilot, tries: int = 80):
     for _ in range(tries):
-        if pilot.app.screen.query_one("#step-container").query(WizardStep):
+        if pilot.app.screen.query_one("#page-body").query(WizardStep):
             return
         await pilot.pause()
     raise AssertionError("step never finished loading")
@@ -528,9 +528,9 @@ def test_a_probed_repository_reaches_confirm_and_dismisses(monkeypatch):
             screen = app.screen
             step = await _probe(pilot)
             await _pick(pilot, step, "suites", ["noble"])
-            await _press(pilot, "#btn-next")
-            assert screen._step_idx == screen._CONFIRM
-            await _press(pilot, "#btn-next")
+            await _press(pilot, "#btn-wizard-next")
+            assert screen.step == 1
+            await _press(pilot, "#btn-wizard-next")
             for _ in range(40):
                 if app.result is not None:
                     break
@@ -552,11 +552,11 @@ def test_confirm_hosts_the_deb_src_switch(monkeypatch):
             await pilot.pause()
             step = await _probe(pilot)
             await _pick(pilot, step, "suites", ["noble"])
-            await _press(pilot, "#btn-next")
+            await _press(pilot, "#btn-wizard-next")
 
-            app.screen.query_one(StepConfirm).query_one("#src-switch", Switch).value = True
+            app.screen.query_one(StepConfirm).query_one("#src-switch", Checkbox).value = True
             await pilot.pause()
-            await _press(pilot, "#btn-next")
+            await _press(pilot, "#btn-wizard-next")
             for _ in range(40):
                 if app.result is not None:
                     break
@@ -577,12 +577,12 @@ def test_back_from_confirm_returns_to_the_repository_step(monkeypatch):
             screen = app.screen
             step = await _probe(pilot)
             await _pick(pilot, step, "suites", ["noble"])
-            await _press(pilot, "#btn-next")
-            assert screen._step_idx == screen._CONFIRM
+            await _press(pilot, "#btn-wizard-next")
+            assert screen.step == 1
 
-            await _press(pilot, "#btn-back")
+            await _press(pilot, "#btn-wizard-back")
             await _await_step(pilot)
-            assert screen._step_idx == screen._REPO
+            assert screen.step == 0
             assert screen.query(StepCustom)
             assert screen._sources == []
 
@@ -706,10 +706,10 @@ def test_a_pasted_deb_src_survives_the_confirm_step(monkeypatch):
             await pilot.pause()
             await _paste(pilot, "deb-src http://archive.example.com/ubuntu noble main\n"
                                 "deb http://archive.example.com/ubuntu noble main\n")
-            await _press(pilot, "#btn-next")
+            await _press(pilot, "#btn-wizard-next")
             await _settle(pilot)
-            assert pilot.app.screen.query_one("#src-switch", Switch).value is True
-            await _press(pilot, "#btn-next")
+            assert pilot.app.screen.query_one("#src-switch", Checkbox).value is True
+            await _press(pilot, "#btn-wizard-next")
             await _settle(pilot)
 
         assert app.result[0].include_sources is True
@@ -721,7 +721,7 @@ def test_loading_a_directory_of_configs_lands_in_the_paste_box(monkeypatch, tmp_
     """The DGX path without a shell: point at a sources.list.d and mmw reads and
     joins the files itself, so records can never run together the way a
     hand-rolled `cat` lets them."""
-    from mmw.tui.path_pick import PathPickModal
+    from mmw.tui.path_pick import PathPickPage
     _stub(monkeypatch)
 
     d = tmp_path / "sources.list.d"
@@ -744,7 +744,7 @@ def test_loading_a_directory_of_configs_lands_in_the_paste_box(monkeypatch, tmp_
             await _settle(pilot)
 
             picker = pilot.app.screen
-            assert isinstance(picker, PathPickModal)
+            assert isinstance(picker, PathPickPage)
             picker.query_one("#path-input", Input).value = str(d)
             picker.query_one("#btn-use", Button).press()
             await _settle(pilot)
@@ -819,3 +819,115 @@ def test_typing_a_config_probes_once_not_once_per_character(monkeypatch):
         f"{len(applied)} probe rounds for one typed line — the debounce is not "
         "coalescing keystrokes"
     )
+
+
+def test_add_repository_controls_are_one_row():
+    import asyncio
+
+    from mmw.tui.custom_repo import StepCustom
+    from mmw.tui.ui.base import ThemedApp
+
+    class _App(ThemedApp):
+        def compose(self):
+            yield StepCustom()
+
+    async def go():
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            for w in app.query("#url-row Input, #url-row Button"):
+                assert w.region.height == 1, w
+    asyncio.run(go())
+
+
+def test_confirm_escapes_names_and_urls():
+    import asyncio
+
+    from mmw.core import config
+    from mmw.tui.ui.base import ThemedApp
+    from mmw.tui.wizard_steps import StepConfirm
+
+    src = config.SourceConfig(url="https://r.example.com/a[b]c", name="n[i]x", arches=["amd64"])
+
+    class _App(ThemedApp):
+        def compose(self):
+            yield StepConfirm([src])
+
+    async def go():
+        app = _App()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            text = " ".join(str(w.render()) for w in app.query(".mirror-entry"))
+            assert "n[i]x" in text and "a[b]c" in text
+    asyncio.run(go())
+
+
+
+def test_back_from_confirm_keeps_the_pasted_config(monkeypatch):
+    """Confirm is where a problem is noticed, so Back must find the repository
+    step exactly as it was left — not a fresh one."""
+    _stub(monkeypatch)
+
+    async def scenario():
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            step = await _paste(pilot, ARM_ONLY)
+            await _press(pilot, "#btn-wizard-next")
+            assert app.screen.step == 1
+            await _press(pilot, "#btn-wizard-back")
+            await _settle(pilot)
+            assert app.screen.query_one(StepCustom) is step
+            assert step.query_one("#paste-area", TextArea).text == ARM_ONLY
+            assert step.query_one("#fields-container").display
+
+    _run(scenario)
+
+
+def test_repositories_shortcuts_do_not_fire_on_the_add_page(tmp_path):
+    from mmw.tui.app import MmwApp
+
+    cfg_obj = config.Config(
+        settings=config.Settings(mirror_dir=tmp_path / "pool"),
+        sources=[config.SourceConfig(url="https://deb.example.com/debian", suites=["bookworm"],
+                                     components=["main"], arches=["amd64"])],
+    )
+    config.save(cfg_obj, tmp_path)
+    before = config.config_path(tmp_path).read_text()
+
+    async def scenario():
+        app = MmwApp(cfg_obj, tmp_path, initial_section="repositories")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 4)
+            await pilot.press("a")
+            await _settle(pilot, 6)
+            page = app.screen
+            assert isinstance(page, AddRepositoryPage)
+            page.query_one("#btn-wizard-cancel", Button).focus()
+            for key in ("s", "d", "p"):
+                await pilot.press(key)
+                await _settle(pilot, 3)
+                assert app.screen is page, f"{key!r} acted under the add page"
+            await pilot.press("escape")
+            await _settle(pilot, 4)
+            assert not isinstance(app.screen, AddRepositoryPage)
+
+    _run(scenario)
+    assert config.config_path(tmp_path).read_text() == before
+
+
+
+def test_back_in_paste_mode_focuses_something_visible(monkeypatch):
+    _stub(monkeypatch)
+
+    async def scenario():
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await _paste(pilot, ARM_ONLY)
+            await _press(pilot, "#btn-wizard-next")
+            await _press(pilot, "#btn-wizard-back")
+            await _settle(pilot)
+            assert app.focused.id == "paste-area"
+
+    _run(scenario)

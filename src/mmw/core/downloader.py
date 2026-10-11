@@ -638,7 +638,7 @@ async def download_mirror(
             # waiters on every completion, and ~1.5 GB RSS in Task objects. The
             # semaphore still bounds *concurrency*; it never bounded allocation.
             #
-            # The semaphore is deliberately kept: `SyncApp` passes one shared
+            # The semaphore is deliberately kept: `SyncView` passes one shared
             # instance so `max_connections` bounds downloads across *all*
             # mirrors at once, not per mirror.
             pending = collections.deque(to_download)

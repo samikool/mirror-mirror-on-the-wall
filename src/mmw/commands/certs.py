@@ -2,7 +2,7 @@
 after a successful `certs = true` publish.
 
 Before this module existed, `NetworkConfig.certs` was only honoured by the
-TUI (`tui/publish_panel.py` calls `_run_certs(net)` after a publish) — cron's
+TUI (`tui/publish_flows.py` runs certs after a publish) — cron's
 `mmw publish --quiet` never generated TLS material at all, so the same config
 produced a cert when a human published and silently produced none from cron.
 `generate_for` is the one place that gap is closed, called from both this

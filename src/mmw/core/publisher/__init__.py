@@ -297,6 +297,15 @@ def walk_network(
     walked.
     """
     mirror_map = {m.name: m for m in network_mirrors(network, cfg, mirror_dir)}
+    from mmw.providers import get_provider
+    held_back = sorted({m.provider for m in mirror_map.values()
+                        if not get_provider(m.provider).publishes})
+    for name in held_back:
+        r = MirrorPublishResult(mirror_name=name)
+        r.errors.append(f"{get_provider(name).label} sources cannot be published yet — "
+                        "publishing support arrives with stage 4")
+        result.mirrors.append(r)
+    mirror_map = {n: m for n, m in mirror_map.items() if m.provider not in held_back}
     selected_names = list(mirror_map)
 
     # Group by mirror_base, preserving selection order.

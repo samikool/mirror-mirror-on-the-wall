@@ -133,9 +133,11 @@ def fetch_metadata_threaded(provider, mirror_config) -> list[MetadataFile]:
     return provider.fetch_metadata(mirror_config, _thread_client())
 
 
-def fetch_all_threaded(provider, mirror_config, status_callback=None) -> tuple[list[PackageInfo], list[MetadataFile]]:
-    """Submit to an executor — packages + metadata from one consistent snapshot."""
-    return provider.fetch_all(mirror_config, _thread_client(), status_callback=status_callback)
+def fetch_all_threaded(provider, mirror_config, status_callback=None,
+                       history=None) -> tuple[list[PackageInfo], list[MetadataFile]]:
+    """Submit to an executor — calls provider.fetch_all with the thread-local client."""
+    return provider.fetch_all(mirror_config, _thread_client(), status_callback=status_callback,
+                              history=history)
 
 
 _BY_HASH_RETRIES = 5

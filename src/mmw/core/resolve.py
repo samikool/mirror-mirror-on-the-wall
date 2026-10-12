@@ -70,7 +70,11 @@ def resolve_sources(
     notes: list[str] = []
     errors: list[str] = []
     for src in sources:
-        r = resolve_source(src, progress=progress)
+        try:
+            r = resolve_source(src, progress=progress)
+        except Exception as e:  # noqa: BLE001 — one source must not sink the rest
+            errors.append(f"{src.name}: could not be resolved — {type(e).__name__}: {e}")
+            continue
         mirrors.extend(r.mirrors)
         notes.extend(r.notes)
         errors.extend(r.errors)
@@ -149,7 +153,7 @@ def available_mirrors(cfg, mirror_dir, pooled: "list[MirrorConfig] | None" = Non
     return pooled or cfg.mirrors
 
 
-def network_mirrors(network, cfg, mirror_dir) -> list[MirrorConfig]:
+def network_mirrors(network, cfg, mirror_dir, *, include_unpublishable: bool = False) -> list[MirrorConfig]:
     """The mirrors a network publishes.
 
     `network.select` filters what the pool actually holds, by dimension. An
@@ -160,11 +164,19 @@ def network_mirrors(network, cfg, mirror_dir) -> list[MirrorConfig]:
     makes "this network is amd64" survive a new architecture appearing upstream
     — the old name list silently stopped publishing anything it did not already
     name, and said nothing about it.
+
+    Units whose provider cannot publish yet (`publishes = False`) are left out
+    of an implicit "everything" network — it keeps publishing what it can —
+    but kept when a `select` names them, so publish can refuse that loudly.
+    `include_unpublishable` returns them regardless.
     """
+    from mmw.providers import get_provider
     available = available_mirrors(cfg, mirror_dir)
-    if not network.select:
+    if network.select:
+        return [m for m in available if any(sel.matches(m) for sel in network.select)]
+    if include_unpublishable:
         return available
-    return [m for m in available if any(sel.matches(m) for sel in network.select)]
+    return [m for m in available if get_provider(m.provider).publishes]
 
 
 def network_mirror_names(network, cfg, mirror_dir) -> list[str]:

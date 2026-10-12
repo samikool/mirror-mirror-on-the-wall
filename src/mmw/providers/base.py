@@ -101,6 +101,8 @@ class BaseProvider(ABC):
     description: str = ""
     dimensions: tuple[Dimension, ...] = ()
     by_hash: bool = False   # publish index files under by-hash/SHA256/ too
+    publishes: bool = True  # publish/bundle support (stage 4 turns VS Code on)
+    carries_history: bool = False  # fetch_all reads `history`; refetches must pass it too
 
     def dimension(self, name: str) -> Dimension | None:
         return next((d for d in self.dimensions if d.name == name), None)
@@ -127,6 +129,18 @@ class BaseProvider(ABC):
         """Can `expand(source)` list this source's units offline? False when an
         open dimension waits for a sync to resolve it."""
         return True
+
+    # ── config ──────────────────────────────────────────────────────────────
+
+    def merge(self, existing, new):
+        """Fold `new` into an already-configured source with the same identity.
+        Default: `new` replaces it (a provider whose sources are a selection
+        policy has nothing to union)."""
+        return new
+
+    @abstractmethod
+    def to_toml(self, source) -> dict:
+        """The source's minimal TOML form (what `mmw.toml` stores)."""
 
     # ── config → units ───────────────────────────────────────────────────────
 
@@ -166,8 +180,12 @@ class BaseProvider(ABC):
     def fetch_all(
         self, mirror_config, client: httpx.Client,
         status_callback: Callable[[str], None] | None = None,
+        history=None,
     ) -> tuple[list[PackageInfo], list[MetadataFile]]:
         """Fetch packages and metadata from one consistent upstream snapshot.
+
+        `history` is the unit's previous refs (`mmw.core.history.UnitHistory`);
+        providers that carry state forward read it, others ignore it.
 
         Default: sequential calls.  Providers whose package list and metadata
         derive from a single index override this so both

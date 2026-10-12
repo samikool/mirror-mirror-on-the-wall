@@ -406,8 +406,18 @@ def narrow_to_selection(mirrors: list[config.MirrorConfig], errors: list[str], s
 
 def resolve_selection(cfg: config.Config, selection) -> tuple[list[config.MirrorConfig], list[str]]:
     """Expand "all" dimensions by listing upstream, then narrow to `selection`.
-    Quiet — the notes come back as messages. **Blocking** (network)."""
-    mirrors, notes, errors = resolve_sources(cfg.sources, progress=None)
+    Quiet — the notes come back as messages. **Blocking** (network).
+
+    Only the sources the selection touches are resolved: ticking one apt
+    repository must not ask the Marketplace for its top 200 first. A mirror
+    name belongs to the source whose name prefixes it (over-matching a
+    prefix-sharing neighbour only resolves one source too many)."""
+    ids, names = split_selection(selection)
+    sources = cfg.sources
+    if ids or names:
+        sources = [s for s in cfg.sources if s.identity in ids
+                   or any(n == s.name or n.startswith(s.name + "-") for n in names)]
+    mirrors, notes, errors = resolve_sources(sources, progress=None)
     messages = [*notes, *(f"⚠ {e}" for e in errors)]
     chosen, problem, _ = narrow_to_selection(mirrors, errors, selection)
     if problem:

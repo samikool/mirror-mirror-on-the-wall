@@ -8,7 +8,7 @@ from mmw.providers.base import BaseProvider, Dimension
 
 
 def test_registry_order_and_lookup():
-    assert [p.name for p in all_providers()] == ["apt", "apt-flat"]
+    assert [p.name for p in all_providers()] == ["apt", "apt-flat", "vscode"]
     assert get_provider("apt").name == "apt"
     with pytest.raises(ValueError, match="Unknown provider"):
         get_provider("nope")
@@ -18,7 +18,8 @@ def test_registry_order_and_lookup():
 def test_every_provider_declares_its_metadata(provider: BaseProvider):
     assert provider.label and provider.description
     assert provider.dimensions and all(isinstance(d, Dimension) for d in provider.dimensions)
-    assert provider.by_hash is True
+    # by-hash is apt's policy (its Release advertises it); VS Code has none.
+    assert provider.by_hash is (provider.name in ("apt", "apt-flat"))
 
 
 def test_apt_dimensions():

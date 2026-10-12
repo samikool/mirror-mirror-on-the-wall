@@ -3,7 +3,7 @@ import re
 import tomllib
 import tomli_w
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -179,10 +179,11 @@ def derive_name(url: str, taken: set[str] | None = None,
     return name
 
 
-Provider = Literal["apt", "apt-flat"]
-"""The providers that exist. A free string let `provider = "apt_flat"` —
-an underscore where the code wants a hyphen — load clean, expand to zero
-mirrors, and exit 0 having mirrored nothing."""
+Provider = Literal["apt", "apt-flat", "vscode"]
+"""Every provider a unit may belong to. A free string let `provider =
+"apt_flat"` load clean, expand to zero mirrors, and exit 0 having mirrored
+nothing."""
+AptProvider = Literal["apt", "apt-flat"]
 
 
 # The fields every apt unit used to declare. A unit is generic now — what
@@ -408,7 +409,7 @@ class SourceConfig(_StrictModel):
     the file you hand-write (or paste) can be just a URL plus what you want.
     """
     url: str                          # repository URI (host + path) — the identity
-    provider: Provider = "apt"
+    provider: AptProvider = "apt"
     name: str = ""                    # derived from url when empty
     label: str = ""                   # derived from url when empty; keys/{label}/
     arches: list[str] = []            # one sync unit per arch
@@ -579,6 +580,73 @@ class SourceConfig(_StrictModel):
         return []
 
 
+MARKETPLACE_URL = "https://marketplace.visualstudio.com"
+_EXT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9_.-]*")
+
+
+class ExtensionSelection(_StrictModel):
+    """Which extensions a VS Code source mirrors — a union of the three."""
+    top_n: int | None = Field(default=None, ge=1)
+    ids: list[str] = []
+    all: bool = False
+    prerelease: bool = False
+
+    @model_validator(mode="after")
+    def _ids_are_publisher_dot_name(self):
+        self.ids = [i.strip().lower() for i in self.ids]
+        bad = [i for i in self.ids if not _EXT_ID_RE.fullmatch(i)]
+        if bad:
+            raise ValueError(f"extension ids must be publisher.name: {', '.join(bad)}")
+        return self
+
+
+class VscodeSource(_StrictModel):
+    """The Microsoft Marketplace: extensions, desktop builds, server builds.
+
+    One per config. Empty kinds / platforms / qualities mean *all*."""
+    provider: Literal["vscode"]
+    name: str = "vscode"
+    label: str = "vscode"
+    url: str = MARKETPLACE_URL
+    kinds: list[str] = []
+    platforms: list[str] = []
+    qualities: list[str] = []
+    extensions: ExtensionSelection = ExtensionSelection()
+
+    @model_validator(mode="after")
+    def _known_values(self):
+        from mmw.providers.vscode.platforms import KINDS, QUALITIES, TARGET_PLATFORMS
+        if normalize_url(self.url) != MARKETPLACE_URL:
+            raise ValueError(f"the vscode provider mirrors the marketplace ({MARKETPLACE_URL}), "
+                             f"not {self.url}")
+        for field, allowed in (("kinds", KINDS), ("platforms", TARGET_PLATFORMS),
+                               ("qualities", QUALITIES)):
+            bad = [v for v in getattr(self, field) if v not in allowed]
+            if bad:
+                raise ValueError(f"unknown {field}: {', '.join(bad)} "
+                                 f"(expected: {', '.join(allowed)})")
+        return self
+
+    @property
+    def identity(self) -> str:
+        return normalize_url(self.url)
+
+    def configured_units(self) -> set:
+        return set()
+
+    def covers(self, unit) -> bool:
+        if (unit.source or "") != self.identity:
+            return False
+        for field, key in (("kinds", "kind"), ("platforms", "platform"), ("qualities", "quality")):
+            chosen, have = getattr(self, field), unit.dims.get(key)
+            if chosen and have and have not in chosen:
+                return False
+        return True
+
+
+AnySource = Annotated[Union[SourceConfig, VscodeSource], Field(discriminator="provider")]
+
+
 # The TUI's colour theme when none is chosen. Lives here, not in tui/, because
 # `save()` needs it to decide whether `theme` is worth writing.
 DEFAULT_THEME = "mmw"
@@ -725,8 +793,25 @@ class NetworkConfig(_StrictModel):
 
 class Config(_StrictModel):
     settings: Settings
-    sources: list[SourceConfig] = []
+    sources: list[AnySource] = []
     networks: list[NetworkConfig] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sources_default_to_apt(cls, data):
+        """`provider` was optional (apt) before there was a second provider;
+        the union needs it to choose a model."""
+        if isinstance(data, dict) and isinstance(data.get("sources"), list):
+            data = {**data, "sources": [
+                {**s, "provider": s.get("provider", "apt")} if isinstance(s, dict) else s
+                for s in data["sources"]]}
+        return data
+
+    @model_validator(mode="after")
+    def _one_vscode_source(self):
+        if sum(1 for s in self.sources if s.provider == "vscode") > 1:
+            raise ValueError("only one vscode source is allowed (it is the whole marketplace)")
+        return self
 
     @property
     def mirrors(self) -> list[MirrorConfig]:
@@ -899,6 +984,54 @@ def _unique_source_name(base: str, url: str, taken: set[str]) -> str:
     return f"{base}-{i}"
 
 
+def _merge_apt_into(target: SourceConfig, src: SourceConfig) -> None:
+    """Union `src` into the apt source `target` in place — empty means all on
+    every dimension, per-suite components kept apart."""
+    target.arches = _union_or_all(target.arches, src.arches)
+    target.include_sources = target.include_sources or src.include_sources
+    target.dist_upgrade = target.dist_upgrade or src.dist_upgrade
+    target.gpg_key_url = target.gpg_key_url or src.gpg_key_url
+    target.extra_files = list(dict.fromkeys(target.extra_files + src.extra_files))
+    target.gpg_key = target.gpg_key or src.gpg_key
+    target.gpg_key_name = target.gpg_key_name or src.gpg_key_name
+
+    if not target.suites or not src.suites:
+        # **Empty means all, on suites too.** A plain `_union` here made an
+        # import naming `jammy` *narrow* a repository that was mirroring
+        # every suite — the exact failure `_union_or_all` exists to
+        # prevent, and it was doing it to two dimensions out of three.
+        #
+        # With the suites open there is no per-suite component map to
+        # build: `comps_by_suite` is seeded from `target.suites`, so an
+        # empty one loses the "all components" fact entirely. Components
+        # fall back to their source-level union (still empty-means-all),
+        # and per-suite overrides are meaningless without a suite list.
+        target.components = _union_or_all(target.components, src.components)
+        target.suites = []
+        target.suite_overrides = []
+    else:
+        # Merge per suite so an existing suite never inherits components the
+        # user picked for a different one.
+        comps_by_suite = {
+            suite: _effective_components(target, suite) for suite in target.suites
+        }
+        for suite in src.suites:
+            incoming = _effective_components(src, suite)
+            if suite in comps_by_suite:
+                comps_by_suite[suite] = _union_or_all(comps_by_suite[suite], incoming)
+            else:
+                comps_by_suite[suite] = incoming
+        suites = _union(target.suites, src.suites)
+        common = comps_by_suite[suites[0]]
+        target.suites = suites
+        target.components = common
+        target.suite_overrides = [
+            SuiteOverride(suite=s, components=comps_by_suite[s])
+            for s in suites[1:]
+            if comps_by_suite[s] != common
+        ]
+
+
 def merge_sources(
     existing: list[SourceConfig], new: list[SourceConfig]
 ) -> tuple[list[SourceConfig], int, int]:
@@ -939,51 +1072,12 @@ def merge_sources(
             )
 
         before = target.model_dump()
-
-        target.arches = _union_or_all(target.arches, src.arches)
-        target.include_sources = target.include_sources or src.include_sources
-        target.dist_upgrade = target.dist_upgrade or src.dist_upgrade
-        target.gpg_key_url = target.gpg_key_url or src.gpg_key_url
-        target.extra_files = list(dict.fromkeys(target.extra_files + src.extra_files))
-        target.gpg_key = target.gpg_key or src.gpg_key
-        target.gpg_key_name = target.gpg_key_name or src.gpg_key_name
-
-        if not target.suites or not src.suites:
-            # **Empty means all, on suites too.** A plain `_union` here made an
-            # import naming `jammy` *narrow* a repository that was mirroring
-            # every suite — the exact failure `_union_or_all` exists to
-            # prevent, and it was doing it to two dimensions out of three.
-            #
-            # With the suites open there is no per-suite component map to
-            # build: `comps_by_suite` is seeded from `target.suites`, so an
-            # empty one loses the "all components" fact entirely. Components
-            # fall back to their source-level union (still empty-means-all),
-            # and per-suite overrides are meaningless without a suite list.
-            target.components = _union_or_all(target.components, src.components)
-            target.suites = []
-            target.suite_overrides = []
-        else:
-            # Merge per suite so an existing suite never inherits components the
-            # user picked for a different one.
-            comps_by_suite = {
-                suite: _effective_components(target, suite) for suite in target.suites
-            }
-            for suite in src.suites:
-                incoming = _effective_components(src, suite)
-                if suite in comps_by_suite:
-                    comps_by_suite[suite] = _union_or_all(comps_by_suite[suite], incoming)
-                else:
-                    comps_by_suite[suite] = incoming
-            suites = _union(target.suites, src.suites)
-            common = comps_by_suite[suites[0]]
-            target.suites = suites
-            target.components = common
-            target.suite_overrides = [
-                SuiteOverride(suite=s, components=comps_by_suite[s])
-                for s in suites[1:]
-                if comps_by_suite[s] != common
-            ]
-
+        from mmw.providers import get_provider
+        merged_src = get_provider(src.provider).merge(target, src)
+        if merged_src is not target:
+            result[result.index(target)] = merged_src
+            by_identity[src.identity] = merged_src
+            target = merged_src
         if target.model_dump() != before:
             merged += 1
 
@@ -1019,7 +1113,14 @@ def _select_to_dict(sel: NetworkSelect) -> dict:
     return {"source": sel.source, **{k: sel.dims[k] for k in keys}}
 
 
-def source_to_dict(s: SourceConfig) -> dict:
+def source_to_dict(s) -> dict:
+    """TOML form of one source — the single serializer, shared by `save()` and
+    every `--dry-run` preview so a preview always matches what gets written."""
+    from mmw.providers import get_provider
+    return get_provider(s.provider).to_toml(s)
+
+
+def _apt_source_to_dict(s: SourceConfig) -> dict:
     """TOML form of one source — the single serializer, shared by `save()` and
     `mmw add --dry-run` so a preview always matches what gets written.
 

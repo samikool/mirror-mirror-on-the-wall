@@ -1,0 +1,19 @@
+{
+ "results": [
+  {
+   "extensions": [],
+   "pagingToken": null,
+   "resultMetadata": [
+    {
+     "metadataItems": [
+      {
+       "count": 0,
+       "name": "TotalCount"
+      }
+     ],
+     "metadataType": "ResultCount"
+    }
+   ]
+  }
+ ]
+}

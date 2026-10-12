@@ -51,7 +51,8 @@ def add_entries() -> list[AddEntry]:
 
 
 def edit_page(source, existing_names: set[str], existing_urls: set[str]):
+    """The page that edits `source` — None when its provider has no edit page yet."""
     factory = _EDIT.get(source.provider)
     if factory is None:
-        raise ValueError(f"no edit page for provider {source.provider!r}")
+        return None
     return factory(source, existing_names, existing_urls)

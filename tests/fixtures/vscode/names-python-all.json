@@ -1,0 +1,3763 @@
+{
+ "results": [
+  {
+   "extensions": [
+    {
+     "deploymentType": 0,
+     "displayName": "Python",
+     "extensionId": "f1f59ae4-9318-4f3c-a9b5-81b2eaa5f8a5",
+     "extensionName": "python",
+     "flags": "validated, public",
+     "lastUpdated": "2026-10-08T14:09:20.39Z",
+     "publishedDate": "2016-01-19T15:03:11.337Z",
+     "publisher": {
+      "displayName": "Microsoft",
+      "domain": "https://microsoft.com",
+      "flags": "verified",
+      "isDomainVerified": true,
+      "publisherId": "998b010b-e2af-44a5-a6cd-0b5fd3b9b6f8",
+      "publisherName": "ms-python"
+     },
+     "releaseDate": "2016-01-19T15:03:11.337Z",
+     "shortDescription": "Python language support with extension access points for IntelliSense (Pylance), Debugging (Python Debugger), linting, formatting, refactoring, unit tests, and more.",
+     "statistics": [
+      {
+       "statisticName": "install",
+       "value": 240661233.0
+      },
+      {
+       "statisticName": "averagerating",
+       "value": 4.204761981964111
+      },
+      {
+       "statisticName": "ratingcount",
+       "value": 630.0
+      },
+      {
+       "statisticName": "trendingdaily",
+       "value": 0.0012773396178774956
+      },
+      {
+       "statisticName": "trendingmonthly",
+       "value": 1.743116162922353
+      },
+      {
+       "statisticName": "trendingweekly",
+       "value": 0.364549417431987
+      },
+      {
+       "statisticName": "onpremDownloads",
+       "value": 2.0
+      },
+      {
+       "statisticName": "updateCount",
+       "value": 1208006722.0
+      },
+      {
+       "statisticName": "weightedRating",
+       "value": 4.20856236703867
+      },
+      {
+       "statisticName": "downloadCount",
+       "value": 3467467.0
+      }
+     ],
+     "versions": [
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457143220/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:09:20.387Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "0cfce69c5b372a3bc2b0b9ea99ecc55004ee45d4339f12c9644d74456617ab73"
+        }
+       ],
+       "targetPlatform": "win32-arm64",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457061419/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:09:09.15Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "594c43833aba80a6e7305f74213a9501c5a3b7daa46663004017e98f04abde5d"
+        }
+       ],
+       "targetPlatform": "web",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457116172/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:08:56.337Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "6d800e740681c1dec91048b6515747594057f96ba6eea6ecfc71526c9a61c616"
+        }
+       ],
+       "targetPlatform": "alpine-x64",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457089868/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:07:41.133Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "353bfc21a66e42d442fe6302ae25662473a78cef9162680d32cbc93156cd6ad4"
+        }
+       ],
+       "targetPlatform": "linux-armhf",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457124854/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:07:33.897Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "60594581288c268573f639d9eb40ff083040960b8ce97529854a36dea63f2893"
+        }
+       ],
+       "targetPlatform": "darwin-arm64",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457151071/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:07:26.883Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "dce6e871e869f952bae2e6ca898c7d2cfbae9afbbc62e3dd0c3d8ed1ae3ad745"
+        }
+       ],
+       "targetPlatform": "win32-x64",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457098384/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:07:07.237Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "41f388758b541681c43f413e48dd98603646192bda49d0775e84716e31be7fe1"
+        }
+       ],
+       "targetPlatform": "linux-x64",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457077208/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:06:55.72Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "bef2dab02bc7d6b157f78b7d24027a31785e476e323a219ebe3b6991e70187bd"
+        }
+       ],
+       "targetPlatform": "linux-arm64",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457132772/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T14:06:10.143Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "3cd8df6a78f8b92a6fec82c019181f0e48acbf0f0a4b83e2aec072d50329aeaf"
+        }
+       ],
+       "targetPlatform": "darwin-x64",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100801/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100801/1791457107337/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-08T11:06:37.903Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "bb6ffc8e5330e709e44e926705e142817797677be444be18ed21f5beabb2f519"
+        }
+       ],
+       "targetPlatform": "alpine-arm64",
+       "version": "2026.9.2026100801"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370948716/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:13:38.157Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "1b0abe234082cc656380610119d549b183f33597d7761f0c9a1006d336265941"
+        }
+       ],
+       "targetPlatform": "web",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370974709/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:12:24.33Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "af7417dc20064861cbb42c12fd70a3107ced56bc3a63969aea2779223d77cad2"
+        }
+       ],
+       "targetPlatform": "linux-x64",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371006706/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:12:19.79Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "e84cc1cdaab25e66d0f4075f6458145538b178520aa4874123f3a862ffe7f62f"
+        }
+       ],
+       "targetPlatform": "darwin-x64",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370966080/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:11:42.877Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "a16941d288533c6cc234188ea20d734461a5ee872418b1b89aac7328812d0111"
+        }
+       ],
+       "targetPlatform": "linux-armhf",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370991317/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:11:32.62Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "7bb8f728d6540e7e7768ae2f9c4cd2aac79ccafe9968f9ff9ab1a9a1d1e6d571"
+        }
+       ],
+       "targetPlatform": "alpine-x64",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371022360/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:11:05.453Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "259c3b7dd7c9de35b9b674df1d40a04ba687c39c7c3a348b529c3bdc14b9f36e"
+        }
+       ],
+       "targetPlatform": "win32-x64",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370983047/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:10:27.397Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "90472fbabaaa48a9225ca1e0a2d754d39246eafc3c0bc9506a5a79605848a5fb"
+        }
+       ],
+       "targetPlatform": "alpine-arm64",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791371015095/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:10:20.447Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "13d34550ee7fe8921f5ba6c5d49d8b7e3973dfb35f7b22723365d76758056e7a"
+        }
+       ],
+       "targetPlatform": "win32-arm64",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370957553/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T14:09:26.653Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "b0c82d9cb4f78ce0bbf3fbf1d58d496a782ce201c73c348541bba1eee213d8f7"
+        }
+       ],
+       "targetPlatform": "linux-arm64",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.9.2026100701/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.9.2026100701/1791370999347/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T11:09:25.65Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.PreRelease",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "e49bfef67853655df8fad4ac91daa5f2c5f192c4f88562416c2c567d164f9a97"
+        }
+       ],
+       "targetPlatform": "darwin-arm64",
+       "version": "2026.9.2026100701"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325653852/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:38:34.263Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "85046cd51d59951331f6f4c52b84d0668cf3eea1d0d72b8191077f9c3248ee65"
+        }
+       ],
+       "targetPlatform": "alpine-x64",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325685571/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:38:05.5Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "b4d268561318307a4a411d4842db69728fb27f15270a9bd7f581b8bb91f64734"
+        }
+       ],
+       "targetPlatform": "win32-x64",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325662360/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:37:04.397Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "8b53e14d6fcdd7a3cf3588a0be19542118df362766c1fe0ed0e0b941043e9c31"
+        }
+       ],
+       "targetPlatform": "darwin-arm64",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325637212/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:36:13.17Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "d0f83c9b2673ac5fa7974fbcc85927cdae97fb533d2aebc1db08a38ee0519e3f"
+        }
+       ],
+       "targetPlatform": "linux-x64",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325628547/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:36:04.11Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "6015a88164a879b7c4e27c8ff4eba91fea3879571d028a4451f982cfc6343d19"
+        }
+       ],
+       "targetPlatform": "linux-armhf",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325611162/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:35:45.27Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "f15b3492d03171d825d980687652618d7e7fe3f2d1e3bbf3088540422f65019b"
+        }
+       ],
+       "targetPlatform": "web",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325620053/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:35:21.493Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "c1f9b7de605451310d5d576c05c71078c528ecd42d38ebc90de1ff854995a114"
+        }
+       ],
+       "targetPlatform": "linux-arm64",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325669945/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:35:15.59Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "fcbd4ce977d32e18c03c34519bf5145a8937e8cdaae5e218574fc3e8701018b8"
+        }
+       ],
+       "targetPlatform": "darwin-x64",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325677576/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-07T01:34:08.893Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "17395c7f57ed0242759548f18d24ecc3b64bf8409bdfaf1fbf0b8003091d941b"
+        }
+       ],
+       "targetPlatform": "win32-arm64",
+       "version": "2026.8.0"
+      },
+      {
+       "assetUri": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426",
+       "fallbackAssetUri": "https://ms-python.gallery.vsassets.io/_apis/public/gallery/publisher/ms-python/extension/python/2026.8.0/assetbyname",
+       "files": [
+        {
+         "assetType": "Microsoft.VisualStudio.Code.Manifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Code.Manifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Services.Content.Changelog"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Services.Content.Details"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Content.License",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Services.Content.License"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Services.Icons.Default"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Services.Icons.Small"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Services.VsixManifest"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Services.VSIXPackage"
+        },
+        {
+         "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+         "source": "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/2026.8.0/1791325645426/Microsoft.VisualStudio.Services.VsixSignature"
+        }
+       ],
+       "flags": "validated",
+       "lastUpdated": "2026-10-06T22:35:41.807Z",
+       "properties": [
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Color",
+         "value": "#1e415e"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Branding.Theme",
+         "value": "dark"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Getstarted",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Support",
+         "value": "https://github.com/Microsoft/vscode-python/issues"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Learn",
+         "value": "https://github.com/Microsoft/vscode-python"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.Source",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Links.GitHub",
+         "value": "https://github.com/Microsoft/vscode-python.git"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.Engine",
+         "value": "^1.95.0"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionDependencies",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.CustomerQnALink",
+         "value": "https://github.com/microsoft/vscode-python/discussions/categories/q-a"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionPack",
+         "value": "ms-python.vscode-pylance,ms-python.debugpy,ms-python.vscode-python-envs"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.LocalizedLanguages",
+         "value": ""
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExtensionKind",
+         "value": "workspace,web"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.Content.Pricing",
+         "value": "Free"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.EnabledApiProposals",
+         "value": "contribEditorContentMenu,quickPickSortByLabel,testObserver,quickPickItemTooltip,terminalDataWriteEvent,terminalExecuteCommandEvent,codeActionAI,notebookReplDocument,notebookVariableProvider"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Code.ExecutesCode",
+         "value": "true"
+        },
+        {
+         "key": "Microsoft.VisualStudio.Services.VsixSha256",
+         "value": "999ddd8fee69ee11df35d137fa1b595e67580e5e5bdbf8ee8420bb5dd6bd2808"
+        }
+       ],
+       "targetPlatform": "alpine-arm64",
+       "version": "2026.8.0"
+      }
+     ]
+    }
+   ],
+   "pagingToken": null,
+   "resultMetadata": [
+    {
+     "metadataItems": [
+      {
+       "count": 1,
+       "name": "TotalCount"
+      }
+     ],
+     "metadataType": "ResultCount"
+    }
+   ]
+  }
+ ]
+}

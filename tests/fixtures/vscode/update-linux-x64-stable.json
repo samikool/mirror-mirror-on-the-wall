@@ -1,0 +1,11 @@
+{
+ "hash": "ea716c7f7a3637e080260da0493c4e9374f09721",
+ "name": "1.141.0",
+ "notes": "2a59476c9bfcb90b3ddc372c36762471b7dfad1c",
+ "productVersion": "1.141.0",
+ "sha256hash": "d77d588f0454cbaaa71e723497de4160d15b95fba4988abe177b1432e6bd570a",
+ "supportsFastUpdate": true,
+ "timestamp": 1791275621288,
+ "url": "https://vscode.download.prss.microsoft.com/dbazure/download/stable/2a59476c9bfcb90b3ddc372c36762471b7dfad1c/code-stable-x64-1791276637.tar.gz",
+ "version": "2a59476c9bfcb90b3ddc372c36762471b7dfad1c"
+}

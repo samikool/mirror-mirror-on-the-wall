@@ -320,9 +320,14 @@ class RepositoriesPage(Page):
             self.notify("Highlight a repository to edit.", severity="warning")
             return
         others = self.app.cfg.sources
-        edited = await self.app.push_screen_wait(provider_ui.edit_page(
-            src, existing_names={s.name for s in others},
-            existing_urls={s.identity for s in others}))
+        page = provider_ui.edit_page(src, existing_names={s.name for s in others},
+                                     existing_urls={s.identity for s in others})
+        if page is None:
+            from mmw.providers import get_provider
+            self.notify(f"{get_provider(src.provider).label} sources are edited in mmw.toml "
+                        "(or with `mmw add vscode`) for now.", severity="warning")
+            return
+        edited = await self.app.push_screen_wait(page)
         if edited is None:
             return
         try:

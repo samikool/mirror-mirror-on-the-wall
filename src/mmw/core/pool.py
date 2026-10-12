@@ -358,6 +358,8 @@ def exclusive_pool_lock(mirror_dir: Path, what: str = "operation"):
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
             finally:
                 fh.close()
+
+
 _TMP_MAX_AGE = 24 * 3600  # crash leftovers older than this are reaped at init
 
 
@@ -673,9 +675,10 @@ class Pool:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(refs)")}
         self._kind_filter = "AND r.kind = 'pkg' " if "kind" in cols else ""
         self._has_source = "source" in cols
-        self._has_mirrors_table = bool(self._conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mirrors'"
-        ).fetchone())
+        self._has_mirrors_table = self._has_table("mirrors")
+        # A read-only open of a pool from before snapshots has no such table;
+        # checked once here, not per query on a connection a writer may hold.
+        self._has_snapshot_blobs = self._has_table("snapshot_blobs")
 
     @property
     def _tmp_dir(self) -> Path:
@@ -684,7 +687,6 @@ class Pool:
     def _reap_stale_tmp(self) -> None:
         """Remove crash leftovers from .pool/tmp — but never fresh files that a
         concurrently running sync may still be writing."""
-        import time
         cutoff = time.time() - _TMP_MAX_AGE
         try:
             for f in self._tmp_dir.iterdir():
@@ -1179,9 +1181,13 @@ class Pool:
     def delete_snapshot(self, snapshot_id: int) -> None:
         """Drop the rows. Its files are freed by the next prune — if nothing
         else (a live mirror, another snapshot) still references them."""
+        self._delete_snapshots([snapshot_id])
+
+    def _delete_snapshots(self, ids: list[int]) -> None:
         with self._lock:
-            self._conn.execute("DELETE FROM snapshot_files WHERE snapshot = ?", (snapshot_id,))
-            self._conn.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
+            for sid in ids:
+                self._conn.execute("DELETE FROM snapshot_files WHERE snapshot = ?", (sid,))
+                self._conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
             # The shared tables hold exactly what some snapshot still lists —
             # prune reads `snapshot_blobs` as the set of held checksums.
             # NOT IN, not a correlated NOT EXISTS: `snapshot_files.path` has no
@@ -1193,6 +1199,49 @@ class Pool:
             self._conn.execute("DELETE FROM snapshot_paths WHERE id NOT IN "
                                "(SELECT path FROM snapshot_files)")
             self._conn.commit()
+
+    def network_names(self) -> set[str]:
+        """Every network with snapshots, bundles or publish records here."""
+        with self._read() as c:
+            return {r[0] for r in c.execute(
+                "SELECT network FROM snapshots UNION SELECT network FROM bundles "
+                "UNION SELECT network FROM published")}
+
+    def rename_network(self, old: str, new: str) -> str | None:
+        """File a network's snapshots, bundle log and publish records under its
+        new name. Returns a problem line instead when `new` already has some
+        (merging two histories would make "where did the last bundle go"
+        meaningless), else None."""
+        if old == new:
+            return None
+        with self._lock:
+            clash = self._conn.execute(
+                "SELECT 1 FROM snapshots WHERE network = ? UNION ALL "
+                "SELECT 1 FROM bundles WHERE network = ? LIMIT 1", (new, new)).fetchone()
+            if clash:
+                return (f"snapshots or bundles of a network called '{new}' are already in "
+                        f"the pool — '{old}''s were left under the old name")
+            for table in ("snapshots", "bundles", "published"):
+                self._conn.execute(f"UPDATE {table} SET network = ? WHERE network = ?",
+                                   (new, old))
+            self._conn.commit()
+        return None
+
+    def forget_network(self, network: str) -> int:
+        """Drop a removed network's snapshots, bundle log and publish records.
+        Returns how many snapshots went; the next prune frees their files.
+
+        Left behind, they were GC roots nothing could reach — every snapshot
+        command names a configured network — and a network added later under
+        the same name inherited the old one's bundle history."""
+        ids = [s.id for s in self.snapshots(network)]
+        if ids:
+            self._delete_snapshots(ids)
+        with self._lock:
+            self._conn.execute("DELETE FROM bundles WHERE network = ?", (network,))
+            self._conn.execute("DELETE FROM published WHERE network = ?", (network,))
+            self._conn.commit()
+        return len(ids)
 
     def snapshot_blob_rows(self, snapshot_id: int):
         """(path, checksum, pool_path, size) for every file of a snapshot, in
@@ -1292,9 +1341,11 @@ class Pool:
             tuple(ids) * 2)
         return row[0] if row else 0
 
-    def prune_orphans(self, configured_sources: list[str]) -> tuple[int, int]:
-        """DB-driven prune: GC refs of unconfigured repositories, then delete
-        pool files no remaining ref wants. Returns (files_removed, bytes_freed).
+    def prune_orphans(self, configured_sources: list[str],
+                      dropped_mirrors: "list[str] | tuple[str, ...]" = ()) -> tuple[int, int]:
+        """DB-driven prune: GC refs of unconfigured repositories and of
+        `dropped_mirrors`, then delete pool files no remaining ref and no
+        snapshot wants. Returns (files_removed, bytes_freed).
 
         Keyed on the **repository URI**, never on mirror names. Mirror names
         encode the architecture, and `arches = []` means "every arch upstream
@@ -1303,9 +1354,17 @@ class Pool:
         them. Asking "is this ref's repository still configured?" is independent
         of how many mirrors that repository happens to expand into.
 
+        `dropped_mirrors` is the one exception, and it is computed from the
+        config by the caller (`resolve.uncovered_mirror_names`): mirrors of a
+        repository that IS still configured but whose suite, component or arch
+        the config no longer covers — narrowing `suites` would otherwise leave
+        the dropped suite's refs, and its files, in the pool forever.
+
         Rows written before the `source` column existed carry an empty source
         and are **never** pruned: a destructive operation must be able to prove
         a ref is unwanted, and those rows cannot. The next sync gives them one.
+        An empty `configured_sources` proves nothing either — it would make
+        every ref unwanted — so it is refused outright (`ValueError`).
 
         Files are unlinked BEFORE their rows are deleted: a crash in between
         leaves a stale row (self-healing via the missing-file path), never an
@@ -1316,25 +1375,69 @@ class Pool:
         everything it has downloaded is `packages − refs` and would be pruned
         as an orphan.
         """
+        if not configured_sources:
+            raise ValueError(
+                "refusing to prune against no configured repositories: every ref in "
+                "the pool would look unwanted and prune would empty the whole pool")
         with exclusive_pool_lock(self.pool_dir.parent, "prune the pool"):
-            return self._prune_orphans_locked(configured_sources)
+            return self._prune_orphans_locked(configured_sources, list(dropped_mirrors))
 
-    def _prune_orphans_locked(self, configured_sources: list[str]) -> tuple[int, int]:
-        with self._lock:
+    def _orphans_sql(self, ref_filter: str = "1",
+                     columns: str = "checksum, pool_path, size") -> str:
+        """Packages no ref passing `ref_filter` wants and no snapshot holds —
+        the one definition of an orphan, shared by the prune and its preview."""
+        held = ("AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
+                "WHERE b.checksum = packages.checksum)" if self._has_snapshot_blobs else "")
+        return (f"SELECT {columns} FROM packages "
+                "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum "
+                f"AND {ref_filter}) {held}")
+
+    def _has_table(self, name: str) -> bool:
+        """Init-time schema probe — not for use once the pool is shared."""
+        return bool(self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
+
+    def prune_preview(self, configured_sources: list[str],
+                      dropped_mirrors: "list[str] | tuple[str, ...]" = ()) -> tuple[int, int]:
+        """(files, bytes) `prune_orphans` would remove — without writing.
+
+        The same orphan query, with the refs the prune would delete filtered
+        out instead of deleted. Snapshot-held blobs are excluded exactly as
+        the prune excludes them: the preview used to be a second copy of the
+        SQL, and it drifted the moment snapshots became GC roots.
+        """
+        if self._has_source:
+            keep = "(r.source = ''"
+            params: list = []
             if configured_sources:
-                ph = ",".join("?" * len(configured_sources))
-                self._conn.execute(
-                    f"DELETE FROM refs WHERE source != '' AND source NOT IN ({ph})",
-                    configured_sources,
-                )
-            else:
-                self._conn.execute("DELETE FROM refs WHERE source != ''")
-            orphans = self._conn.execute(
-                "SELECT checksum, pool_path, size FROM packages "
-                "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum) "
-                "AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
-                "WHERE b.checksum = packages.checksum)"
-            ).fetchall()
+                keep += f" OR r.source IN ({','.join('?' * len(configured_sources))})"
+                params += configured_sources
+            keep += ")"
+            if dropped_mirrors:
+                keep += f" AND r.mirror_name NOT IN ({','.join('?' * len(dropped_mirrors))})"
+                params += list(dropped_mirrors)
+        else:
+            # A pre-`source` pool can prove nothing about any ref.
+            keep, params = "1", []
+        with self._read() as c:
+            row = c.execute(self._orphans_sql(keep, "COUNT(*), COALESCE(SUM(size), 0)"),
+                            params).fetchone()
+        return (int(row[0]), int(row[1])) if row else (0, 0)
+
+    def _prune_orphans_locked(self, configured_sources: list[str],
+                              dropped_mirrors: list[str]) -> tuple[int, int]:
+        with self._lock:
+            ph = ",".join("?" * len(configured_sources))
+            self._conn.execute(
+                f"DELETE FROM refs WHERE source != '' AND source NOT IN ({ph})",
+                configured_sources,
+            )
+            for i in range(0, len(dropped_mirrors), _CHUNK):
+                chunk = dropped_mirrors[i:i + _CHUNK]
+                mph = ",".join("?" * len(chunk))
+                self._conn.execute(f"DELETE FROM refs WHERE mirror_name IN ({mph})", chunk)
+                self._conn.execute(f"DELETE FROM mirrors WHERE name IN ({mph})", chunk)
+            orphans = self._conn.execute(self._orphans_sql()).fetchall()
             self._conn.commit()
 
         removed = 0
@@ -1367,15 +1470,49 @@ class Pool:
 
         return removed, freed
 
+    def forget_blobs(self, checksums) -> tuple[int, int]:
+        """Drop damaged blobs — file and `packages` row — so the next sync
+        downloads them again. Returns (blobs, bytes on record).
+
+        A blob whose bytes no longer match its checksum (truncated, missing,
+        rewritten) is otherwise permanent: every sync asks "is this checksum
+        pooled?", the row says yes, and the bad file is published and bundled
+        forever. Refs are left alone — they are what the next sync fills.
+        Takes the pool exclusively, like prune: a sync must not be linking
+        the same checksum while its row is deleted.
+        """
+        checksums = sorted(set(checksums))
+        if not checksums:
+            return 0, 0
+        with exclusive_pool_lock(self.pool_dir.parent, "repair the pool"):
+            self.flush_writes()
+            rows: list[tuple[str, str, int]] = []
+            with self._lock:
+                for i in range(0, len(checksums), _CHUNK):
+                    chunk = checksums[i:i + _CHUNK]
+                    rows += self._conn.execute(
+                        f"SELECT checksum, pool_path, size FROM packages "
+                        f"WHERE checksum IN ({','.join('?' * len(chunk))})", chunk).fetchall()
+            for _checksum, pool_path, _size in rows:
+                Path(pool_path).unlink(missing_ok=True)
+            with self._lock:
+                for i in range(0, len(rows), _CHUNK):
+                    chunk = [r[0] for r in rows[i:i + _CHUNK]]
+                    self._conn.execute(
+                        f"DELETE FROM packages WHERE checksum IN ({','.join('?' * len(chunk))})",
+                        chunk)
+                self._conn.commit()
+        return len(rows), sum(r[2] for r in rows)
+
     def stats(self) -> dict:
         """(packages, total_size) for the whole pool.
 
-        `SUM(size)` cannot use an index, so this is a **full table scan** — on a
-        real pool (320k rows, a 435 MB DB with a large WAL overlay, on spinning
-        disk) it was measured at 9-14 s. It therefore uses a short-lived
-        read-only connection so it never waits on `self._lock`, which 32
-        download workers hold constantly: taking that lock made every worker
-        block behind the scan and the scan block behind the workers.
+        Answered from the covering `idx_packages_size` index (see SCHEMA);
+        before it, a full table scan measured at 9-14 s on a real pool. It
+        still uses a short-lived read-only connection so it never waits on
+        `self._lock`, which 32 download workers hold constantly: taking that
+        lock made every worker block behind the scan and the scan block
+        behind the workers.
 
         Callers must keep this off any event loop. See `SyncView`.
 
@@ -1472,7 +1609,6 @@ class Pool:
             (mirror_name,),
         )
         return (row[0], row[1]) if row else (0, 0)
-
 
 
 def wipe(mirror_dir: Path) -> None:

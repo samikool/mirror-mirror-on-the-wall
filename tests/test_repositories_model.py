@@ -177,3 +177,19 @@ def test_resolve_selection_is_quiet_and_returns_messages(monkeypatch):
     mirrors, messages = R.resolve_selection(_cfg("https://a.example.com/a"), ((), ()))
     assert [m.name for m in mirrors] == ["a-noble-main-arm64"]
     assert messages == ["a: 1 arch"]
+
+
+def test_a_changed_url_carries_its_network_selections_along():
+    """A network selecting the old URL used to match nothing after the edit —
+    and its next pruning publish deleted the repository's tree."""
+    old = config.SourceConfig(url="http://old.test/repo", suites=["s"])
+    other = config.SourceConfig(url="http://other.test/repo", suites=["s"])
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir="/m"), sources=[old, other],
+        networks=[config.NetworkConfig(name="lab", select=[
+            config.NetworkSelect(source="HTTP://OLD.test/repo/", arches=["amd64"]),
+            config.NetworkSelect(source=other.url)])])
+    edited = old.model_copy(update={"url": "http://new.test/repo"})
+    out = R.replace_source(cfg, old.identity, edited)
+    assert [s.source for s in out.networks[0].select] == ["http://new.test/repo", other.url]
+    assert out.networks[0].select[0].arches == ["amd64"]          # the slice is kept

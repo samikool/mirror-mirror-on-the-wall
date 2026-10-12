@@ -22,8 +22,11 @@ def _cfg(tmp_path, *names, root=None):
         settings=config.Settings(mirror_dir=tmp_path / "pool"),
         sources=[config.SourceConfig(url=SRC, suites=["bookworm"], components=["main"],
                                      arches=["amd64"])],
-        networks=[config.NetworkConfig(name=n, root=root, select=[config.NetworkSelect(source=SRC)])
-                  for n in names],
+        # One root per network when there are several: overlapping roots are
+        # refused (each publish would prune the other's files).
+        networks=[config.NetworkConfig(
+            name=n, root=root / n if root is not None and len(names) > 1 else root,
+            select=[config.NetworkSelect(source=SRC)]) for n in names],
     )
 
 

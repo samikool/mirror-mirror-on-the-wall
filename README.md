@@ -12,7 +12,7 @@ at all** — see [How clients find the mirror](#how-clients-find-the-mirror).
 NVIDIA, Docker, a PPA — still has to be installed on each client, exactly as it
 would online.)
 
-> **Status: 0.9.0 / beta.** Everything below is exercised by an offline test
+> **Status: beta, heading for 1.0.** Everything below is exercised by an offline test
 > suite and most of it has run against real upstreams. The one path that has
 > **not** been round-tripped on real hardware is bundling across a physical
 > airgap — see [CHANGELOG.md](CHANGELOG.md).
@@ -231,6 +231,11 @@ of an airgap. `mmw verify` is the read-only check that catches it while you can
 still fix it. (`publish` and `bundle` run it themselves too, but running it
 separately tells you *before* you start a multi-hour transfer.)
 
+Those checks read the database, not the files. `mmw verify --deep` also stats
+every pool file and `--rehash` re-hashes it — slow, so never implicit — and
+`--repair` drops any that are damaged so the next `mmw sync` downloads them
+again. A bundle refuses to write while the pool holds a damaged file.
+
 Every headless command exits non-zero on failure, so cron is the intended
 frontend:
 
@@ -288,7 +293,9 @@ What actually helps:
   second architecture's binaries free.
 
 `mmw prune` reclaims pool content no configured mirror's index references any
-more — superseded package versions are not kept forever.
+more — superseded package versions are not kept forever. Narrowing a
+repository (dropping a suite, component or architecture from it) stops it
+being published right away, and the next prune frees what only it used.
 
 ## Moving a mirror to the airgapped side
 

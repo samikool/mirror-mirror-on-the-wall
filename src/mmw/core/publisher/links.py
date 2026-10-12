@@ -14,7 +14,7 @@ import posixpath
 import shutil
 from pathlib import Path
 
-from mmw.core.config import MirrorConfig, derive_name
+from mmw.core.config import MirrorConfig
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 
 from mmw.core.publisher.results import MirrorPublishResult
@@ -64,6 +64,15 @@ def atomic_write(dst: Path, data: bytes, tmp_dir: Path | None = None) -> None:
                 pass
 
 
+def same_file(a: Path, b: Path) -> bool:
+    """One inode — the device included. Inode numbers are per filesystem, so
+    on a destination that falls back to copying (another device) an inode
+    number alone could match the pool's by coincidence and skip a file that
+    needed replacing."""
+    sa, sb = a.stat(), b.stat()
+    return sa.st_ino == sb.st_ino and sa.st_dev == sb.st_dev
+
+
 def hardlink_or_copy(src: Path, dst: Path, tmp_dir: Path | None = None) -> None:
     """Hardlink src → dst, falling back to copy on cross-device — atomically.
 
@@ -88,7 +97,7 @@ def hardlink_or_copy(src: Path, dst: Path, tmp_dir: Path | None = None) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         try:
-            if dst.stat().st_ino == src.stat().st_ino:
+            if same_file(dst, src):
                 return
         except OSError:
             pass
@@ -340,14 +349,14 @@ def file_checksum(path: Path) -> str:
 
 def _key_groups(mirrors: list[MirrorConfig]) -> set[str]:
     """The `keys/` directories a set of mirrors owns: each one's label, plus
-    the derived source name as a fallback (see `publish_keys`)."""
+    the repository's name as a fallback (see `publish_keys`) — the same
+    fallback the sync writes under."""
+    from mmw.core import upstream
     groups: set[str] = set()
     for mirror in mirrors:
         if mirror.label:
             groups.add(mirror.label)
-        source = getattr(mirror, "source", "") or mirror.source_url
-        if source:
-            groups.add(derive_name(source))
+        groups.add(upstream.repository_name(mirror))
     return groups
 
 
@@ -363,7 +372,15 @@ def upstream_files(mirror_dir: Path, mirrors: list[MirrorConfig]) -> dict[str, P
     """
     from mmw.core import upstream
     found: dict[str, Path] = {}
-    for group in sorted({upstream.repository_group(m) for m in mirrors}):
+    groups: set[str] = set()
+    for m in mirrors:
+        group = upstream.repository_group(m)
+        if not upstream.group_dir(mirror_dir, group).is_dir():
+            # Not synced since the directory name became unique: serve what
+            # the old one holds rather than drop the files from the tree.
+            group = upstream.legacy_group(m) or group
+        groups.add(group)
+    for group in sorted(groups):
         base = upstream.group_dir(mirror_dir, group)
         if not base.is_dir():
             continue
@@ -485,10 +502,10 @@ def publish_keys(sink, mirror_dir: Path,
     return errors, published
 
 
-
 __all__ = [
     "ROOT_RELATIVE_PREFIX",
     "atomic_write",
+    "same_file",
     "file_checksum",
     "hardlink_or_copy",
     "is_package_file",

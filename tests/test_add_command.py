@@ -135,9 +135,11 @@ def test_missing_config_reports_cleanly(tmp_path):
     src = tmp_path / "in.sources"
     src.write_text("deb http://x/deb noble main\n")
     out: list[str] = []
-    code = add.run(file=src, cfg_dir=tmp_path, echo=out.append)
+    err: list[str] = []
+    code = add.run(file=src, cfg_dir=tmp_path, echo=out.append, echo_err=err.append)
     assert code == 1
-    assert "mmw init" in out[0]
+    assert "mmw init" in err[0]          # a failure: stderr, where cron mail looks
+    assert out == []
 
 
 def test_label_and_arch_overrides(cfg_dir):
@@ -297,3 +299,14 @@ def test_an_inline_key_is_never_overwritten_by_a_same_named_file(tmp_path):
                      gpg_key=ARMOUR, gpg_key_name="a.gpg")
     assert attach_keys([s], keys_dir) == (0, 0)
     assert s.gpg_key == ARMOUR, "the config's own key is the authority"
+
+
+def test_a_provider_clash_is_one_line_on_stderr_not_a_traceback(tmp_path, capsys):
+    from mmw.commands import add as add_cmd
+    (tmp_path / "mmw.toml").write_text(
+        f'[settings]\nmirror_dir = "{tmp_path / "m"}"\n\n[[sources]]\n'
+        'url = "https://vendor.test/repo"\nprovider = "apt-flat"\n')
+    f = tmp_path / "x.list"
+    f.write_text("deb https://vendor.test/repo noble main\n")
+    assert add_cmd.run(file=f, cfg_dir=tmp_path) == 1
+    assert "Nothing written" in capsys.readouterr().err

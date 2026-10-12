@@ -10,8 +10,7 @@ from mmw.core import config
 from mmw.core.format import fmt_size as _fmt_size
 from mmw.core.pool import Pool
 from mmw.commands.mirror import resolve_and_report
-from mmw.core.downloader import fetch_packages_threaded
-from mmw.providers import get_provider
+from mmw.core.sync_engine import classify_mirror
 
 
 def _pct(part: int, total: int) -> str:
@@ -46,7 +45,6 @@ async def _check_all(cfg: config.Config) -> int:
 
 async def _check_all_inner(cfg: config.Config, executor) -> int:
     mirror_dir = cfg.settings.mirror_dir
-    loop = asyncio.get_running_loop()
 
     # Counted, not merely printed. Before this only `resolve_errors` reached
     # the exit gate, so a run where every metadata fetch failed printed
@@ -75,63 +73,41 @@ async def _check_all_inner(cfg: config.Config, executor) -> int:
             typer.echo(f"  ▶  {mirror.name}  [{mirror.provider}]")
             typer.echo(_rule())
 
-            try:
-                provider = get_provider(mirror.provider)
-            except ValueError as e:
-                typer.echo(f"  ERROR: {e}", err=True)
-                mirror_errors.append(f"{mirror.name}: {e}")
-                continue
-
             typer.echo("  fetching metadata...")
             t0 = time.monotonic()
             try:
-                packages = await loop.run_in_executor(
-                    executor, fetch_packages_threaded, provider, mirror
-                )
+                stats = await classify_mirror(mirror, pool, executor)
             except Exception as e:
                 typer.echo(f"  ERROR fetching metadata: {e}", err=True)
                 mirror_errors.append(f"{mirror.name}: {e}")
                 continue
-            typer.echo(f"  {len(packages):,} packages  ({time.monotonic() - t0:.1f}s)")
+            typer.echo(f"  {stats.total:,} packages  ({time.monotonic() - t0:.1f}s)")
 
-            known = [p.checksum for p in packages if p.checksum]
-            pooled = await loop.run_in_executor(executor, pool.batch_contains, known)
-            in_pool   = [p for p in packages if p.checksum and p.checksum in pooled]
-            to_fetch  = [p for p in packages if not p.checksum or p.checksum not in pooled]
-            size_known = all(p.size > 0 for p in packages)
-
-            total_size  = sum(p.size for p in packages)
-            pool_size   = sum(p.size for p in in_pool)
-            fetch_size  = sum(p.size for p in to_fetch)
-            unknown_n   = sum(1 for p in to_fetch if not p.checksum)
-
-            grand_pkgs       += len(packages)
-            grand_size       += total_size
-            grand_fetch_n    += len(to_fetch)
-            grand_fetch_size += fetch_size
-            grand_pool_n     += len(in_pool)
-            grand_pool_size  += pool_size
+            grand_pkgs       += stats.total
+            grand_size       += stats.total_size
+            grand_fetch_n    += stats.to_fetch
+            grand_fetch_size += stats.fetch_size
+            grand_pool_n     += stats.in_pool
+            grand_pool_size  += stats.pool_size
 
             col = 18
-            typer.echo(f"  {'Packages':<{col}} {len(packages):>8,}")
-            if size_known:
-                typer.echo(f"  {'Full size':<{col}} {_fmt_size(total_size):>10}")
+            typer.echo(f"  {'Packages':<{col}} {stats.total:>8,}")
+            if stats.sizes_known:
+                typer.echo(f"  {'Full size':<{col}} {_fmt_size(stats.total_size):>10}")
             else:
                 typer.echo(f"  {'Full size':<{col}} {'unknown':>10}")
 
             typer.echo()
-            typer.echo(f"  {'In pool':<{col}} {len(in_pool):>8,}  {_pct(len(in_pool), len(packages))}  {_fmt_size(pool_size)}")
-            typer.echo(f"  {'To download':<{col}} {len(to_fetch):>8,}  {_pct(len(to_fetch), len(packages))}  {_fmt_size(fetch_size) if size_known else '?'}")
+            typer.echo(f"  {'In pool':<{col}} {stats.in_pool:>8,}  {_pct(stats.in_pool, stats.total)}  {_fmt_size(stats.pool_size)}")
+            typer.echo(f"  {'To download':<{col}} {stats.to_fetch:>8,}  {_pct(stats.to_fetch, stats.total)}  {_fmt_size(stats.fetch_size) if stats.sizes_known else '?'}")
             typer.echo()
 
-            bar_pool  = _bar(len(in_pool), len(packages))
-            bar_fetch = _bar(len(to_fetch), len(packages))
-            typer.echo(f"  pool    {bar_pool}  {_pct(len(in_pool), len(packages))}")
-            typer.echo(f"  fetch   {bar_fetch}  {_pct(len(to_fetch), len(packages))}")
+            typer.echo(f"  pool    {_bar(stats.in_pool, stats.total)}  {_pct(stats.in_pool, stats.total)}")
+            typer.echo(f"  fetch   {_bar(stats.to_fetch, stats.total)}  {_pct(stats.to_fetch, stats.total)}")
 
-            if unknown_n:
+            if stats.no_checksum:
                 typer.echo()
-                typer.echo(f"  ⚠  {unknown_n} package(s) have no known checksum —")
+                typer.echo(f"  ⚠  {stats.no_checksum} package(s) have no known checksum —")
                 typer.echo("     size and pool status unknown until download.")
 
         typer.echo()

@@ -276,9 +276,22 @@ def pooled_mirrors(cfg, mirror_dir) -> list[MirrorConfig]:
     configured = sorted({s.identity for s in cfg.sources})
     try:
         with Pool(mirror_dir, read_only=True) as pool:
-            return pool.mirrors(configured)
+            held = pool.mirrors(configured)
     except Exception:
         return []
+    # A suite, component or arch the config no longer asks for is gone, even
+    # though its repository is still configured (see `SourceConfig.covers`).
+    return [m for m in held if any(s.covers(m) for s in cfg.sources)]
+
+
+def uncovered_mirror_names(cfg, pool) -> list[str]:
+    """Mirrors the pool holds for a still-configured repository that the
+    config no longer covers — what `Pool.prune_orphans(dropped_mirrors=…)`
+    drops. Mirrors of an unconfigured repository are not listed: the prune
+    already drops those by URI."""
+    configured = sorted({s.identity for s in cfg.sources})
+    return [m.name for m in pool.mirrors(configured)
+            if not any(s.covers(m) for s in cfg.sources)]
 
 
 def available_mirrors(cfg, mirror_dir, pooled: "list[MirrorConfig] | None" = None) -> list[MirrorConfig]:

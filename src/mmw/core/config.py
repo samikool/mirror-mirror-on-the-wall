@@ -5,7 +5,7 @@ import tomli_w
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 CONFIG_FILENAME = "mmw.toml"
 
@@ -25,10 +25,13 @@ _ARCH_ALIASES = {"sbsa": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd_64
 # ledger) and a Textual widget id, so it is a path segment, not free text.
 NETWORK_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
+# Every architecture Debian and Ubuntu have shipped. One list: `apt.py`
+# excludes other arches' index files by it, and two copies had already
+# drifted apart (each lacked arches the other had, both lacked loong64).
 KNOWN_ARCHES = frozenset({
-    "amd64", "arm64", "armhf", "armel", "ppc64el", "mipsel", "mips64el",
-    "mips", "powerpc", "hppa", "m68k", "sh4", "x32", "i386", "riscv64",
-    "s390x", "alpha", "sparc64", "hurd-i386", "hurd-amd64",
+    "amd64", "arm64", "armhf", "armel", "i386", "ppc64el", "s390x", "riscv64",
+    "loong64", "mipsel", "mips64el", "mips", "powerpc", "ppc64", "sparc", "sparc64",
+    "ia64", "hppa", "alpha", "m68k", "sh4", "x32", "hurd-i386", "hurd-amd64",
     "kfreebsd-i386", "kfreebsd-amd64",
 })
 
@@ -273,6 +276,26 @@ class SourceConfig(_StrictModel):
                     units.add((self.label, suite, comp, arch))
         return units
 
+    def covers(self, mirror: "MirrorConfig") -> bool:
+        """Does this source, as configured now, still ask for `mirror`?
+
+        The pool remembers every mirror it ever synced, and publish enumerates
+        from the pool — so without this, narrowing `suites`, `components` or
+        `arches` kept publishing what was dropped, frozen at its last sync and
+        never pruned. Empty still means all, on every dimension. A flat
+        repository has no dimensions: its URL is all of it.
+        """
+        if (mirror.source or "") != self.identity:
+            return False
+        if self.provider == "apt-flat":
+            return True
+        if self.suites and (mirror.suite or "") not in self.suites:
+            return False
+        comps = _effective_components(self, mirror.suite) if mirror.suite else self.components
+        if comps and (mirror.component or "") not in comps:
+            return False
+        return not (self.arches and mirror.arch not in self.arches)
+
     @property
     def effective_arches(self) -> list[str]:
         """Arches to expand into sync units.
@@ -380,7 +403,9 @@ DEFAULT_THEME = "mmw"
 
 class Settings(_StrictModel):
     mirror_dir: Path
-    max_connections: int = os.cpu_count() or 10
+    # At least one: 0 built an `asyncio.Semaphore(0)` every download waited on
+    # forever, and a `ThreadPoolExecutor(0)` that refused to start.
+    max_connections: int = Field(default=os.cpu_count() or 10, ge=1)
     theme: str = DEFAULT_THEME
 
 
@@ -504,6 +529,72 @@ class Config(_StrictModel):
             if dupes:
                 raise ValueError(f"duplicate {label}(s): {', '.join(sorted(dupes))}")
         return self
+
+    @model_validator(mode="after")
+    def _destinations_do_not_collide(self):
+        """Publish destinations that would destroy each other, refused at load.
+
+        - a root that is, or holds, the mirror directory (see
+          `destination_problem`): the first pruning publish deleted the pool;
+        - two networks whose roots are the same or nested: each publish
+          prunes the other's repositories as stale;
+        - a bundle_dir inside a publish root: the tarballs are served to every
+          client, and the next pruning publish deletes them.
+        """
+        roots: list[tuple[str, Path]] = []
+        for n in self.networks:
+            if n.root is not None:
+                problem = destination_problem(n.root, self.settings.mirror_dir)
+                if problem:
+                    raise ValueError(f"network '{n.name}': root {problem}")
+                roots.append((n.name, _abs(n.root)))
+        for i, (a, ra) in enumerate(roots):
+            for b, rb in roots[i + 1:]:
+                if _within(ra, rb) or _within(rb, ra):
+                    raise ValueError(
+                        f"networks '{a}' and '{b}' publish into overlapping roots ({ra}, {rb}) "
+                        "— each publish would prune the other's files")
+        for n in self.networks:
+            if n.bundle_dir is None:
+                continue
+            for name, r in roots:
+                if _within(_abs(n.bundle_dir), r):
+                    raise ValueError(
+                        f"network '{n.name}': bundle_dir {n.bundle_dir} is inside network "
+                        f"'{name}''s publish root — served to every client, and deleted by "
+                        "its next pruning publish")
+        return self
+
+
+def _abs(p: Path) -> Path:
+    """Absolute and normalized, without touching the filesystem (a validator
+    runs on every load, and the paths need not exist yet)."""
+    return Path(os.path.normpath(os.path.abspath(os.path.expanduser(str(p)))))
+
+
+def _within(inner: Path, outer: Path) -> bool:
+    """`inner` is `outer` or somewhere under it."""
+    return inner == outer or outer in inner.parents
+
+
+def destination_problem(root: Path, mirror_dir: Path) -> str | None:
+    """Why `root` cannot be a publish destination for the pool at
+    `mirror_dir`, or None.
+
+    A pruning publish removes every top-level directory of its root that no
+    repository it publishes owns (`TreeSink.prune_stale_bases`), and removing
+    a network can delete its whole root. A root that IS the mirror directory,
+    or holds it, therefore deleted `.pool/`, `certs/`, `bundles/` — the pool
+    itself — on the first publish. Checked at load and again at publish
+    time (resolving symlinks there), since `--root` never passes the config.
+    """
+    r, m = _abs(root), _abs(mirror_dir)
+    if r == Path(r.anchor):
+        return f"{root} is the filesystem root"
+    if _within(m, r):
+        return (f"{root} holds the mirror directory {mirror_dir} — a pruning publish "
+                "deletes what it does not publish there, the pool included")
+    return None
 
 
 def _union_or_all(a: list[str], b: list[str]) -> list[str]:
@@ -701,15 +792,26 @@ def source_to_dict(s: SourceConfig) -> dict:
 
 def rename_network_state(mirror_dir: Path, old: str, new: str) -> list[str]:
     """Move what is filed under a network's name — its TLS key and cert
-    (`certs/{name}/`) and its bundle ledger (`bundles/{name}/`) — to the new
-    name. Without this a rename silently starts over: a fresh private key
-    that no signed cert matches, and a ledger with no history, so the next
-    bundle is a full one the far side refuses as out of order.
+    (`certs/{name}/`), its bundle ledger (`bundles/{name}/`), and its
+    snapshots, bundle log and publish records in the pool database — to the
+    new name. Without this a rename silently starts over: a fresh private key
+    that no signed cert matches, no record of where the last bundle went (so
+    the next one is a full one the far side refuses as out of order), and
+    snapshots stranded under a name nothing can reach any more.
 
-    Never overwrites: a directory already at the new name is left alone and
+    Never overwrites: state already at the new name is left alone and
     reported. Returns one line per thing it could not do.
     """
     problems: list[str] = []
+    if (mirror_dir / ".pool" / "mmw.db").exists():
+        from mmw.core.pool import Pool
+        try:
+            with Pool(mirror_dir) as pool:
+                problem = pool.rename_network(old, new)
+        except Exception as e:  # noqa: BLE001 — reported, like the moves below
+            problem = f"could not move the pool's records of '{old}': {e}"
+        if problem:
+            problems.append(problem)
     for kind in ("certs", "bundles"):
         src, dst = mirror_dir / kind / old, mirror_dir / kind / new
         if not src.exists():
@@ -792,6 +894,19 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             f"refusing to write an unloadable {CONFIG_FILENAME}: {e}"
         ) from e
 
-    with open(path, "wb") as f:
-        tomli_w.dump(data, f)
+    # Staged and renamed: written in place, a full disk or a kill mid-write
+    # left a truncated mmw.toml — every command then refuses to start, and the
+    # file is hand-edited, so there is often no other copy. The target is
+    # resolved first so a symlinked mmw.toml is replaced at its real location
+    # rather than turned into a regular file.
+    target = path.resolve() if path.is_symlink() else path
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        with open(tmp, "wb") as f:
+            tomli_w.dump(data, f)
+        if target.exists():
+            os.chmod(tmp, target.stat().st_mode & 0o7777)
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
     return path

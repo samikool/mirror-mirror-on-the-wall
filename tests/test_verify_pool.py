@@ -69,3 +69,36 @@ def test_verify_apt_unsynced(pool, mirror_dir):
     assert "synced" in r.error
 
 
+
+
+def test_deep_verify_finds_a_truncated_blob_and_repair_refetches_it(pool, mirror_dir):
+    """A blob truncated under its own (correct) checksum is invisible to every
+    database check, and a sync never re-fetches a pooled checksum — so the
+    damage is permanent until something stats the file and drops the row.
+    That is `mmw verify --deep --repair`; afterwards the ref is simply
+    missing, which is what the next sync fills."""
+    content = b"x" * 4096
+    cs = _seed(pool, content, "a.deb")
+    pool.reconcile_refs("m", [(cs, "pool/a.deb", KIND_PKG)])
+    blob = pool.pool_dir / "packages" / cs[:2] / f"{cs}-a.deb"
+    blob.write_bytes(content[:100])
+
+    m = _mirror("apt-flat")
+    assert verify_mirror(m, mirror_dir, pool).corrupt == []          # shallow: blind to it
+    r = verify_mirror(m, mirror_dir, pool, deep=True)
+    assert r.corrupt_checksums == [cs] and not r.complete
+
+    assert pool.forget_blobs(r.corrupt_checksums) == (1, len(content))
+    assert not blob.exists()
+    assert pool.batch_contains([cs]) == set()                          # the sync will fetch it
+    assert pool.missing_for("m") == [("pool/a.deb", cs)]
+
+
+def test_rehash_finds_a_blob_rewritten_at_the_same_size(pool, mirror_dir):
+    cs = _seed(pool, b"good-bytes", "a.deb")
+    pool.reconcile_refs("m", [(cs, "pool/a.deb", KIND_PKG)])
+    (pool.pool_dir / "packages" / cs[:2] / f"{cs}-a.deb").write_bytes(b"evil-bytes")
+
+    m = _mirror("apt-flat")
+    assert verify_mirror(m, mirror_dir, pool, deep=True).corrupt == []
+    assert verify_mirror(m, mirror_dir, pool, rehash=True).corrupt_checksums == [cs]

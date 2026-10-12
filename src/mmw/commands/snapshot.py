@@ -6,17 +6,29 @@ again exactly. Deleting one only drops its rows; the next `mmw prune` frees
 the files no live mirror and no other snapshot still references.
 """
 from pathlib import Path
+from types import SimpleNamespace
 
 from mmw.commands.common import eprint, load_config_or_none
 from mmw.core.format import fmt_size
 from mmw.core.pool import Pool, SnapshotInfo
 
 
-def _network(cfg_dir: Path, name: str):
+def _network(cfg_dir: Path, name: str, gone_ok: bool = False):
+    """(cfg, network). With `gone_ok`, a network no longer in the config but
+    still holding snapshots in the pool is returned as a bare name: its
+    snapshots can be listed, renamed and deleted, never taken or bundled.
+    Without that, a network hand-edited out of mmw.toml left snapshots that
+    pinned their files in the pool with no command able to reach them."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return None, None
     net = next((n for n in cfg.networks if n.name == name), None)
+    if net is None and gone_ok:
+        with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+            if name in pool.network_names():
+                print(f"({name} is no longer in the config — its snapshots can be "
+                      "listed and deleted.)")
+                return cfg, SimpleNamespace(name=name)
     if net is None:
         eprint(f"No network named {name!r} — one of: "
                f"{', '.join(n.name for n in cfg.networks) or '(none configured)'}")
@@ -51,7 +63,7 @@ def take(cfg_dir: Path, network: str, label: str | None = None) -> int:
 
 def list_(cfg_dir: Path, network: str) -> int:
     from mmw.core import snapshots
-    cfg, net = _network(cfg_dir, network)
+    cfg, net = _network(cfg_dir, network, gone_ok=True)
     if net is None:
         return 1
     with Pool(cfg.settings.mirror_dir) as pool:
@@ -95,7 +107,7 @@ def delete(cfg_dir: Path, network: str, ref: str, yes: bool = False) -> int:
 
 def _with_snapshot(cfg_dir, network, ref, act) -> int:
     from mmw.core import snapshots
-    cfg, net = _network(cfg_dir, network)
+    cfg, net = _network(cfg_dir, network, gone_ok=True)
     if net is None:
         return 1
     with Pool(cfg.settings.mirror_dir) as pool:
@@ -107,12 +119,32 @@ def _with_snapshot(cfg_dir, network, ref, act) -> int:
         return act(pool, snap)
 
 
+def _forget(pool: Pool, name: str, yes: bool) -> int:
+    """`clean --keep 0` for a network no longer in the config: everything
+    goes. Nothing can bundle from or publish its snapshots any more, so the
+    "last bundle went here" and "published there" protections mean nothing."""
+    snaps = pool.snapshots(name)
+    frees = pool.snapshot_exclusive_bytes([s.id for s in snaps])
+    print(f"{'Deleted' if yes else 'Would delete'} all {len(snaps)} snapshot(s) of {name} "
+          "and its bundle history:")
+    for s in snaps:
+        print(_row(s))
+    print(f"`mmw prune` then frees {fmt_size(frees)}.")
+    if yes:
+        pool.forget_network(name)
+    else:
+        print("run again with --yes to delete them.")
+    return 0
+
+
 def clean(cfg_dir: Path, network: str, keep: int, yes: bool = False) -> int:
     from mmw.core import snapshots
-    cfg, net = _network(cfg_dir, network)
+    cfg, net = _network(cfg_dir, network, gone_ok=True)
     if net is None:
         return 1
     with Pool(cfg.settings.mirror_dir) as pool:
+        if isinstance(net, SimpleNamespace) and keep == 0:
+            return _forget(pool, net.name, yes)
         plan = snapshots.clean_plan(pool, net.name, keep)
         for snap, why in plan.kept:
             print(f"Keeping {snap.stamp}" + (f" ({snap.label})" if snap.label else "")

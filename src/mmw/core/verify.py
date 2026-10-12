@@ -47,7 +47,23 @@ class VerifyResult:
     # deep mode only: blobs whose file is gone, the wrong size, or (with
     # `rehash`) whose bytes no longer hash to their own checksum.
     corrupt: list[str] = field(default_factory=list)
+    # The checksums behind `corrupt` — what `Pool.forget_blobs` (`mmw verify
+    # --repair`) drops so the next sync downloads them again.
+    corrupt_checksums: list[str] = field(default_factory=list)
     checked_blobs: int = 0
+
+    def describe(self) -> str:
+        """What is wrong with an incomplete mirror, in one line — shared by
+        `mmw verify` and the publish/bundle pre-flight, which used to print
+        "0 of N missing" for a mirror short only of refs or damaged blobs."""
+        parts = []
+        if self.missing_count:
+            parts.append(f"{self.missing_count:,} of {self.total:,} missing")
+        if self.missing_refs_count:
+            parts.append(f"{self.missing_refs_count:,} wanted file(s) not in the pool")
+        if self.corrupt:
+            parts.append(f"{len(self.corrupt):,} damaged blob(s)")
+        return ", ".join(parts) or "incomplete"
 
     @property
     def complete(self) -> bool:
@@ -112,12 +128,14 @@ def _check_blobs(pool: Pool, mirror_name: str, result: VerifyResult, rehash: boo
             st = p.stat()
         except OSError:
             result.corrupt.append(f"{repo_path}: blob missing from pool ({pool_path})")
+            result.corrupt_checksums.append(checksum)
             continue
         result.checked_blobs += 1
         if size and st.st_size != size:
             result.corrupt.append(
                 f"{repo_path}: blob is {st.st_size} bytes, index says {size}"
             )
+            result.corrupt_checksums.append(checksum)
             continue
         if rehash and checksum:
             h = hashlib.sha256()
@@ -127,9 +145,11 @@ def _check_blobs(pool: Pool, mirror_name: str, result: VerifyResult, rehash: boo
                         h.update(chunk)
             except OSError as e:
                 result.corrupt.append(f"{repo_path}: unreadable ({e})")
+                result.corrupt_checksums.append(checksum)
                 continue
             if h.hexdigest() != checksum:
                 result.corrupt.append(f"{repo_path}: content no longer matches its checksum")
+                result.corrupt_checksums.append(checksum)
 
 
 def _resolve_first(pool: Pool, mirror_name: str, candidates: list[str]) -> Path | None:

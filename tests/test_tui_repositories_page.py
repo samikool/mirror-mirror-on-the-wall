@@ -261,7 +261,7 @@ def test_wipe_refused_while_the_pool_is_busy_deletes_nothing(tmp_path, monkeypat
 
 
 def test_prune_reports_what_it_freed(tmp_path, monkeypatch):
-    monkeypatch.setattr(R, "prune_pool", lambda d, ids: (12, 4096))
+    monkeypatch.setattr(R, "prune_pool", lambda cfg: (12, 4096))
 
     async def check(app, pilot):
         await pilot.press("p")
@@ -304,7 +304,7 @@ def test_a_second_action_is_refused_instead_of_cancelling_the_first(tmp_path, mo
     # rightly allowed).
     running, release = threading.Event(), threading.Event()
 
-    def held_prune(d, ids):
+    def held_prune(cfg):
         running.set()
         release.wait(30)
         return (3, 1024)

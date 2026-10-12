@@ -100,7 +100,13 @@ class SetupPage(Wizard):
         sources = await self.app.push_screen_wait(AddRepositoryPage(
             existing_urls={s.identity for s in self._planned}))
         if sources:
-            self._planned, _, _ = config.merge_sources(self._planned, sources)
+            try:
+                self._planned, _, _ = config.merge_sources(self._planned, sources)
+            except ValueError as e:
+                # One URI added as `apt` and again as `apt-flat`. Unhandled in
+                # this worker it took the whole app down; it is a sentence.
+                self.app.notify(str(e), severity="error", timeout=12)
+                return
             self._render_repos()
             return
         if not self._planned:

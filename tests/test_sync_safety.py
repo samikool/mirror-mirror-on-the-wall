@@ -299,3 +299,78 @@ def test_a_prefetched_index_is_meta_not_release(pool):
         f"the index was filed as {kinds['Packages.xz']!r}"
     )
     assert kinds["InRelease"] == KIND_RELEASE
+
+
+# ── 6. two mirrors downloading one URL never share a partial file ────────────
+
+def test_concurrent_downloads_of_one_url_never_pool_a_partial(pool, monkeypatch):
+    """`Architecture: all` packages sit in every arch's index, and the TUI
+    syncs every mirror at once — so two mirrors download the same URL at the
+    same moment. Both used to stream into one URL-keyed resume file: the
+    second `open("wb")` replaced the first's, the first then finished and
+    linked the SECOND's half-written file into the pool under the right
+    checksum, and when the second was stopped the pool kept the truncated
+    bytes forever (`_fetch_or_skip`/`batch_contains` never re-fetch a pooled
+    checksum)."""
+    import threading
+    from contextlib import contextmanager
+
+    from mmw.core import downloader as dl
+
+    data = bytes(range(256)) * 1024                   # 256 KiB, 4 chunks
+    pkg = _pkg("all.deb", data)
+    a_started, b_started = threading.Event(), threading.Event()
+    a_go, b_go = threading.Event(), threading.Event()
+    stop_b = threading.Event()
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, started, go):
+            self._started, self._go = started, go
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, n):
+            for i in range(0, len(data), 65536):
+                yield data[i:i + 65536]
+                if i == 0:
+                    self._started.set()
+                    assert self._go.wait(10)
+
+    class _Client:
+        def __init__(self, started, go):
+            self._started, self._go = started, go
+
+        @contextmanager
+        def stream(self, *a, **k):
+            yield _Resp(self._started, self._go)
+
+    outcome: dict[str, object] = {}
+
+    def run(name, started, go, stop):
+        dl._thread_local.client = _Client(started, go)
+        try:
+            outcome[name] = dl._download_sync(pkg, pool, None, None, stop)
+        except BaseException as e:            # noqa: BLE001 — recorded for the asserts
+            outcome[name] = e
+
+    ta = threading.Thread(target=run, args=("a", a_started, a_go, None))
+    tb = threading.Thread(target=run, args=("b", b_started, b_go, stop_b))
+    ta.start()
+    assert a_started.wait(10)
+    tb.start()                                # B opens its file while A is mid-stream
+    assert b_started.wait(10)
+    a_go.set()
+    ta.join(10)                               # A finishes and pools its download
+    stop_b.set()
+    b_go.set()
+    tb.join(10)
+
+    assert outcome["a"].status == dl.Status.DOWNLOADED
+    assert isinstance(outcome["b"], InterruptedError)
+    pool.flush_writes()
+    blob = pool.pool_dir / "packages" / pkg.checksum[:2] / f"{pkg.checksum}-all.deb"
+    assert blob.read_bytes() == data, (
+        f"the pool holds {blob.stat().st_size} bytes under a {len(data)}-byte package's checksum")

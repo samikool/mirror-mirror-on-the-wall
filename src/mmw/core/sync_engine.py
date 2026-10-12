@@ -50,7 +50,11 @@ class DryRunStats:
     in_pool: int
     to_fetch: int
     fetch_size: int
-    has_unknown: bool
+    has_unknown: bool            # some package to fetch has no stated size
+    total_size: int = 0
+    pool_size: int = 0
+    no_checksum: int = 0         # to fetch, with no checksum to look up
+    sizes_known: bool = True     # every package states its size
 
 
 class KeySyncCoordinator:
@@ -97,8 +101,8 @@ class KeySyncCoordinator:
         # `ubuntu-archive-keyring.asc` into 16 directories — and published none
         # of them, because publish reads the pool and the pool has no key
         # column. A label directory is one place, and `label` *is* in the pool.
-        group = mirror.label or upstream.repository_group(mirror)
-        stem = getattr(mirror, "gpg_key_name", None) or upstream.repository_group(mirror)
+        group = mirror.label or upstream.repository_name(mirror)
+        stem = getattr(mirror, "gpg_key_name", None) or upstream.repository_name(mirror)
         claim = f"{group}/{stem}" if inline else f"{group}/url:{url}"
         if not self._claim(claim):
             return [], None
@@ -149,15 +153,23 @@ async def classify_mirror(
     packages = await loop.run_in_executor(executor, fetch_packages_threaded, provider, mirror)
 
     def _classify() -> DryRunStats:
+        # The one classification, shared by the sync TUI's dry run and
+        # `mmw dry-run` (which used to carry its own copy).
         known = [p.checksum for p in packages if p.checksum]
         pooled = pool.batch_contains(known)
         missing = [p for p in packages if not (p.checksum and p.checksum in pooled)]
+        total_size = sum(p.size for p in packages)
+        fetch_size = sum(p.size for p in missing)
         return DryRunStats(
             total=len(packages),
             in_pool=len(packages) - len(missing),
             to_fetch=len(missing),
-            fetch_size=sum(p.size for p in missing),
+            fetch_size=fetch_size,
             has_unknown=any(p.size == 0 for p in missing),
+            total_size=total_size,
+            pool_size=total_size - fetch_size,
+            no_checksum=sum(1 for p in missing if not p.checksum),
+            sizes_known=all(p.size > 0 for p in packages),
         )
 
     return await loop.run_in_executor(executor, _classify)

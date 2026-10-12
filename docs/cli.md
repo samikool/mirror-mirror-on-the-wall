@@ -48,7 +48,7 @@ codes — see [airgap.md](airgap.md#exit-codes).
 | [`mmw publish`](#mmw-publish) | Publish mirrors to network targets |
 | [`mmw snapshot`](#mmw-snapshot) | Network snapshots: a network's exact state, kept to bundle to or publish again |
 | [`mmw sync`](#mmw-sync) | Sync configured mirrors |
-| [`mmw verify`](#mmw-verify) | Check the pool holds every blob its mirrors' refs want (read-only) |
+| [`mmw verify`](#mmw-verify) | Check the pool holds every blob its mirrors' refs want (read-only unless --repair) |
 
 ### `mmw add`
 
@@ -167,8 +167,11 @@ Sync configured mirrors. Use --quiet for cron jobs.
 
 ### `mmw verify`
 
-Check the pool holds every blob its mirrors' refs want (read-only).
+Check the pool holds every blob its mirrors' refs want (read-only unless --repair).
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--network`, `-n` |  | Verify only this network's mirrors |
+| `--deep` |  | Also stat every blob (slow: one stat per file) |
+| `--rehash` |  | Also re-hash every blob (slowest: reads the whole pool) |
+| `--repair` |  | Drop damaged blobs so the next sync downloads them again (implies --deep) |

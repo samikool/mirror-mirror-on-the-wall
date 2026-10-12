@@ -73,8 +73,9 @@ def test_classify_mirror(monkeypatch, tmp_path):
                 return await classify_mirror(_mirror(), pool, ex)
 
         stats = asyncio.run(run())
-        assert stats == DryRunStats(total=3, in_pool=1, to_fetch=2,
-                                    fetch_size=500, has_unknown=True)
+        assert (stats.total, stats.in_pool, stats.to_fetch, stats.fetch_size,
+                stats.has_unknown) == (3, 1, 2, 500, True)
+        assert isinstance(stats, DryRunStats)
     finally:
         pool.close()
 

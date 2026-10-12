@@ -8,6 +8,7 @@ import posixpath
 import shutil
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -336,17 +337,21 @@ class PermanentFetchError(Exception):
 
 
 def _partial_path(pool: Pool, pkg: PackageInfo) -> Path:
-    """A resume file keyed by URL, stable across retries of one package.
+    """A resume file for ONE download of `pkg`: unique to it, and reused by
+    that download's own retries (`_do_one` makes it once and hands it to
+    every attempt, since a retry may land on another executor thread).
 
-    Deterministic rather than per-thread because a retry may land on a
-    different executor thread and still needs to find what the previous
-    attempt already pulled down. Two different packages cannot collide (the
-    key is a digest of the URL) and one package is only ever downloaded by one
-    consumer coroutine at a time, so nothing races here. Abandoned partials
-    are swept by the pool's existing 24 h tmp reaper.
+    Never derived from the URL alone. `Architecture: all` packages are in
+    every arch's index and the TUI syncs all mirrors at once, so two mirrors
+    routinely download one URL at the same moment. With a URL-keyed name the
+    second `open("wb")` replaced the first's file, the first finished and
+    linked the second's *half-written* file into the pool under the correct
+    checksum, and a stop or a dropped connection on the second left it
+    truncated there for good — a pooled checksum is never fetched again.
+    Abandoned partials are swept by the pool's 24 h tmp reaper.
     """
     key = hashlib.sha256(pkg.url.encode()).hexdigest()[:16]
-    return pool._tmp_dir / f"{os.getpid()}-part-{key}-{pkg.filename}"
+    return pool._tmp_dir / f"{os.getpid()}-part-{key}-{uuid.uuid4().hex[:12]}-{pkg.filename}"
 
 
 def _download_sync(
@@ -356,6 +361,8 @@ def _download_sync(
     start_callback: Callable[[], None] | None,
     stop_event: threading.Event | None = None,
     resume: bool = False,
+    *,
+    partial: Path | None = None,
 ) -> DownloadResult:
     """Stream pkg from network into the pool. Runs in executor thread.
 
@@ -368,12 +375,15 @@ def _download_sync(
     before anything is pooled: if the server ignores the Range (answering 200),
     we start over; if it serves the wrong bytes, the digest catches it and the
     partial is discarded. No trust is placed in the range machinery itself.
+
+    `partial` is the resume file `_do_one` made for this package; a call
+    without one (a single attempt) gets a fresh one of its own.
     """
     if start_callback:
         start_callback()
     client = _thread_client()
     h = hashlib.new(pkg.checksum_type)
-    tmp = _partial_path(pool, pkg)
+    tmp = partial if partial is not None else _partial_path(pool, pkg)
 
     offset = 0
     if resume and tmp.exists():
@@ -569,6 +579,7 @@ async def download_mirror(
                 async with _sem:
                     result = DownloadResult(Status.FAILED, Path(pkg.filename), error="not attempted")
                     delay = _PKG_BACKOFF
+                    partial = _partial_path(pool, pkg)    # this download's own, across retries
                     for attempt in range(_PKG_RETRIES):
                         if stop_event and stop_event.is_set():
                             summary.stopped = True
@@ -578,6 +589,7 @@ async def download_mirror(
                                 _download_sync, pkg, pool,
                                 chunk_callback, start_callback if attempt == 0 else None,
                                 stop_event, attempt > 0,     # resume after the first try
+                                partial=partial,
                             )
                             result = await loop.run_in_executor(executor, fn)
                         except InterruptedError:
@@ -714,12 +726,11 @@ async def download_mirror(
 
             meta_entries.clear()
             # `is_release` is declared by the provider rather than inferred
-            # from which other fields happen to be set. The old rule —
-            # "content is set and expected_sha256 is not" — silently depended
-            # on `AptProvider` pre-fetching its release files: `AptFlatProvider`
-            # only HEADs them, so every flat repository filed InRelease /
-            # Release / Release.gpg as KIND_META and lost the release-last
-            # publish ordering that keeps a live-served tree consistent.
+            # from which other fields happen to be set: the old rule ("content
+            # is set and expected_sha256 is not") filed a flat repository's
+            # release files as KIND_META while its provider only HEADed them,
+            # losing the release-last publish ordering that keeps a
+            # live-served tree consistent.
             def _is_release(mf: MetadataFile) -> bool:
                 # The flag, and only the flag. There used to be a fallback
                 # inference here — "content is set and expected_sha256 is not"

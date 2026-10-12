@@ -52,15 +52,41 @@ def upstream_rel(url: str) -> str | None:
     return rel
 
 
-def repository_group(mirror) -> str:
-    """The name a mirror's repository files are filed under: the *source*
-    name, never the expanded mirror name — that carries suite, component and
-    arch, so one repository would scatter across every combination of them.
-    Sync (which stores) and publish (which reads) must agree on it exactly."""
+def repository_name(mirror) -> str:
+    """A readable name for a mirror's repository — the *source*, never the
+    expanded mirror name, which carries suite, component and arch. Used for
+    file names a person reads (a key's stem); `repository_group` is the one
+    that must be unique."""
     from mmw.core.config import derive_name
 
     source = getattr(mirror, "source", "") or mirror.source_url
-    return derive_name(source) if source else mirror.name
+    return derive_name(source, provider=mirror.provider) if source else mirror.name
+
+
+def repository_group(mirror) -> str:
+    """The directory a mirror's repository files are filed under, unique per
+    repository: its name plus a digest of its URI. Sync (which stores) and
+    publish (which reads) must agree on it exactly.
+
+    A derived name alone is not unique — NVIDIA's per-arch flat repositories
+    (`…/hpc-sdk/ubuntu/amd64`, `…/arm64`) derived one — and two repositories
+    sharing a directory each pruned the other's files and only the first one
+    synced ever fetched its own."""
+    import hashlib
+
+    source = getattr(mirror, "source", "") or mirror.source_url
+    if not source:
+        return mirror.name
+    return f"{repository_name(mirror)}-{hashlib.sha256(source.encode()).hexdigest()[:8]}"
+
+
+def legacy_group(mirror) -> str | None:
+    """Where a repository's files were filed before `repository_group` was
+    unique — read by publish until the next sync refiles them."""
+    from mmw.core.config import derive_name
+
+    source = getattr(mirror, "source", "") or mirror.source_url
+    return derive_name(source) if source else None
 
 
 def group_dir(mirror_dir: Path, group: str) -> Path:
@@ -69,14 +95,20 @@ def group_dir(mirror_dir: Path, group: str) -> Path:
 
 def fetch_bytes(url: str, client) -> bytes:
     """The file exactly as the server sent it (redirects followed — the copy
-    is still published at the URL the instructions name)."""
-    resp = client.get(url, timeout=30, follow_redirects=True)
-    resp.raise_for_status()
-    data = resp.content
-    if len(data) > MAX_BYTES:
-        raise ValueError(f"{len(data)} bytes is more than the {MAX_BYTES >> 20} MiB "
-                         "allowed for an upstream file")
-    return data
+    is still published at the URL the instructions name).
+
+    Streamed against MAX_BYTES: reading `resp.content` first and checking
+    after buffered the whole response, so the cap could not stop the
+    endless stream it exists for."""
+    with client.stream("GET", url, timeout=30, follow_redirects=True) as resp:
+        resp.raise_for_status()
+        data = bytearray()
+        for chunk in resp.iter_bytes():
+            data += chunk
+            if len(data) > MAX_BYTES:
+                raise ValueError(f"more than the {MAX_BYTES >> 20} MiB allowed for an "
+                                 "upstream file")
+    return bytes(data)
 
 
 def store(mirror_dir: Path, group: str, url: str, raw: bytes) -> Path:

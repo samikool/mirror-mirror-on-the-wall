@@ -341,3 +341,37 @@ def test_an_unresolvable_repository_says_where_it_looked(monkeypatch):
     )
     assert r.mirrors == []
     assert "Release" in r.errors[0] and "noble-updates" in r.errors[0]
+
+
+def test_a_narrowed_source_stops_publishing_what_it_dropped(tmp_path):
+    """The pool remembers every mirror it synced; publish enumerates from it.
+    Dropping `jammy` from `suites` used to keep publishing jammy — frozen at
+    its last sync, never updated again — because the pool was filtered by
+    repository only."""
+    import hashlib
+
+    from mmw.core.config import Config, MirrorConfig, normalize_url
+    from mmw.core.pool import KIND_PKG, Pool
+    from mmw.core.resolve import network_mirrors
+
+    url = "http://archive.ubuntu.com/ubuntu"
+    with Pool(tmp_path) as pool:
+        for suite, arch in (("jammy", "amd64"), ("noble", "amd64"), ("noble", "i386")):
+            cs = hashlib.sha256(f"{suite}{arch}".encode()).hexdigest()
+            pool.add(b"x", cs, "sha256", "x.deb", 1)
+            m = MirrorConfig(name=f"u-{suite}-main-{arch}", provider="apt", source_url=url,
+                             source=normalize_url(url), arch=arch, suite=suite,
+                             component="main")
+            pool.record_mirror(m)
+            pool.reconcile_refs(m.name, [(cs, "pool/x.deb", KIND_PKG)], normalize_url(url))
+
+    def published(**src):
+        cfg = Config.model_validate({"settings": {"mirror_dir": str(tmp_path)},
+                                     "sources": [{"url": url, **src}],
+                                     "networks": [{"name": "lab"}]})
+        return sorted(m.name for m in network_mirrors(cfg.networks[0], cfg, tmp_path))
+
+    assert published() == ["u-jammy-main-amd64", "u-noble-main-amd64", "u-noble-main-i386"]
+    assert published(suites=["noble"]) == ["u-noble-main-amd64", "u-noble-main-i386"]
+    assert published(arches=["amd64"]) == ["u-jammy-main-amd64", "u-noble-main-amd64"]
+    assert published(components=["universe"]) == []

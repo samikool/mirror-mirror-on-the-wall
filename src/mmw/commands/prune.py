@@ -12,8 +12,9 @@ preview, no confirmation and no guard:
   configured-source list cannot *prove* anything is unwanted, which is the
   same standard `prune_orphans` already applies to pre-`source` refs rows, so
   it is refused outright here.
-- **`--dry-run`** answers "what would go" without deleting. The preview runs
-  the same set difference against a read-only connection; it never writes.
+- **`--dry-run`** answers "what would go" without deleting. The preview is
+  the prune's own orphan query (`Pool.prune_preview`) on a read-only pool; it
+  never writes, and it cannot drift from what the prune actually removes.
 - **`--yes`** skips the confirmation an interactive run now gets. A
   non-interactive run (cron) proceeds without asking, because a prompt nobody
   can answer is just a hang.
@@ -27,38 +28,24 @@ from mmw.core.format import fmt_size as _fmt_size
 from mmw.core.pool import Pool, PoolBusy
 
 
-def _preview(mirror_dir: Path, configured: list[str]) -> tuple[int, int]:
-    """(files, bytes) `prune_orphans(configured)` would remove. Read-only.
-
-    Models exactly what `Pool.prune_orphans` does — drop the refs of
-    unconfigured repositories, then count the packages no remaining ref wants
-    — but in one SELECT against a `mode=ro` connection, so a preview can never
-    be the thing that deletes. Kept here rather than in `core/pool.py` so the
-    read-only query lives beside the command that needs it.
-    """
-    db_path = mirror_dir / ".pool" / "mmw.db"
-    if not db_path.exists():
-        return 0, 0
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    try:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(refs)")}
-        if "source" in cols:
-            ph = ",".join("?" * len(configured))
-            keep = f"(r.source = '' OR r.source IN ({ph}))"
-            params = configured
-        else:
-            # A pre-`source` pool can prove nothing about any ref, and
-            # `prune_orphans` never deletes those rows either.
-            keep, params = "1", []
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM packages "
-            "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum "
-            f"AND {keep})",
-            params,
-        ).fetchone()
-        return int(row[0]), int(row[1])
-    finally:
-        conn.close()
+def _plan(cfg, mirror_dir: Path) -> tuple[list[str], int, int]:
+    """(dropped mirrors, files, bytes) a prune would remove. Read-only: the
+    preview is `Pool.prune_preview` — the prune's own orphan query, with the
+    refs it would delete filtered out rather than deleted — on a read-only
+    pool, so a preview can never be the thing that deletes."""
+    from mmw.core.resolve import uncovered_mirror_names
+    with Pool(mirror_dir, read_only=True) as pool:
+        dropped = uncovered_mirror_names(cfg, pool)
+        files, size = pool.prune_preview([s.identity for s in cfg.sources], dropped)
+        gone = sorted(n for n in pool.network_names() - {n.name for n in cfg.networks}
+                      if pool.snapshots(n))
+    for name in gone:
+        # Snapshots are GC roots, so a network removed from mmw.toml by hand
+        # keeps its files in the pool until its snapshots go. Said here, where
+        # someone is asking what can be freed.
+        print(f"  Snapshots of {name} (no longer configured) still hold files — "
+              f"`mmw snapshot clean -n {name} --keep 0 --yes` lets prune free them.")
+    return dropped, files, size
 
 
 @interruptible
@@ -84,12 +71,16 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
         return 1
 
     try:
-        removable, freeable = _preview(mirror_dir, configured)
+        dropped, removable, freeable = _plan(cfg, mirror_dir)
     except (OSError, sqlite3.Error) as e:
         eprint(f"Cannot read the pool in {mirror_dir}: {e}")
         return 1
 
     print(f"Pruning pool against {len(configured)} configured repositor(y/ies)...")
+    if dropped:
+        print(f"  {len(dropped)} synced mirror(s) are no longer in the config "
+              f"(a suite, component or arch was removed): "
+              f"{', '.join(dropped[:5])}{' …' if len(dropped) > 5 else ''}")
     if dry_run:
         if removable == 0:
             print("Pool is clean — no orphaned packages found. (dry run)")
@@ -116,7 +107,7 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
         eprint(f"Cannot open the pool in {mirror_dir}: {e.strerror or e}")
         return 1
     try:
-        removed, freed = pool.prune_orphans(configured)
+        removed, freed = pool.prune_orphans(configured, dropped)
     except PoolBusy as e:
         # A sync is running. Until a mirror's refs are reconciled at the end of
         # its run, every blob it has downloaded is `packages − refs` — i.e.

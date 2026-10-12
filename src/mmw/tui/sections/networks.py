@@ -287,7 +287,8 @@ class NetworksPage(Page):
         if net is None:
             return
         if not await self.app.push_screen_wait(ConfirmDialog(
-                "Remove network", f"Remove network [b]{escape(net.name)}[/b]?", "Remove")):
+                "Remove network", f"Remove network [b]{escape(net.name)}[/b]?\n"
+                "Its snapshots and bundle history are removed with it.", "Remove")):
             return
         try:
             await self.app.save_config(lambda c: networks.without_network(c, net.name))

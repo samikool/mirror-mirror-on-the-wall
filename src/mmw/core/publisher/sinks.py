@@ -190,10 +190,10 @@ class TreeSink:
         return self.root.joinpath(*_TMP_SUBDIR)
 
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
-        from mmw.core.publisher.links import hardlink_or_copy
+        from mmw.core.publisher.links import hardlink_or_copy, same_file
         dst = self.root / rel
         try:
-            if dst.exists() and dst.stat().st_ino == src.stat().st_ino:
+            if dst.exists() and same_file(dst, src):
                 return "skipped"
             hardlink_or_copy(src, dst, tmp_dir=self.tmp_dir)
             return "linked"
@@ -438,8 +438,6 @@ class BundleSink:
         self._generated: dict[str, bytes] = {}
         self._seen: set[str] = set()
         self.deleted: list[str] = []
-        self.sent = 0
-        self.sent_bytes = 0
         self.errors: list[str] = []
 
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
@@ -448,18 +446,15 @@ class BundleSink:
         self._seen.add(rel)
         self.manifest_rows.append((rel, checksum))
         # `and checksum` is a deliberate divergence from manifest.delta()'s
-        # pure `prev.get(rel) != cs` set difference: an empty checksum (a
-        # published GPG key — `publish_keys` calls `sink.link(f, rel,
-        # size, "", KIND_META)`, see links.py) must never compare equal to
-        # itself across bundles and be treated as "unchanged, skip resend" —
-        # a key has no content hash to trust that judgement on, so it is
-        # always resent. `test_bundle_sink_delta_agrees_with_manifest_delta`
-        # only asserts the two rules agree where both have a real checksum.
+        # pure `prev.get(rel) != cs` set difference: an empty checksum has no
+        # content hash to trust an "unchanged, skip resend" judgement on, so
+        # it is always resent. Every producer passes a real checksum today
+        # (keys included — `publish_keys` hashes them); this is the backstop.
+        # `test_bundle_sink_delta_agrees_with_manifest_delta` only asserts the
+        # two rules agree where both have a real checksum.
         if not self._full and self._prev.get(rel) == checksum and checksum:
             return "skipped"
         self._send.append((rel, src, size, checksum))
-        self.sent += 1
-        self.sent_bytes += size
         return "linked"
 
     def write(self, rel: str, data: bytes) -> None:
@@ -469,8 +464,30 @@ class BundleSink:
         if not self._full and self._prev.get(rel) == checksum:
             return
         self._generated[rel] = data
-        self.sent += 1
-        self.sent_bytes += len(data)
+
+    @property
+    def sent(self) -> int:
+        """Tar entries this bundle carries, hardlink entries included."""
+        return len(self._send) + len(self._generated)
+
+    @property
+    def sent_bytes(self) -> int:
+        """File bytes this bundle's tar actually carries. A repeated checksum
+        is written as a hardlink entry with no payload (see close()), so it
+        is counted once — summing every row reported the logical tree size,
+        ~10% over the real tar on oak (arch:all debs on both archive and
+        ports, CUDA debs shared across repos), and the archive progress bar
+        stalled at ~91% against it.
+        """
+        seen: set[str] = set()
+        total = sum(len(d) for d in self._generated.values())
+        for _rel, _src, size, checksum in self._send:
+            if checksum:
+                if checksum in seen:
+                    continue
+                seen.add(checksum)
+            total += size
+        return total
 
     def finalize_group(self, base: str, keep: set[str],
                        live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
@@ -569,59 +586,35 @@ class BundleSink:
 
     def close(self) -> None:
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
-        # ── Pre-flight: a row whose pool blob can't be streamed is dropped
-        # from the plan BEFORE the manifest that describes the plan is
-        # written. This used to happen inside the write loop instead, which
-        # made every such failure unrecoverable on the far side:
-        # `file_count` was computed up front from the unfiltered lists, the
-        # loop then `continue`d past the bad row, and the tarball STILL
-        # landed and the ledger manifest STILL advanced. The far side
-        # correctly refused (`written != declared` → EXIT_TOOLING, so
-        # `.mmw-state` never moved) while the producing side's ledger had
-        # moved — every subsequent delta then failed EXIT_OUT_OF_ORDER
-        # forever, and the skipped file sat in manifest N with a real
-        # checksum so no delta would ever resend it either. Recovery was a
-        # multi-TB `--full`.
-        #
-        # Dropping the row instead keeps every side consistent: the tar,
-        # `file_count` and the manifest all agree, the far side applies
-        # cleanly, and — because the manifest no longer claims the path —
-        # the NEXT ordinary delta bundle resends it on its own. The failure
-        # is still loud: it is in `self.errors`, which `bundle_network`
-        # folds into `BundleResult`, so `mmw bundle` exits 1.
-        send: list[tuple[str, Path, int, str]] = []
-        dropped: set[str] = set()
-        for rel, src, size, checksum in self._send:
-            # Verified BEFORE any tar write: TarFile.addfile() writes the
+        # ── Pre-flight: every pool blob must be exactly what was recorded,
+        # or NOTHING is written. Not one row dropped and the rest shipped:
+        # that was tried, on the theory that a manifest no longer naming the
+        # path would make the next delta resend it. Deltas are computed from
+        # snapshots now, and the destination snapshot still names the path,
+        # so the next bundle took it as already sent — the far side lacked
+        # the file for good, with every later `apply.py --verify` failing on
+        # it. A missing or wrong-sized blob is a damaged pool: the fix is
+        # `mmw verify --repair` and a sync, then the same bundle again.
+        bad: list[str] = []
+        for rel, src, size, _checksum in self._send:
+            # Checked BEFORE any tar write: TarFile.addfile() writes the
             # entry's header (and whatever chunks it manages to read)
-            # straight to the stream before a short read can
-            # raise — so catching that failure mid-loop would leave
-            # tarfile's offset bookkeeping out of sync with bytes already
-            # flushed, corrupting every entry after it. A pool blob is
-            # content-addressed and shouldn't change, but the size recorded
-            # at link() time must still be checked against the file on disk.
+            # straight to the stream before a short read can raise, so a
+            # failure mid-loop would leave a misaligned archive.
             try:
                 actual_size = src.stat().st_size
             except OSError as e:
-                self.errors.append(f"{rel}: {e}")
-                dropped.add(rel)
+                bad.append(f"{rel}: {e}")
                 continue
             if actual_size != size:
-                self.errors.append(
-                    f"{rel}: pool blob is {actual_size} bytes, "
-                    f"expected {size} — skipped rather than "
-                    "write a truncated tar entry")
-                dropped.add(rel)
-                continue
-            send.append((rel, src, size, checksum))
-        if dropped:
-            self.manifest_rows = [(r, c) for r, c in self.manifest_rows
-                                  if r not in dropped]
-            for rel, _src, size, _cs in self._send:
-                if rel in dropped:
-                    self.sent -= 1
-                    self.sent_bytes -= size
-            self._send = send
+                bad.append(f"{rel}: pool blob is {actual_size} bytes, expected {size}")
+        if bad:
+            self.errors.extend(bad)
+            raise ValueError(
+                f"{len(bad)} file(s) are damaged in the pool, so nothing was bundled "
+                f"(first: {bad[0]}). `mmw verify --repair` drops them and the next "
+                "`mmw sync` downloads them again.")
+        send = self._send
 
         # `_send`/`_generated` are final the instant link()/write() stop being
         # called, so exactly how many real files (never the fixed .mmw/

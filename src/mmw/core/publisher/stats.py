@@ -160,6 +160,7 @@ def dry_run_network(
 
     if network.dist_upgrade:
         with Pool(mirror_dir, read_only=True) as pool:
-            result.dist_upgrade_paths, result.dist_upgrade_warnings = dist_upgrade_info(network, cfg, pool)
+            result.dist_upgrade_paths, result.dist_upgrade_warnings = dist_upgrade_info(
+                network, cfg, pool, mirror_dir)
 
     return result

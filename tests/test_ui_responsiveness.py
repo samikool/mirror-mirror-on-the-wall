@@ -799,7 +799,7 @@ def test_downloads_do_not_allocate_a_task_per_package(tmp_path, monkeypatch):
     n_pkgs = 400
     calls = [0]
 
-    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False):
+    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False, **_kw):
         calls[0] += 1
         return dl.DownloadResult(dl.Status.DOWNLOADED, Path(pkg.filename),
                                  bytes_transferred=10, checksum=pkg.checksum)
@@ -844,7 +844,7 @@ def test_the_consumer_pool_is_capped_by_max_connections(tmp_path, monkeypatch):
     live = [0]
     peak = [0]
 
-    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False):
+    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False, **_kw):
         live[0] += 1
         peak[0] = max(peak[0], live[0])
         time.sleep(0.002)
@@ -872,7 +872,7 @@ def test_the_consumer_pool_is_capped_by_max_connections(tmp_path, monkeypatch):
 def test_fewer_packages_than_workers_still_completes(tmp_path, monkeypatch):
     import mmw.core.downloader as dl
 
-    monkeypatch.setattr(dl, "_download_sync", lambda pkg, *a: dl.DownloadResult(
+    monkeypatch.setattr(dl, "_download_sync", lambda pkg, *a, **_kw: dl.DownloadResult(
         dl.Status.DOWNLOADED, Path(pkg.filename), bytes_transferred=10,
         checksum=pkg.checksum))
 
@@ -896,7 +896,7 @@ def test_a_stop_event_drains_the_consumers(tmp_path, monkeypatch):
     stop = threading.Event()
     seen = [0]
 
-    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False):
+    def fake_download(pkg, pool, chunk_cb, start_cb, stop_ev, resume=False, **_kw):
         seen[0] += 1
         if seen[0] == 10:
             stop.set()
@@ -941,7 +941,7 @@ def test_the_sync_lock_is_never_taken_on_the_event_loop(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         dl, "_download_sync",
-        lambda pkg, pool, chunk_cb, start_cb, stop_ev, resume=False: dl.DownloadResult(
+        lambda pkg, pool, chunk_cb, start_cb, stop_ev, resume=False, **_kw: dl.DownloadResult(
             dl.Status.DOWNLOADED, Path(pkg.filename), bytes_transferred=10,
             checksum=pkg.checksum,
         ),

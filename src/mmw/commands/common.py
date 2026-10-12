@@ -102,10 +102,7 @@ def incomplete_mirrors(net, cfg, mirror_dir: Path) -> list[str]:
             if r.error:
                 problems.append(f"{r.mirror_name}: {r.error}")
             elif not r.complete:
-                problems.append(
-                    f"{r.mirror_name}: {r.missing_count:,} of {r.total:,} file(s) "
-                    "missing from the pool"
-                )
+                problems.append(f"{r.mirror_name}: {r.describe()}")
     return problems
 
 

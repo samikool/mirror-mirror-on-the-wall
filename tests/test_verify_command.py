@@ -32,7 +32,7 @@ def test_verify_all_complete_exits_0(cfg_dir, monkeypatch, capsys):
         VerifyResult("debian-bookworm-main-amd64", "apt", total=100, present=100),
         VerifyResult("ubuntu-noble-main-amd64", "apt", total=50, present=50),
     ]
-    monkeypatch.setattr(verify_cmd, "_verify_all", lambda cfg, mirror_dir, network: results)
+    monkeypatch.setattr(verify_cmd, "_verify_all", lambda cfg, mirror_dir, network, **_k: results)
 
     code = verify_cmd.run(cfg_dir)
 
@@ -48,7 +48,7 @@ def test_verify_missing_blobs_exits_1_and_reports_count(cfg_dir, monkeypatch, ca
     results = [
         VerifyResult("ubuntu-noble-main-amd64", "apt", total=100, present=97, missing_count=3),
     ]
-    monkeypatch.setattr(verify_cmd, "_verify_all", lambda cfg, mirror_dir, network: results)
+    monkeypatch.setattr(verify_cmd, "_verify_all", lambda cfg, mirror_dir, network, **_k: results)
 
     code = verify_cmd.run(cfg_dir)
 
@@ -64,7 +64,7 @@ def test_verify_network_option_narrows_to_that_network(cfg_dir, monkeypatch):
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg(net))
     seen = {}
 
-    def fake_verify_all(cfg, mirror_dir, network):
+    def fake_verify_all(cfg, mirror_dir, network, **_k):
         seen["network"] = network
         return [VerifyResult("ubuntu-noble-main-amd64", "apt", total=10, present=10)]
     monkeypatch.setattr(verify_cmd, "_verify_all", fake_verify_all)
@@ -90,7 +90,7 @@ def test_verify_unknown_network_returns_1_without_calling_verify_all(cfg_dir, mo
 
 def test_verify_no_mirrors_exits_0(cfg_dir, monkeypatch, capsys):
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg())
-    monkeypatch.setattr(verify_cmd, "_verify_all", lambda cfg, mirror_dir, network: [])
+    monkeypatch.setattr(verify_cmd, "_verify_all", lambda cfg, mirror_dir, network, **_k: [])
 
     code = verify_cmd.run(cfg_dir)
 
@@ -101,7 +101,7 @@ def test_verify_no_mirrors_exits_0(cfg_dir, monkeypatch, capsys):
 def test_verify_reports_mirror_with_error(cfg_dir, monkeypatch, capsys):
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg())
     results = [VerifyResult("broken-mirror", "apt", error="Packages index not in pool — has this mirror been synced?")]
-    monkeypatch.setattr(verify_cmd, "_verify_all", lambda cfg, mirror_dir, network: results)
+    monkeypatch.setattr(verify_cmd, "_verify_all", lambda cfg, mirror_dir, network, **_k: results)
 
     code = verify_cmd.run(cfg_dir)
 
@@ -109,3 +109,31 @@ def test_verify_reports_mirror_with_error(cfg_dir, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "broken-mirror" in err
     assert "not in pool" in err
+
+
+def test_verify_repair_drops_damaged_blobs_and_still_exits_1(tmp_path, monkeypatch, capsys):
+    """A repaired pool is still short until the next sync, so cron sees 1."""
+    import hashlib
+
+    from mmw.core.pool import Pool
+
+    mirror_dir = tmp_path / "pool"
+    (tmp_path / "mmw.toml").write_text(f'[settings]\nmirror_dir = "{mirror_dir}"\n')
+    with Pool(mirror_dir) as pool:
+        cs = hashlib.sha256(b"pkg").hexdigest()
+        pool.add(b"pkg", cs, "sha256", "a.deb", 3)
+    seen = {}
+
+    def fake_verify_all(cfg, mirror_dir, network, **kw):
+        seen.update(kw)
+        return [VerifyResult("m", "apt", total=1, present=1,
+                             corrupt=["pool/a.deb: blob is 1 bytes, index says 3"],
+                             corrupt_checksums=[cs])]
+    monkeypatch.setattr(verify_cmd, "_verify_all", fake_verify_all)
+
+    assert verify_cmd.run(tmp_path, repair=True) == 1
+    assert seen == {"deep": True, "rehash": False}
+    out = capsys.readouterr()
+    assert "1 damaged blob" in out.err and "Dropped 1 damaged blob" in out.out
+    with Pool(mirror_dir, read_only=True) as pool:
+        assert pool.batch_contains([cs]) == set()

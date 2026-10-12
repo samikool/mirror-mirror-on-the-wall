@@ -1,5 +1,6 @@
 """Phase 2: error paths must surface, not vanish."""
 import asyncio
+import contextlib
 import hashlib
 
 
@@ -109,6 +110,9 @@ def test_summary_ok_property():
 # ── keys: failures are returned, not swallowed ───────────────────────────────
 
 class _FakeResponse:
+    def iter_bytes(self):
+        yield self.content
+
     def __init__(self, content=b"key-bytes", status=200):
         self.content = content
         self.status_code = status
@@ -123,6 +127,10 @@ class _FakeClient:
         self.fail = fail
         self.content = content
         self.status = status
+
+    @contextlib.contextmanager
+    def stream(self, method, url, **kwargs):
+        yield self.get(url, **kwargs)
 
     def get(self, url, **kwargs):
         if self.fail:

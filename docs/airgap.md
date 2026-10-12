@@ -371,6 +371,11 @@ Otherwise, re-check the `.sha256` and re-transfer.
 The bundle shipped an index without its package. Run `mmw verify` on the
 connected side — that is exactly what it detects — then re-sync and re-bundle.
 
+**`mmw bundle` says files are damaged in the pool.**
+A pool file no longer matches what was recorded for it, so nothing was
+bundled. `mmw verify --repair` drops the damaged files, `mmw sync` downloads
+them again, and the same `mmw bundle` command then works.
+
 **`apt update` reports a missing `Release` file.**
 The suite was published without its metadata. Check `mmw verify` on the
 connected side, and confirm DNS points at the mirror for that specific host.

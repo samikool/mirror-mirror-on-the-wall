@@ -151,9 +151,67 @@ def test_unreadable_pool_is_one_line_not_a_traceback(tmp_path, monkeypatch, caps
     def boom(*a, **k):
         raise OSError(13, "Permission denied")
 
-    monkeypatch.setattr(prune_cmd, "_preview", boom)
+    monkeypatch.setattr(prune_cmd, "_plan", boom)
 
     assert prune_cmd.run(cfg_dir) == 1
     err = capsys.readouterr().err
     assert "Permission denied" in err
     assert len(err.strip().splitlines()) <= 3
+
+
+def test_core_refuses_an_empty_source_list(pooled):
+    """The guard lives in `Pool.prune_orphans` itself: the TUI's Prune button
+    had none of the CLI's, and with every repository removed it deleted every
+    blob no snapshot held."""
+    with Pool(pooled) as pool:
+        with pytest.raises(ValueError, match="no configured repositories"):
+            pool.prune_orphans([])
+    assert _blob_count(pooled) == 2
+
+
+def test_preview_does_not_count_snapshot_held_blobs(pooled, tmp_path, capsys):
+    """Snapshots are GC roots. The preview was a second copy of the orphan
+    SQL that never learned that, so the dry run and the confirmation prompt
+    promised to delete files the prune then kept."""
+    import hashlib
+    with Pool(pooled) as pool:
+        held = hashlib.sha256(b"b.deb" * 50).hexdigest()
+        pool.create_snapshot("lab", "20260101T000000Z", kind="manual",
+                             rows=[("other.invalid/repo/pool/b.deb", held)])
+        assert pool.prune_preview([SRC]) == (0, 0)
+        assert pool.prune_orphans([SRC]) == (0, 0)
+
+    assert prune_cmd.run(_cfg_dir(tmp_path, pooled, [SRC]), dry_run=True) == 0
+    assert "Pool is clean" in capsys.readouterr().out
+
+
+def test_a_suite_dropped_from_the_config_is_pruned(tmp_path, capsys):
+    """Narrowing `suites` on a still-configured repository: the dropped
+    suite's refs are proven unwanted by the config, so prune frees them."""
+    import hashlib
+
+    from mmw.core.config import MirrorConfig, normalize_url
+
+    mirror_dir = tmp_path / "mirror"
+    src = normalize_url(SRC)
+    with Pool(mirror_dir) as pool:
+        for suite in ("jammy", "noble"):
+            data = suite.encode() * 10
+            cs = hashlib.sha256(data).hexdigest()
+            pool.add(data, cs, "sha256", f"{suite}.deb", len(data))
+            m = MirrorConfig(name=f"r-{suite}-main-amd64", provider="apt", source_url=SRC,
+                             source=src, arch="amd64", suite=suite, component="main")
+            pool.record_mirror(m)
+            pool.reconcile_refs(m.name, [(cs, f"pool/{suite}.deb", KIND_PKG)], source=src)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "mmw.toml").write_text(
+        f'[settings]\nmirror_dir = "{mirror_dir}"\n\n[[sources]]\nurl = "{SRC}"\n'
+        'suites = ["noble"]\ncomponents = ["main"]\narches = ["amd64"]\n')
+
+    assert prune_cmd.run(cfg_dir, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "r-jammy-main-amd64" in out and "Would remove 1 orphaned" in out
+    assert prune_cmd.run(cfg_dir, yes=True) == 0
+    with Pool(mirror_dir, read_only=True) as pool:
+        assert [m.name for m in pool.mirrors([src])] == ["r-noble-main-amd64"]

@@ -12,6 +12,7 @@ work unchanged. Two real layouts are exercised end to end:
 
 Plus `keys/` served at `/mmw-keys/` on every host.
 """
+import contextlib
 import hashlib
 import subprocess
 import sys
@@ -39,6 +40,9 @@ MS_KEY = "https://packages.microsoft.com/keys/microsoft.asc"
 
 
 class _Resp:
+    def iter_bytes(self):
+        yield self.content
+
     def __init__(self, content, status=200):
         self.content = content
         self.status = status
@@ -54,6 +58,10 @@ class _Client:
     def __init__(self, files):
         self.files = files
         self.urls = []
+
+    @contextlib.contextmanager
+    def stream(self, method, url, **kwargs):
+        yield self.get(url, **kwargs)
 
     def get(self, url, **kwargs):
         self.urls.append(url)
@@ -337,3 +345,49 @@ def test_keys_module_no_longer_owns_upstream_copies():
     """One implementation: upstream copies live in core/upstream.py only."""
     assert not hasattr(keys, "store_upstream_key")
     assert not hasattr(keys, "upstream_key_rel")
+
+
+def test_per_arch_repositories_keep_their_own_upstream_files(tmp_path, monkeypatch):
+    """NVIDIA's amd64 and arm64 flat repositories derived one directory name,
+    so the second never fetched its own files and each pruned the other's."""
+    amd = "https://nvidia.github.io/libnvidia-container/stable/deb/amd64"
+    arm = "https://nvidia.github.io/libnvidia-container/stable/deb/arm64"
+    a = _mirror(name="a", source=config.normalize_url(amd), source_url=amd,
+                extra_files=["https://x.test/amd.list"])
+    b = _mirror(name="b", source=config.normalize_url(arm), source_url=arm,
+                extra_files=["https://x.test/arm.list"])
+    assert upstream.repository_group(a) != upstream.repository_group(b)
+    coord, _ = _coord(tmp_path, monkeypatch, {"https://x.test/amd.list": b"amd",
+                                              "https://x.test/arm.list": b"arm"})
+    assert coord.sync_for(a) == [] and coord.sync_for(b) == []
+    assert _stored(tmp_path, a, "https://x.test/amd.list").read_bytes() == b"amd"
+    assert _stored(tmp_path, b, "https://x.test/arm.list").read_bytes() == b"arm"
+
+
+def test_files_filed_under_the_old_directory_are_still_published(tmp_path):
+    from mmw.core.publisher.links import upstream_files
+    m = _mirror()
+    old = upstream.group_dir(tmp_path, upstream.legacy_group(m)) / upstream.upstream_rel(NV_KEY)
+    old.parent.mkdir(parents=True)
+    old.write_bytes(BINARY)
+    assert upstream_files(tmp_path, [m]) == {upstream.upstream_rel(NV_KEY): old}
+
+
+def test_the_size_cap_stops_an_endless_stream(monkeypatch):
+    monkeypatch.setattr(upstream, "MAX_BYTES", 1000)
+
+    class _Endless:
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self):
+            while True:
+                yield b"x" * 100
+
+    class _Client:
+        @contextlib.contextmanager
+        def stream(self, *a, **k):
+            yield _Endless()
+
+    with pytest.raises(ValueError, match="MiB"):
+        upstream.fetch_bytes("https://x.test/f", _Client())

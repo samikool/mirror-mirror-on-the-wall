@@ -9,7 +9,7 @@ from pathlib import Path
 
 import tomli_w
 
-from mmw.commands.common import eprint
+from mmw.commands.common import ConfigError, eprint, load_config
 from mmw.core import config, discover, keys
 from mmw.core.apt_sources import (
     AptEntry, entries_to_sources, expand_placeholder_entry, parse_apt_sources, remember_sources_url,
@@ -184,19 +184,22 @@ def run(
         return 0
 
     try:
-        cfg = config.load(cfg_dir)
-    except FileNotFoundError:
-        echo("No config found. Run `mmw init` first, or use --dry-run to preview.")
-        return 1
-    except Exception as e:
-        echo(f"Invalid config at {config.config_path(cfg_dir)}:\n{e}")
+        cfg = load_config(cfg_dir)
+    except ConfigError as e:
+        echo_err(f"{e}\n(--dry-run previews without a config.)")
         return 1
 
-    merged, added, updated = config.merge_sources(cfg.sources, new_sources)
-    cfg.sources = merged
-    # Re-validate before writing: duplicate mirror names must never reach disk.
-    cfg = config.Config(settings=cfg.settings, sources=merged, networks=cfg.networks)
-    config.save(cfg, cfg_dir)
+    # Each of these refuses rather than writes: a URI configured as the other
+    # provider, a duplicate mirror name, or a file `load()` would reject.
+    # They used to escape as tracebacks — one line on stderr says it.
+    try:
+        merged, added, updated = config.merge_sources(cfg.sources, new_sources)
+        # Re-validate before writing: duplicate mirror names must never reach disk.
+        cfg = config.Config(settings=cfg.settings, sources=merged, networks=cfg.networks)
+        config.save(cfg, cfg_dir)
+    except (ValueError, OSError) as e:
+        echo_err(f"Nothing written: {e}")
+        return 1
 
     for s in new_sources:
         echo(f"  {s.name}  [{s.provider}] {', '.join(s.arches)}  {s.url}")

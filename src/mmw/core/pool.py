@@ -1,5 +1,6 @@
 import fcntl
 import hashlib
+import json
 import os
 import queue
 import re
@@ -167,8 +168,13 @@ CREATE TABLE IF NOT EXISTS mirrors (
     component       TEXT,
     label           TEXT NOT NULL DEFAULT '',
     include_sources INTEGER NOT NULL DEFAULT 0,
-    dist_upgrade    INTEGER NOT NULL DEFAULT 0
+    dist_upgrade    INTEGER NOT NULL DEFAULT 0,
+    dims            TEXT NOT NULL DEFAULT '{}'
 );
+-- mirrors.dims: the unit's coordinates as JSON (`MirrorConfig.dims`). The
+-- arch/suite/component columns are still written so an older mmw can read
+-- this pool, but `dims` is what this version reads. (Kept out of the CREATE
+-- TABLE: SQLite cannot rewrite a column list with a comment in it.)
 """
 
 _CHUNK = 900
@@ -583,6 +589,30 @@ class SnapshotInfo:
     files: int
 
 
+def _legacy_dims(arch: str | None, suite: str | None, component: str | None) -> dict[str, str]:
+    """`dims` for a mirrors row written before the column existed."""
+    dims = {"arch": arch or ""}
+    if suite is not None:
+        dims["suite"] = suite
+    if component is not None:
+        dims["component"] = component
+    return dims
+
+
+def _current_dims(raw: str | None, arch: str | None, suite: str | None,
+                  component: str | None) -> dict[str, str]:
+    """A mirrors row's coordinates. The stored JSON, except that the legacy
+    columns win for every key it already has: an older mmw re-recording a
+    mirror updates only those columns, so where they disagree they are the
+    newer truth. They never add a key — a unit with no arch must not gain
+    `arch: ""` from an empty column."""
+    legacy = _legacy_dims(arch, suite, component)
+    if not raw or raw == "{}":
+        return legacy
+    dims = json.loads(raw)
+    return {k: legacy.get(k, v) for k, v in dims.items()}
+
+
 class Pool:
     def __init__(self, mirror_dir: Path, read_only: bool = False,
                  defer_writes: bool | None = None,
@@ -626,6 +656,21 @@ class Pool:
             # After the ALTER, never inside SCHEMA: executescript would run this
             # before the column exists on a pre-source database.
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_refs_source ON refs(source)")
+            # Pre-dims databases: add the column, then fill it from the
+            # legacy columns once. Rows already carrying dims are untouched.
+            mcols = {r[1] for r in self._conn.execute("PRAGMA table_info(mirrors)")}
+            if "dims" not in mcols:
+                self._conn.execute("ALTER TABLE mirrors ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'")
+            # Fill pre-dims rows, and repair rows an older mmw re-recorded
+            # (it updates the legacy columns only, leaving dims stale).
+            rows = self._conn.execute(
+                "SELECT name, dims, arch, suite, component FROM mirrors").fetchall()
+            stale = []
+            for n, raw, a, s, c in rows:
+                fresh = json.dumps(_current_dims(raw, a, s, c), sort_keys=True)
+                if fresh != raw:
+                    stale.append((fresh, n))
+            self._conn.executemany("UPDATE mirrors SET dims = ? WHERE name = ?", stale)
             self._conn.commit()
 
         # ── the read path ────────────────────────────────────────────────────
@@ -676,6 +721,8 @@ class Pool:
         self._kind_filter = "AND r.kind = 'pkg' " if "kind" in cols else ""
         self._has_source = "source" in cols
         self._has_mirrors_table = self._has_table("mirrors")
+        self._has_mirror_dims = self._has_mirrors_table and "dims" in {
+            r[1] for r in self._conn.execute("PRAGMA table_info(mirrors)")}
         # A read-only open of a pool from before snapshots has no such table;
         # checked once here, not per query on a connection a writer may hold.
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
@@ -952,19 +999,19 @@ class Pool:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO mirrors (name, source, provider, source_url, arch, suite, "
-                "component, label, include_sources, dist_upgrade) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "component, label, include_sources, dist_upgrade, dims) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET "
                 "source=excluded.source, provider=excluded.provider, "
                 "source_url=excluded.source_url, arch=excluded.arch, "
                 "suite=excluded.suite, component=excluded.component, "
                 "label=excluded.label, include_sources=excluded.include_sources, "
-                "dist_upgrade=excluded.dist_upgrade",
+                "dist_upgrade=excluded.dist_upgrade, dims=excluded.dims",
                 (
-                    mirror.name, getattr(mirror, "source", ""), mirror.provider,
-                    mirror.source_url, mirror.arch, mirror.suite, mirror.component,
-                    getattr(mirror, "label", ""), int(mirror.include_sources),
-                    int(getattr(mirror, "dist_upgrade", False)),
+                    mirror.name, mirror.source, mirror.provider, mirror.source_url,
+                    mirror.arch, mirror.suite, mirror.component, mirror.label,
+                    int(mirror.include_sources), int(mirror.dist_upgrade),
+                    json.dumps(mirror.dims, sort_keys=True),
                 ),
             )
             self._conn.commit()
@@ -983,7 +1030,9 @@ class Pool:
             return []
         sql = (
             "SELECT m.name, m.source, m.provider, m.source_url, m.arch, m.suite, "
-            "m.component, m.label, m.include_sources, m.dist_upgrade FROM mirrors m "
+            "m.component, m.label, m.include_sources, m.dist_upgrade"
+            + (", m.dims" if self._has_mirror_dims else "")
+            + " FROM mirrors m "
             "WHERE EXISTS (SELECT 1 FROM refs r WHERE r.mirror_name = m.name)"
         )
         params: list = []
@@ -995,14 +1044,15 @@ class Pool:
         sql += " ORDER BY m.name"
         with self._read() as _c:
             rows = _c.execute(sql, params).fetchall()
-        return [
-            MirrorConfig(
-                name=r[0], source=r[1], provider=r[2], source_url=r[3], arch=r[4],
-                suite=r[5], component=r[6], label=r[7],
-                include_sources=bool(r[8]), dist_upgrade=bool(r[9]),
-            )
-            for r in rows
-        ]
+        units = []
+        for r in rows:
+            dims = _current_dims(r[10] if self._has_mirror_dims else None, r[4], r[5], r[6])
+            units.append(MirrorConfig(
+                name=r[0], source=r[1], provider=r[2], source_url=r[3], label=r[7],
+                dims=dims,
+                options={"include_sources": bool(r[8]), "dist_upgrade": bool(r[9])},
+            ))
+        return units
 
     def list_mirrors(self) -> list[str]:
         """Every mirror the pool holds refs for — what was *actually* synced.

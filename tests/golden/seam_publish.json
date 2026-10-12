@@ -1,0 +1,40 @@
+{
+  "bundled": {
+    "UPGRADE.md": "3dd78484a5f66ebc0f92bb2d88986dd5e79cbf2ea911b0f3de64019c34b9da15",
+    "archive.ubuntu.com/ubuntu/dists/jammy/InRelease": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
+    "archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages.gz": "955e2af9c538a4ec47557459cd60a7d7423e3c0b4e718b803d8c899f5de283d3",
+    "archive.ubuntu.com/ubuntu/dists/noble/InRelease": "dbe65b3483a9d7bf8ba14af6c9015b6ce0cf9525580ce76aed6ca9027f711161",
+    "archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/Packages.gz": "f5bf8bed60520fd8f0062cf53a01c28725a590973e9d8fe9b5a2d488a0252770",
+    "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello_1.0_amd64.deb": "10e881b7bf8699c7985a6e35d88dd60f41ab90206dc2f0616a80641f7ace9f67",
+    "changelogs.ubuntu.com/meta-release": "29a4e1bc91396d629777be0cd0edf4652ea09c62dcf57a1ae238167b4c04a40e",
+    "changelogs.ubuntu.com/meta-release-lts": "c988375f233152f458b9db93d7c56faea085035a783be8336f7dc7d4492509e5",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub": "abcaef341ccc52c60a8a9b5b16f7ed69563ad27fc55dda1b33eb7d2f356e9363",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/InRelease": "d4626e51223117b30f820c4da42f79b981000e0fbbe83a761b5eb86a0247bed0",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/Packages.gz": "b9ab32e23e3b9b817a11a243274ad9e443199ebfe274f1a4c9cfacbdc6ddd90d",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-12_12.0_amd64.deb": "a880213eaa902146fec6d89a147f64ea977eeb11211c217eb39539b10f8b9dc3",
+    "keys/ubuntu/ubuntu-archive-keyring.asc": "b2611765b77692e0621e92be65f9dccb01c61af93857dc002d656731358a12fb",
+    "nginx/mirror.conf": "aba129c28ad9d0aedf67e2fcf4c21d79d002afdcd8c6dbeac7181f5596038a09"
+  },
+  "published": {
+    "UPGRADE.md": "6ea688162dd724ded13dd5ec82fcedb6aa2591c2cd567c6f55114adb16b63394",
+    "archive.ubuntu.com/ubuntu/dists/jammy/InRelease": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
+    "archive.ubuntu.com/ubuntu/dists/jammy/by-hash/SHA256/416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
+    "archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages.gz": "955e2af9c538a4ec47557459cd60a7d7423e3c0b4e718b803d8c899f5de283d3",
+    "archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/by-hash/SHA256/955e2af9c538a4ec47557459cd60a7d7423e3c0b4e718b803d8c899f5de283d3": "955e2af9c538a4ec47557459cd60a7d7423e3c0b4e718b803d8c899f5de283d3",
+    "archive.ubuntu.com/ubuntu/dists/noble/InRelease": "dbe65b3483a9d7bf8ba14af6c9015b6ce0cf9525580ce76aed6ca9027f711161",
+    "archive.ubuntu.com/ubuntu/dists/noble/by-hash/SHA256/dbe65b3483a9d7bf8ba14af6c9015b6ce0cf9525580ce76aed6ca9027f711161": "dbe65b3483a9d7bf8ba14af6c9015b6ce0cf9525580ce76aed6ca9027f711161",
+    "archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/Packages.gz": "f5bf8bed60520fd8f0062cf53a01c28725a590973e9d8fe9b5a2d488a0252770",
+    "archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/by-hash/SHA256/f5bf8bed60520fd8f0062cf53a01c28725a590973e9d8fe9b5a2d488a0252770": "f5bf8bed60520fd8f0062cf53a01c28725a590973e9d8fe9b5a2d488a0252770",
+    "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello_1.0_amd64.deb": "10e881b7bf8699c7985a6e35d88dd60f41ab90206dc2f0616a80641f7ace9f67",
+    "changelogs.ubuntu.com/meta-release": "29a4e1bc91396d629777be0cd0edf4652ea09c62dcf57a1ae238167b4c04a40e",
+    "changelogs.ubuntu.com/meta-release-lts": "c988375f233152f458b9db93d7c56faea085035a783be8336f7dc7d4492509e5",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub": "abcaef341ccc52c60a8a9b5b16f7ed69563ad27fc55dda1b33eb7d2f356e9363",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/InRelease": "d4626e51223117b30f820c4da42f79b981000e0fbbe83a761b5eb86a0247bed0",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/Packages.gz": "b9ab32e23e3b9b817a11a243274ad9e443199ebfe274f1a4c9cfacbdc6ddd90d",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/by-hash/SHA256/b9ab32e23e3b9b817a11a243274ad9e443199ebfe274f1a4c9cfacbdc6ddd90d": "b9ab32e23e3b9b817a11a243274ad9e443199ebfe274f1a4c9cfacbdc6ddd90d",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/by-hash/SHA256/d4626e51223117b30f820c4da42f79b981000e0fbbe83a761b5eb86a0247bed0": "d4626e51223117b30f820c4da42f79b981000e0fbbe83a761b5eb86a0247bed0",
+    "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-12_12.0_amd64.deb": "a880213eaa902146fec6d89a147f64ea977eeb11211c217eb39539b10f8b9dc3",
+    "keys/ubuntu/ubuntu-archive-keyring.asc": "b2611765b77692e0621e92be65f9dccb01c61af93857dc002d656731358a12fb",
+    "nginx/mirror.conf": "7860526fefe4bddfebd35059016bcc51844818a68a42b9e5afb09798814fab06"
+  }
+}

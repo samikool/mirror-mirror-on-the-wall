@@ -5,10 +5,8 @@ metadata indexes already present at the publish destination.
 """
 from pathlib import Path
 
-from mmw.core.compress import decompress
 from mmw.core.config import Config, MirrorConfig, NetworkConfig
 from mmw.core.pool import Pool
-from mmw.providers.apt import _parse_packages, _parse_packages_flat
 
 from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult, NetworkTotals
 
@@ -26,40 +24,21 @@ def publish_base(network: NetworkConfig, mirror: MirrorConfig) -> Path:
     return network.root / mirror.mirror_base
 
 
-def _packages_base(dst_root: Path, mirror: MirrorConfig) -> Path | None:
-    if mirror.provider == "apt":
-        return (dst_root / "dists" / (mirror.suite or "") / (mirror.component or "main")
-                / f"binary-{mirror.arch}" / "Packages")
-    if mirror.provider == "apt-flat":
-        return dst_root / "Packages"
-    return None
-
-
 def dst_index_path(dst_root: Path, mirror: MirrorConfig) -> Path | None:
     """The published index `dst_packages` reads for this mirror, if any —
     its mtime says whether figures read from it are still current."""
-    base = _packages_base(dst_root, mirror)
-    if base is None:
-        return None
-    for suffix in (".xz", ".gz", ""):
-        p = Path(str(base) + suffix)
-        if p.exists():
-            return p
-    return None
+    from mmw.providers import get_provider
+    return get_provider(mirror.provider).published_index(dst_root, mirror)
 
 
 def dst_packages(dst_root: Path, mirror: MirrorConfig) -> list:
     """The packages a published index at the destination lists (empty when
     nothing is published yet, or for a provider with no index we read)."""
+    from mmw.providers import get_provider
     p = dst_index_path(dst_root, mirror)
     if p is None:
         return []
-    parse = _parse_packages if mirror.provider == "apt" else _parse_packages_flat
-    try:
-        text = decompress(p.read_bytes(), p.name).decode("utf-8", errors="replace")
-        return parse(text, "")
-    except Exception:
-        return []
+    return get_provider(mirror.provider).published_packages(p)
 
 
 def unique_packages(pkgs, seen: dict[str, int]) -> None:

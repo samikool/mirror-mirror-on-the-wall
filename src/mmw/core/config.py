@@ -3,7 +3,7 @@ import re
 import tomllib
 import tomli_w
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -185,21 +185,200 @@ an underscore where the code wants a hyphen — load clean, expand to zero
 mirrors, and exit 0 having mirrored nothing."""
 
 
+# The fields every apt unit used to declare. A unit is generic now — what
+# varies between providers is its coordinates (`dims`) and its settings
+# (`options`) — but every caller, test and recorded snapshot still says
+# `arch=`/`suite=`/`gpg_key=`, so the old names are folded in on the way in
+# and exposed as properties on the way out.
+_LEGACY_DIM_FIELDS = ("arch", "suite", "component")
+_OPTION_DEFAULTS: dict[str, Any] = {
+    "include_sources": False,   # mirror deb-src in addition to deb binaries
+    "gpg_key_url": None,        # fetched to keys/{label}/ during sync
+    "gpg_key": None,            # armoured key, written to keys/ without a fetch
+    "gpg_key_name": None,       # filename stem for the emitted key files
+    "extra_files": [],          # upstream URLs mirrored at their own path
+    "dist_upgrade": False,      # also mirror changelogs.ubuntu.com meta-release
+}
+_APT_PROVIDERS = ("apt", "apt-flat")
+
+
 class MirrorConfig(_StrictModel):
+    """One sync unit.
+
+    `dims` are the unit's coordinates along its provider's dimensions
+    (`{"suite": "noble", "component": "main", "arch": "amd64"}` for apt);
+    `options` are provider settings that travel with it.
+    """
     name: str
     provider: Provider
-    source_url: str     # this mirror's own URL (repository root for apt)
-    source: str = ""    # normalized repository URI this mirror belongs to
+    source_url: str     # this unit's own URL (repository root for apt)
+    source: str = ""    # normalized source URI this unit belongs to
     label: str = ""     # keys/{label}/ grouping only — never identity
-    arch: str = "amd64"
-    suite: str | None = None
-    component: str | None = None
-    include_sources: bool = False  # mirror deb-src in addition to deb binaries
-    gpg_key_url: str | None = None  # optional: fetched to keys/{name}/ during sync
-    gpg_key: str | None = None      # armoured key, written to keys/ without a fetch
-    gpg_key_name: str | None = None # filename stem for the emitted key files
-    extra_files: list[str] = []     # upstream URLs mirrored at their own path
-    dist_upgrade: bool = False      # also mirror changelogs.ubuntu.com meta-release
+    dims: dict[str, str] = {}
+    options: dict[str, Any] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_legacy_fields(cls, data):
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        dims = dict(data.get("dims") or {})
+        options = dict(data.get("options") or {})
+        for key in _LEGACY_DIM_FIELDS:
+            if key in data:
+                value = data.pop(key)
+                if value is not None:
+                    dims[key] = value
+        for key in _OPTION_DEFAULTS:
+            if key in data:
+                options[key] = data.pop(key)
+        # A spelled-out default says nothing: drop it, so two units that mean
+        # the same thing compare equal however they were built.
+        options = {k: v for k, v in options.items()
+                   if k not in _OPTION_DEFAULTS or v != _OPTION_DEFAULTS[k]}
+        # The old `arch: str = "amd64"` default, kept for apt units only: an
+        # apt unit always has an arch coordinate, even when nobody stated it.
+        if data.get("provider") in _APT_PROVIDERS:
+            dims.setdefault("arch", "amd64")
+        data["dims"], data["options"] = dims, options
+        return data
+
+    # ── compatibility: the old apt fields, read and written through dims/options
+
+    @property
+    def arch(self) -> str:
+        return self.dims.get("arch", "")
+
+    @arch.setter
+    def arch(self, value: str) -> None:
+        self.dims["arch"] = value
+
+    @property
+    def suite(self) -> str | None:
+        return self.dims.get("suite")
+
+    @suite.setter
+    def suite(self, value: str | None) -> None:
+        self._set_dim("suite", value)
+
+    @property
+    def component(self) -> str | None:
+        return self.dims.get("component")
+
+    @component.setter
+    def component(self, value: str | None) -> None:
+        self._set_dim("component", value)
+
+    def _set_dim(self, key: str, value: str | None) -> None:
+        if value is None:
+            self.dims.pop(key, None)
+        else:
+            self.dims[key] = value
+
+    def _option(self, key: str):
+        default = _OPTION_DEFAULTS[key]
+        value = self.options.get(key, default)
+        return list(value) if isinstance(default, list) else value
+
+    @property
+    def include_sources(self) -> bool:
+        return bool(self._option("include_sources"))
+
+    @include_sources.setter
+    def include_sources(self, value: bool) -> None:
+        self.options["include_sources"] = value
+
+    @property
+    def gpg_key_url(self) -> str | None:
+        return self._option("gpg_key_url")
+
+    @gpg_key_url.setter
+    def gpg_key_url(self, value: str | None) -> None:
+        self.options["gpg_key_url"] = value
+
+    @property
+    def gpg_key(self) -> str | None:
+        return self._option("gpg_key")
+
+    @gpg_key.setter
+    def gpg_key(self, value: str | None) -> None:
+        self.options["gpg_key"] = value
+
+    @property
+    def gpg_key_name(self) -> str | None:
+        return self._option("gpg_key_name")
+
+    @gpg_key_name.setter
+    def gpg_key_name(self, value: str | None) -> None:
+        self.options["gpg_key_name"] = value
+
+    @property
+    def extra_files(self) -> list[str]:
+        # The stored list itself, so `m.extra_files.append(url)` sticks as it
+        # did when this was a field.
+        return self.options.setdefault("extra_files", [])
+
+    @extra_files.setter
+    def extra_files(self, value: list[str]) -> None:
+        self.options["extra_files"] = list(value)
+
+    @property
+    def dist_upgrade(self) -> bool:
+        return bool(self._option("dist_upgrade"))
+
+    @dist_upgrade.setter
+    def dist_upgrade(self, value: bool) -> None:
+        self.options["dist_upgrade"] = value
+
+    def _identity_tuple(self) -> tuple:
+        options = {k: v for k, v in self.options.items()
+                   if k not in _OPTION_DEFAULTS or v != _OPTION_DEFAULTS[k]}
+        return (self.name, self.provider, self.source_url, self.source, self.label,
+                self.dims, options)
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, MirrorConfig):
+            return NotImplemented
+        return self._identity_tuple() == other._identity_tuple()
+
+    __hash__ = None  # mutable, like every pydantic model
+
+    def model_copy(self, *, update: dict | None = None, deep: bool = False) -> "MirrorConfig":
+        """As pydantic's, plus: the old field names work in `update`, and a
+        shallow copy gets its own `dims`/`options` — with flat fields, a copy
+        never shared state with its original."""
+        dims, options = dict(self.dims), {
+            k: list(v) if isinstance(v, list) else v for k, v in self.options.items()}
+        update = dict(update or {})
+        for key in _LEGACY_DIM_FIELDS:
+            if key in update:
+                value = update.pop(key)
+                if value is None:
+                    dims.pop(key, None)
+                else:
+                    dims[key] = value
+        for key in _OPTION_DEFAULTS:
+            if key in update:
+                options[key] = update.pop(key)
+        update.setdefault("dims", dims)
+        update.setdefault("options", options)
+        return super().model_copy(update=update, deep=deep)
+
+    def legacy_dict(self) -> dict:
+        """This unit in the pre-seam field set (`arch`, `suite`, …, flat).
+
+        What snapshots record: an older mmw validates recorded mirrors with
+        `extra="forbid"` and knows no `dims`/`options`, so recording them would
+        leave it unable to publish a snapshot this version took. Every unit
+        today is an apt unit, so the old fields hold everything it carries.
+        """
+        return {
+            "name": self.name, "provider": self.provider, "source_url": self.source_url,
+            "source": self.source, "label": self.label, "arch": self.arch,
+            "suite": self.suite, "component": self.component,
+            **{key: self._option(key) for key in _OPTION_DEFAULTS},
+        }
 
     @property
     def mirror_base(self) -> str:
@@ -210,6 +389,10 @@ class MirrorConfig(_StrictModel):
             host = f"{host}_{parsed.port}"
         path = parsed.path.strip("/")
         return f"{host}/{path}" if path else host
+
+
+Unit = MirrorConfig
+"""The provider-neutral name for a sync unit (stage 1 keeps the class name)."""
 
 
 class SuiteOverride(_StrictModel):
@@ -410,30 +593,84 @@ class Settings(_StrictModel):
 
 
 class NetworkSelect(_StrictModel):
-    """One repository's slice of a network, by dimension.
+    """One source's slice of a network, by dimension.
 
-    Empty means all — the same rule as `SourceConfig`. Selecting by dimension
-    rather than by mirror name is what lets "all arches" stay true as new
-    architectures appear: a frozen list of names silently stops publishing them.
+    `dims` holds one list per dimension of the source's provider (`suites`,
+    `components`, `arches` for apt). Empty means all — the same rule as a
+    source. TOML spells each dimension as its own key, which is folded in
+    here, so hand-written files stay flat. Selecting by dimension rather than
+    by unit name is what lets "all arches" stay true as new architectures
+    appear: a frozen list of names silently stops publishing them.
     """
-    source: str                     # repository URI
-    suites: list[str] = []          # empty = every suite mirrored for it
-    components: list[str] = []
-    arches: list[str] = []
+    source: str                          # source URI
+    dims: dict[str, list[str]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_dimension_keys(cls, data):
+        if not isinstance(data, dict):
+            return data
+        if "dims" in data:
+            raise ValueError(
+                "write a select's dimensions as flat keys (suites = [...]), not a dims table")
+        dims: dict[str, list[str]] = {}
+        for key, values in data.items():
+            if key == "source":
+                continue
+            if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                raise ValueError(f"select key {key!r} must be a list of strings")
+            dims[key] = values
+        folded: dict = {"dims": dims}
+        if "source" in data:
+            folded["source"] = data["source"]
+        return folded
+
+    @model_validator(mode="after")
+    def _keys_are_dimensions(self):
+        from mmw.providers import all_providers
+        known = {d.name for p in all_providers() for d in p.dimensions}
+        unknown = sorted(set(self.dims) - known)
+        if unknown:
+            raise ValueError(
+                f"unknown select key(s) {', '.join(unknown)} for {self.source} — "
+                f"expected one of: {', '.join(sorted(known))}")
+        return self
+
+    @property
+    def suites(self) -> list[str]:
+        return self.dims.get("suites", [])
+
+    @property
+    def components(self) -> list[str]:
+        return self.dims.get("components", [])
+
+    @property
+    def arches(self) -> list[str]:
+        return self.dims.get("arches", [])
 
     def matches(self, mirror) -> bool:
         from mmw.core.config import normalize_url  # local: same module at import time
+        from mmw.providers import get_provider
         if normalize_url(self.source) != (mirror.source or ""):
             return False
-        if self.suites and (mirror.suite or "") not in self.suites:
-            return False
-        if self.components and (mirror.component or "") not in self.components:
-            return False
-        # A mirror with no architecture is not arch-expanded — a flat
-        # repository, whose arch lives in its URL. Filtering it by arch would
-        # drop it from every arch-specific network, silently, which is exactly
-        # the failure this dimension model exists to prevent.
-        return not (self.arches and mirror.arch and mirror.arch not in self.arches)
+        provider = get_provider(mirror.provider)
+        for name, values in self.dims.items():
+            if not values:
+                continue
+            dim = provider.dimension(name)
+            if dim is None:
+                continue
+            have = mirror.dims.get(dim.unit_key) or ""
+            if not have:
+                # A flat repository has no arch coordinate; filtering it by
+                # arch would drop it from every arch-specific network,
+                # silently — the failure this dimension model exists to prevent.
+                if dim.absent_matches:
+                    continue
+                return False
+            if have not in values:
+                return False
+        return True
 
 
 _LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress"})
@@ -493,8 +730,9 @@ class Config(_StrictModel):
 
     @property
     def mirrors(self) -> list[MirrorConfig]:
-        """Flat list of all sync units, derived from sources."""
-        return [m for s in self.sources for m in s.to_mirrors()]
+        """Flat list of all sync units, derived from sources by their providers."""
+        from mmw.providers import get_provider
+        return [m for s in self.sources for m in get_provider(s.provider).expand(s)]
 
     def configured_units(self) -> set[tuple[str, str, str, str]]:
         """Everything already configured, across all sources."""
@@ -528,6 +766,27 @@ class Config(_StrictModel):
                 seen.add(n)
             if dupes:
                 raise ValueError(f"duplicate {label}(s): {', '.join(sorted(dupes))}")
+        return self
+
+    @model_validator(mode="after")
+    def _selects_use_their_providers_dimensions(self):
+        """A select key must be a dimension of *that* source's provider —
+        `components` on a flat repository is a mistake, not a no-op."""
+        from mmw.providers import get_provider
+        by_identity = {s.identity: s for s in self.sources}
+        for n in self.networks:
+            for sel in n.select:
+                src = by_identity.get(normalize_url(sel.source))
+                if src is None:
+                    continue
+                names = {d.name for d in get_provider(src.provider).dimensions}
+                # An empty list filters nothing, so it is harmless on any
+                # provider — and such files loaded before the seam.
+                wrong = sorted(k for k, v in sel.dims.items() if v and k not in names)
+                if wrong:
+                    raise ValueError(
+                        f"network '{n.name}': {', '.join(wrong)} is not a dimension of "
+                        f"{src.provider} source {src.identity}")
         return self
 
     @model_validator(mode="after")
@@ -748,6 +1007,18 @@ def delete(directory: Path = Path(".")) -> None:
     config_path(directory).unlink(missing_ok=True)
 
 
+def _select_to_dict(sel: NetworkSelect) -> dict:
+    """TOML form of one select: flat dimension keys, in registry dimension
+    order (suites, components, arches for apt), empty ones omitted."""
+    from mmw.providers import all_providers
+    order: list[str] = []
+    for p in all_providers():
+        order += [d.name for d in p.dimensions if d.name not in order]
+    keys = sorted((k for k, v in sel.dims.items() if v),
+                  key=lambda k: order.index(k) if k in order else len(order))
+    return {"source": sel.source, **{k: sel.dims[k] for k in keys}}
+
+
 def source_to_dict(s: SourceConfig) -> dict:
     """TOML form of one source — the single serializer, shared by `save()` and
     `mmw add --dry-run` so a preview always matches what gets written.
@@ -845,15 +1116,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"bundle_dir": str(n.bundle_dir)} if n.bundle_dir is not None else {}),
             "prune": n.prune,
             **(
-                {"select": [
-                    {
-                        "source": s.source,
-                        **({"suites": s.suites} if s.suites else {}),
-                        **({"components": s.components} if s.components else {}),
-                        **({"arches": s.arches} if s.arches else {}),
-                    }
-                    for s in n.select
-                ]}
+                {"select": [_select_to_dict(s) for s in n.select]}
                 if n.select else {}
             ),
             **({"nginx": False} if not n.nginx else {}),

@@ -24,7 +24,8 @@ EXPIRY_WARNING = timedelta(days=30)
 
 def collect_hostnames(network: NetworkConfig, cfg: Config) -> list[str]:
     """Return sorted unique hostnames the network serves: every mirror's host,
-    plus changelogs.ubuntu.com for a `dist_upgrade` network."""
+    plus every provider's extra hosts (changelogs.ubuntu.com for a
+    dist-upgrade network)."""
     selected_mirrors = network_mirrors(network, cfg, cfg.settings.mirror_dir)
     mirror_map = {m.name: m for m in selected_mirrors}
     selected = list(mirror_map)
@@ -38,9 +39,11 @@ def collect_hostnames(network: NetworkConfig, cfg: Config) -> list[str]:
         if host and host not in seen:
             seen.add(host)
             hostnames.append(host)
-    if network.dist_upgrade and CHANGELOGS_HOST not in seen:
-        hostnames.append(CHANGELOGS_HOST)
-        seen.add(CHANGELOGS_HOST)
+    from mmw.providers import extra_hosts
+    for host in extra_hosts(network, selected_mirrors):
+        if host not in seen:
+            hostnames.append(host)
+            seen.add(host)
     # Keys published at their upstream path are served from their own host,
     # which need not be any mirror's (nvidia.github.io/libnvidia-container/
     # gpgkey sits outside the repository it signs).

@@ -107,3 +107,23 @@ def test_taking_a_snapshot_holds_the_pool_against_prune(tmp_path, monkeypatch):
         release.set()
         t.join(10)
     assert not pool_is_busy(mirror_dir)
+
+
+# The exact field set MirrorConfig had before the provider seam. An older mmw
+# validates recorded mirrors with extra="forbid", so a snapshot must record
+# nothing outside it, or that mmw cannot publish a snapshot this one took.
+_PRE_SEAM_MIRROR_FIELDS = {
+    "name", "provider", "source_url", "source", "label", "arch", "suite", "component",
+    "include_sources", "gpg_key_url", "gpg_key", "gpg_key_name", "extra_files", "dist_upgrade",
+}
+
+
+def test_snapshot_records_mirrors_in_the_pre_seam_shape(two_mirrors):  # noqa: F811
+    from mmw.core.config import MirrorConfig
+    cfg, net, mirror_dir = two_mirrors
+    snap = take_snapshot(net, cfg, mirror_dir)
+    recorded = json.loads(snap.settings)["mirrors"]
+    assert recorded
+    for m in recorded:
+        assert set(m) == _PRE_SEAM_MIRROR_FIELDS, set(m) ^ _PRE_SEAM_MIRROR_FIELDS
+        assert MirrorConfig.model_validate(m).name == m["name"]

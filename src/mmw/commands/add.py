@@ -11,6 +11,7 @@ import tomli_w
 
 from mmw.commands.common import ConfigError, eprint, load_config
 from mmw.core import config, discover, keys
+from mmw.providers import get_provider
 from mmw.core.apt_sources import (
     AptEntry, entries_to_sources, expand_placeholder_entry, parse_apt_sources, remember_sources_url,
 )
@@ -179,7 +180,7 @@ def run(
 
     if dry_run:
         echo(_as_toml(new_sources))
-        total = sum(len(s.to_mirrors()) for s in new_sources)
+        total = sum(len(get_provider(s.provider).expand(s)) for s in new_sources)
         echo(f"# {len(new_sources)} source(s), {total} mirror(s) — nothing written")
         return 0
 

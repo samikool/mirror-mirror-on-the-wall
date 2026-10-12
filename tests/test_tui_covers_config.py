@@ -48,9 +48,9 @@ EDITORS = {
     ("NetworkConfig", "nginx"): ("network_screens.py", "nginx-switch"),
 
     ("NetworkSelect", "source"): ("network_screens.py", "repo-checklist"),
-    ("NetworkSelect", "suites"): ("network_screens.py", "axis-block"),
-    ("NetworkSelect", "components"): ("network_screens.py", "axis-block"),
-    ("NetworkSelect", "arches"): ("network_screens.py", "axis-block"),
+    # One list per provider dimension (suites/components/arches for apt),
+    # all edited by the network editor's per-repository axis block.
+    ("NetworkSelect", "dims"): ("network_screens.py", "axis-block"),
 }
 
 MODELS = [config.Settings, config.SourceConfig, config.SuiteOverride,

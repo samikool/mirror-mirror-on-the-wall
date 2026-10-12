@@ -307,8 +307,9 @@ def publish_group(
         result.errors.append("not synced yet — no pool refs for this mirror")
         return result
 
-    apt_like = any(m.provider in ("apt", "apt-flat") for m in mirrors)
-    for rows, by_hash in ((pkg_rows, False), (meta_rows, apt_like), (rel_rows, apt_like)):
+    from mmw.providers import get_provider
+    hashed = any(get_provider(m.provider).by_hash for m in mirrors)
+    for rows, by_hash in ((pkg_rows, False), (meta_rows, hashed), (rel_rows, hashed)):
         if not _link_rows(rows, base, sink, result, progress, stop_event, by_hash):
             return result
 

@@ -106,11 +106,15 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
             raise ValueError(f"snapshot of {network.name} not taken: " + "; ".join(problems[:5])
                              + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""))
         from mmw.core.publisher.links import upstream_file_hosts, upstream_files
+        from mmw.providers import extra_hosts
         settings = json.dumps({
             "network": network.model_dump(mode="json"),
-            "mirrors": [m.model_dump(mode="json") for m in mirrors],
+            "mirrors": [m.legacy_dict() for m in mirrors],
             # nginx needs a server block per upstream-file host.
             "upstream_hosts": upstream_file_hosts(upstream_files(mirror_dir, mirrors)),
+            # Hosts providers serve beyond their units' own (changelogs.ubuntu.com
+            # for dist-upgrade), so a snapshot's nginx is regenerated exactly.
+            "extra_hosts": extra_hosts(network, mirrors),
         }, sort_keys=True)
         stamp = _free_stamp(pool, network.name)
         sid = pool.create_snapshot(network.name, stamp, kind=kind, label=label,

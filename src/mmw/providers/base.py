@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -35,7 +37,72 @@ class MetadataFile:
     is_release: bool = False
 
 
+@dataclass(frozen=True)
+class Dimension:
+    """One named axis a provider's sources are narrowed along. Empty means all.
+
+    `name` is the config / network-select key (plural, `suites`); `unit_key`
+    is the coordinate's key in `MirrorConfig.dims` (`suite`). A unit with no
+    coordinate on this axis fails a filter on it, unless `absent_matches` —
+    a flat apt repository has no arch coordinate and must never be dropped
+    from an arch-filtered network.
+    """
+    name: str
+    unit_key: str
+    label: str
+    absent_matches: bool = False
+
+
+@dataclass
+class PublishContext:
+    """What a provider's `contribute()` may use while a network is laid out.
+
+    `sink` is the same Sink every group was published through; `result` is
+    the network's `NetworkPublishResult`; `units` is every unit the network
+    publishes, across all providers.
+    """
+    network: Any
+    cfg: Any
+    mirror_dir: Path
+    pool: Any
+    sink: Any
+    result: Any
+    units: list
+
+
 class BaseProvider(ABC):
+    """One ecosystem's plugin. Core never branches on a provider's name; it
+    asks the provider. A provider that can recognise a pasted URL also
+    defines `probe(url) -> DetectResult` — the only optional member."""
+
+    name: str = ""
+    label: str = ""
+    description: str = ""
+    dimensions: tuple[Dimension, ...] = ()
+    by_hash: bool = False   # publish index files under by-hash/SHA256/ too
+
+    def dimension(self, name: str) -> Dimension | None:
+        return next((d for d in self.dimensions if d.name == name), None)
+
+    # ── config → units ───────────────────────────────────────────────────────
+
+    @abstractmethod
+    def expand(self, source) -> list:
+        """Offline expansion of a source into units (no network)."""
+
+    @abstractmethod
+    def covers(self, source, unit) -> bool:
+        """Does `source`, as configured now, still ask for `unit`?"""
+
+    def needs_resolving(self, source) -> bool:
+        """True when an open dimension needs the network to expand."""
+        return False
+
+    @abstractmethod
+    def resolve(self, source, *, progress: Callable[[str], None] | None = None):
+        """Fill open dimensions against upstream → `mmw.core.resolve.ResolvedSource`."""
+
+    # ── fetch ────────────────────────────────────────────────────────────────
 
     @abstractmethod
     def fetch_packages(
@@ -66,3 +133,29 @@ class BaseProvider(ABC):
         packages = self.fetch_packages(mirror_config, client, status_callback=status_callback)
         metadata = self.fetch_metadata(mirror_config, client)
         return packages, metadata
+
+    # ── verify / publish ─────────────────────────────────────────────────────
+
+    def verify_witness(self, unit, pool):
+        """An independent second opinion parsed from pooled metadata →
+        `mmw.core.verify.VerifyResult`, or None when the provider has none."""
+        return None
+
+    def published_index(self, dst_root: Path, unit) -> Path | None:
+        """The index file at a publish destination that lists this unit's
+        packages (dry-run size accounting reads it), or None."""
+        return None
+
+    def published_packages(self, index: Path) -> list[PackageInfo]:
+        """The packages a `published_index` file lists."""
+        return []
+
+    def extra_hosts(self, network, units) -> list[str]:
+        """Hostnames this provider serves beyond its units' own hosts (pure —
+        nginx, certs and snapshots all ask)."""
+        return []
+
+    def contribute(self, ctx: PublishContext) -> None:
+        """Publish-time additions through `ctx.sink` (called for every
+        registered provider on every network walk; decide from `ctx`)."""
+        return None

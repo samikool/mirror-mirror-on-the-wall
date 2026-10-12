@@ -726,12 +726,11 @@ async def download_mirror(
 
             meta_entries.clear()
             # `is_release` is declared by the provider rather than inferred
-            # from which other fields happen to be set. The old rule —
-            # "content is set and expected_sha256 is not" — silently depended
-            # on `AptProvider` pre-fetching its release files: `AptFlatProvider`
-            # only HEADs them, so every flat repository filed InRelease /
-            # Release / Release.gpg as KIND_META and lost the release-last
-            # publish ordering that keeps a live-served tree consistent.
+            # from which other fields happen to be set: the old rule ("content
+            # is set and expected_sha256 is not") filed a flat repository's
+            # release files as KIND_META while its provider only HEADed them,
+            # losing the release-last publish ordering that keeps a
+            # live-served tree consistent.
             def _is_release(mf: MetadataFile) -> bool:
                 # The flag, and only the flag. There used to be a fallback
                 # inference here — "content is set and expected_sha256 is not"

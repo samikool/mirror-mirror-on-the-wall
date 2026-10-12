@@ -190,9 +190,10 @@ def entries_to_sources(
             if comps_by_suite[s] != common
         ]
 
+        provider = "apt-flat" if flat else "apt"
         sources.append(SourceConfig(
-            name=_unique_name(url, taken, suites),
-            provider="apt-flat" if flat else "apt",
+            name=_unique_name(url, taken, suites, provider),
+            provider=provider,
             url=url,
             arches=arches,
             suites=suites,
@@ -366,7 +367,9 @@ def _parse_one_line(text: str) -> list[AptEntry]:
         line = line.split("#", 1)[0].strip()
         if not line:
             continue
-        kind, _, rest = line.partition(" ")
+        # Any whitespace after the type, as apt accepts: a tab-separated
+        # `deb\thttp://…` line was silently skipped.
+        kind, _, rest = line.replace("\t", " ").partition(" ")
         if kind not in ("deb", "deb-src"):
             continue
         parsed = _parse_one_line_body(rest.strip())
@@ -507,9 +510,14 @@ def _is_mirrorable(uri: str) -> bool:
     return uri.lower().startswith(("http://", "https://"))
 
 
-def _unique_name(url: str, taken: set[str], suites: list[str] | None = None) -> str:
-    """derive_name(), remembering what this import already claimed."""
-    name = derive_name(url, taken, suites=suites)
+def _unique_name(url: str, taken: set[str], suites: list[str] | None = None,
+                 provider: str = "apt") -> str:
+    """derive_name(), remembering what this import already claimed. The
+    provider matters: a flat repository's name carries its arch, exactly as
+    the wizard and `source_to_dict` derive it — without it, `mmw add` named
+    NVIDIA's amd64 and arm64 repositories apart by accident and wrote the
+    name out as an override."""
+    name = derive_name(url, taken, suites=suites, provider=provider)
     taken.add(name)
     return name
 

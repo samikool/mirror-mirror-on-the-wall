@@ -224,18 +224,22 @@ def substitute_root(root, path):
         fh.write(data.replace(ROOT_PLACEHOLDER.encode(), root.encode()))
 
 
-def _link_or_copy(target, dest):
+def _link_or_copy(target, dest, tmp):
     """Recreate a by-hash duplicate. os.link is nearly free (the pool key IS
     the sha256, so the two paths are byte-identical); fall back to a copy
     only when the destination filesystem can't hardlink at all — a USB drive
     or NFS mount formatted differently from what mmw was built against.
+
+    Staged at `tmp` and renamed, like every regular file: unlinking `dest`
+    first left a window in which a live-served by-hash path 404'd.
     """
-    if os.path.exists(dest):
-        os.unlink(dest)
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
     try:
-        os.link(target, dest)
+        os.link(target, tmp)
     except OSError:
-        shutil.copy2(target, dest)
+        shutil.copy2(target, tmp)
+    os.rename(tmp, dest)
 
 
 def _tmp_dir(root):
@@ -538,7 +542,7 @@ def apply(bundle, root, dry_run=False, verify=False):
                         "hardlink target missing, bundle is malformed: "
                         "%r -> %r\n" % (name, member.linkname))
                     return EXIT_UNSAFE
-                _link_or_copy(target, dest)
+                _link_or_copy(target, dest, _tmp_path(root, name))
             else:
                 # Staged under {root}/.mmw/tmp/, never beside `dest` — see
                 # _tmp_path/_sweep_tmp. `dest` only ever comes into being via

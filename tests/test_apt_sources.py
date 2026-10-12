@@ -696,3 +696,14 @@ def test_two_spellings_of_one_repository_preview_as_one_source():
     ))
     assert len(sources) == 1
     assert sorted(sources[0].suites) == ["jammy", "noble"]
+
+
+def test_flat_repositories_are_named_like_the_wizard_names_them():
+    from mmw.core import config
+    from mmw.core.apt_sources import entries_to_sources, parse_apt_sources
+    text = ("deb https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /\n"
+            "deb\thttps://developer.download.nvidia.com/hpc-sdk/ubuntu/arm64 /\n")
+    sources = entries_to_sources(parse_apt_sources(text))
+    assert [s.name for s in sources] == ["nvidia-developer-hpc-sdk-amd64",
+                                         "nvidia-developer-hpc-sdk-arm64"]
+    assert all("name" not in config.source_to_dict(s) for s in sources)

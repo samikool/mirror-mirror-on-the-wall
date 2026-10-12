@@ -128,12 +128,10 @@ def test_b_asks_from_and_to_on_networks_then_bundles(two_mirrors):  # noqa: F811
 
 
 def test_incomplete_mirrors_end_it_without_publishing(two_mirrors, monkeypatch):  # noqa: F811
-    from types import SimpleNamespace
-
     import mmw.core.verify as verify
     cfg, net, mirror_dir = two_mirrors
-    monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p: SimpleNamespace(
-        mirror_name=m.name, error=None, complete=False, missing_count=1, total=3))
+    monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p: verify.VerifyResult(
+        m.name, m.provider, total=3, present=2, missing_count=1))
 
     async def check(app, pilot):
         await press_publish(app, pilot)

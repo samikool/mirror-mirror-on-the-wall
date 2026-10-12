@@ -93,6 +93,7 @@ def publish_network(
         result.mirrors.append(r)
         return result
 
+    _check_destination(network.root, mirror_dir)
     from mmw.core.certs import servable_paths
     # Served straight from cert_dir: a publish destination is on this
     # machine, and the key never enters a served tree.
@@ -111,6 +112,17 @@ def publish_network(
         _record_published(mirror_dir, network.root, network.name, "live")
 
     return result
+
+
+def _check_destination(root: Path, mirror_dir: Path) -> None:
+    """Refuse a destination that is, or holds, the pool — the config check
+    again, at the moment it matters, with symlinks resolved and covering a
+    `--root` that never went through the config."""
+    from mmw.core.config import destination_problem
+    problem = (destination_problem(root, mirror_dir)
+               or destination_problem(Path(root).resolve(), Path(mirror_dir).resolve()))
+    if problem:
+        raise ValueError(f"refusing to publish into {root}: {problem}")
 
 
 def _record_published(mirror_dir: Path, root: Path, network: str, target: str) -> None:
@@ -165,6 +177,7 @@ def publish_snapshot(
     root = root if root is not None else network.root
     if root is None:
         raise ValueError(f"network '{network.name}' has no publish root — pass a directory")
+    _check_destination(root, mirror_dir)
     with Pool(mirror_dir, read_only=True) as pool:
         snap = find_snapshot(pool, network.name, ref)
         if not snap.complete:
@@ -320,7 +333,7 @@ def walk_network(
         ))
 
     if network.dist_upgrade and not (stop_event and stop_event.is_set()):
-        paths, warnings = dist_upgrade_info(network, cfg, pool)
+        paths, warnings = dist_upgrade_info(network, cfg, pool, mirror_dir)
         result.dist_upgrade_paths = paths
         result.dist_upgrade_warnings = warnings
         publish_changelogs(sink, pool, result)

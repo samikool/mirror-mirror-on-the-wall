@@ -53,7 +53,8 @@ def env(tmp_path, monkeypatch):
             raise state["raise"]
         return state["packages"]
 
-    monkeypatch.setattr(dry_run_cmd, "fetch_packages_threaded", fake_fetch)
+    from mmw.core import sync_engine
+    monkeypatch.setattr(sync_engine, "fetch_packages_threaded", fake_fetch)
     return state
 
 
@@ -82,7 +83,8 @@ def test_unknown_provider_exits_1(env, monkeypatch):
     def boom(name):
         raise ValueError(f"unknown provider {name!r}")
 
-    monkeypatch.setattr(dry_run_cmd, "get_provider", boom)
+    from mmw.core import sync_engine
+    monkeypatch.setattr(sync_engine, "get_provider", boom)
     assert dry_run_cmd.run(env["cfg_dir"]) == 1
 
 

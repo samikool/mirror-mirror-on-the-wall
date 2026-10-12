@@ -54,18 +54,6 @@ def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
         pool.close()
 
 
-def _describe(r: VerifyResult) -> str:
-    """What is wrong with an incomplete mirror, in one line."""
-    parts = []
-    if r.missing_count:
-        parts.append(f"{r.missing_count:,} of {r.total:,} missing")
-    if r.missing_refs_count:
-        parts.append(f"{r.missing_refs_count:,} wanted file(s) not in the pool")
-    if r.corrupt:
-        parts.append(f"{len(r.corrupt):,} damaged blob(s)")
-    return ", ".join(parts) or "incomplete"
-
-
 @interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None, deep: bool = False,
         rehash: bool = False, repair: bool = False) -> int:
@@ -100,7 +88,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, deep: bool = Fals
         elif r.complete:
             print(f"  {r.mirror_name:<40} complete · {r.total:,} files")
         else:
-            eprint(f"  {r.mirror_name:<40} {_describe(r)}")
+            eprint(f"  {r.mirror_name:<40} {r.describe()}")
             for line in r.corrupt[:5]:
                 eprint(f"      ✗ {line}")
             if len(r.corrupt) > 5:

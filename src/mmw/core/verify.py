@@ -52,6 +52,19 @@ class VerifyResult:
     corrupt_checksums: list[str] = field(default_factory=list)
     checked_blobs: int = 0
 
+    def describe(self) -> str:
+        """What is wrong with an incomplete mirror, in one line — shared by
+        `mmw verify` and the publish/bundle pre-flight, which used to print
+        "0 of N missing" for a mirror short only of refs or damaged blobs."""
+        parts = []
+        if self.missing_count:
+            parts.append(f"{self.missing_count:,} of {self.total:,} missing")
+        if self.missing_refs_count:
+            parts.append(f"{self.missing_refs_count:,} wanted file(s) not in the pool")
+        if self.corrupt:
+            parts.append(f"{len(self.corrupt):,} damaged blob(s)")
+        return ", ".join(parts) or "incomplete"
+
     @property
     def complete(self) -> bool:
         return (

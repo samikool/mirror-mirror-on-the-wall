@@ -166,12 +166,12 @@ class _Repo:
         return _Resp(404)
 
 
-def _mirror():
-    return config.MirrorConfig(
-        name="m", provider="apt", label="t", arch="amd64",
-        suite="noble", component="main",
-        source_url="https://example.test/ubuntu",
-    )
+def _mirror(**kw):
+    return config.MirrorConfig(**{
+        "name": "m", "provider": "apt", "label": "t", "arch": "amd64",
+        "suite": "noble", "component": "main",
+        "source_url": "https://example.test/ubuntu", **kw,
+    })
 
 
 def test_fetch_all_enumerates_the_index_the_release_names():
@@ -313,3 +313,27 @@ def test_flat_filename_loses_only_its_dot_slash_prefix():
             "Package: b\nFilename: ../b.deb\nSHA256: " + "b" * 64 + "\n\n")
     assert [p.repo_path for p in _parse_packages_flat(text, "http://x")] == [
         ".cache/a.deb", "../b.deb"]          # the traversal is left for the safety check
+
+
+def test_dist_upgrader_files_are_mirrored_only_for_dist_upgrade_sources():
+    """`dist-upgrader-all/` (the release-upgrade tool tarballs) was walked for
+    every `main` component, upgrade or not — the same files the source's
+    `dist_upgrade` flag already gates `meta-release` on."""
+    release = b"Suite: noble\nSHA256:\n"
+    listing = b'<a href="noble.tar.gz">noble.tar.gz</a>'
+
+    class _Repo:
+        def get(self, url, **kw):
+            if url.endswith("/InRelease"):
+                return _Resp(200, release)
+            if url.endswith("dist-upgrader-all/current/"):
+                return _Resp(200, listing)
+            return _Resp(404)
+
+    def upgrader(**kw):
+        files = AptProvider().fetch_metadata(_mirror(**kw), _Repo())
+        return [f.repo_path for f in files if "dist-upgrader" in f.repo_path]
+
+    assert upgrader() == []
+    assert upgrader(dist_upgrade=True) == [
+        "dists/noble/main/dist-upgrader-all/current/noble.tar.gz"]

@@ -42,13 +42,10 @@ def dist_upgrade_info(network: NetworkConfig, cfg: Config, pool: Pool,
     upgrade_paths: consecutive LTS pairs both present as base suites.
     warnings: base suites missing their -updates counterpart.
 
-    `mirror_dir` is the pool this call should resolve against. Every caller
-    (`publish_network`, `bundle_network`, `dry_run_network`) was handed one
-    explicitly and this function ignored all of them, reaching for
-    `cfg.settings.mirror_dir` instead — so a publish pointed at any other
-    pool silently derived its upgrade paths from the configured one. Kept
-    optional, defaulting to the old behaviour, so nothing that doesn't pass
-    it changes.
+    `mirror_dir` is the pool this call should resolve against — every caller
+    (`walk_network`, `dry_run_network`) passes the one it was handed, so a
+    publish pointed at another pool does not derive its upgrade paths from
+    the configured one. Defaults to `cfg.settings.mirror_dir`.
     """
     if mirror_dir is None:
         mirror_dir = cfg.settings.mirror_dir

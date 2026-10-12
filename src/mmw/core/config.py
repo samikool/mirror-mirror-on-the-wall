@@ -530,6 +530,72 @@ class Config(_StrictModel):
                 raise ValueError(f"duplicate {label}(s): {', '.join(sorted(dupes))}")
         return self
 
+    @model_validator(mode="after")
+    def _destinations_do_not_collide(self):
+        """Publish destinations that would destroy each other, refused at load.
+
+        - a root that is, or holds, the mirror directory (see
+          `destination_problem`): the first pruning publish deleted the pool;
+        - two networks whose roots are the same or nested: each publish
+          prunes the other's repositories as stale;
+        - a bundle_dir inside a publish root: the tarballs are served to every
+          client, and the next pruning publish deletes them.
+        """
+        roots: list[tuple[str, Path]] = []
+        for n in self.networks:
+            if n.root is not None:
+                problem = destination_problem(n.root, self.settings.mirror_dir)
+                if problem:
+                    raise ValueError(f"network '{n.name}': root {problem}")
+                roots.append((n.name, _abs(n.root)))
+        for i, (a, ra) in enumerate(roots):
+            for b, rb in roots[i + 1:]:
+                if _within(ra, rb) or _within(rb, ra):
+                    raise ValueError(
+                        f"networks '{a}' and '{b}' publish into overlapping roots ({ra}, {rb}) "
+                        "— each publish would prune the other's files")
+        for n in self.networks:
+            if n.bundle_dir is None:
+                continue
+            for name, r in roots:
+                if _within(_abs(n.bundle_dir), r):
+                    raise ValueError(
+                        f"network '{n.name}': bundle_dir {n.bundle_dir} is inside network "
+                        f"'{name}''s publish root — served to every client, and deleted by "
+                        "its next pruning publish")
+        return self
+
+
+def _abs(p: Path) -> Path:
+    """Absolute and normalized, without touching the filesystem (a validator
+    runs on every load, and the paths need not exist yet)."""
+    return Path(os.path.normpath(os.path.abspath(os.path.expanduser(str(p)))))
+
+
+def _within(inner: Path, outer: Path) -> bool:
+    """`inner` is `outer` or somewhere under it."""
+    return inner == outer or outer in inner.parents
+
+
+def destination_problem(root: Path, mirror_dir: Path) -> str | None:
+    """Why `root` cannot be a publish destination for the pool at
+    `mirror_dir`, or None.
+
+    A pruning publish removes every top-level directory of its root that no
+    repository it publishes owns (`TreeSink.prune_stale_bases`), and removing
+    a network can delete its whole root. A root that IS the mirror directory,
+    or holds it, therefore deleted `.pool/`, `certs/`, `bundles/` — the pool
+    itself — on the first publish. Checked at load and again at publish
+    time (resolving symlinks there), since `--root` never passes the config.
+    """
+    r, m = _abs(root), _abs(mirror_dir)
+    if r == Path(r.anchor):
+        return f"{root} is the filesystem root"
+    if _within(m, r):
+        return (f"{root} holds the mirror directory {mirror_dir} — a pruning publish "
+                "deletes what it does not publish there, the pool included")
+    return None
+
 
 def _union_or_all(a: list[str], b: list[str]) -> list[str]:
     """Union under empty-means-all semantics.

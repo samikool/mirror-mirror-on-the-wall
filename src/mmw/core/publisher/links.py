@@ -14,7 +14,7 @@ import posixpath
 import shutil
 from pathlib import Path
 
-from mmw.core.config import MirrorConfig, derive_name
+from mmw.core.config import MirrorConfig
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 
 from mmw.core.publisher.results import MirrorPublishResult
@@ -349,14 +349,14 @@ def file_checksum(path: Path) -> str:
 
 def _key_groups(mirrors: list[MirrorConfig]) -> set[str]:
     """The `keys/` directories a set of mirrors owns: each one's label, plus
-    the derived source name as a fallback (see `publish_keys`)."""
+    the repository's name as a fallback (see `publish_keys`) — the same
+    fallback the sync writes under."""
+    from mmw.core import upstream
     groups: set[str] = set()
     for mirror in mirrors:
         if mirror.label:
             groups.add(mirror.label)
-        source = getattr(mirror, "source", "") or mirror.source_url
-        if source:
-            groups.add(derive_name(source))
+        groups.add(upstream.repository_name(mirror))
     return groups
 
 
@@ -372,7 +372,15 @@ def upstream_files(mirror_dir: Path, mirrors: list[MirrorConfig]) -> dict[str, P
     """
     from mmw.core import upstream
     found: dict[str, Path] = {}
-    for group in sorted({upstream.repository_group(m) for m in mirrors}):
+    groups: set[str] = set()
+    for m in mirrors:
+        group = upstream.repository_group(m)
+        if not upstream.group_dir(mirror_dir, group).is_dir():
+            # Not synced since the directory name became unique: serve what
+            # the old one holds rather than drop the files from the tree.
+            group = upstream.legacy_group(m) or group
+        groups.add(group)
+    for group in sorted(groups):
         base = upstream.group_dir(mirror_dir, group)
         if not base.is_dir():
             continue

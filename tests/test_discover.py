@@ -81,3 +81,32 @@ def test_expand_arch_placeholder_is_a_thin_wrapper_over_probe(monkeypatch):
         lambda url: DetectResult(provider="apt-flat") if "arm64" in url else DetectResult(provider=None),
     )
     assert discover.expand_arch_placeholder("https://x.example/deb/$(ARCH)", "$(ARCH)") == ["arm64"]
+
+
+def test_flat_detection_accepts_release_or_bare_index_but_not_html(monkeypatch):
+    """InRelease alone used to be tried, so a flat repository with only a
+    Release — or an unsigned one with only Packages — was "not a repository".
+    A host answering every path with an HTML page must not match instead."""
+    import gzip
+
+    import httpx
+
+    from mmw.core import discover
+
+    real = httpx.Client
+
+    def serve(files):
+        def handler(request):
+            body = files.get(request.url.path.rsplit("/", 1)[-1])
+            if body is None:
+                return httpx.Response(200, content=b"<html>landing page</html>")
+            return httpx.Response(200, content=body)
+        monkeypatch.setattr(discover.httpx, "Client",
+                            lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+
+    serve({"Release": b"Origin: vendor\nSHA256:\n"})
+    assert discover.detect_repository("https://v.test/repo").provider == "apt-flat"
+    serve({"Packages.gz": gzip.compress(b"Package: a\n")})
+    assert discover.detect_repository("https://v.test/repo").provider == "apt-flat"
+    serve({})
+    assert discover.detect_repository("https://v.test/repo").provider is None

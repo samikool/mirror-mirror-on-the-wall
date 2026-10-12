@@ -542,16 +542,16 @@ class AptProvider(BaseProvider):
                     fallback_url=canonical_url,
                 ))
 
-        # dist-upgrader-all/ is not in the Release SHA256 block; walk it directly.
-        # Only present under the "main" component — skip silently for others.
-        if component == "main":
-            files += _fetch_dist_upgrader_files(dist_base, component, suite, client)
-
-        # Mirror changelogs.ubuntu.com for dist-upgrade support — declared on the
-        # source (`dist_upgrade = true`), not inferred from a distro name. Both
-        # files are identical regardless of suite, so last-write-wins across
-        # multiple mirrors.
+        # Release-upgrade support — declared on the source (`dist_upgrade =
+        # true`), never inferred from a distro name, and the one flag for all
+        # of it. dist-upgrader-all/ (the upgrade tool tarballs) used to be
+        # walked for every `main` component regardless, so every Ubuntu mirror
+        # carried and published them whether or not it was meant to upgrade.
         if component == "main" and getattr(mirror_config, "dist_upgrade", False):
+            # Not in the Release SHA256 block; walked directly. Only present
+            # under "main". The changelogs.ubuntu.com files below are
+            # identical regardless of suite, so last-write-wins across mirrors.
+            files += _fetch_dist_upgrader_files(dist_base, component, suite, client)
             for name in ("meta-release", "meta-release-lts"):
                 # repo_path prefix marks these as network-root-relative for publish
                 files.append(MetadataFile(

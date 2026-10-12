@@ -43,7 +43,7 @@ def _run_tui(app):
 
 app = typer.Typer(
     name="mmw",
-    help="Mirror Mirror on the Wall — universal package repository mirror.",
+    help="Mirror Mirror on the Wall — APT repository mirror for airgapped networks.",
     no_args_is_help=True,
 )
 
@@ -92,7 +92,7 @@ def _main(
         help="Directory holding mmw.toml (default: the working directory).",
     ),
 ) -> None:
-    """Mirror Mirror on the Wall — universal package repository mirror.
+    """Mirror Mirror on the Wall — APT repository mirror for airgapped networks.
 
     `--version` matters more here than for most tools: the machine that hits a
     bug is often on the far side of an airgap, with no `git log`, no network
@@ -101,14 +101,13 @@ def _main(
 
 
 def _load_config_or_exit(cfg_dir: Path):
-    """Load mmw.toml, exiting with a readable message on any failure."""
+    """Load mmw.toml, exiting with a readable message on any failure — the
+    same door (`commands.common.load_config`) every headless verb uses."""
+    from mmw.commands.common import ConfigError, load_config
     try:
-        return config.load(cfg_dir)
-    except FileNotFoundError:
-        typer.echo("No config found. Run `mmw init` first.", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"Invalid config at {config.config_path(cfg_dir)}:\n{e}", err=True)
+        return load_config(cfg_dir)
+    except ConfigError as e:
+        typer.echo(str(e), err=True)
         raise typer.Exit(1)
 
 
@@ -150,7 +149,7 @@ def _open_app(cfg, cfg_dir, section: str = "repositories", **kwargs):
 @app.command("init")
 def cmd_init(
     mirror_dir: Path = typer.Option(Path("./mirror"), help="Mirror storage directory"),
-    max_connections: int = typer.Option(10, help="Concurrent download connections"),
+    max_connections: int = typer.Option(10, min=1, help="Concurrent download connections"),
     force: bool = typer.Option(False, "--force", help="Re-initialize even if config exists"),
 ):
     """Setup wizard. Launches manage if config already exists."""
@@ -160,11 +159,7 @@ def cmd_init(
 
     if cfg_path.exists() and not force:
         typer.echo(f"Config found at {cfg_path} — launching manage.")
-        try:
-            cfg = config.load(cfg_dir)
-        except Exception as e:
-            typer.echo(f"Error loading config: {e}", err=True)
-            raise typer.Exit(1)
+        cfg = _load_config_or_exit(cfg_dir)
         _run_tui(_open_app(cfg, cfg_dir, **defaults))
         return
 
@@ -187,12 +182,21 @@ def cmd_manage(
     cfg = _load_config_or_exit(cfg_dir)
 
     if quiet:
+        # What the pool holds for the configured repositories (config
+        # expansion only as a fallback before the first sync): a source left
+        # at "all arches" expands to nothing offline, so `cfg.mirrors` listed
+        # zero mirrors for exactly the configs the README suggests checking.
+        from mmw.core.resolve import available_mirrors, needs_resolving
+        mirrors = available_mirrors(cfg, cfg.settings.mirror_dir)
         typer.echo(f"Mirror dir : {cfg.settings.mirror_dir}")
         typer.echo(f"Connections: {cfg.settings.max_connections}")
-        typer.echo(f"Mirrors    : {len(cfg.mirrors)}")
+        typer.echo(f"Mirrors    : {len(mirrors)}")
         typer.echo("")
-        for m in cfg.mirrors:
+        for m in mirrors:
             typer.echo(f"  {m.name}  ({m.provider})")
+        if not mirrors and needs_resolving(cfg.sources):
+            typer.echo("  (\"all\" suites/components/arches are resolved at the first "
+                       "sync — `mmw dry-run` lists what they expand to)")
         return
 
     with _profiling(profile) as prof:

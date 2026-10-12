@@ -399,3 +399,42 @@ def test_save_replaces_the_file_whole_and_keeps_a_symlink(tmp_path, monkeypatch)
     with pytest.raises(OSError):
         config.save(cfg, real.parent)
     assert config.load(real.parent).settings.max_connections == 3     # untouched
+
+
+@pytest.mark.parametrize("root, bundle, other, msg", [
+    ("{m}", None, None, "holds the mirror directory"),
+    ("{t}", None, None, "holds the mirror directory"),          # a parent of the pool
+    ("/", None, None, "filesystem root"),
+    ("{t}/www", None, "{t}/www", "overlapping roots"),
+    ("{t}/www", None, "{t}/www/oak", "overlapping roots"),
+    ("{t}/www", "{t}/www/bundles", None, "inside network"),
+])
+def test_destinations_that_would_destroy_each_other_are_refused(tmp_path, root, bundle,
+                                                                 other, msg):
+    """A pruning publish removes every top-level directory of its root that it
+    does not publish — so a root holding the pool deleted `.pool/` on the
+    first publish, overlapping roots pruned each other, and a bundle_dir in a
+    root was served and then deleted."""
+    from pydantic import ValidationError
+
+    t, m = tmp_path, tmp_path / "mirror"
+    fill = lambda s: s and s.format(t=t, m=m)   # noqa: E731
+    nets = [{"name": "lab", "root": fill(root), **({"bundle_dir": fill(bundle)} if bundle else {})}]
+    if other:
+        nets.append({"name": "oak", "root": fill(other)})
+    with pytest.raises(ValidationError, match=msg):
+        config.Config.model_validate({"settings": {"mirror_dir": str(m)}, "networks": nets})
+
+
+def test_publish_refuses_a_root_that_holds_the_pool_even_via_root_override(tmp_path):
+    from mmw.core.publisher import publish_network, publish_snapshot
+
+    m = tmp_path / "mirror"
+    cfg = config.Config(settings=config.Settings(mirror_dir=m))
+    net = config.NetworkConfig(name="lab", root=tmp_path / "www")
+    link = tmp_path / "alias"
+    link.symlink_to(m.parent)                 # a symlink to the pool's parent
+    with pytest.raises(ValueError, match="holds the mirror directory"):
+        publish_network(net.model_copy(update={"root": link}), cfg, m)
+    with pytest.raises(ValueError, match="holds the mirror directory"):
+        publish_snapshot(net, cfg, m, "x", root=m)

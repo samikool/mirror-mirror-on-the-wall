@@ -1,8 +1,9 @@
 # Configuration
 
-`mmw` reads **`mmw.toml` from the current working directory**. There is no
-system-wide config, no `~/.config` lookup and no `--config` flag: the working
-directory *is* the selector, so two mirrors on one machine are two directories.
+`mmw` reads **`mmw.toml` from the current working directory**, or from the
+directory `mmw --config DIR` names. There is no system-wide config and no
+`~/.config` lookup: the directory *is* the selector, so two mirrors on one
+machine are two directories.
 
 > **Generated file — do not hand-edit.** The key tables below are built from the
 > pydantic models in `src/mmw/core/config.py`:
@@ -112,7 +113,7 @@ One table per upstream repository. The only required key is `url`.
 | `gpg_key` | string | *(unset)* | The armoured key itself, inline. This is what an imported deb822 stanza with an inline `Signed-By:` block becomes. It is kept in `mmw.toml` rather than only on disk on purpose: an airgapped network is exactly where a key *URL* cannot be reached, so the config alone has to be able to reproduce the mirror, and `keys/` is an output directory that gets rebuilt. |
 | `gpg_key_name` | string | *(unset)* | Filename stem for the emitted key files — `nvidia-spark-repo` gives `keys/nvidia/nvidia-spark-repo.asc` and `.gpg`. Taken from the basename of a `Signed-By:` *path* when a config named a keyring file mmw does not have, which is also the handle `mmw add --keys-dir` matches against to supply it later. |
 | `extra_files` | list of string | `[]` | Any other upstream URLs a vendor's install instructions fetch — a sources `.list`, a key on another path or host, a keyring `.deb`. Each is fetched every sync and published byte-for-byte at its own path (`https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list` → `{root}/nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list`), so the vendor's commands work unchanged once DNS points at the mirror. A host that only serves such a file gets a server block and a certificate name. A failed fetch keeps the last good copy; removing a URL removes its copy. Must name a file, with no query string; 64 MiB at most. |
-| `dist_upgrade` | bool | `false` | Ubuntu only. Also mirror `changelogs.ubuntu.com/meta-release*`, which `do-release-upgrade` reads to discover releases. A **declared** opt-in — it is never inferred from a distro name. Pair it with `dist_upgrade` on the network that should publish those files. |
+| `dist_upgrade` | bool | `false` | Ubuntu only. Also mirror `changelogs.ubuntu.com/meta-release*`, which `do-release-upgrade` reads to discover releases, and the upgrade tool tarballs under `main/dist-upgrader-all/`. A **declared** opt-in — it is never inferred from a distro name. Pair it with `dist_upgrade` on the network that should publish those files. |
 
 
 ### `[[sources.suite_overrides]]`
@@ -143,8 +144,8 @@ destination is unset says so rather than inventing one.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `name` | string | **required** | Identifies the network in `-n` flags, in `{mirror_dir}/certs/{name}/`, in the bundle ledger at `{mirror_dir}/bundles/{name}/`, and in bundle filenames. Removing a network clears its bundle ledger, so reusing a name later starts clean rather than inheriting delta history the far side never received. |
-| `root` | path | *(unset)* | The `publish` verb's destination. Trees are materialized at `{root}/{hostname}/{upstream_path}/` as hardlinks into the pool. A network with no `root` is skipped by publish with a message — it is a valid config, not an error. |
-| `bundle_dir` | path | *(unset)* | The `bundle` verb's destination. Independent of `root`: a network may have neither, one, or both. `mmw bundle --out` overrides it for one run. |
+| `root` | path | *(unset)* | The `publish` verb's destination. Trees are materialized at `{root}/{hostname}/{upstream_path}/` as hardlinks into the pool. A network with no `root` is skipped by publish with a message — it is a valid config, not an error. A pruning publish removes what it does not publish under `root`, so it may not be (or hold) `mirror_dir`, nor overlap another network's `root` — such a config is refused at load. |
+| `bundle_dir` | path | *(unset)* | The `bundle` verb's destination. Independent of `root`: a network may have neither, one, or both. `mmw bundle --out` overrides it for one run. Never inside a publish `root`: the tarballs would be served, then pruned. |
 | `select` | table array | `[]` — every mirrored repository | A list of `[[networks.select]]` tables — what this network publishes, **by dimension, never by mirror name**. Omitting `select` entirely publishes every mirrored repository. See the table below. |
 | `prune` | bool | `true` | Delete files at the destination that the current refs set no longer wants. **This is what makes a published tree exactly match the mirror**, and it is why a network that selects one architecture of a shared-base repository removes the other architecture's files from *that tree* (the pool keeps them). `by-hash/` is swept separately, keeping the newest two stale generations for clients that are mid-`apt update`. |
 | `dist_upgrade` | bool | `false` | Publish `changelogs.ubuntu.com/meta-release*` to the network root and write an `UPGRADE.md` with the DNS entries this network actually needs (derived from its own mirrors) and the LTS upgrade paths parsed out of the mirrored meta-release file. Needs `dist_upgrade = true` on the Ubuntu source too, or there is nothing to publish. |

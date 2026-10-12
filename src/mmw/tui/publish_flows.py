@@ -120,7 +120,7 @@ class PublishFlows:
                     elif vr.complete:
                         detail, ok = f"complete · {vr.total:,} files", True
                     else:
-                        detail, ok = f"{vr.missing_count:,} of {vr.total:,} missing", False
+                        detail, ok = vr.describe(), False
                     view.mirror_done(n, m.name, detail, ok)
 
                 verify_results = await _run_per_mirror(
@@ -181,14 +181,14 @@ class PublishFlows:
                     network_totals, [m.name for m in selected_mirrors], pool, published)
                 if net.dist_upgrade:
                     dry_result.dist_upgrade_paths, dry_result.dist_upgrade_warnings = \
-                        await asyncio.to_thread(dist_upgrade_info, net, self.cfg(), pool)
+                        await asyncio.to_thread(dist_upgrade_info, net, self.cfg(), pool, mirror_dir)
 
         return verify_results, file_counts, dry_result
 
     def _incomplete_lines(self, verify_results: list) -> list[str]:
         return [
             f"  • {r.mirror_name}: {r.error}" if r.error
-            else f"  • {r.mirror_name}: {r.missing_count:,} of {r.total:,} files missing"
+            else f"  • {r.mirror_name}: {r.describe()}"
             for r in verify_results if not r.complete
         ]
 

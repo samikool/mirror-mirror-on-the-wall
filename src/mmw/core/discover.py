@@ -44,15 +44,22 @@ def detect_repository(url: str) -> DetectResult:
     last_error = ""
     try:
         with httpx.Client(timeout=8, follow_redirects=True) as client:
-            # Flat repository: InRelease sitting at the root, no dists/ tree.
-            try:
-                r = client.get(f"{base}/InRelease")
-                if r.status_code == 200:
-                    result = DetectResult(provider="apt-flat", signal="APT flat  (InRelease at root)")
-                    _parse_release_headers(r.text, result)
+            # Flat repository: a release file — or, unsigned, just the index —
+            # at the root, no dists/ tree. InRelease alone used to be checked,
+            # so a flat repository with only `Release`, or an unsigned one
+            # (`deb [trusted=yes] … ./`), read as "not an apt repository".
+            for name in ("InRelease", "Release", "Packages.xz", "Packages.gz", "Packages"):
+                try:
+                    r = client.get(f"{base}/{name}")
+                except Exception as e:
+                    last_error = str(e) or type(e).__name__
+                    break               # unreachable — the next names are too
+                if r.status_code == 200 and _looks_like(name, r.content):
+                    result = DetectResult(provider="apt-flat",
+                                          signal=f"APT flat  ({name} at root)")
+                    if name in ("InRelease", "Release"):
+                        _parse_release_headers(r.text, result)
                     return result
-            except Exception as e:
-                last_error = str(e) or type(e).__name__
 
             # Standard repository: a dists/ directory.
             try:
@@ -87,6 +94,22 @@ def detect_repository(url: str) -> DetectResult:
         candidates=candidates,
         error=last_error or "not an apt repository",
     )
+
+
+def _looks_like(name: str, body: bytes) -> bool:
+    """Is `body` plausibly the file `name` says? Some hosts answer 200 with an
+    HTML page for any path (deb.debian.org's CDN landing page), which must not
+    read as a flat repository."""
+    if name.endswith(".xz"):
+        return body.startswith(b"\xfd7zXZ\x00")
+    if name.endswith(".gz"):
+        return body.startswith(b"\x1f\x8b")
+    head = body[:4096].lstrip()
+    if name == "Packages":
+        return head.startswith(b"Package:")
+    return head.startswith(b"-----BEGIN PGP SIGNED MESSAGE-----") or any(
+        f"\n{k}:".encode() in b"\n" + head
+        for k in ("Origin", "Label", "Suite", "Codename", "SHA256", "Date"))
 
 
 def _parse_release_headers(text: str, result: DetectResult) -> None:
@@ -220,13 +243,14 @@ def probe_arch_placeholder(url_template: str, placeholder: str) -> list[tuple[st
     caller that also needs the repository's shape (suites, provider — the
     TUI's URL-probe path) never has to probe the same candidate twice.
     """
-    found = []
-    for arch in sorted(KNOWN_ARCHES):
-        candidate = url_template.replace(placeholder, arch)
-        result = detect_repository(candidate)
-        if result.provider is not None:
-            found.append((arch, result))
-    return found
+    # Concurrently: one probe per known arch, each up to a few requests with
+    # 8 s timeouts, took minutes one after another against a slow host.
+    from concurrent.futures import ThreadPoolExecutor
+    arches = sorted(KNOWN_ARCHES)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(
+            lambda a: detect_repository(url_template.replace(placeholder, a)), arches))
+    return [(a, r) for a, r in zip(arches, results) if r.provider is not None]
 
 
 def expand_arch_placeholder(url_template: str, placeholder: str) -> list[str]:

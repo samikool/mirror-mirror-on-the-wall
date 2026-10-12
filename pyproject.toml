@@ -1,6 +1,6 @@
 [project]
 name = "mirror-mirror-on-the-wall"
-version = "0.10.1"
+version = "1.0.0"
 description = "APT repository mirror for airgapped networks — exact upstream mirroring, GPG signatures preserved, content-addressable pool"
 readme = "README.md"
 license = "MIT"
@@ -10,7 +10,7 @@ authors = [
 ]
 keywords = ["mirror", "apt", "debian", "ubuntu", "repository", "airgap"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",

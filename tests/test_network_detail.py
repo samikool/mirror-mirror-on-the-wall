@@ -5,6 +5,7 @@ from pathlib import Path
 from mmw.core import config
 from mmw.tui.sections.network_detail import NetworkDetail
 from mmw.tui.ui.base import ThemedApp
+from waiting import settle
 
 
 def _cfg():
@@ -39,12 +40,10 @@ def test_a_result_for_a_previous_network_is_dropped(monkeypatch):
         stale_gen = pane._detail_gen
         pane.show(config.NetworkConfig(name="new", select=[]), cfg)
         pane._on_loaded(stale_gen, ["old-mirror"], (5, 50, None, []))
-        for _ in range(4):
-            await pilot.pause()
+        await settle(pilot)
         assert "old-mirror" not in _text(app)
         pane._on_loaded(pane._detail_gen, ["new-mirror"], None)
-        for _ in range(4):
-            await pilot.pause()
+        await settle(pilot)
         assert "new-mirror" in _text(app)
     _run(check, monkeypatch)
 
@@ -55,8 +54,7 @@ def test_names_and_paths_render_literally(monkeypatch):
         net = config.NetworkConfig(name="lab", root=Path("/srv/a[b]c"), select=[])
         pane.show(net, _cfg())
         pane._on_loaded(pane._detail_gen, ["m[i]x"], None)
-        for _ in range(4):
-            await pilot.pause()
+        await settle(pilot)
         text = _text(app)
         assert "/srv/a[b]c" in text and "m[i]x" in text
     _run(check, monkeypatch)
@@ -79,10 +77,8 @@ def test_a_failed_load_says_so_instead_of_loading_forever(monkeypatch):
             await pilot.pause()
             app.query_one(NetworkDetail).show(
                 config.NetworkConfig(name="lab", root=Path("/srv/lab"), select=[]), _cfg())
-            for _ in range(10):
-                await pilot.pause()
+            await settle(pilot)
             await app.workers.wait_for_complete()
-            for _ in range(4):
-                await pilot.pause()
+            await settle(pilot)
             assert "pool unreadable" in _text(app)
     asyncio.run(go())

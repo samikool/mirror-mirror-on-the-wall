@@ -20,7 +20,7 @@ Sizes match `test_tui_geometry.py`: 80x24 is the POSIX default and the floor
 mmw should stay usable at.
 """
 from mmw.core import config
-from waiting import until
+from waiting import settle, until
 
 # One representative size per screen rather than the geometry file's three.
 # Snapshots are for catching visual drift, and three baselines per screen
@@ -214,8 +214,7 @@ async def _then_settle(pilot, n=3):
     for w in pilot.app.screen.query("Input, TextArea"):
         if isinstance(w, (Input, TextArea)):
             w.cursor_blink = False
-    for _ in range(n):
-        await pilot.pause()
+    await settle(pilot)
 
 
 async def _tick_first(pilot):

@@ -7,6 +7,7 @@ from textual.widgets import Button, SelectionList
 
 from mmw.tui.ui.base import ThemedApp
 from mmw.tui.pick import PickPage
+from waiting import settle, until
 
 OPTIONS = [f"suite-{i}" for i in range(10)]
 
@@ -39,15 +40,13 @@ class _Harness(ThemedApp):
 
 
 async def _settle(pilot, tries: int = 20):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 async def _wait_result(pilot, app, tries: int = 40):
-    for _ in range(tries):
-        if app.result != "unset":
-            return
-        await pilot.pause()
+    """`tries` is ignored: wait for the result itself (tests/waiting.py)."""
+    await until(pilot, lambda: app.result != "unset")
 
 
 def _run(scenario):

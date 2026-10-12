@@ -21,6 +21,7 @@ from textual.app import ComposeResult
 
 from mmw.core import config
 from mmw.tui.ui.base import ThemedApp
+from waiting import settle
 
 # 80x24 is the POSIX default terminal. 80x40 and 120x40 are ordinary modern
 # windows. If a screen is unusable at 80x24 that is worth knowing explicitly,
@@ -322,8 +323,7 @@ def test_page_action_buttons_all_fit(tmp_path, section):
     async def go(size):
         a = _mmw(tmp_path, section)()
         async with a.run_test(size=size) as pilot:
-            for _ in range(20):
-                await pilot.pause()
+            await settle(pilot)
             bar = a.screen.query_one("#page-actions")
             buttons = [b for b in a.screen.query("#page-actions Button") if b.display]
             assert buttons, "the action bar has no buttons"
@@ -353,8 +353,7 @@ def test_network_detail_mirror_list_is_not_starved(tmp_path):
         a = _mmw(tmp_path, "networks")()
         async with a.run_test(size=size) as pilot:
             await a.workers.wait_for_complete()
-            for _ in range(25):
-                await pilot.pause()
+            await settle(pilot)
             ml = a.screen.query_one(NetworkDetail).query_one("#mirror-list")
             return ml.size.height, ml.virtual_size.height
 

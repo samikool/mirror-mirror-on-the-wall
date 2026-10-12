@@ -15,6 +15,7 @@ from textual.widgets import Button, Checkbox, SelectionList
 
 from mmw.core import config
 from mmw.tui.network_screens import AddNetworkPage, EditNetworkPage, NetworkForm
+from waiting import settle
 
 
 def _mirror(name, source, arch="arm64", suite="noble", component="main"):
@@ -32,8 +33,8 @@ def _mirrors():
 
 
 async def _settle(pilot, tries: int = 25):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(scenario):

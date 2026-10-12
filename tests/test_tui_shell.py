@@ -11,7 +11,7 @@ from mmw.tui.navigation import SECTION_MODES
 from mmw.tui.theme import MMW_THEMES
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.sidebar import SectionLink, Sidebar
-from waiting import until
+from waiting import settle, until
 
 
 def _cfg():
@@ -24,8 +24,8 @@ class _Sub(Page):
 
 
 async def _settle(pilot, n=3):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(check, tmp_path, section="repositories", size=(120, 40)):

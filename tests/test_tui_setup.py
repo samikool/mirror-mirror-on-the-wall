@@ -9,6 +9,7 @@ from mmw.tui.app import MmwApp
 from mmw.tui.sections.setup import SetupPage
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.sidebar import Sidebar
+from waiting import settle, until
 
 SRC = "https://deb.example.com/debian"
 
@@ -18,8 +19,8 @@ def _source():
 
 
 async def _settle(pilot, n=6):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(tmp_path, check, cfg=None, **kw):
@@ -178,15 +179,17 @@ def test_a_sync_resolving_when_setup_starts_does_not_start(tmp_path, monkeypatch
         nonlocal release
         import threading
         release = threading.Event()
+        started = threading.Event()
 
         def slow_resolve(cfg, sel):
+            started.set()
             release.wait(5)
             return [config.MirrorConfig(name="debian-bookworm-main-amd64", provider="apt",
                                         source=SRC, source_url=SRC, arch="amd64",
                                         suite="bookworm", component="main")], []
         monkeypatch.setattr(R, "resolve_selection", slow_resolve)
         task = asyncio.ensure_future(app.start_sync(((), ())))
-        await _settle(pilot)
+        await until(pilot, started.is_set)     # resolving, and parked there
         app.cfg = None                     # what reinitialise does meanwhile
         release.set()
         await task                         # must not touch the Sync section with no config

@@ -8,7 +8,7 @@ from mmw.tui import repositories as R
 from mmw.tui.app import MmwApp
 from mmw.tui.source_screens import EditSourcePage
 from mmw.tui.ui.dialog import ConfirmDialog
-from waiting import until
+from waiting import settle, until
 
 
 def _cfg(tmp_path, n=3):
@@ -22,8 +22,8 @@ def _cfg(tmp_path, n=3):
 
 
 async def _settle(pilot, n=4):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(tmp_path, check, cfg=None, size=(120, 40)):
@@ -311,12 +311,16 @@ def test_a_second_action_is_refused_instead_of_cancelling_the_first(tmp_path, mo
     monkeypatch.setattr(R, "prune_pool", held_prune)
 
     async def check(app, pilot):
+        notes = []
+        real_notify = app.screen.notify
+        app.screen.notify = lambda m, **kw: (notes.append(str(m)), real_notify(m, **kw))
         await pilot.press("p")
-        await _settle(pilot)
+        await until(pilot, lambda: app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, running.is_set)
         await pilot.press("a")                       # while the prune runs
-        await _settle(pilot)
+        # Refused, said so — and no Add page (a negative waits for the refusal).
+        await until(pilot, lambda: any("Still working" in n for n in notes))
         assert not isinstance(app.screen, AddSourcePage)
         release.set()
         await _done(app, pilot)

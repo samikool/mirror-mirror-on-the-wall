@@ -9,6 +9,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Button, DirectoryTree, Input, Label
 
 from mmw.tui.path_pick import PathPickPage, _resolve_start
+from waiting import settle
 
 
 class _Harness(App):
@@ -25,8 +26,8 @@ class _Harness(App):
 
 
 async def _settle(pilot, tries: int = 30):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(scenario):

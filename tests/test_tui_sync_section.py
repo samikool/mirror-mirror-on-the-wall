@@ -10,6 +10,7 @@ from mmw.tui import sync as sync_mod
 from mmw.tui.app import MmwApp
 from mmw.tui.sync import SyncView
 from mmw.tui.ui.dialog import ConfirmDialog
+from waiting import settle, until
 
 SRC = "https://deb.example.com/debian"
 
@@ -29,8 +30,8 @@ async def _fake_sync_mirror(mirror, *, stop_event, events=None, **_):
 
 
 async def _settle(pilot, n=6):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(tmp_path, monkeypatch, check):
@@ -59,10 +60,8 @@ def _run(tmp_path, monkeypatch, check):
 async def _start(app, pilot):
     app.screen.query_one("#repo-list", ListView).focus()
     await pilot.press("s")
-    for _ in range(40):
-        await pilot.pause(0.02)
-        if app.active_sync is not None and app.active_sync.running:
-            return
+    await until(pilot, lambda: app.active_sync is not None and app.active_sync.running)
+    return
     raise AssertionError("sync never started")
 
 

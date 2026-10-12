@@ -5,6 +5,7 @@ import asyncio
 from mmw.core import config
 from mmw.tui.app import MmwApp
 from mmw.tui.ui.dialog import HelpDialog
+from waiting import settle
 
 SRC = "https://deb.example.com/debian"
 
@@ -20,8 +21,7 @@ def _run(tmp_path, section, check):
     async def go():
         app = MmwApp(cfg, tmp_path, initial_section=section)
         async with app.run_test(size=(100, 30)) as pilot:
-            for _ in range(6):
-                await pilot.pause()
+            await settle(pilot)
             await check(app, pilot)
     asyncio.run(go())
 

@@ -6,7 +6,7 @@ from textual.widgets import Button, Input, Select
 
 from mmw.core import config
 from mmw.tui.app import MmwApp
-from waiting import until
+from waiting import settle, until
 
 
 def _cfg():
@@ -15,8 +15,8 @@ def _cfg():
 
 
 async def _settle(pilot, n=4):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(tmp_path, check, cfg=None):

@@ -1,5 +1,6 @@
 """The rebuilt Networks section."""
 import asyncio
+from waiting import settle
 
 from textual.widgets import Button, Input, ListView, SelectionList
 
@@ -31,8 +32,8 @@ def _cfg(tmp_path, *names, root=None):
 
 
 async def _settle(pilot, n=4):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 async def _done(app, pilot):

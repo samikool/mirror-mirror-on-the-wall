@@ -14,6 +14,7 @@ import pytest
 from mmw.core import config
 from mmw.tui.app import MmwApp
 from mmw.tui.navigation import SECTION_MODES
+from waiting import settle
 
 SIZES = [(80, 24), (120, 40)]
 
@@ -24,8 +25,8 @@ def _cfg():
 
 
 async def _settle(pilot, n=3):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 async def unreachable(app, pilot) -> list[str]:

@@ -12,10 +12,10 @@ at all** — see [How clients find the mirror](#how-clients-find-the-mirror).
 NVIDIA, Docker, a PPA — still has to be installed on each client, exactly as it
 would online.)
 
-> **Status: beta, heading for 1.0.** Everything below is exercised by an offline test
-> suite and most of it has run against real upstreams. The one path that has
-> **not** been round-tripped on real hardware is bundling across a physical
-> airgap — see [CHANGELOG.md](CHANGELOG.md).
+> **Status: 1.0.** Everything below is exercised by an offline test suite and
+> has run against real upstreams. Bundling is tested end to end — a real bundle
+> is applied by `apply.py` and diffed against a directly published tree — but
+> report anything a physical airgap turns up. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Highlights
 

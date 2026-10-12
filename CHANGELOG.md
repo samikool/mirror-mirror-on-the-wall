@@ -6,13 +6,92 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### 1.0 is gated on a real hardware round trip
+## [1.0.0]
 
-The bundling path — bundle, transfer, `apply.py`, serve — is covered end to end
-by the test suite (a real bundle is produced, `apply.py` runs as a subprocess,
-and the result is diffed against a directly-published tree, across a delta),
-but it has never run against a genuinely airgapped site. 1.0 is tagged after
-that, not before.
+The first stable release. Upgrading from 0.10: if you synced in the TUI,
+run `mmw verify --deep --repair` once and then `mmw sync` (see the first
+Fixed entry); a config whose network `root` overlaps the mirror directory or
+another network's root is now refused at load and says which.
+
+### Added
+
+- `mmw verify --deep` stats every pool file and `--rehash` re-hashes it — the
+  only checks that see a file damaged on disk. `--repair` drops damaged files
+  so the next `mmw sync` downloads them again. Run `mmw verify --repair` once
+  after upgrading if you synced in the TUI before (see the first Fixed entry).
+
+### Changed
+
+- The release-upgrade tool tarballs (`dist-upgrader-all/`) are mirrored only
+  for a source with `dist_upgrade = true`, like `meta-release`. Every Ubuntu
+  `main` mirror used to carry them; the next sync and pruning publish drop
+  them elsewhere.
+
+### Fixed
+
+- A pool file could be stored truncated under its correct checksum, and was
+  then never downloaded again: two mirrors syncing at once in the TUI (amd64
+  and i386 share every `Architecture: all` package) shared one partial-download
+  file, and stopping the sync — or a dropped connection — at the wrong moment
+  left the half-written one in the pool. Each download now has its own.
+- Dropping a suite, component or architecture from a repository kept
+  publishing and bundling it, frozen at its last sync, and `mmw prune` never
+  freed it. It now stops being served at once and the next prune frees it.
+- Renaming a network left its snapshots and bundle history under the old
+  name, and removing one left them behind: no command could reach them, their
+  files could never be pruned, and a later network of the same name inherited
+  the old one's bundle history. Rename now carries them along and removal
+  (in the TUI) removes them. Snapshots of a network deleted from `mmw.toml` by
+  hand can be listed and cleared (`mmw snapshot clean -n OLD --keep 0 --yes`),
+  and `mmw prune` points them out.
+- A bundle with a damaged pool file shipped without it and was recorded as
+  sent, so later bundles never sent that file. Such a bundle is now refused
+  whole, with what to do about it.
+- The TUI's Prune button with no repositories configured deleted every pool
+  file no snapshot held. Prune now refuses that everywhere.
+- `mmw prune --dry-run` and its confirmation prompt counted files snapshots
+  still hold, promising to free more than prune then did.
+- A flat repository's `Release` was downloaded at the end of the sync but its
+  `Packages` at the start, unchecked against each other, so a republish in
+  between published a `Release` that did not match its index. Both are now
+  read up front and checked.
+- Taking a snapshot did not hold the pool against a concurrent `mmw prune`,
+  which could delete key files the snapshot had just stored.
+- `loong64` (and `hurd-i386` next to `i386`) index files were taken into other
+  architectures' mirrors.
+- `mmw.toml` and the far side's `.mmw-state` are written whole: a full disk or a
+  kill mid-write no longer leaves a truncated file. `max_connections` must be
+  at least 1.
+- A network `root` that is, or holds, `mirror_dir` had its pool deleted by the
+  first pruning publish (the stale-repository sweep removed `.pool/`), and
+  removing such a network in the TUI could delete it too. Two networks with
+  overlapping roots pruned each other's repositories, and a `bundle_dir` inside
+  a root was served and then pruned. All of these are now refused when
+  `mmw.toml` loads, and publish checks its destination again (symlinks
+  resolved, `--root` included).
+- Two repositories whose names derive alike — NVIDIA's per-arch flat
+  repositories — shared one upstream-files directory: the second never fetched
+  its own extra files, and each sync pruned the other's. Each repository now
+  has its own; files under the old directory are served until the next sync.
+- An upstream file's 64 MiB cap is enforced while downloading, not after.
+- `mmw add`: a flat repository is named as the wizard names it (with its
+  arch); a tab after `deb` is accepted; a source clash or an unwritable config
+  is one line on stderr, not a traceback — and config errors go to stderr.
+- A flat repository with only a `Release`, or an unsigned one with only
+  `Packages`, is recognised when probed; `$(ARCH)` URLs are probed in parallel.
+- `mmw manage --quiet` lists what the pool holds, so a source left at "all
+  arches" no longer shows zero mirrors.
+- A mirror short only of index files or damaged blobs is described as such,
+  not as "0 of N missing". `apply.py` replaces by-hash links atomically.
+- Changing a repository's URL in the TUI left every network's selection of
+  it pointing at the old URL: the network silently stopped publishing it, and
+  a pruning publish then deleted its tree. The selections follow the URL now.
+- Adding one URL during Setup as both a `dists/` and a flat repository closed
+  the app; it is a notice now.
+- A bundle's progress total counted files that ship as hardlinks to an
+  identical file as full copies, so it announced the logical tree size (5.1 TB
+  for a 4.65 TB tar), the bar stalled near 91% and the ETA ran long. The
+  `sent` size in `mmw bundle`'s summary was overstated the same way.
 
 ## [0.10.1]
 

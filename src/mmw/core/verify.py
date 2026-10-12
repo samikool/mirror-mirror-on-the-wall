@@ -10,8 +10,8 @@ manifest, `apply.py --verify` passes, and the gap only surfaces as a 404 during
 `apt install` on the far side of an airgap. It is answered entirely from the
 database (`pool.missing_for`), so it is cheap enough to gate every publish.
 
-**the pooled index** — the mirror's own `Packages` file is parsed as an
-independent witness and every checksum it lists is checked. refs were
+**the pooled index** — the provider's witness (apt: its own `Packages` file) is parsed
+as an independent witness and every checksum it lists is checked. refs were
 reconciled from that same index, so agreement is expected; disagreement means
 the refs and the index have drifted.
 
@@ -25,7 +25,6 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mmw.core.compress import decompress
 from mmw.core.config import MirrorConfig
 from mmw.core.pool import Pool
 
@@ -87,14 +86,14 @@ def verify_mirror(
     `deep` stats every blob; `rehash` (which implies `deep`) also re-reads and
     hashes them. Both are off by default — see the module docstring.
     """
-    if mirror.provider == "apt":
-        result = _verify_apt(mirror, pool)
-    elif mirror.provider == "apt-flat":
-        result = _verify_apt_flat(mirror, pool)
-    else:
+    from mmw.providers import get_provider
+    try:
+        provider = get_provider(mirror.provider)
+    except ValueError:
         return VerifyResult(
             mirror.name, mirror.provider, error=f"unknown provider {mirror.provider!r}"
         )
+    result = provider.verify_witness(mirror, pool) or VerifyResult(mirror.name, mirror.provider)
 
     _check_refs(pool, mirror.name, result)
     if deep or rehash:
@@ -166,57 +165,3 @@ def _check_checksums(pool: Pool, result: VerifyResult, checksums: list[str]) -> 
     result.present = sum(1 for c in checksums if c in present)
     result.missing_count = result.total - result.present
     return result
-
-
-# ── APT ───────────────────────────────────────────────────────────────────────
-
-def _verify_apt(mirror: MirrorConfig, pool: Pool) -> VerifyResult:
-    result = VerifyResult(mirror.name, mirror.provider)
-    suite = mirror.suite or ""
-    component = mirror.component or ""
-    # No `or "amd64"`. An arch-less `apt` mirror is a bug upstream of here, and
-    # inventing one sent verify at `binary-amd64/Packages`, which does not
-    # exist — reporting "has this mirror been synced?" for what is really a
-    # wrong assumption. The rule is "never invent an architecture";
-    # this was the last place in core/ that still did.
-    if not mirror.arch:
-        result.error = (
-            "mirror has no architecture — an apt mirror is one arch per sync unit, "
-            "so this row cannot be verified (re-sync to repopulate it)"
-        )
-        return result
-    base = f"dists/{suite}/{component}/binary-{mirror.arch}/Packages"
-
-    pkg_file = _resolve_first(pool, mirror.name, [base + ".xz", base + ".gz", base])
-    if pkg_file is None:
-        result.error = "Packages index not in pool — has this mirror been synced?"
-        return result
-
-    try:
-        checksums = _parse_apt_sha256(pkg_file)
-    except Exception as e:
-        result.error = f"failed to parse Packages file: {e}"
-        return result
-
-    return _check_checksums(pool, result, checksums)
-
-
-def _verify_apt_flat(mirror: MirrorConfig, pool: Pool) -> VerifyResult:
-    result = VerifyResult(mirror.name, mirror.provider)
-    pkg_file = _resolve_first(pool, mirror.name, ["Packages.xz", "Packages.gz", "Packages"])
-    if pkg_file is None:
-        result.error = "Packages index not in pool — has this mirror been synced?"
-        return result
-
-    try:
-        checksums = _parse_apt_sha256(pkg_file)
-    except Exception as e:
-        result.error = f"failed to parse Packages file: {e}"
-        return result
-
-    return _check_checksums(pool, result, checksums)
-
-
-def _parse_apt_sha256(path: Path) -> list[str]:
-    text = decompress(path.read_bytes(), path.name).decode("utf-8", errors="replace")
-    return [line[8:].strip() for line in text.splitlines() if line.startswith("SHA256: ")]

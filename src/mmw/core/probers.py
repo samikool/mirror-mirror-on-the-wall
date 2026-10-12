@@ -5,10 +5,9 @@ the URL before it can figure out how to mirror it. That is different from the
 config-paste box: a `.list`/`.sources` file's own syntax already says apt, so
 there is nothing to dispatch over there.
 
-Exactly one prober exists today (apt, via `discover.detect_repository`), so
-this module is pure ceremony for now — but it is the seam a second provider
-(pypi, say) plugs into later without `custom_repo.py` needing to change how it
-asks "what is this URL". Deliberately not generalized further than that: a
+Probers come from the provider registry: every provider defining `probe(url)`
+takes part, in registry order — the seam a second provider plugs into without
+`custom_repo.py` needing to change how it asks "what is this URL". Deliberately not generalized further than that: a
 `Prober` returns a `DetectResult`, which today only apt populates
 meaningfully, and outcomes that are inherently apt-specific (browsable
 `candidates`, the `$(ARCH)` substitution — see `apt_sources.py` and
@@ -17,22 +16,16 @@ into a shape that fits a hypothetical second provider no one has built yet.
 """
 from collections.abc import Callable
 
-from mmw.core import discover
 from mmw.core.discover import DetectResult
 
 Prober = Callable[[str], DetectResult]
 
 
-def _probe_apt(url: str) -> DetectResult:
-    # A thin wrapper, not `discover.detect_repository` itself: existing tests
-    # (and any future caller) monkeypatch `discover.detect_repository` as a
-    # module attribute, which only a fresh lookup through `discover` — not a
-    # function reference captured once at import time — will pick up.
-    return discover.detect_repository(url)
+from mmw.providers import all_providers  # noqa: E402  (after the Prober alias)
 
-
-# Ordered: the first prober to recognize the URL wins. One entry today.
-PROBERS: list[Prober] = [_probe_apt]
+# Ordered: the first prober to recognize the URL wins. Every provider that
+# can recognise a URL (`probe`) takes part; ecosystem providers have none.
+PROBERS: list[Prober] = [p.probe for p in all_providers() if callable(getattr(p, "probe", None))]
 
 
 def probe_url(url: str) -> DetectResult:

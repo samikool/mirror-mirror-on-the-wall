@@ -332,25 +332,22 @@ def walk_network(
             keep_extra=set(upstream_paths),
         ))
 
-    if network.dist_upgrade and not (stop_event and stop_event.is_set()):
-        paths, warnings = dist_upgrade_info(network, cfg, pool, mirror_dir)
-        result.dist_upgrade_paths = paths
-        result.dist_upgrade_warnings = warnings
-        publish_changelogs(sink, pool, result)
-        write_upgrade_md(sink, network, pool, paths, result.dist_upgrade_warnings,
-                         mirrors=[mirror_map[n] for n in selected_names
-                                  if n in mirror_map])
+    if not (stop_event and stop_event.is_set()):
+        from mmw.providers import all_providers
+        from mmw.providers.base import PublishContext
+        ctx = PublishContext(network=network, cfg=cfg, mirror_dir=mirror_dir, pool=pool,
+                             sink=sink, result=result, units=published_mirrors)
+        for provider in all_providers():
+            provider.contribute(ctx)
 
     # Must run before sink.close(): BundleSink (Task 6) finalizes the
     # whole archive there, so anything written after close is dropped.
     if not (stop_event and stop_event.is_set()):
         nginx_rels: set[str] = set()
         if network.nginx and nginx_root is not None:
-            from mmw.core.certs import CHANGELOGS_HOST
             from mmw.core.publisher.nginx import nginx_files
-            extra = upstream_file_hosts(upstream_paths)
-            if network.dist_upgrade:
-                extra.append(CHANGELOGS_HOST)
+            from mmw.providers import extra_hosts
+            extra = upstream_file_hosts(upstream_paths) + extra_hosts(network, published_mirrors)
             for rel, data in nginx_files(published_mirrors, nginx_root,
                                          tls=tls, extra_hosts=extra).items():
                 sink.write(rel, data)

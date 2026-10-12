@@ -37,7 +37,7 @@ def test_question_mark_lists_the_repositories_keys_and_notes(tmp_path):
         assert isinstance(app.screen, HelpDialog)
         text = _text(app)
         for key, what in (("a", "Add"), ("s", "Sync"), ("p", "Prune pool"),
-                          ("^w", "Wipe pool"), ("1", "Repositories"), ("q", "Quit")):
+                          ("^w", "Wipe pool"), ("1", "Sources"), ("q", "Quit")):
             assert any(line.split()[:1] == [key] and what in line
                        for line in text.splitlines()), (key, what, text)
         assert "narrow" in text                     # the page's own notes

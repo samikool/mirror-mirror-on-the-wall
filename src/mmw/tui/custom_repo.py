@@ -1,7 +1,7 @@
 """Add a repository: probe a URL, or paste a config and probe it the same way.
 
 Two modes, one destination. Whether the repository arrives as a URL or as a
-pasted apt config, it becomes a `RepositoryDraft` — the same object, enumerated
+pasted apt config, it becomes a `SourceDraft` — the same object, enumerated
 the same way, presented through the same three dimension pickers. A pasted
 config only supplies a *pre-selection* (and possibly a GPG key), never a
 different code path.
@@ -27,7 +27,7 @@ from mmw.core.apt_sources import (
     remember_sources_url,
 )
 from mmw.core.draft import (
-    DIMENSIONS, RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders,
+    DIMENSIONS, SourceDraft, drafts_from_entries, probe_all, resolve_placeholders,
 )
 from mmw.tui.bulk_review import BulkReviewPage
 from mmw.tui.key_modal import KeyPage, apply_key, key_summary
@@ -120,8 +120,8 @@ class StepCustom(WizardStep):
         self._bulk_probing = False
         # The one repository these pickers edit. A paste naming several holds
         # them in `_bundle` instead and hands them to the review pane.
-        self._draft: RepositoryDraft | None = None
-        self._bundle: list[RepositoryDraft] = []
+        self._draft: SourceDraft | None = None
+        self._bundle: list[SourceDraft] = []
         # Set while the repositories shown came from a sources file fetched
         # by URL (Probe URL on a `.list`): each keeps it as an extra file.
         self._sources_url: str | None = None
@@ -138,6 +138,12 @@ class StepCustom(WizardStep):
         self._hide_browse()
         for dim, _ in _DIMENSIONS:
             self.query_one(f"#{dim}-row").display = False
+
+    def focus_first(self) -> None:
+        """Focus the visible input: in paste mode the URL row is hidden, and
+        focus there let typing/Enter silently re-probe and drop the paste."""
+        row_shown = self.query_one("#url-row").display
+        self.query_one("#custom-url" if row_shown else "#paste-area").focus()
 
     # ── mode ─────────────────────────────────────────────────────────────────
 
@@ -174,7 +180,7 @@ class StepCustom(WizardStep):
 
     # ── one draft drives the fields ──────────────────────────────────────────
 
-    def _show_draft(self, draft: RepositoryDraft) -> None:
+    def _show_draft(self, draft: SourceDraft) -> None:
         """Point the fields at a draft and render every dimension it carries."""
         self._draft = draft
         self._bundle = []
@@ -285,7 +291,7 @@ class StepCustom(WizardStep):
         try:
             drafts = []
             for arch, result in discover.probe_arch_placeholder(url, placeholder):
-                draft = RepositoryDraft(url=url.replace(placeholder, arch), provider=result.provider)
+                draft = SourceDraft(url=url.replace(placeholder, arch), provider=result.provider)
                 if result.provider == "apt":
                     draft.set_dimension("suites", result.suites, chosen=[], enumerated=True)
                 drafts.append(draft)
@@ -293,7 +299,7 @@ class StepCustom(WizardStep):
         except Exception as exc:
             self.app.call_from_thread(self._worker_failed, "architecture probe", exc)
 
-    def _on_url_placeholder_resolved(self, drafts: list[RepositoryDraft], gen: int) -> None:
+    def _on_url_placeholder_resolved(self, drafts: list[SourceDraft], gen: int) -> None:
         if gen != self._probe_gen:
             return                                  # a newer probe is in flight
         if not drafts:
@@ -324,7 +330,7 @@ class StepCustom(WizardStep):
 
         self._hide_browse()
         status.update(f"[$mmw-ok]✓ {escape(result.signal)}[/]")
-        draft = RepositoryDraft(url=url, provider=result.provider)
+        draft = SourceDraft(url=url, provider=result.provider)
         if result.provider == "apt":
             # Nothing preselected: archive.ubuntu.com publishes 55 suites, and
             # preselecting them would turn one Enter into a multi-terabyte sync.
@@ -441,7 +447,7 @@ class StepCustom(WizardStep):
             self.app.call_from_thread(self._worker_failed, "architecture probe", exc)
 
     def _on_placeholders_resolved(
-        self, entries: list[AptEntry], drafts: list[RepositoryDraft], gen: int
+        self, entries: list[AptEntry], drafts: list[SourceDraft], gen: int
     ) -> None:
         if gen != self._probe_gen:
             return                                  # a newer paste is in flight
@@ -458,7 +464,7 @@ class StepCustom(WizardStep):
             return
         self._display_drafts(len(entries), drafts)
 
-    def _display_drafts(self, entry_count: int, drafts: list[RepositoryDraft]) -> None:
+    def _display_drafts(self, entry_count: int, drafts: list[SourceDraft]) -> None:
         """Show what resolved to: one repository's fields, or the bulk review
         pane for several. Shared by the ordinary paste path, the $(ARCH)
         config-paste resolution, and the $(ARCH) URL-probe resolution, so none
@@ -495,7 +501,7 @@ class StepCustom(WizardStep):
             self._enrich_worker(draft, self._probe_gen)
 
     @work(thread=True, exit_on_error=False)
-    def _enrich_worker(self, draft: RepositoryDraft, gen: int) -> None:
+    def _enrich_worker(self, draft: SourceDraft, gen: int) -> None:
         """Widen a pasted config's dimensions to everything the repo publishes.
 
         The config states a filter; probing finds the full set it filtered
@@ -508,18 +514,18 @@ class StepCustom(WizardStep):
         except Exception as exc:
             self.app.call_from_thread(self._worker_failed, "probe", exc)
 
-    def _on_enriched(self, draft: RepositoryDraft, gen: int) -> None:
+    def _on_enriched(self, draft: SourceDraft, gen: int) -> None:
         if gen == self._probe_gen and draft is self._draft:
             self._refresh_dimensions()
 
     # ── a paste naming several repositories ──────────────────────────────────
 
-    def _start_bulk_probe(self, drafts: list[RepositoryDraft], gen: int) -> None:
+    def _start_bulk_probe(self, drafts: list[SourceDraft], gen: int) -> None:
         """Disable Review until the probe finishes, then start it.
 
         `_display_drafts` used to show the Review button and start this worker
         in the same breath. `probe_all` mutates every draft from eight threads,
-        and `RepositoryDraft.set_dimension` writes `available` then `chosen`
+        and `SourceDraft.set_dimension` writes `available` then `chosen`
         non-atomically — so a pane opened mid-probe rendered pre-probe
         dimensions that never refreshed, and pressing Done could read a draft
         between those two writes and store an explicit narrow list where the
@@ -536,7 +542,7 @@ class StepCustom(WizardStep):
         self._bulk_probe_worker(drafts, gen)
 
     @work(thread=True, exit_on_error=False)
-    def _bulk_probe_worker(self, drafts: list[RepositoryDraft], gen: int) -> None:
+    def _bulk_probe_worker(self, drafts: list[SourceDraft], gen: int) -> None:
         """Probe every repository in the bundle at once.
 
         A DGX sources tree names a dozen; probing them one after another would
@@ -548,7 +554,7 @@ class StepCustom(WizardStep):
         except Exception as exc:
             self.app.call_from_thread(self._worker_failed, "probe", exc)
 
-    def _on_bulk_probed(self, drafts: list[RepositoryDraft], gen: int) -> None:
+    def _on_bulk_probed(self, drafts: list[SourceDraft], gen: int) -> None:
         self._bulk_probing = False
         try:
             btn = self.query_one("#btn-bulk", Button)
@@ -651,7 +657,7 @@ class StepCustom(WizardStep):
         self._choose_dimension("arches", "architectures")
 
     @work(thread=True, exit_on_error=False)
-    def _suite_dimensions_worker(self, draft: RepositoryDraft, suite: str, gen: int) -> None:
+    def _suite_dimensions_worker(self, draft: SourceDraft, suite: str, gen: int) -> None:
         """Components and architectures follow from a chosen suite."""
         try:
             draft.probe_suite(suite)
@@ -659,7 +665,7 @@ class StepCustom(WizardStep):
         except Exception as exc:
             self.app.call_from_thread(self._worker_failed, "suite probe", exc)
 
-    def _on_suite_dimensions(self, draft: RepositoryDraft, gen: int) -> None:
+    def _on_suite_dimensions(self, draft: SourceDraft, gen: int) -> None:
         if gen == self._probe_gen and draft is self._draft:
             self._refresh_dimensions()
 

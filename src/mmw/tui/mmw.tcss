@@ -228,7 +228,7 @@ StepConfirm .mirror-entry { height: 1; width: 1fr; text-wrap: nowrap; text-overf
 StepConfirm #apt-options { height: auto; }
 StepConfirm .opt-hint, StepSettings .field-label { color: $text-muted; }
 StepSettings Input { margin-bottom: 1; }
-AddRepositoryPage #confirm-slot { height: auto; }
+AddSourcePage #confirm-slot, AddSourcePage #add-step-slot { height: auto; }
 
 /* ── Networks: add / edit form ───────────────────────────────────────── */
 NetworkForm { height: auto; }
@@ -365,3 +365,12 @@ DeleteProgressModal .modal-title { text-style: bold; color: $primary; margin-bot
 DeleteProgressModal ProgressBar { margin: 1 0; }
 DeleteProgressModal #count { color: $text-muted; }
 DeleteProgressModal Horizontal { align: center middle; height: auto; margin-top: 1; }
+
+#add-pick {
+    height: auto;
+}
+
+#add-entry-list {
+    height: auto;
+    max-height: 100%;
+}

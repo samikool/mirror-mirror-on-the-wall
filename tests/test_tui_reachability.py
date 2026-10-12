@@ -65,8 +65,8 @@ def test_every_control_is_reachable(tmp_path, section, size):
 
 
 def _pushed_pages(tmp_path):
-    from mmw.core.draft import RepositoryDraft
-    from mmw.tui.add_repository import AddRepositoryPage
+    from mmw.core.draft import SourceDraft
+    from mmw.tui.add_source import AddSourcePage
     from mmw.tui.bulk_review import BulkReviewPage
     from mmw.tui.key_modal import KeyPage
     from mmw.tui.network_screens import AddNetworkPage, EditNetworkPage
@@ -82,9 +82,9 @@ def _pushed_pages(tmp_path):
         "KeyPage": lambda: KeyPage("debian", "debian-archive.gpg"),
         "PickPage": lambda: PickPage("Suites", "sub", [f"suite-{i}" for i in range(55)], []),
         "PathPickPage": lambda: PathPickPage("Pick", "sub", str(tmp_path)),
-        "AddRepositoryPage": lambda: AddRepositoryPage(),
+        "AddSourcePage": lambda: AddSourcePage(),
         "BulkReviewPage": lambda: BulkReviewPage(
-            [RepositoryDraft(url=f"https://r{i}.example.com/u") for i in range(5)]),
+            [SourceDraft(url=f"https://r{i}.example.com/u") for i in range(5)]),
         "EditNetworkPage": lambda: EditNetworkPage(
             config.NetworkConfig(name="lab", select=[]), _net_mirrors()),
         "AddNetworkPage": lambda: AddNetworkPage(_net_mirrors()),
@@ -105,7 +105,7 @@ def _net_mirrors():
 
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
 @pytest.mark.parametrize("name", ["EditSourcePage", "KeyPage", "PickPage", "PathPickPage",
-                                  "AddRepositoryPage", "BulkReviewPage",
+                                  "AddSourcePage", "BulkReviewPage",
                                   "EditNetworkPage", "AddNetworkPage", "CertsPage"])
 def test_every_control_on_pushed_pages_is_reachable(tmp_path, name, size):
     async def go():

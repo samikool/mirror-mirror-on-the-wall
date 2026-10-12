@@ -109,12 +109,12 @@ def test_pool_helpers_cope_with_no_pool(tmp_path):
 
 
 def _edit(src, **over):
-    from mmw.core.draft import RepositoryDraft
+    from mmw.core.draft import SourceDraft
     args = dict(original=src, url=src.url, name=src.name, label=src.label, key_url="",
                 include_sources=False, dist_upgrade=False, extra_files=[], overrides_text="",
                 other_names=set(), other_urls=set(), suites_started_empty=not src.suites)
     args.update(over)
-    return R.edited_source(RepositoryDraft.from_source(src), **args)
+    return R.edited_source(SourceDraft.from_source(src), **args)
 
 
 def test_edited_source_round_trips_unchanged():
@@ -193,3 +193,17 @@ def test_a_changed_url_carries_its_network_selections_along():
     out = R.replace_source(cfg, old.identity, edited)
     assert [s.source for s in out.networks[0].select] == ["http://new.test/repo", other.url]
     assert out.networks[0].select[0].arches == ["amd64"]          # the slice is kept
+
+
+def test_sources_screens_have_no_apt_checks():
+    """The list, its detail panes and Confirm's offline count ask providers.
+    (`edited_source` is the apt edit page's own logic and stays apt-aware.)"""
+    import inspect
+    from mmw.tui import repositories, wizard_steps
+    from mmw.tui.sections import repositories as page
+    for obj in (repositories.RepositoryList, page.mirror_line, page.source_detail,
+                page.mirror_detail, page.source_line, wizard_steps._unresolved):
+        src = inspect.getsource(obj)
+        assert 'provider == "apt"' not in src and '"apt-flat")' not in src, obj.__name__
+        assert ".to_mirrors()" not in src, obj.__name__
+    assert ".to_mirrors()" not in inspect.getsource(wizard_steps.StepConfirm)

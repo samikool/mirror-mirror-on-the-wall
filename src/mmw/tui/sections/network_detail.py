@@ -313,11 +313,13 @@ class NetworkDetail(Widget):
         else:
             self.mount(self._meta("Publishes", ""))
             for sel in n.select:
+                from mmw.tui.network_screens import select_dims_line
+                cfg = getattr(self.app, "cfg", None)
+                pairs = select_dims_line(sel, cfg.sources if cfg else [], short=True)
                 dims = "  ".join(
                     f"{label} [i]all[/]" if not vals else
                     f"{label} {escape(', '.join(vals[:3]))}" + ("…" if len(vals) > 3 else "")
-                    for label, vals in (("suites", sel.suites), ("comps", sel.components),
-                                        ("arches", sel.arches)))
+                    for label, vals in pairs)
                 self.mount(Label(f"  [$mmw-path]{escape(sel.source)}[/]", classes="detail-meta"))
                 self.mount(Label(f"    [dim]{dims}[/]", classes="detail-meta"))
         self.mount(Label("Published", classes="section-hdr"))

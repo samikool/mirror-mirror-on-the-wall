@@ -345,14 +345,14 @@ def test_editing_a_fetched_key_drops_its_url(monkeypatch):
 
 
 def test_a_key_fetched_in_bulk_review_keeps_its_url_into_the_config():
-    from mmw.core.draft import RepositoryDraft
+    from mmw.core.draft import SourceDraft
 
-    d = RepositoryDraft(url="https://nvidia.example/libnvidia-container/stable/deb/amd64",
+    d = SourceDraft(url="https://nvidia.example/libnvidia-container/stable/deb/amd64",
                         provider="apt-flat", name="nv")
     d.set_key(ARMOUR, source="fetched", url="https://nvidia.example/libnvidia-container/gpgkey")
     src = d.to_source()
     assert src.gpg_key_url == "https://nvidia.example/libnvidia-container/gpgkey"
-    assert RepositoryDraft.from_source(src).gpg_key_url == src.gpg_key_url
+    assert SourceDraft.from_source(src).gpg_key_url == src.gpg_key_url
     d.set_key(ARMOUR, source="pasted")             # replaced by a paste: no URL any more
     assert d.to_source().gpg_key_url is None
 
@@ -414,7 +414,7 @@ def test_row_summary_is_positional_and_fits_a_narrow_row():
     """
     import re
 
-    from mmw.core.draft import DIMENSIONS, RepositoryDraft
+    from mmw.core.draft import DIMENSIONS, SourceDraft
     from mmw.tui.bulk_review import RepoRow
 
     def rendered(draft):
@@ -423,12 +423,12 @@ def test_row_summary_is_positional_and_fits_a_narrow_row():
         return re.sub(r"\[/?[^\]]*\]", "", RepoRow._dimension_text(row))
 
     # Everything open — said once, not three times.
-    d = RepositoryDraft(url="https://r.example.com/ubuntu")
+    d = SourceDraft(url="https://r.example.com/ubuntu")
     assert rendered(d) == "all — resolved at sync"
 
     # Narrowed on one axis only: the other two still render, so `arm64` never
     # moves out of third place. Positional labelling needs fixed positions.
-    d2 = RepositoryDraft(url="https://r.example.com/ubuntu")
+    d2 = SourceDraft(url="https://r.example.com/ubuntu")
     d2.set_dimension("suites", ["noble", "jammy"], chosen=["noble"], enumerated=True)
     text = rendered(d2)
     assert text.count("·") == len(DIMENSIONS) - 1, f"a slot went missing: {text!r}"
@@ -436,7 +436,7 @@ def test_row_summary_is_positional_and_fits_a_narrow_row():
     assert text.endswith("all")
 
     # A long selection is abbreviated rather than allowed to run away.
-    d3 = RepositoryDraft(url="https://r.example.com/ubuntu")
+    d3 = SourceDraft(url="https://r.example.com/ubuntu")
     d3.set_dimension("suites", [f"s{i}" for i in range(9)],
                      chosen=[f"s{i}" for i in range(7)], enumerated=True)
     assert "+5" in rendered(d3)
@@ -472,13 +472,13 @@ def test_key_page_is_a_scrolling_page_with_one_row_controls():
 def test_bulk_review_page_rows_escape_markup_and_controls_are_one_row():
     import asyncio
 
-    from mmw.core.draft import RepositoryDraft
+    from mmw.core.draft import SourceDraft
     from mmw.tui.bulk_review import BulkReviewPage
     from mmw.tui.ui.base import ThemedApp
     from mmw.tui.ui.page import Page
 
     assert issubclass(BulkReviewPage, Page)
-    drafts = [RepositoryDraft(url="https://r.example.com/x[b]y")]
+    drafts = [SourceDraft(url="https://r.example.com/x[b]y")]
 
     class _Host(ThemedApp):
         def on_mount(self):

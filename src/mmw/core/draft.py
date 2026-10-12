@@ -1,6 +1,6 @@
 """One repository being authored — the shared model behind every add flow.
 
-`RepositoryDraft` is deliberately not a widget. The single-repository step edits
+`SourceDraft` is deliberately not a widget. The single-repository step edits
 one of these; a pasted bundle naming eight repositories holds eight. Probing,
 the "empty means all" rule, and the conversion to `SourceConfig` therefore have
 exactly one implementation regardless of how the repository arrived.
@@ -11,14 +11,17 @@ from dataclasses import dataclass, field
 from mmw.core import discover
 from mmw.core.apt_sources import AptEntry, expand_placeholder_entry
 from mmw.core.config import SourceConfig, derive_name, normalize_url
+from mmw.providers import get_provider
 
-# The three axes of an apt repository.
-DIMENSIONS = ("suites", "components", "arches")
+# The axes of the apt repository this draft authors — the provider's own,
+# so the add flow and network editor can never disagree about them.
+DIMENSIONS = tuple(d.name for d in get_provider("apt").dimensions)
 
 
 @dataclass
-class RepositoryDraft:
-    """A repository plus what the user has chosen to mirror from it."""
+class SourceDraft:
+    """One source being authored — the shared model behind every apt add flow:
+    a repository plus what the user has chosen to mirror from it."""
 
     url: str
     provider: str = "apt"
@@ -226,7 +229,7 @@ class RepositoryDraft:
         )
 
     @classmethod
-    def from_source(cls, source: SourceConfig) -> "RepositoryDraft":
+    def from_source(cls, source: SourceConfig) -> "SourceDraft":
         """The mirror image of `to_source()` — an existing config entry, opened
         for editing.
 
@@ -244,7 +247,7 @@ class RepositoryDraft:
         "ticking everything collapses back to all" behaviour then applies,
         unchanged and intentionally so.
 
-        `dist_upgrade` has no `RepositoryDraft` field and is dropped here; a
+        `dist_upgrade` has no `SourceDraft` field and is dropped here; a
         consumer that needs it must carry it separately.
         """
         draft = cls(
@@ -267,7 +270,7 @@ class RepositoryDraft:
         return draft
 
 
-def probe_all(drafts: list[RepositoryDraft], max_workers: int = 8) -> None:
+def probe_all(drafts: list[SourceDraft], max_workers: int = 8) -> None:
     """Probe a whole bundle at once.
 
     A cat'd DGX sources tree names a dozen repositories, each costing several
@@ -282,7 +285,7 @@ def probe_all(drafts: list[RepositoryDraft], max_workers: int = 8) -> None:
             pass
 
 
-def _probe_one(draft: RepositoryDraft) -> None:
+def _probe_one(draft: SourceDraft) -> None:
     try:
         draft.probe()
     except Exception as e:                      # one bad repo must not stop the rest
@@ -322,7 +325,7 @@ def resolve_placeholders(entries: list[AptEntry]) -> list[AptEntry]:
     return resolved
 
 
-def drafts_from_entries(entries: list[AptEntry]) -> list[RepositoryDraft]:
+def drafts_from_entries(entries: list[AptEntry]) -> list[SourceDraft]:
     """Group parsed apt entries into one draft per repository.
 
     A cat'd bundle of `/etc/apt/sources.list.d/*` becomes one draft per distinct
@@ -344,7 +347,7 @@ def drafts_from_entries(entries: list[AptEntry]) -> list[RepositoryDraft]:
         name = derive_name(url, taken, suites=stated["suites"] or None,
                           provider="apt-flat" if flat else "apt")
         taken.add(name)
-        draft = RepositoryDraft(
+        draft = SourceDraft(
             url=url,
             provider="apt-flat" if flat else "apt",
             name=name,

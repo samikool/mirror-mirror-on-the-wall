@@ -4,7 +4,7 @@ import asyncio
 from textual.widgets import Button, Input
 
 from mmw.core import config
-from mmw.tui.add_repository import AddRepositoryPage
+from mmw.tui.add_source import AddSourcePage
 from mmw.tui.app import MmwApp
 from mmw.tui.sections.setup import SetupPage
 from mmw.tui.ui.dialog import ConfirmDialog
@@ -48,7 +48,7 @@ def test_setup_writes_the_config_and_continues_into_repositories(tmp_path):
         page.query_one("#mirror-dir", Input).value = str(tmp_path / "pool")
         page.query_one("#btn-wizard-next", Button).press()          # → Repositories
         await _settle(pilot)
-        assert isinstance(app.screen, AddRepositoryPage)            # opened for you
+        assert isinstance(app.screen, AddSourcePage)            # opened for you
         app.screen.dismiss([_source()])
         await _settle(pilot)
         page.query_one("#btn-wizard-next", Button).press()          # → Confirm
@@ -68,7 +68,7 @@ def test_esc_in_the_first_add_asks_before_quitting_setup(tmp_path):
     async def check(app, pilot):
         app.screen.query_one("#btn-wizard-next", Button).press()
         await _settle(pilot)
-        assert isinstance(app.screen, AddRepositoryPage)
+        assert isinstance(app.screen, AddSourcePage)
         await pilot.press("escape")
         await _settle(pilot)
         assert isinstance(app.screen, ConfirmDialog)

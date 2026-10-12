@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import urlparse
 
 from mmw.core import config, pool as pool_mod
 from mmw.core.resolve import available_mirrors, pooled_mirrors, resolve_sources
+from mmw.providers import get_provider
 
 
 class Row(NamedTuple):
@@ -62,32 +62,27 @@ class RepositoryList:
         self.selection &= {m.name for m in self.available}
 
     def unresolved(self, src: config.SourceConfig) -> bool:
-        """True when this source's rows cannot be known without listing upstream.
-
-        `to_mirrors()` is a pure offline function: with `components = []` or
-        `arches = []` it expands to **nothing** — both are open questions a
-        config can leave for "all", which is now the common case. Rather than
-        render a guess, say so, and let sync resolve it.
-        """
+        """True when this source's rows cannot be known without listing upstream:
+        nothing in the pool yet, and an open dimension its provider cannot
+        expand offline. Rather than render a guess, say so, and let sync
+        resolve it."""
         if self.by_source.get(src.identity):
             return False                      # the pool knows; that is the truth
-        if not src.arches:
-            return True
-        return src.provider == "apt" and bool(src.suites) and not src.components
+        return not get_provider(src.provider).expansion_known(src)
 
     def mirrors_of(self, src: config.SourceConfig) -> list[config.MirrorConfig]:
-        """This repository's mirrors: from the pool, else its config expansion
+        """This source's units: from the pool, else its offline expansion
         (nothing synced yet, so an optimistic answer beats an empty one)."""
         if self.unresolved(src):
             return []
-        return self.by_source.get(src.identity) or src.to_mirrors()
+        return self.by_source.get(src.identity) or get_provider(src.provider).expand(src)
 
     def is_selected(self, src: config.SourceConfig) -> bool:
         return src.identity in self.selected_sources
 
     @staticmethod
     def host_of(src: config.SourceConfig) -> str:
-        return (urlparse(src.url).hostname or "?").lower()
+        return get_provider(src.provider).group(src)
 
     def sorted_sources(self) -> list[config.SourceConfig]:
         """Grouped by host, then by name — one host commonly serves several
@@ -298,7 +293,7 @@ def edited_source(draft, *, original: config.SourceConfig, url: str, name: str, 
     """The edit-repository form's checks, in order, as data.
 
     Returns `(source, None, None)`, or `(None, message, id of the field to
-    focus)`. `draft` is the page's `RepositoryDraft` (dimensions and key)."""
+    focus)`. `draft` is the page's `SourceDraft` (dimensions and key)."""
     from mmw.core.upstream import upstream_rel
 
     # An empty suites list has two meanings and only one is a mistake. A
@@ -341,7 +336,7 @@ def edited_source(draft, *, original: config.SourceConfig, url: str, name: str, 
     draft.name = name or draft.name
     draft.include_sources = include_sources
     source = draft.to_source()
-    # `RepositoryDraft.to_source()` has no field for these, so they are
+    # `SourceDraft.to_source()` has no field for these, so they are
     # stamped back on. Dropping them would silently switch off dist-upgrade
     # support or a key-URL fetch on every edit.
     source.dist_upgrade = dist_upgrade

@@ -22,6 +22,8 @@ from textual.widgets import Checkbox, Input, Label, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
 from mmw.core import config
+from mmw.providers import all_providers, get_provider
+from mmw.providers.base import Dimension
 from mmw.tui import networks
 from mmw.tui.ui.form import Form, PathField, TextField, ToggleField
 from mmw.tui.ui.page import Page
@@ -31,12 +33,11 @@ from mmw.tui.ui.widgets import Button, JumpSelectionList
 
 @dataclass
 class _Axis:
-    """One repository's three dimension pickers inside a network editor."""
+    """One source's dimension pickers inside a network editor."""
     source: str
     label: str
-    suites: list[str]
-    components: list[str]
-    arches: list[str]
+    dimensions: "tuple[Dimension, ...]"
+    values: dict[str, list[str]]          # dimension name → values on offer
     chosen: "config.NetworkSelect | None"
 
     def _id(self, dim: str) -> str:
@@ -49,53 +50,48 @@ class _Axis:
         """Empty in the stored select means all — show that as everything ticked."""
         if self.chosen is None:
             return set(available)
-        stored = getattr(self.chosen, dim)
+        stored = self.chosen.dims.get(dim, [])
         return set(stored) if stored else set(available)
 
     def compose_widgets(self):
         yield Label(f"[b]{escape(self.label)}[/]  [dim]{escape(self.source)}[/]",
                     classes="axis-title")
-        for dim, values in (
-            ("suites", self.suites),
-            ("components", self.components),
-            ("arches", self.arches),
-        ):
+        for d in self.dimensions:
+            values = self.values.get(d.name, [])
             if not values:
                 continue
-            picked = self._picked(dim, values)
-            yield Label(f"[dim]{dim}[/]", classes="axis-dim")
+            picked = self._picked(d.name, values)
+            yield Label(f"[dim]{d.name}[/]", classes="axis-dim")
             yield JumpSelectionList(
                 *[Selection(v, v, v in picked) for v in values],
-                id=self._id(dim),
+                id=self._id(d.name),
                 classes="axis-list",
                 compact=True,
             )
 
     def to_select(self, node) -> "config.NetworkSelect | None":
-        """None when nothing in this repository is ticked — it is left out."""
+        """None when nothing in this source is ticked — it is left out."""
         picked = {}
-        for dim, values in (
-            ("suites", self.suites),
-            ("components", self.components),
-            ("arches", self.arches),
-        ):
+        for d in self.dimensions:
+            values = self.values.get(d.name, [])
             if not values:
                 continue
             try:
-                sl = node.query_one("#" + self._id(dim), SelectionList)
+                sl = node.query_one("#" + self._id(d.name), SelectionList)
             except Exception:
                 continue
             chosen = list(sl.selected)
             if not chosen:
                 return None
             # Everything ticked is stored as "all", so the network keeps
-            # following the repository as new suites or arches appear.
-            picked[dim] = [] if set(chosen) == set(values) else chosen
+            # following the source as new suites or arches appear.
+            picked[d.name] = [] if set(chosen) == set(values) else chosen
         return config.NetworkSelect(source=self.source, **picked)
 
 
 def build_axes(mirrors, existing_select) -> "list[_Axis]":
-    """Group the pool's mirrors into one axis set per repository."""
+    """Group the pool's units into one axis set per source, along its
+    provider's dimensions."""
     by_source: dict[str, list] = {}
     for m in mirrors:
         by_source.setdefault(m.source or m.mirror_base, []).append(m)
@@ -103,15 +99,33 @@ def build_axes(mirrors, existing_select) -> "list[_Axis]":
 
     axes = []
     for source, group in sorted(by_source.items()):
+        dims = get_provider(group[0].provider).dimensions
         axes.append(_Axis(
             source=source,
             label=group[0].name.split("-")[0] if group else source,
-            suites=sorted({m.suite for m in group if m.suite}),
-            components=sorted({m.component for m in group if m.component}),
-            arches=sorted({m.arch for m in group if m.arch}),
+            dimensions=dims,
+            values={d.name: sorted({m.dims[d.unit_key] for m in group if m.dims.get(d.unit_key)})
+                    for d in dims},
             chosen=chosen_by_source.get(config.normalize_url(source)),
         ))
     return axes
+
+
+def select_dims_line(sel: "config.NetworkSelect", sources, *, short: bool) -> list[tuple[str, list[str]]]:
+    """(dimension name, values) for one select, in its source's provider
+    order. A select whose source is no longer configured (hand-edited) is
+    shown along the first provider whose dimensions cover its keys, so every
+    axis still reads — empty ones as "all"."""
+    src = next((s for s in sources if s.identity == config.normalize_url(sel.source)), None)
+    if src is not None:
+        dims = get_provider(src.provider).dimensions
+    else:
+        keys = set(sel.dims)
+        dims = next((p.dimensions for p in all_providers()
+                     if keys <= {d.name for d in p.dimensions}), None)
+        if dims is None:
+            return list(sel.dims.items())
+    return [(d.display if short else d.name, sel.dims.get(d.name, [])) for d in dims]
 
 
 class NetworkForm(Vertical):
@@ -276,9 +290,10 @@ class NetworkForm(Vertical):
             lines.append("[dim]no destination — this network can be edited and synced, "
                          "not published[/]")
         for s in self.selects():
+            cfg = getattr(self.app, "cfg", None)
             dims = "  ".join(f"{d}: {', '.join(v) if v else 'all'}"
-                             for d, v in (("suites", s.suites), ("components", s.components),
-                                          ("arches", s.arches)))
+                             for d, v in select_dims_line(s, cfg.sources if cfg else [],
+                                                          short=False))
             lines.append(f"[$primary]●[/] {escape(s.source)}  [dim]{escape(dims)}[/]")
         return "\n".join(lines)
 

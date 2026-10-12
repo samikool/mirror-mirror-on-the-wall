@@ -6,7 +6,7 @@ that, and importing it wholesale gives the user no say over the terabytes it
 implies. So the bundle gets a pane: one row per repository, each drilling into
 the *same* `PickPage` and `KeyPage` the single-repository step uses.
 
-Rows are `RepositoryDraft`s, so nothing here re-implements probing, the
+Rows are `SourceDraft`s, so nothing here re-implements probing, the
 "empty means all" rule, or the conversion to `SourceConfig`.
 """
 from pathlib import Path
@@ -18,7 +18,7 @@ from textual.markup import escape
 from textual.widgets import Checkbox, Input, Label
 
 from mmw.core import keys
-from mmw.core.draft import DIMENSIONS, RepositoryDraft
+from mmw.core.draft import DIMENSIONS, SourceDraft
 from mmw.tui.key_modal import KeyPage, apply_key
 from mmw.tui.path_pick import PathPickPage
 from mmw.tui.pick import PickPage
@@ -37,7 +37,7 @@ class RepoRow(Vertical):
     """One repository: include-or-not, its three dimensions, and its key."""
 
 
-    def __init__(self, idx: int, draft: RepositoryDraft, existing: bool):
+    def __init__(self, idx: int, draft: SourceDraft, existing: bool):
         super().__init__(id=_row_id(idx, "row"))
         self._idx = idx
         self.draft = draft
@@ -124,7 +124,7 @@ class BulkReviewPage(Page):
 
     SCROLLS = False
 
-    def __init__(self, drafts: list[RepositoryDraft], existing: set[str] | None = None):
+    def __init__(self, drafts: list[SourceDraft], existing: set[str] | None = None):
         super().__init__()
         self.TITLE = f"Review {len(drafts)} repositories"
         self.subtitle = "untick what you don't want · each row drills into the same pickers"

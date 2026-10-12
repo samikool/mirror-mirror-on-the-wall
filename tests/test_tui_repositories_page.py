@@ -146,7 +146,7 @@ def test_edit_opens_the_page_and_saves_by_identity(tmp_path):
         page.query_one("#edit-source-name", Input).value = "renamed"
         page.query_one("#btn-save-source", Button).press()
         await _done(app, pilot)
-        assert app.screen.TITLE == "Repositories"
+        assert app.screen.TITLE == "Sources"
         assert "renamed" in [s.name for s in config.load(tmp_path).sources]
         assert any("renamed" in lbl for lbl in _labels(app))
     _run(tmp_path, check)
@@ -204,22 +204,22 @@ def test_edit_and_remove_with_nothing_highlighted_do_nothing(tmp_path):
         await pilot.press("e")
         await pilot.press("d")
         await _done(app, pilot)
-        assert app.screen.TITLE == "Repositories"
+        assert app.screen.TITLE == "Sources"
         assert len(config.load(tmp_path).sources) == 3
     _run(tmp_path, check)
 
 
 def test_add_opens_the_add_flow_and_cancel_writes_nothing(tmp_path):
-    from mmw.tui.add_repository import AddRepositoryPage
+    from mmw.tui.add_source import AddSourcePage
 
     async def check(app, pilot):
         before = config.config_path(tmp_path).read_text()
         await pilot.press("a")
         await _settle(pilot)
-        assert isinstance(app.screen, AddRepositoryPage)
+        assert isinstance(app.screen, AddSourcePage)
         await pilot.press("escape")
         await _done(app, pilot)
-        assert app.screen.TITLE == "Repositories"
+        assert app.screen.TITLE == "Sources"
         assert config.config_path(tmp_path).read_text() == before
     _run(tmp_path, check)
 
@@ -281,7 +281,7 @@ def test_declined_wipe_does_nothing(tmp_path, monkeypatch):
         await _settle(pilot)
         await pilot.press("escape")
         await _done(app, pilot)
-        assert calls == [] and app.screen.TITLE == "Repositories"
+        assert calls == [] and app.screen.TITLE == "Sources"
     _run(tmp_path, check)
 
 
@@ -297,7 +297,7 @@ def test_overlapping_list_rebuilds_do_not_collide(tmp_path):
 def test_a_second_action_is_refused_instead_of_cancelling_the_first(tmp_path, monkeypatch):
     import threading
 
-    from mmw.tui.add_repository import AddRepositoryPage
+    from mmw.tui.add_source import AddSourcePage
 
     # Held until the test has tried the second action — a timed sleep lost
     # the race under parallel load (the prune finished first, so `a` was
@@ -317,7 +317,7 @@ def test_a_second_action_is_refused_instead_of_cancelling_the_first(tmp_path, mo
         await until(pilot, running.is_set)
         await pilot.press("a")                       # while the prune runs
         await _settle(pilot)
-        assert not isinstance(app.screen, AddRepositoryPage)
+        assert not isinstance(app.screen, AddSourcePage)
         release.set()
         await _done(app, pilot)
         await until(pilot, lambda: "Removed 3" in _status(app))
@@ -334,3 +334,11 @@ def test_the_list_follows_a_pool_directory_change_in_settings(tmp_path):
         await _done(app, pilot)
         assert app.screen.model.cfg.settings.mirror_dir == new_dir
     _run(tmp_path, check)
+
+
+def test_the_section_is_called_sources():
+    from mmw.tui.navigation import SECTIONS
+    from mmw.tui.sections.repositories import RepositoriesPage
+    first = SECTIONS[0]
+    assert (first.mode, first.label, first.key) == ("repositories", "Sources", "1")
+    assert RepositoriesPage.TITLE == "Sources"

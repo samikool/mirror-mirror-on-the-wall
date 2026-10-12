@@ -18,3 +18,13 @@ async def press_publish(app, pilot) -> None:
 async def press_bundle(app, pilot) -> None:
     await pilot.press("b")
     await confirm_picker(app, pilot, "BundlePickPage")
+
+
+async def choose_add_entry(app, pilot, key: str = "apt") -> None:
+    """Answer "What are you adding?" with `key` and move to its step."""
+    await until(pilot, lambda: type(app.screen).__name__ == "AddSourcePage"
+                and app.screen.query("#add-entry-list"))
+    page = app.screen
+    page.query_one("#add-entry-list").highlighted = [e.key for e in page.entries].index(key)
+    page.query_one("#btn-wizard-next").press()
+    await until(pilot, lambda: page.step == 1)

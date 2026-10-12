@@ -254,7 +254,7 @@ def test_clearing_stated_suites_to_zero_is_refused():
 
 
 def test_dist_upgrade_and_gpg_key_url_survive_an_edit():
-    """`RepositoryDraft.to_source()` has no field for either — both must be
+    """`SourceDraft.to_source()` has no field for either — both must be
     carried across by the screen itself, or editing silently drops them."""
     src = _source(dist_upgrade=True, gpg_key_url="https://example.com/key.gpg")
 

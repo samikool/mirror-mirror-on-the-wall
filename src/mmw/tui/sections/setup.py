@@ -1,7 +1,7 @@
 """Setup — first run (no mmw.toml) and re-initialise, inside MmwApp.
 
-Settings → Repositories → Confirm, then the config is written and the app
-carries on into Repositories. The repository step opens the add flow for you
+Settings → Sources → Confirm, then the config is written and the app
+carries on into Sources. The sources step opens the add flow for you
 the first time; escaping it with nothing added asks whether to quit setup —
 a reflex Esc used to end the whole session with no config and no message.
 """
@@ -15,7 +15,7 @@ from textual.markup import escape
 from textual.widgets import Label, Static
 
 from mmw.core import config
-from mmw.tui.add_repository import AddRepositoryPage
+from mmw.tui.add_source import AddSourcePage
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.wizard import Wizard
 from mmw.tui.ui.widgets import Button
@@ -37,7 +37,7 @@ def build_config(mirror_dir: Path, max_connections: int,
 
 class SetupPage(Wizard):
     TITLE = "Set up mmw"
-    STEPS = ("Settings", "Repositories", "Confirm")
+    STEPS = ("Settings", "Sources", "Confirm")
     FINISH_LABEL = "Write config ✓"
 
     def __init__(self):
@@ -55,7 +55,7 @@ class SetupPage(Wizard):
         with Vertical(id="setup-repos"):
             yield Label("", id="setup-repo-count")
             yield Static("", id="setup-repo-list")
-            yield Button("Add repositories…", id="btn-setup-add", compact=True)
+            yield Button("Add sources…", id="btn-setup-add", compact=True)
         yield Vertical(id="setup-confirm-slot")
 
     async def enter(self, step: int) -> None:
@@ -73,13 +73,13 @@ class SetupPage(Wizard):
                 self.run_worker(self._add(), group="setup-add")
         else:
             await slot.mount(StepConfirm(self._planned, self._mirror_dir, self._max_connections,
-                                         ask_sources=False))
+                                         offer_source_packages=False))
 
     async def leave(self, step: int) -> bool:
         if step == 0:
             self._mirror_dir, self._max_connections = self.query_one(StepSettings).get_settings()
         elif step == 1 and not self._planned:
-            self.set_status("Add at least one repository to continue.", "error")
+            self.set_status("Add at least one source to continue.", "error")
             return False
         self.set_status("")
         return True
@@ -87,8 +87,8 @@ class SetupPage(Wizard):
     def _render_repos(self) -> None:
         n = len(self._planned)
         self.query_one("#setup-repo-count", Label).update(
-            f"{n} repositor{'y' if n == 1 else 'ies'} to mirror" if n else
-            "No repositories yet.")
+            f"{n} source{'s' if n != 1 else ''} to mirror" if n else
+            "No sources yet.")
         self.query_one("#setup-repo-list", Static).update("\n".join(
             f"[$primary]●[/] {escape(s.name)}  [dim]{escape(s.url)}[/]" for s in self._planned))
 
@@ -97,7 +97,7 @@ class SetupPage(Wizard):
         self.run_worker(self._add(), group="setup-add", exclusive=True)
 
     async def _add(self) -> None:
-        sources = await self.app.push_screen_wait(AddRepositoryPage(
+        sources = await self.app.push_screen_wait(AddSourcePage(
             existing_urls={s.identity for s in self._planned}))
         if sources:
             try:

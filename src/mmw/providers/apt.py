@@ -6,7 +6,7 @@ import httpx
 
 from mmw.core.compress import decompress as _decompress
 from mmw.core.config import KNOWN_ARCHES
-from mmw.providers.base import BaseProvider, MetadataFile, PackageInfo
+from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, SourceDescription
 
 
 def _parse_release_files(text: str) -> list[tuple[str, str, int]]:
@@ -199,13 +199,110 @@ def _parse_packages_flat(text: str, base_url: str) -> list[PackageInfo]:
     return packages
 
 
-class AptFlatProvider(BaseProvider):
+def _parse_apt_sha256(path) -> list[str]:
+    text = _decompress(path.read_bytes(), path.name).decode("utf-8", errors="replace")
+    return [line[8:].strip() for line in text.splitlines() if line.startswith("SHA256: ")]
+
+
+_ARCHES = Dimension("arches", "arch", "Architectures", absent_matches=True)
+_APT_DIMENSIONS = (
+    Dimension("suites", "suite", "Suites"),
+    Dimension("components", "component", "Components", short="comps"),
+    _ARCHES,
+)
+
+
+class _AptCommon(BaseProvider):
+    """What both apt shapes share: by-hash publishing, and a source model
+    (`SourceConfig`) that already knows how to expand and cover itself."""
+
+    by_hash = True
+
+    def expand(self, source) -> list:
+        return source.to_mirrors()
+
+    def covers(self, source, unit) -> bool:
+        return source.covers(unit)
+
+    def _describe_fields(self, source) -> list:
+        return [("Provider", source.provider), ("Label", source.label),
+                ("Arches", list(source.arches))]
+
+    def describe(self, source) -> SourceDescription:
+        flags = [label for label, on in (("deb-src", source.include_sources),
+                                         ("dist-upgrade", source.dist_upgrade)) if on]
+        return SourceDescription(fields=self._describe_fields(source), flags=flags,
+                                 location_label="Repository", location=source.url)
+
+    def unit_describe(self, unit) -> list[tuple[str, str]]:
+        rows = [("Arch", unit.arch or "")]
+        if unit.suite:
+            rows.append(("Suite", unit.suite))
+        if unit.component:
+            rows.append(("Component", unit.component))
+        return rows
+
+    def _index_base(self, dst_root, unit):
+        raise NotImplementedError
+
+    def published_index(self, dst_root, unit):
+        base = self._index_base(dst_root, unit)
+        for suffix in (".xz", ".gz", ""):
+            p = base.with_name(base.name + suffix)
+            if p.exists():
+                return p
+        return None
+
+    def _parse_index(self, text: str) -> list[PackageInfo]:
+        raise NotImplementedError
+
+    def published_packages(self, index) -> list[PackageInfo]:
+        try:
+            text = _decompress(index.read_bytes(), index.name).decode("utf-8", errors="replace")
+            return self._parse_index(text)
+        except Exception:
+            return []
+
+
+class AptFlatProvider(_AptCommon):
     """APT flat/trivial repository: Packages file at the root, no dists/ hierarchy.
 
     Used for repos whose sources.list entry has suite '/' — e.g.:
       deb https://nvidia.github.io/libnvidia-container/stable/deb/amd64 /
     Set source_url to the full per-arch URL including arch component.
     """
+
+    name = "apt-flat"
+    label = "APT flat repository"
+    description = "A Packages file at the repository root, no dists/ tree"
+    dimensions = (_ARCHES,)
+
+    def resolve(self, source, *, progress=None):
+        from mmw.providers.apt_resolve import resolve_apt_flat
+        return resolve_apt_flat(source, progress=progress)
+
+    def expansion_known(self, source) -> bool:
+        return bool(source.arches)
+
+    def _index_base(self, dst_root, unit):
+        return dst_root / "Packages"
+
+    def _parse_index(self, text: str) -> list[PackageInfo]:
+        return _parse_packages_flat(text, "")
+
+    def verify_witness(self, unit, pool):
+        from mmw.core.verify import VerifyResult, _check_checksums, _resolve_first
+        result = VerifyResult(unit.name, unit.provider)
+        pkg_file = _resolve_first(pool, unit.name, ["Packages.xz", "Packages.gz", "Packages"])
+        if pkg_file is None:
+            result.error = "Packages index not in pool — has this mirror been synced?"
+            return result
+        try:
+            checksums = _parse_apt_sha256(pkg_file)
+        except Exception as e:
+            result.error = f"failed to parse Packages file: {e}"
+            return result
+        return _check_checksums(pool, result, checksums)
 
     def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None):
         """One fetch of the index, handed to both halves.
@@ -384,7 +481,99 @@ def _pick_index(files: list[MetadataFile], suffix_path: str) -> MetadataFile | N
     return None
 
 
-class AptProvider(BaseProvider):
+class AptProvider(_AptCommon):
+
+    name = "apt"
+    label = "APT repository"
+    description = "Debian, Ubuntu or vendor apt repository (dists/ tree)"
+    dimensions = _APT_DIMENSIONS
+
+    def preview(self, network, cfg, pool, mirror_dir, result) -> None:
+        if not network.dist_upgrade:
+            return
+        from mmw.core.publisher import dist_upgrade
+        result.dist_upgrade_paths, result.dist_upgrade_warnings = \
+            dist_upgrade.dist_upgrade_info(network, cfg, pool, mirror_dir)
+
+    def needs_resolving(self, source) -> bool:
+        return not source.suites or not source.components or not source.arches
+
+    def resolve(self, source, *, progress=None):
+        from mmw.providers.apt_resolve import resolve_apt
+        return resolve_apt(source, progress=progress)
+
+    def _describe_fields(self, source) -> list:
+        return super()._describe_fields(source) + [
+            ("Suites", list(source.suites)), ("Components", list(source.components))]
+
+    def unit_label(self, unit) -> tuple[str, str] | None:
+        if unit.suite and unit.component:
+            # Arch matters: a multi-arch source lists suite/component once per arch.
+            return f"{unit.suite} / {unit.component}", unit.arch or ""
+        return None
+
+    def expansion_known(self, source) -> bool:
+        if not source.arches:
+            return False
+        return not (source.suites and not source.components)
+
+    def _index_base(self, dst_root, unit):
+        return (dst_root / "dists" / (unit.suite or "") / (unit.component or "main")
+                / f"binary-{unit.arch}" / "Packages")
+
+    def _parse_index(self, text: str) -> list[PackageInfo]:
+        return _parse_packages(text, "")
+
+    def extra_hosts(self, network, units) -> list[str]:
+        # changelogs.ubuntu.com is published beside the mirrors by a
+        # dist-upgrade network; no unit's URL names it.
+        from mmw.core.certs import CHANGELOGS_HOST
+        return [CHANGELOGS_HOST] if network.dist_upgrade else []
+
+    def contribute(self, ctx) -> None:
+        if not ctx.network.dist_upgrade:
+            return
+        from mmw.core.publisher.dist_upgrade import (
+            dist_upgrade_info, publish_changelogs, write_upgrade_md,
+        )
+        paths, warnings = dist_upgrade_info(ctx.network, ctx.cfg, ctx.pool, ctx.mirror_dir)
+        ctx.result.dist_upgrade_paths = paths
+        ctx.result.dist_upgrade_warnings = warnings
+        publish_changelogs(ctx.sink, ctx.pool, ctx.result)
+        write_upgrade_md(ctx.sink, ctx.network, ctx.pool, paths,
+                         ctx.result.dist_upgrade_warnings, mirrors=ctx.units)
+
+    def verify_witness(self, unit, pool):
+        from mmw.core.verify import VerifyResult, _check_checksums, _resolve_first
+        result = VerifyResult(unit.name, unit.provider)
+        suite = unit.suite or ""
+        component = unit.component or ""
+        # No `or "amd64"`. An arch-less `apt` mirror is a bug upstream of here,
+        # and inventing one sent verify at `binary-amd64/Packages`, which does
+        # not exist. The rule is "never invent an architecture".
+        if not unit.arch:
+            result.error = (
+                "mirror has no architecture — an apt mirror is one arch per sync unit, "
+                "so this row cannot be verified (re-sync to repopulate it)"
+            )
+            return result
+        base = f"dists/{suite}/{component}/binary-{unit.arch}/Packages"
+        pkg_file = _resolve_first(pool, unit.name, [base + ".xz", base + ".gz", base])
+        if pkg_file is None:
+            result.error = "Packages index not in pool — has this mirror been synced?"
+            return result
+        try:
+            checksums = _parse_apt_sha256(pkg_file)
+        except Exception as e:
+            result.error = f"failed to parse Packages file: {e}"
+            return result
+        return _check_checksums(pool, result, checksums)
+
+    def probe(self, url: str):
+        """The "Detect from URL" door. Looked up through the module at call
+        time so tests (and callers) can monkeypatch `discover.detect_repository`."""
+        from mmw.core import discover
+        return discover.detect_repository(url)
 
     def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None):
         """Packages and metadata from ONE upstream snapshot, and one fetch.

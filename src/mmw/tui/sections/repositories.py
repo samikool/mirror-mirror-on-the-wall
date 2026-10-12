@@ -1,4 +1,4 @@
-"""Repositories — what mmw mirrors. List grouped by host, detail beside it.
+"""Sources — what mmw mirrors. List grouped by host, detail beside it.
 
 All state lives in `RepositoryList` (tui/repositories.py); this page renders
 it and turns keys into calls on it.
@@ -14,10 +14,10 @@ from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from mmw.core import config, pool as pool_mod
 from mmw.core.format import fmt_size
-from mmw.tui import repositories
+from mmw.providers import get_provider
+from mmw.tui import provider_ui, repositories
 from mmw.tui.modals import DeleteProgressModal
 from mmw.tui.repositories import RepositoryList, Row, replace_source, without_sources
-from mmw.tui.source_screens import EditSourcePage
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.list_detail import ListDetail
 from mmw.tui.ui.page import Page
@@ -51,11 +51,17 @@ def source_line(model: RepositoryList, src: config.SourceConfig) -> str:
     return f" {tick} {arrow} [b]{escape(src.name)}[/]{count}{where}"
 
 
+def _meta(label: str) -> str:
+    """`label` dimmed and padded to the pane's 13-column label gutter."""
+    return f"[dim]{escape(label)}[/]" + " " * max(1, 13 - len(label))
+
+
 def mirror_line(model: RepositoryList, src: config.SourceConfig, m: config.MirrorConfig) -> str:
     tick = "[$mmw-selected]✓[/]" if m.name in model.selection else " "
-    if m.suite and m.component:
-        # Arch matters: a multi-arch source lists suite/component once per arch.
-        label = f"{escape(m.suite)} / {escape(m.component)}  [dim]{escape(m.arch or '')}[/]"
+    labelled = get_provider(m.provider).unit_label(m)
+    if labelled is not None:
+        main, dimmed = labelled
+        label = f"{escape(main)}  [dim]{escape(dimmed)}[/]"
     elif m.name.startswith(src.name + "-"):
         label = escape(m.name[len(src.name) + 1:])
     else:
@@ -64,39 +70,28 @@ def mirror_line(model: RepositoryList, src: config.SourceConfig, m: config.Mirro
 
 
 def source_detail(model: RepositoryList, src: config.SourceConfig) -> str:
-    lines = [
-        f"[b $primary]{escape(src.name)}[/]",
-        "",
-        f"[dim]Provider[/]     {escape(src.provider)}",
-        f"[dim]Label[/]        {escape(src.label)}",
-        f"[dim]Arches[/]       {_dimension(src.arches)}",
-    ]
-    if src.provider == "apt":
-        lines += [f"[dim]Suites[/]       {_dimension(src.suites)}",
-                  f"[dim]Components[/]   {_dimension(src.components)}"]
-    lines.append(f"[dim]Mirrors[/]      {len(model.mirrors_of(src))}")
-    if src.include_sources:
-        lines.append("[dim]deb-src[/]      [$mmw-ok]yes[/]")
-    if src.dist_upgrade:
-        lines.append("[dim]dist-upgrade[/] [$mmw-ok]yes[/]")
-    lines += ["", "[dim]Repository[/]", f"[$mmw-path]{escape(src.url)}[/]"]
+    d = get_provider(src.provider).describe(src)
+    lines = [f"[b $primary]{escape(src.name)}[/]", ""]
+    for label, value in d.fields:
+        shown = _dimension(value) if isinstance(value, list) else escape(str(value))
+        lines.append(_meta(label) + shown)
+    lines.append(_meta("Mirrors") + str(len(model.mirrors_of(src))))
+    for flag in d.flags:
+        lines.append(_meta(flag) + "[$mmw-ok]yes[/]")
+    lines += ["", f"[dim]{escape(d.location_label)}[/]", f"[$mmw-path]{escape(d.location)}[/]"]
     return "\n".join(lines)
 
 
 def mirror_detail(m: config.MirrorConfig) -> str:
-    lines = [f"[b $primary]{escape(m.name)}[/]", "",
-             f"[dim]Provider[/]     {escape(m.provider)}",
-             f"[dim]Arch[/]         {escape(m.arch or '')}"]
-    if m.suite:
-        lines.append(f"[dim]Suite[/]        {escape(m.suite)}")
-    if m.component:
-        lines.append(f"[dim]Component[/]    {escape(m.component)}")
+    lines = [f"[b $primary]{escape(m.name)}[/]", "", _meta("Provider") + escape(m.provider)]
+    lines += [_meta(label) + escape(value)
+              for label, value in get_provider(m.provider).unit_describe(m)]
     lines += ["", "[dim]Source[/]", f"[$mmw-path]{escape(m.source_url or '')}[/]"]
     return "\n".join(lines)
 
 
 class RepositoriesPage(Page):
-    TITLE = "Repositories"
+    TITLE = "Sources"
     SCROLLS = False
     HELP = ("Edit is the only way to [i]narrow[/i] a repository — adding can only widen it.\n"
             "s syncs the ticked repositories, or all of them when none are ticked.\n"
@@ -325,7 +320,7 @@ class RepositoriesPage(Page):
             self.notify("Highlight a repository to edit.", severity="warning")
             return
         others = self.app.cfg.sources
-        edited = await self.app.push_screen_wait(EditSourcePage(
+        edited = await self.app.push_screen_wait(provider_ui.edit_page(
             src, existing_names={s.name for s in others},
             existing_urls={s.identity for s in others}))
         if edited is None:
@@ -364,9 +359,9 @@ class RepositoriesPage(Page):
         await self._after_write()
 
     async def _add(self) -> None:
-        from mmw.tui.add_repository import AddRepositoryPage
+        from mmw.tui.add_source import AddSourcePage
         cfg = self.app.cfg
-        new_sources = await self.app.push_screen_wait(AddRepositoryPage(
+        new_sources = await self.app.push_screen_wait(AddSourcePage(
             existing_units=cfg.configured_units(),
             existing_urls={s.identity for s in cfg.sources}))
         if not new_sources:
@@ -386,7 +381,7 @@ class RepositoriesPage(Page):
             self.notify("Nothing new — everything selected is already configured.")
             return
         await self._after_write()
-        self.notify(f"Repositories: {repositories.added_summary(counts['added'], counts['updated'])}.")
+        self.notify(f"Sources: {repositories.added_summary(counts['added'], counts['updated'])}.")
 
     # ── the pool ─────────────────────────────────────────────────────────────
     # Helpers are called as `repositories.<name>` so tests can stand in a busy pool.

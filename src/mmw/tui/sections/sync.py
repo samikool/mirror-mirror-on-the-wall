@@ -1,4 +1,4 @@
-"""Sync — the session started from Repositories, shown here, running while
+"""Sync — the session started from Sources, shown here, running while
 the other sections are browsed.
 
 This page is the Sync mode's root and is never popped, so the SyncView it
@@ -15,7 +15,7 @@ from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
-_IDLE = ("No sync running. Tick repositories in Repositories and press s — "
+_IDLE = ("No sync running. Tick sources in Sources and press s — "
          "or press s with nothing ticked to sync everything.")
 
 

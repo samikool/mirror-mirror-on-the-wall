@@ -175,6 +175,9 @@ def recorded_nginx_files(settings: str, root: str, *,
         return {}
     mirrors = [MirrorConfig.model_validate(m) for m in recorded.get("mirrors", [])]
     extra = list(recorded.get("upstream_hosts", []))
-    if rec_net.get("dist_upgrade"):
+    if "extra_hosts" in recorded:
+        extra += [h for h in recorded["extra_hosts"] if h not in extra]
+    elif rec_net.get("dist_upgrade"):
+        # Recorded before providers named their extra hosts.
         extra.append(CHANGELOGS_HOST)
     return nginx_files(mirrors, root, tls=tls, tls_include=tls_include, extra_hosts=extra)

@@ -117,10 +117,10 @@ def test_snapshot_certs_modal(snap_compare):
 
 
 def test_snapshot_bulk_review(snap_compare):
-    from mmw.core.draft import RepositoryDraft
+    from mmw.core.draft import SourceDraft
     from mmw.tui.bulk_review import BulkReviewPage
 
-    drafts = [RepositoryDraft(url=f"https://repo{i}.example.com/ubuntu", provider="apt")
+    drafts = [SourceDraft(url=f"https://repo{i}.example.com/ubuntu", provider="apt")
               for i in range(5)]
     assert snap_compare(_app(lambda: BulkReviewPage(drafts)), terminal_size=SNAP_SIZE)
 
@@ -250,20 +250,40 @@ def test_snapshot_mmw_edit_source(snap_compare, tmp_path):
                         terminal_size=(80, 24), run_before=open_edit)
 
 
-def test_snapshot_mmw_add_repository(snap_compare, tmp_path):
+async def _open_add(pilot):
+    from mmw.tui.add_source import AddSourcePage
+    await _list_ready(pilot)
+    pilot.app.screen.query_one("#repo-list").focus()
+    await pilot.press("a")
+    await until(pilot, lambda: isinstance(pilot.app.screen, AddSourcePage)
+                and pilot.app.screen.query("#add-entry-list"))
+
+
+def test_snapshot_mmw_add_source(snap_compare, tmp_path):
+    """Add starts by asking what you are adding."""
     from mmw.tui.app import MmwApp
 
     async def open_add(pilot):
-        from mmw.tui.add_repository import AddRepositoryPage
-        await _list_ready(pilot)
-        pilot.app.screen.query_one("#repo-list").focus()
-        await pilot.press("a")
-        await until(pilot, lambda: isinstance(pilot.app.screen, AddRepositoryPage)
-                    and pilot.app.screen.query("#mode-select"))
+        await _open_add(pilot)
         await _then_settle(pilot)
 
     assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="repositories"),
                         terminal_size=(80, 24), run_before=open_add)
+
+
+def test_snapshot_mmw_add_source_apt_step(snap_compare, tmp_path):
+    """…then the apt entry's step."""
+    from mmw.tui.app import MmwApp
+    from pickers import choose_add_entry
+
+    async def open_apt(pilot):
+        await _open_add(pilot)
+        await choose_add_entry(pilot.app, pilot)
+        await until(pilot, lambda: pilot.app.screen.query("#mode-select"))
+        await _then_settle(pilot)
+
+    assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="repositories"),
+                        terminal_size=(80, 24), run_before=open_apt)
 
 
 def _nets_cfg(theme="mmw"):

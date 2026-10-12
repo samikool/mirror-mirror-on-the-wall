@@ -97,7 +97,7 @@ class PublishFlows:
         from mmw.core.verify import verify_mirror
         from mmw.core.pool import Pool
         from mmw.core.publisher import (
-            dry_run_mirror, NetworkPublishResult, dist_upgrade_info, network_totals,
+            dry_run_mirror, NetworkPublishResult, network_totals,
         )
 
         verify_results = []
@@ -179,9 +179,8 @@ class PublishFlows:
                     return verify_results, file_counts, dry_result
                 dry_result.totals = await asyncio.to_thread(
                     network_totals, [m.name for m in selected_mirrors], pool, published)
-                if net.dist_upgrade:
-                    dry_result.dist_upgrade_paths, dry_result.dist_upgrade_warnings = \
-                        await asyncio.to_thread(dist_upgrade_info, net, self.cfg(), pool, mirror_dir)
+                from mmw.providers import preview_all
+                await asyncio.to_thread(preview_all, net, self.cfg(), pool, mirror_dir, dry_result)
 
         return verify_results, file_counts, dry_result
 

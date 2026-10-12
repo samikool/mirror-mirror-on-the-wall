@@ -13,7 +13,7 @@ from textual.widgets import Button, Input, Label, RadioButton, SelectionList, Ch
 
 from mmw.core import config, discover
 from mmw.tui.custom_repo import StepCustom
-from mmw.tui.add_repository import AddRepositoryPage
+from mmw.tui.add_source import AddSourcePage
 from mmw.tui.wizard_steps import StepConfirm, WizardStep
 
 URL = "http://archive.example.com/ubuntu"
@@ -64,7 +64,7 @@ class _Harness(App):
 
     @work
     async def _pick(self):
-        self.result = await self.push_screen_wait(AddRepositoryPage())
+        self.result = await self.push_screen_wait(AddSourcePage(entry="apt"))
 
 
 def _stub(monkeypatch, suites=("noble", "jammy"), components=("main", "universe"),
@@ -624,7 +624,7 @@ def test_merging_an_all_arches_paste_keeps_all():
 
 
 def test_an_unprobeable_config_keeps_its_stated_selection(monkeypatch):
-    """`RepositoryDraft.stored` may only collapse a *probed* list to "all". When nothing could
+    """`SourceDraft.stored` may only collapse a *probed* list to "all". When nothing could
     be enumerated, `available` is merely what the config named — collapsing it
     would turn an explicit `Suites: noble` into every suite the repo has."""
     _stub_nothing(monkeypatch)
@@ -902,7 +902,7 @@ def test_repositories_shortcuts_do_not_fire_on_the_add_page(tmp_path):
             await pilot.press("a")
             await _settle(pilot, 6)
             page = app.screen
-            assert isinstance(page, AddRepositoryPage)
+            assert isinstance(page, AddSourcePage)
             page.query_one("#btn-wizard-cancel", Button).focus()
             for key in ("s", "d", "p"):
                 await pilot.press(key)
@@ -910,7 +910,7 @@ def test_repositories_shortcuts_do_not_fire_on_the_add_page(tmp_path):
                 assert app.screen is page, f"{key!r} acted under the add page"
             await pilot.press("escape")
             await _settle(pilot, 4)
-            assert not isinstance(app.screen, AddRepositoryPage)
+            assert not isinstance(app.screen, AddSourcePage)
 
     _run(scenario)
     assert config.config_path(tmp_path).read_text() == before

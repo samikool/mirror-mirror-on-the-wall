@@ -1,4 +1,4 @@
-"""`RepositoryDraft` — the one model behind every add flow.
+"""`SourceDraft` — the one model behind every add flow.
 
 Probing, the "empty means all" rule and the conversion to `SourceConfig` live
 here rather than in a widget, so the single-repository step, the bulk review
@@ -9,7 +9,7 @@ import pytest
 from mmw.core import discover
 from mmw.core.apt_sources import parse_apt_sources
 from mmw.core.config import SourceConfig
-from mmw.core.draft import DIMENSIONS, RepositoryDraft, drafts_from_entries, probe_all, resolve_placeholders
+from mmw.core.draft import DIMENSIONS, SourceDraft, drafts_from_entries, probe_all, resolve_placeholders
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def test_everything_probed_and_ticked_is_stored_as_all(stub):
     """A frozen full list would stop following upstream — the bug
     `NetworkConfig.mirrors` had."""
     stub()
-    d = RepositoryDraft(url="http://example.com/ubuntu")
+    d = SourceDraft(url="http://example.com/ubuntu")
     d.probe()
 
     assert d.available["arches"] == ["amd64", "arm64"]
@@ -39,7 +39,7 @@ def test_everything_probed_and_ticked_is_stored_as_all(stub):
 
 def test_a_narrowed_selection_is_stored_literally(stub):
     stub()
-    d = RepositoryDraft(url="http://example.com/ubuntu")
+    d = SourceDraft(url="http://example.com/ubuntu")
     d.probe()
     d.chosen["arches"] = ["arm64"]
 
@@ -98,7 +98,7 @@ def test_the_release_file_answers_when_nothing_lists(stub):
 
 def test_probe_suite_refollows_a_different_suite(stub):
     stub()
-    d = RepositoryDraft(url="http://example.com/ubuntu")
+    d = SourceDraft(url="http://example.com/ubuntu")
     d.probe()
     d.chosen["components"] = []
     d.probe_suite("jammy")
@@ -108,7 +108,7 @@ def test_probe_suite_refollows_a_different_suite(stub):
 
 def test_a_flat_repository_has_nothing_to_enumerate(stub):
     stub()
-    d = RepositoryDraft(url="http://example.com/repo", provider="apt-flat")
+    d = SourceDraft(url="http://example.com/repo", provider="apt-flat")
     d.probe()
 
     assert d.available["suites"] == []
@@ -173,15 +173,15 @@ def test_one_unreachable_repository_does_not_stop_the_rest(monkeypatch):
 # ── keys ─────────────────────────────────────────────────────────────────────
 
 def test_key_state_distinguishes_have_from_needs():
-    a, b, c = (RepositoryDraft(url="http://x/1", gpg_key="ARMOUR"),
-               RepositoryDraft(url="http://x/2", gpg_key_name="foo.gpg"),
-               RepositoryDraft(url="http://x/3"))
+    a, b, c = (SourceDraft(url="http://x/1", gpg_key="ARMOUR"),
+               SourceDraft(url="http://x/2", gpg_key_name="foo.gpg"),
+               SourceDraft(url="http://x/3"))
 
     assert (a.key_state(), b.key_state(), c.key_state()) == ("have", "needs", "none")
 
 
 def test_a_supplied_key_reaches_the_source():
-    d = RepositoryDraft(url="http://x/1", gpg_key_name="foo.gpg")
+    d = SourceDraft(url="http://x/1", gpg_key_name="foo.gpg")
     d.set_key("-----BEGIN PGP PUBLIC KEY BLOCK-----", source="dir")
     src = d.to_source()
 
@@ -197,7 +197,7 @@ def test_a_supplied_key_reaches_the_source():
 def test_an_explicit_selection_round_trips_unchanged():
     src = SourceConfig(url="http://example.com/ubuntu", suites=["noble"],
                         components=["main"], arches=["arm64"])
-    d = RepositoryDraft.from_source(src)
+    d = SourceDraft.from_source(src)
 
     assert d.to_source().suites == ["noble"]
     assert d.to_source().components == ["main"]
@@ -208,7 +208,7 @@ def test_empty_dimensions_survive_the_round_trip_as_empty():
     """The important case: a source following upstream must reopen as still
     following upstream, not freeze at whatever `available` happens to hold."""
     src = SourceConfig(url="http://example.com/ubuntu")
-    d = RepositoryDraft.from_source(src)
+    d = SourceDraft.from_source(src)
 
     for dim in DIMENSIONS:
         assert d.chosen[dim] == []
@@ -221,7 +221,7 @@ def test_empty_dimensions_survive_the_round_trip_as_empty():
 def test_every_dimension_starts_unenumerated():
     """Nothing has been listed yet — only a `probe()` may set this."""
     src = SourceConfig(url="http://example.com/ubuntu", arches=["amd64"])
-    d = RepositoryDraft.from_source(src)
+    d = SourceDraft.from_source(src)
 
     assert all(d.enumerated[dim] is False for dim in DIMENSIONS)
 
@@ -230,7 +230,7 @@ def test_metadata_and_inline_key_carry_across():
     src = SourceConfig(url="http://example.com/ubuntu", name="my-ubuntu", provider="apt-flat",
                         include_sources=True, gpg_key="-----BEGIN PGP PUBLIC KEY BLOCK-----",
                         gpg_key_name="ubuntu.asc")
-    d = RepositoryDraft.from_source(src)
+    d = SourceDraft.from_source(src)
 
     assert d.name == "my-ubuntu"
     assert d.provider == "apt-flat"
@@ -244,7 +244,7 @@ def test_a_needs_only_key_name_is_not_marked_inline():
     """`key_state()` distinguishes `have` from `needs` — a source that only
     named a keyring (`Signed-By: /usr/share/...`) has no key material yet."""
     src = SourceConfig(url="http://example.com/ubuntu", gpg_key_name="ubuntu.asc")
-    d = RepositoryDraft.from_source(src)
+    d = SourceDraft.from_source(src)
 
     assert d.gpg_key is None
     assert d.key_source == ""
@@ -258,7 +258,7 @@ def test_probing_after_from_source_widens_available_without_moving_chosen(stub):
     stub(suites=("noble",), components=("main",), arches=("amd64", "arm64", "i386"))
     src = SourceConfig(url="http://example.com/ubuntu", suites=["noble"],
                         components=["main"], arches=["arm64"])
-    d = RepositoryDraft.from_source(src)
+    d = SourceDraft.from_source(src)
     d.probe()
 
     assert d.available["arches"] == ["amd64", "arm64", "i386"]
@@ -320,3 +320,11 @@ def test_placeholder_drafts_go_through_the_same_grouping_as_any_other(monkeypatc
         "https://nvidia.example/deb/ppc64el",
     }
     assert all(d.provider == "apt-flat" for d in drafts)
+
+
+def test_source_draft_takes_its_dimensions_from_the_provider():
+    from mmw.core import draft
+    from mmw.providers import get_provider
+    assert draft.DIMENSIONS == tuple(d.name for d in get_provider("apt").dimensions)
+    assert not hasattr(draft, "RepositoryDraft")
+    assert draft.SourceDraft(url="http://x.example/ubuntu").provider == "apt"

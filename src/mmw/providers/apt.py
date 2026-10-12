@@ -6,7 +6,7 @@ import httpx
 
 from mmw.core.compress import decompress as _decompress
 from mmw.core.config import KNOWN_ARCHES
-from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo
+from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, SourceDescription
 
 
 def _parse_release_files(text: str) -> list[tuple[str, str, int]]:
@@ -207,7 +207,7 @@ def _parse_apt_sha256(path) -> list[str]:
 _ARCHES = Dimension("arches", "arch", "Architectures", absent_matches=True)
 _APT_DIMENSIONS = (
     Dimension("suites", "suite", "Suites"),
-    Dimension("components", "component", "Components"),
+    Dimension("components", "component", "Components", short="comps"),
     _ARCHES,
 )
 
@@ -223,6 +223,24 @@ class _AptCommon(BaseProvider):
 
     def covers(self, source, unit) -> bool:
         return source.covers(unit)
+
+    def _describe_fields(self, source) -> list:
+        return [("Provider", source.provider), ("Label", source.label),
+                ("Arches", list(source.arches))]
+
+    def describe(self, source) -> SourceDescription:
+        flags = [label for label, on in (("deb-src", source.include_sources),
+                                         ("dist-upgrade", source.dist_upgrade)) if on]
+        return SourceDescription(fields=self._describe_fields(source), flags=flags,
+                                 location_label="Repository", location=source.url)
+
+    def unit_describe(self, unit) -> list[tuple[str, str]]:
+        rows = [("Arch", unit.arch or "")]
+        if unit.suite:
+            rows.append(("Suite", unit.suite))
+        if unit.component:
+            rows.append(("Component", unit.component))
+        return rows
 
     def _index_base(self, dst_root, unit):
         raise NotImplementedError
@@ -262,6 +280,9 @@ class AptFlatProvider(_AptCommon):
     def resolve(self, source, *, progress=None):
         from mmw.providers.apt_resolve import resolve_apt_flat
         return resolve_apt_flat(source, progress=progress)
+
+    def expansion_known(self, source) -> bool:
+        return bool(source.arches)
 
     def _index_base(self, dst_root, unit):
         return dst_root / "Packages"
@@ -467,12 +488,34 @@ class AptProvider(_AptCommon):
     description = "Debian, Ubuntu or vendor apt repository (dists/ tree)"
     dimensions = _APT_DIMENSIONS
 
+    def preview(self, network, cfg, pool, mirror_dir, result) -> None:
+        if not network.dist_upgrade:
+            return
+        from mmw.core.publisher import dist_upgrade
+        result.dist_upgrade_paths, result.dist_upgrade_warnings = \
+            dist_upgrade.dist_upgrade_info(network, cfg, pool, mirror_dir)
+
     def needs_resolving(self, source) -> bool:
         return not source.suites or not source.components or not source.arches
 
     def resolve(self, source, *, progress=None):
         from mmw.providers.apt_resolve import resolve_apt
         return resolve_apt(source, progress=progress)
+
+    def _describe_fields(self, source) -> list:
+        return super()._describe_fields(source) + [
+            ("Suites", list(source.suites)), ("Components", list(source.components))]
+
+    def unit_label(self, unit) -> tuple[str, str] | None:
+        if unit.suite and unit.component:
+            # Arch matters: a multi-arch source lists suite/component once per arch.
+            return f"{unit.suite} / {unit.component}", unit.arch or ""
+        return None
+
+    def expansion_known(self, source) -> bool:
+        if not source.arches:
+            return False
+        return not (source.suites and not source.components)
 
     def _index_base(self, dst_root, unit):
         return (dst_root / "dists" / (unit.suite or "") / (unit.component or "main")

@@ -36,8 +36,8 @@ Two doors. Both produce the same `mmw.toml`.
 uv run mmw init
 ```
 
-It asks for a mirror directory and a connection limit, then opens the
-repository step. Paste a repository URL — `http://archive.ubuntu.com/ubuntu` —
+It asks for a mirror directory and a connection limit, then asks what you are
+adding — choose **APT repository** and press Enter. Paste a repository URL — `http://archive.ubuntu.com/ubuntu` —
 and press **Probe URL**. mmw fetches the repository, works out that it is an
 apt repository with a `dists/` hierarchy, and lists what it actually publishes.
 

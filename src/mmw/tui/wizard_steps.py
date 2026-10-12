@@ -1,4 +1,4 @@
-"""Wizard step widgets shared by SetupPage and AddRepositoryPage.
+"""Wizard step widgets shared by SetupPage and AddSourcePage.
 
 The distro catalog is gone, so the
 version/arch/repo discovery steps that drove it went with it. What remains is
@@ -14,6 +14,7 @@ from textual.markup import escape
 from textual.widgets import Checkbox, Input, Label, Static
 
 from mmw.core import config
+from mmw.providers import get_provider
 from mmw.tui.ui.form import Heading
 
 
@@ -23,14 +24,10 @@ class WizardStep(Static):
 
 
 def _unresolved(src: config.SourceConfig) -> bool:
-    """True when this source's mirror count cannot be known offline.
-
-    The same rule `RepositoryList.unresolved` applies to the list rows,
-    minus the pool half — nothing has been synced yet at Confirm time.
-    """
-    if not src.arches:
-        return True
-    return src.provider == "apt" and bool(src.suites) and not src.components
+    """True when this source's unit count cannot be known offline — the rule
+    `RepositoryList.unresolved` applies to list rows, minus the pool half
+    (nothing has been synced yet at Confirm time)."""
+    return not get_provider(src.provider).expansion_known(src)
 
 
 class StepSettings(WizardStep):
@@ -68,16 +65,17 @@ class StepConfirm(WizardStep):
         mirror_dir: Path | None = None,
         max_connections: int | None = None,
         *,
-        ask_sources: bool = True,
+        offer_source_packages: bool = True,
     ):
-        """`ask_sources=False`: each add already decided deb-src for its own
-        repositories (Setup) — one box here would overwrite them all."""
+        """`offer_source_packages=False`: each add already decided deb-src for
+        its own repositories (Setup), or the entry has no such option — one box
+        here would overwrite them all."""
         super().__init__()
         self._sources = sources
         self._mirror_dir = mirror_dir
         self._max_connections = max_connections
-        self._has_apt = ask_sources and any(s.provider in ("apt", "apt-flat") for s in sources)
-        self._total_mirrors = sum(len(s.to_mirrors()) for s in sources)
+        self._has_apt = offer_source_packages and bool(sources)
+        self._total_mirrors = sum(len(get_provider(s.provider).expand(s)) for s in sources)
         # `to_mirrors()` is pure and offline: with `components = []` or
         # `arches = []` — the documented "empty means all", and the ordinary
         # state of a freshly added repository — it expands to *nothing*. This

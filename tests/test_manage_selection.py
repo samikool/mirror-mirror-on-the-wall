@@ -173,7 +173,7 @@ def test_sync_with_no_sources_at_all_is_refused(tmp_path):
         await app.start_sync(((), ()))
         await _settle(pilot)
         assert app.active_sync is None
-        assert any("No repositories configured" in n for n in app.notes)
+        assert any("No sources configured" in n for n in app.notes)
     _run(tmp_path, _cfg(tmp_path), check)
 
 

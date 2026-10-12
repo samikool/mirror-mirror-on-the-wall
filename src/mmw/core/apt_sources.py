@@ -536,7 +536,7 @@ def is_sources_file_url(url: str) -> bool:
 def remember_sources_url(targets, url: str) -> None:
     """Keep the sources file a repository was added from as one of its
     `extra_files`, so the vendor's own `curl …/foo.list` works against the
-    mirror. `targets` are SourceConfigs or RepositoryDrafts; a URL that cannot
+    mirror. `targets` are SourceConfigs or SourceDrafts; a URL that cannot
     be served at its own path (a query string, no file name) is skipped."""
     from mmw.core.upstream import upstream_rel
     if upstream_rel(url) is None:

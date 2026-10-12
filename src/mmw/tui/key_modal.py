@@ -32,14 +32,14 @@ from textual.markup import escape
 from textual.widgets import Input, Label, OptionList, TextArea
 
 from mmw.core import keys
-from mmw.core.draft import RepositoryDraft
+from mmw.core.draft import SourceDraft
 from mmw.tui.path_pick import PathPickPage
 from mmw.tui.ui.form import Heading
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
 
-def apply_key(draft: RepositoryDraft, result) -> bool:
+def apply_key(draft: SourceDraft, result) -> bool:
     """Put a `KeyPage` result on `draft`. False when it was cancelled. Every
     caller (adding, the bulk review, editing) goes through here, so a key
     fetched from a URL keeps that URL wherever it was chosen."""
@@ -51,7 +51,7 @@ def apply_key(draft: RepositoryDraft, result) -> bool:
     return True
 
 
-def key_summary(draft: RepositoryDraft, url: str | None = None) -> str:
+def key_summary(draft: SourceDraft, url: str | None = None) -> str:
     """One line for a Key field: what the repository's key is, and where it
     comes from when that is a URL (`url`, else the draft's own)."""
     url = (url if url is not None else draft.gpg_key_url) or ""

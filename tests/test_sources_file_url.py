@@ -10,7 +10,7 @@ import asyncio
 from mmw.commands import add as add_cmd
 from mmw.core import discover
 from mmw.core.apt_sources import is_sources_file_url, remember_sources_url
-from mmw.core.draft import RepositoryDraft
+from mmw.core.draft import SourceDraft
 
 LIST_URL = "https://nvidia.example/libnvidia-container/stable/deb/nvidia-container-toolkit.list"
 LIST = ("deb https://nvidia.example/libnvidia-container/stable/deb/$(ARCH) /\n"
@@ -25,13 +25,13 @@ def test_sources_file_urls_are_recognised():
 
 
 def test_remembering_it_adds_it_once():
-    d = RepositoryDraft(url="https://x.example/deb/amd64", provider="apt-flat", name="x")
+    d = SourceDraft(url="https://x.example/deb/amd64", provider="apt-flat", name="x")
     remember_sources_url([d], LIST_URL)
     remember_sources_url([d], LIST_URL)
     assert d.extra_files == [LIST_URL]
     src = d.to_source()
     assert src.extra_files == [LIST_URL]
-    assert RepositoryDraft.from_source(src).extra_files == [LIST_URL]
+    assert SourceDraft.from_source(src).extra_files == [LIST_URL]
 
 
 def test_mmw_add_url_keeps_the_sources_file(tmp_path, monkeypatch, capsys):

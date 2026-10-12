@@ -9,7 +9,7 @@ class Section(NamedTuple):
 
 
 SECTIONS = (
-    Section("repositories", "Repositories", "1"),
+    Section("repositories", "Sources", "1"),
     Section("networks", "Networks", "2"),
     Section("sync", "Sync", "3"),
     Section("publish", "Publish", "4"),

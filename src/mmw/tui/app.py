@@ -228,7 +228,7 @@ class MmwApp(ThemedApp):
                         "moment.", severity="warning")
             return
         if not self.cfg.sources:
-            self.notify("No repositories configured — press a in Repositories to add one.",
+            self.notify("No sources configured — press a in Sources to add one.",
                         severity="warning")
             return
         self.notify("Resolving what to sync…")

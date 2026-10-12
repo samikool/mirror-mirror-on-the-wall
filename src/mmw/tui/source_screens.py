@@ -12,8 +12,8 @@ no route through the TUI at all; only delete-then-re-add or hand-editing
 edited `SourceConfig` directly over the existing entry (`repositories.replace_source` replaces
 by identity, never merges), so a narrower selection actually sticks.
 
-Built on the same `RepositoryDraft` every other add-a-repository door uses
-(`RepositoryDraft.from_source()` seeds one from an existing entry), so probing
+Built on the same `SourceDraft` every other add-a-repository door uses
+(`SourceDraft.from_source()` seeds one from an existing entry), so probing
 and the "empty means all" rule are the same code as everywhere else — not a
 second implementation that could drift from it.
 """
@@ -23,7 +23,7 @@ from textual.markup import escape
 from textual.widgets import Checkbox, Input, Select, TextArea
 
 from mmw.core import config
-from mmw.core.draft import DIMENSIONS, RepositoryDraft
+from mmw.core.draft import DIMENSIONS, SourceDraft
 from mmw.tui.key_modal import KeyPage, apply_key, key_summary
 from mmw.tui.pick import PickPage
 from mmw.tui.repositories import edited_source, format_overrides, parse_overrides  # noqa: F401
@@ -54,7 +54,7 @@ class EditSourcePage(Page):
         # name moved onto theirs would write a config the loader refuses.
         self._existing_urls = set(existing_urls or ()) - {source.identity}
         self._existing_names = set(existing_names or ()) - {source.name}
-        self._draft = RepositoryDraft.from_source(source)
+        self._draft = SourceDraft.from_source(source)
         # Whether this repository arrived mirroring *all* suites — see
         # `repositories.edited_source`.
         self._suites_started_empty = not source.suites

@@ -206,11 +206,11 @@ def test_path_pick_tree_is_usable(tmp_path):
 def test_bulk_review_pane_is_usable():
     """A DGX tree names a dozen repositories; the review pane is how they get
     triaged, so its list must not collapse."""
-    from mmw.core.draft import RepositoryDraft
+    from mmw.core.draft import SourceDraft
     from mmw.tui.bulk_review import BulkReviewPage
 
     drafts = [
-        RepositoryDraft(url=f"https://repo{i}.example.com/ubuntu", provider="apt")
+        SourceDraft(url=f"https://repo{i}.example.com/ubuntu", provider="apt")
         for i in range(6)
     ]
     _assert_usable(lambda: BulkReviewPage(drafts), ["#repo-list"], "BulkReviewPage")

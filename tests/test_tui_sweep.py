@@ -43,7 +43,7 @@ from textual.app import ComposeResult
 
 from mmw.core import config
 from mmw.tui.ui.base import ThemedApp
-from mmw.core.draft import RepositoryDraft
+from mmw.core.draft import SourceDraft
 from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
 
 SIZES = [(80, 24), (100, 32)]
@@ -218,7 +218,7 @@ def _screens():
         "KeyPage": lambda: KeyPage("debian", "debian-archive.gpg"),
         "PickPage": lambda: PickPage("Suites", "sub", [f"suite-{i}" for i in range(55)], []),
         "BulkReviewPage": lambda: BulkReviewPage(
-            [RepositoryDraft(url=f"https://repo{i}.example.com/ubuntu") for i in range(5)]),
+            [SourceDraft(url=f"https://repo{i}.example.com/ubuntu") for i in range(5)]),
         "PublishPickPage": lambda: PublishPickPage(
             net.model_copy(update={"root": Path("/srv/mirror/lab")}), snapshot_status_demo()),
         "BundlePickPage": lambda: BundlePickPage(net, snapshot_status_demo(),

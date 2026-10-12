@@ -3,6 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -45,12 +46,32 @@ class Dimension:
     is the coordinate's key in `MirrorConfig.dims` (`suite`). A unit with no
     coordinate on this axis fails a filter on it, unless `absent_matches` —
     a flat apt repository has no arch coordinate and must never be dropped
-    from an arch-filtered network.
+    from an arch-filtered network. `short` is a compact display name where
+    space is tight (network detail); `display` falls back to `name`.
     """
     name: str
     unit_key: str
     label: str
     absent_matches: bool = False
+    short: str = ""
+
+    @property
+    def display(self) -> str:
+        return self.short or self.name
+
+
+@dataclass
+class SourceDescription:
+    """What a detail pane shows for one source — plain values, no markup.
+
+    `fields` render in order; a list value is a dimension (empty means *all*).
+    Then the TUI adds the unit count, then every on-flag in `flags`, then
+    `location_label` above `location`.
+    """
+    fields: list
+    flags: list
+    location_label: str
+    location: str
 
 
 @dataclass
@@ -83,6 +104,29 @@ class BaseProvider(ABC):
 
     def dimension(self, name: str) -> Dimension | None:
         return next((d for d in self.dimensions if d.name == name), None)
+
+    # ── presentation (pure, Textual-free; the TUI renders these) ─────────────
+
+    def group(self, source) -> str:
+        """The heading a source is listed under (apt: its host)."""
+        return (urlparse(source.identity).hostname or "?").lower()
+
+    @abstractmethod
+    def describe(self, source) -> SourceDescription:
+        """A source's detail pane."""
+
+    def unit_label(self, unit) -> tuple[str, str] | None:
+        """(main, dimmed) text for a unit's row, or None for its name."""
+        return None
+
+    def unit_describe(self, unit) -> list[tuple[str, str]]:
+        """A unit's detail-pane coordinates, in display order."""
+        return []
+
+    def expansion_known(self, source) -> bool:
+        """Can `expand(source)` list this source's units offline? False when an
+        open dimension waits for a sync to resolve it."""
+        return True
 
     # ── config → units ───────────────────────────────────────────────────────
 
@@ -154,6 +198,10 @@ class BaseProvider(ABC):
         """Hostnames this provider serves beyond its units' own hosts (pure —
         nginx, certs and snapshots all ask)."""
         return []
+
+    def preview(self, network, cfg, pool, mirror_dir, result) -> None:
+        """Dry-run additions to a `NetworkPublishResult` (read-only)."""
+        return None
 
     def contribute(self, ctx: PublishContext) -> None:
         """Publish-time additions through `ctx.sink` (called for every

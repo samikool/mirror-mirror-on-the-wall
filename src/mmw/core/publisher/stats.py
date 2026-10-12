@@ -104,8 +104,6 @@ def dry_run_network(
     mirror_dir: Path,
 ) -> NetworkPublishResult:
     """Read-only report — pool DB for mirror sizes, filesystem scan only for destination."""
-    from mmw.core.publisher.dist_upgrade import dist_upgrade_info
-
     result = NetworkPublishResult(network_name=network.name, dry_run=True)
 
     # A bundle-only network has no publish root — `publish_base()` below
@@ -136,10 +134,7 @@ def dry_run_network(
                 continue
             result.mirrors.append(dry_run_mirror(mirror, network, mirror_dir, pool, published))
         result.totals = network_totals(selected_names, pool, published)
-
-    if network.dist_upgrade:
-        with Pool(mirror_dir, read_only=True) as pool:
-            result.dist_upgrade_paths, result.dist_upgrade_warnings = dist_upgrade_info(
-                network, cfg, pool, mirror_dir)
+        from mmw.providers import preview_all
+        preview_all(network, cfg, pool, mirror_dir, result)
 
     return result

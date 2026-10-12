@@ -28,3 +28,9 @@ def extra_hosts(network, units) -> list[str]:
             if host not in seen:
                 seen.append(host)
     return seen
+
+
+def preview_all(network, cfg, pool, mirror_dir, result) -> None:
+    """Every provider's dry-run additions, in registry order."""
+    for provider in all_providers():
+        provider.preview(network, cfg, pool, mirror_dir, result)

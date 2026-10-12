@@ -184,3 +184,21 @@ def test_progress_names_each_mirror_base(states, tmp_path):
     bundle_network(net, cfg, mirror_dir, from_ref=None, to_ref="s1",
                    mirror_start_callback=lambda *a: calls.append(a))
     assert calls == [("archive.ubuntu.com/ubuntu", 1, 1)]
+
+
+def test_a_damaged_blob_refuses_the_bundle_and_records_nothing(states, tmp_path):
+    """Recording a bundle that left a file out made the next delta treat the
+    file as sent: deltas come from the destination snapshot, which names it.
+    So a damaged pool blob refuses the bundle whole — no tar, no log entry,
+    and the default starting point of the next bundle is unchanged."""
+    cfg, net, mirror_dir, snaps, _published = states
+    bundle_network(net, cfg, mirror_dir, from_ref=None, to_ref="s1")
+    content = b"hello 3"
+    cs = hashlib.sha256(content).hexdigest()
+    (mirror_dir / ".pool" / "packages" / cs[:2] / f"{cs}-hello_3.0_amd64.deb").write_bytes(b"he")
+
+    with pytest.raises(ValueError, match="damaged in the pool"):
+        bundle_network(net, cfg, mirror_dir, to_ref="s3")
+    with Pool(mirror_dir, read_only=True) as pool:
+        assert [b.to_stamp for b in pool.bundles("lab")] == [snaps[1].stamp]
+    assert not list((tmp_path / "out").glob(f"*{snaps[3].stamp}.tar"))

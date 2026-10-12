@@ -241,14 +241,17 @@ def pool_busy(mirror_dir: Path) -> bool:
     return pool_mod.pool_is_busy(mirror_dir)
 
 
-def prune_pool(mirror_dir: Path, identities: list[str]) -> tuple[int, int]:
+def prune_pool(cfg: "config.Config") -> tuple[int, int]:
     """(removed, freed bytes). **Blocking.** Raises `pool.PoolBusy` while a
     sync runs: everything it has downloaded so far is unreferenced until its
-    reconcile lands, so pruning now would delete the sync's own work.
+    reconcile lands, so pruning now would delete the sync's own work — and
+    `ValueError` with no repositories configured, which would delete it all.
     Constructing the Pool is itself disk work (mkdirs, SQLite, a tmp sweep)."""
-    pool = pool_mod.Pool(mirror_dir)
+    from mmw.core.resolve import uncovered_mirror_names
+    pool = pool_mod.Pool(cfg.settings.mirror_dir)
     try:
-        return pool.prune_orphans(identities)
+        return pool.prune_orphans([s.identity for s in cfg.sources],
+                                  uncovered_mirror_names(cfg, pool))
     finally:
         pool.close()
 

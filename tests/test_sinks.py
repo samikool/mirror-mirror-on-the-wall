@@ -315,29 +315,24 @@ def test_bundle_sink_delete_list_only_when_pruning(pool, tmp_path):
             assert m[".mmw/delete.list"].decode().split() == ["host/repo/pool/gone.deb"]
 
 
-def test_bundle_sink_reports_error_on_size_mismatch_without_corrupting_archive(
+def test_bundle_sink_refuses_to_write_anything_when_a_blob_is_damaged(
         pool, tmp_path):
     """The size recorded at link() time (from the pool DB) is checked against
-    the blob actually on disk before anything is streamed. A stale/wrong size
-    must be reported and skipped, never silently written as a short tar
-    entry that would misalign every entry after it."""
+    the blob actually on disk before anything is streamed. A mismatch means
+    a damaged pool, and the bundle is refused whole — shipping the rest used
+    to leave the far side permanently without the file, because the next
+    delta (computed from the snapshot, which still names it) took it as sent."""
     cs, src = _seed(pool, b"hello", "a.deb")
     out = tmp_path / "lab.tar"
     sink = BundleSink(out, _hdr(), prev={}, apply_script=b"")
-    # Claim a size larger than the actual 5-byte blob.
-    sink.link(src, "host/repo/pool/a.deb", 999, cs, KIND_PKG)
-    sink.link(src, "host/repo/pool/b.deb", 5, cs, KIND_PKG)  # dup checksum, real size
-    sink.close()
+    sink.link(src, "host/repo/pool/a.deb", 999, cs, KIND_PKG)     # recorded size is wrong
+    sink.link(src, "host/repo/pool/b.deb", 5, cs, KIND_PKG)
 
-    assert len(sink.errors) == 1
-    assert "a.deb" in sink.errors[0]
-    assert "999" in sink.errors[0]
-    # The archive itself must still be well-formed and readable to the end —
-    # a bad entry does not corrupt what comes after it, because nothing for
-    # it was ever written to the tar stream.
-    m = _members(out)
-    assert "host/repo/pool/a.deb" not in m
-    assert m["host/repo/pool/b.deb"] == b"hello"
+    with pytest.raises(ValueError, match="verify --repair"):
+        sink.close()
+    assert len(sink.errors) == 1 and "a.deb" in sink.errors[0] and "999" in sink.errors[0]
+    assert not any(p.name.startswith("lab.tar") for p in tmp_path.iterdir()), (
+        "a refused bundle left files behind")
 
 
 def test_bundle_sink_delta_agrees_with_manifest_delta(pool, tmp_path):
@@ -742,20 +737,3 @@ def test_bundle_sink_sent_bytes_counts_duplicate_content_once(pool, tmp_path):
     m = _members(out)
     assert m["archive.example/ubuntu/pool/all.deb"] == content
     assert m["ports.example/ubuntu/pool/all.deb"] == b"->archive.example/ubuntu/pool/all.deb"
-
-
-def test_bundle_sink_sent_bytes_after_dropping_first_duplicate(pool, tmp_path):
-    """When the first occurrence of a checksum is dropped in close(), the
-    surviving duplicate is written in full — its bytes must still count."""
-    content = b"shared-bytes"
-    cs, src = _seed(pool, content, "s.deb")
-    out = tmp_path / "lab.tar"
-    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"")
-    # Recorded size disagrees with the blob on disk → dropped in close().
-    sink.link(src, "a.example/pool/s.deb", len(content) + 1, cs, KIND_PKG)
-    sink.link(src, "b.example/pool/s.deb", len(content), cs, KIND_PKG)
-    sink.close()
-
-    assert sink.sent == 1
-    assert sink.sent_bytes == len(content)
-    assert _members(out)["b.example/pool/s.deb"] == content

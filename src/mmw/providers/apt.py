@@ -5,6 +5,7 @@ from pathlib import PurePosixPath
 import httpx
 
 from mmw.core.compress import decompress as _decompress
+from mmw.core.config import KNOWN_ARCHES
 from mmw.providers.base import BaseProvider, MetadataFile, PackageInfo
 
 
@@ -163,7 +164,13 @@ def _parse_packages_flat(text: str, base_url: str) -> list[PackageInfo]:
     block: dict[str, str] = {}
 
     def _flush():
-        filename = block.get("Filename", "").lstrip("./")
+        # `removeprefix`, not `lstrip("./")`: lstrip strips a character SET,
+        # so `.hidden/x.deb` lost its leading dot and `../x.deb` its `..` —
+        # the second silently turning a traversal into a plausible path
+        # instead of leaving it for `is_safe_repo_path` to refuse.
+        filename = block.get("Filename", "")
+        while filename.startswith("./"):
+            filename = filename[2:]
         sha256 = block.get("SHA256", "")
         size = int(block.get("Size", 0))
         name = block.get("Package", "")
@@ -229,6 +236,13 @@ class AptFlatProvider(BaseProvider):
                 continue
             if resp.status_code != 200:
                 continue
+            if mf.expected_sha256 and hashlib.sha256(resp.content).hexdigest() != mf.expected_sha256:
+                # The Release read a moment ago names different bytes: the
+                # repository is mid-republish. Publishing either half would
+                # pair a Release with an index it does not describe.
+                raise ValueError(
+                    f"{mf.url} does not match the hash its Release gives — the "
+                    "repository is being updated; sync again shortly")
             mf.content = resp.content
             text = _decompress(resp.content, mf.repo_path).decode("utf-8", errors="replace")
             return _parse_packages_flat(text, base), files
@@ -251,35 +265,44 @@ class AptFlatProvider(BaseProvider):
         raise ValueError(f"Could not fetch Packages from {base}/Packages[.xz/.gz]")
 
     def fetch_metadata(self, mirror_config, client: httpx.Client) -> list[MetadataFile]:
+        """Release files fetched (not just HEADed) and every index variant
+        tied to the hash the Release gives it.
+
+        A flat repository that signs itself has the same consistency problem
+        as a `dists/` one: the Release used to be HEADed here and only
+        downloaded by the metadata phase, after the package downloads, while
+        the index was read up front. A republish in between published a
+        Release whose `Packages.xz` hash matched nothing in the tree. Reading
+        the Release now and verifying each index against it keeps the pair
+        from one snapshot; a repository with no Release is unchanged.
+        """
         base = mirror_config.source_url.rstrip("/")
         files: list[MetadataFile] = []
+        listed: dict[str, str] = {}
         for name in ("InRelease", "Release", "Release.gpg"):
             try:
-                resp = client.head(f"{base}/{name}")
-                if resp.status_code == 200:
-                    files.append(MetadataFile(url=f"{base}/{name}", repo_path=name,
-                                              is_release=True))
+                resp = client.get(f"{base}/{name}")
             except Exception:
-                pass
+                continue
+            if resp.status_code != 200:
+                continue
+            files.append(MetadataFile(url=f"{base}/{name}", repo_path=name,
+                                      content=resp.content, is_release=True))
+            if name != "Release.gpg" and not listed:
+                listed = {path: cs for cs, path, _ in _parse_release_files(
+                    resp.content.decode("utf-8", errors="replace"))}
         for suffix in (".xz", ".gz", ""):
             name = f"Packages{suffix}"
-            try:
-                resp = client.head(f"{base}/{name}")
-                if resp.status_code == 200:
-                    files.append(MetadataFile(url=f"{base}/{name}", repo_path=name))
-            except Exception:
-                pass
+            present = name in listed      # a Release naming it is as good as a HEAD
+            if not present:
+                try:
+                    present = client.head(f"{base}/{name}").status_code == 200
+                except Exception:
+                    present = False
+            if present:
+                files.append(MetadataFile(url=f"{base}/{name}", repo_path=name,
+                                          expected_sha256=listed.get(name)))
         return files
-
-
-# Every arch Debian/Ubuntu have ever shipped — used to exclude other-arch index
-# variants by token so e.g. arch="mips" can never substring-match "mipsel".
-_KNOWN_ARCHES = {
-    "amd64", "arm64", "armhf", "armel", "i386", "ppc64el", "s390x", "riscv64",
-    "mipsel", "mips64el", "mips", "powerpc", "ppc64", "sparc", "sparc64",
-    "ia64", "hppa", "alpha", "m68k", "sh4", "x32", "hurd-i386", "hurd-amd64",
-    "kfreebsd-i386", "kfreebsd-amd64",
-}
 
 
 def _wanted_index_file(path: str, component: str, other_arches: set[str], include_sources: bool) -> bool:
@@ -288,8 +311,13 @@ def _wanted_index_file(path: str, component: str, other_arches: set[str], includ
     Includes everything in our component subtree (Packages, Translation-*,
     cnf/Commands-*, dep11/*, Contents-*, debian-installer, …) plus suite
     top-level files, excluding other-arch variants and — unless include_sources
-    — the source/ index. Matching is segment/token based: substring matching
+    — the source/ index. Matching is segment based: substring matching
     would let component "free" match "non-free" and arch "mips" match "mipsel".
+
+    A segment names an arch when it IS one or ends in `-{arch}`, taking the
+    longest match — `binary-hurd-i386` is hurd-i386, not i386. Splitting on
+    every `-` instead read it as i386, so an i386 mirror took hurd-i386's
+    indexes and a hurd-i386 mirror refused its own.
     """
     segs = path.split("/")
     in_component = segs[0] == component
@@ -298,8 +326,17 @@ def _wanted_index_file(path: str, component: str, other_arches: set[str], includ
         return False
     if in_component and len(segs) > 1 and segs[1] == "source" and not include_sources:
         return False
-    tokens = set(re.split(r"[/.\-]", path))
-    return not (tokens & other_arches)
+    return not any(_segment_arch(seg) in other_arches for seg in re.split(r"[/.]", path))
+
+
+def _segment_arch(seg: str) -> str | None:
+    """The architecture a path segment names (`binary-amd64`, `Contents-udeb-arm64`,
+    `amd64`), or None. The longest known arch wins."""
+    best = None
+    for a in KNOWN_ARCHES:
+        if (seg == a or seg.endswith("-" + a)) and (best is None or len(a) > len(best)):
+            best = a
+    return best
 
 
 def _fetch_verified_index(mf: MetadataFile, client: httpx.Client) -> bytes:
@@ -485,7 +522,7 @@ class AptProvider(BaseProvider):
                 + ("; ".join(release_failures) if release_failures else "nothing served")
             )
 
-        other_arches = _KNOWN_ARCHES - {arch}
+        other_arches = KNOWN_ARCHES - {arch}
         include_sources = getattr(mirror_config, "include_sources", False)
         if release_text:
             for _checksum, path, _size in _parse_release_files(release_text):

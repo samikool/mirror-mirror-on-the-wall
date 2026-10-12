@@ -256,7 +256,8 @@ def test_flat_fetch_all_reuses_the_index_it_fetched():
     packages, metadata = AptFlatProvider().fetch_all(_flat_mirror(), repo)
 
     assert [p.name for p in packages] == ["cuda"]
-    assert len(repo.gets) == 1, f"index fetched {len(repo.gets)}x: {repo.gets}"
+    index_gets = [u for u in repo.gets if "Packages" in u]
+    assert len(index_gets) == 1, f"index fetched {len(index_gets)}x: {index_gets}"
     idx = [m for m in metadata if m.repo_path == "Packages.xz"]
     assert idx and idx[0].content is not None
 
@@ -268,3 +269,47 @@ def test_flat_fetch_all_still_works_when_head_is_refused():
     repo = _FlatRepo(head_ok=False)
     packages, _ = AptFlatProvider().fetch_all(_flat_mirror(), repo)
     assert [p.name for p in packages] == ["cuda"]
+
+
+class _SignedFlatRepo(_FlatRepo):
+    """A flat repository with a Release naming its index by hash — NVIDIA's
+    libnvidia-container is one."""
+
+    def __init__(self, release_hash=None):
+        super().__init__()
+        digest = release_hash or hashlib.sha256(self.body).hexdigest()
+        self.release = (f"Origin: vendor\nSHA256:\n {digest} {len(self.body)} Packages.xz\n"
+                        ).encode()
+
+    def get(self, url, **kw):
+        if url.endswith("/Release"):
+            self.gets.append(url)
+            return _Resp(200, self.release)
+        return super().get(url, **kw)
+
+
+def test_flat_release_and_index_come_from_one_snapshot():
+    """The Release used to be only HEADed here and fetched hours later by the
+    metadata phase, while `Packages.xz` was read up front — so a republish in
+    between published a Release whose hash for `Packages.xz` matched nothing
+    in the tree, and every client's `apt update` failed on it. Both are read
+    now, and the index is checked against the Release that names it."""
+    repo = _SignedFlatRepo()
+    _packages, metadata = AptFlatProvider().fetch_all(_flat_mirror(), repo)
+    by_path = {m.repo_path: m for m in metadata}
+    assert by_path["Release"].content == repo.release and by_path["Release"].is_release
+    assert by_path["Packages.xz"].expected_sha256 == hashlib.sha256(repo.body).hexdigest()
+
+
+def test_flat_index_that_disagrees_with_its_release_fails_the_mirror():
+    repo = _SignedFlatRepo(release_hash="ab" * 32)
+    with pytest.raises(ValueError, match="does not match"):
+        AptFlatProvider().fetch_all(_flat_mirror(), repo)
+
+
+def test_flat_filename_loses_only_its_dot_slash_prefix():
+    from mmw.providers.apt import _parse_packages_flat
+    text = ("Package: a\nFilename: ./.cache/a.deb\nSHA256: " + "a" * 64 + "\n\n"
+            "Package: b\nFilename: ../b.deb\nSHA256: " + "b" * 64 + "\n\n")
+    assert [p.repo_path for p in _parse_packages_flat(text, "http://x")] == [
+        ".cache/a.deb", "../b.deb"]          # the traversal is left for the safety check

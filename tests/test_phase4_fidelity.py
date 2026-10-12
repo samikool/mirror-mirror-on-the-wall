@@ -1,7 +1,8 @@
 """Phase 4: APT index completeness + RPM snapshot consistency."""
 import pytest
 
-from mmw.providers.apt import _KNOWN_ARCHES, _wanted_index_file
+from mmw.core.config import KNOWN_ARCHES as _KNOWN_ARCHES
+from mmw.providers.apt import _wanted_index_file
 
 AMD64_OTHERS = _KNOWN_ARCHES - {"amd64"}
 
@@ -96,3 +97,15 @@ class _RepoClient:
         return r
 
 
+
+
+def test_loong64_and_hyphenated_arches_are_told_apart():
+    others = _KNOWN_ARCHES - {"amd64"}
+    assert not _wanted_index_file("main/binary-loong64/Packages.xz", "main", others, False)
+    assert not _wanted_index_file("Contents-loong64.gz", "main", others, False)
+    i386_others = _KNOWN_ARCHES - {"i386"}
+    assert not _wanted_index_file("main/binary-hurd-i386/Packages.xz", "main", i386_others, False)
+    assert _wanted_index_file("main/binary-i386/Packages.xz", "main", i386_others, False)
+    hurd_others = _KNOWN_ARCHES - {"hurd-i386"}
+    assert _wanted_index_file("main/binary-hurd-i386/Packages.xz", "main", hurd_others, False)
+    assert _wanted_index_file("main/Contents-hurd-i386.gz", "main", hurd_others, False)

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mmw.core.config import Config, NetworkConfig
-from mmw.core.pool import BundleInfo, Pool, SnapshotInfo
+from mmw.core.pool import BundleInfo, Pool, SnapshotInfo, shared_pool_lock
 from mmw.core.publisher.manifest import (
     bump_stamp, is_manifest, iter_manifest, ledger_dir, now_stamp,
 )
@@ -84,8 +84,13 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
     Raises if the walk reported errors (a key that could not be frozen, a
     mirror missing from the config): a snapshot that silently lacks a file
     would not restore what it claims to.
+
+    Holds the pool's shared lock throughout, as a sync does: keys and
+    upstream files are frozen into the pool before the snapshot row that
+    makes them GC roots is committed, so a prune in that window would delete
+    them and leave a snapshot that can never be published or bundled to.
     """
-    with Pool(mirror_dir) as pool:
+    with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
         sink = RecordingSink(pool)
         result = NetworkPublishResult(network_name=network.name, dry_run=False)
         from mmw.core.publisher import walk_network

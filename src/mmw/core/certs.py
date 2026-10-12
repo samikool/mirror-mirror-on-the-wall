@@ -162,7 +162,7 @@ Generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
 
 | File | Purpose |
 |------|---------|
-| `{key_path.name}` | Private key — stays on this server, never transfer |
+| `{key_path.name}` | Private key — never served; travels only inside bundles (see **Bundled networks**) |
 | `{cnf_path.name}` | OpenSSL config — edit this to adjust hostnames or key size |
 | `{csr_path.name}` | Certificate signing request — send this to your CA |
 | `mirror.crt` | Signed certificate — put here after signing |
@@ -247,7 +247,6 @@ def cert_dir(network: NetworkConfig, cfg: Config) -> Path:
     if not NETWORK_NAME_RE.fullmatch(network.name or "") or network.name in (".", ".."):
         raise ValueError(f"invalid network name {network.name!r}")
     return cfg.settings.mirror_dir / "certs" / network.name
-
 
 
 class CAKeyEncrypted(ValueError):
@@ -428,6 +427,7 @@ def servable_paths(network: NetworkConfig, cfg: Config) -> tuple[Path, Path] | N
         return paths if _key_matches(paths[0].parent) else None
     except (OSError, ValueError):
         return None
+
 
 def generate_certs(network: NetworkConfig, cfg: Config) -> tuple[list[str], Path, Path, Path, Path]:
     """Top-level entry point.  Returns (hostnames, key_path, cnf_path, csr_path, md_path)."""

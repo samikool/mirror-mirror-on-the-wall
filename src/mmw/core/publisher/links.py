@@ -64,6 +64,15 @@ def atomic_write(dst: Path, data: bytes, tmp_dir: Path | None = None) -> None:
                 pass
 
 
+def same_file(a: Path, b: Path) -> bool:
+    """One inode — the device included. Inode numbers are per filesystem, so
+    on a destination that falls back to copying (another device) an inode
+    number alone could match the pool's by coincidence and skip a file that
+    needed replacing."""
+    sa, sb = a.stat(), b.stat()
+    return sa.st_ino == sb.st_ino and sa.st_dev == sb.st_dev
+
+
 def hardlink_or_copy(src: Path, dst: Path, tmp_dir: Path | None = None) -> None:
     """Hardlink src → dst, falling back to copy on cross-device — atomically.
 
@@ -88,7 +97,7 @@ def hardlink_or_copy(src: Path, dst: Path, tmp_dir: Path | None = None) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         try:
-            if dst.stat().st_ino == src.stat().st_ino:
+            if same_file(dst, src):
                 return
         except OSError:
             pass
@@ -485,10 +494,10 @@ def publish_keys(sink, mirror_dir: Path,
     return errors, published
 
 
-
 __all__ = [
     "ROOT_RELATIVE_PREFIX",
     "atomic_write",
+    "same_file",
     "file_checksum",
     "hardlink_or_copy",
     "is_package_file",

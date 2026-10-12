@@ -365,3 +365,37 @@ def test_a_retired_bundle_compress_key_loads_and_is_dropped_on_save(tmp_path):
     assert [n.name for n in cfg.networks] == ["lab"]
     config.save(cfg, tmp_path)
     assert "bundle_compress" not in (tmp_path / "mmw.toml").read_text()
+
+
+def test_max_connections_must_be_at_least_one():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        config.Settings(mirror_dir="/m", max_connections=0)
+
+
+def test_save_replaces_the_file_whole_and_keeps_a_symlink(tmp_path, monkeypatch):
+    """A crash mid-write used to leave a truncated mmw.toml that no command
+    would load. The write is staged and renamed — onto the symlink's target,
+    so a symlinked config stays a symlink."""
+    real = tmp_path / "real" / "mmw.toml"
+    real.parent.mkdir()
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "m"))
+    config.save(cfg, real.parent)
+    real.chmod(0o600)
+    link_dir = tmp_path / "cwd"
+    link_dir.mkdir()
+    (link_dir / "mmw.toml").symlink_to(real)
+
+    config.save(cfg.model_copy(update={"settings": config.Settings(
+        mirror_dir=tmp_path / "m", max_connections=3)}), link_dir)
+    assert (link_dir / "mmw.toml").is_symlink()
+    assert config.load(real.parent).settings.max_connections == 3
+    assert real.stat().st_mode & 0o777 == 0o600
+    assert not list(real.parent.glob("*.tmp"))
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(config.tomli_w, "dump", boom)
+    with pytest.raises(OSError):
+        config.save(cfg, real.parent)
+    assert config.load(real.parent).settings.max_connections == 3     # untouched

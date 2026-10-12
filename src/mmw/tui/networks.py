@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 
 from mmw.core import config
+from mmw.core.pool import Pool
 from mmw.core.publisher.manifest import ledger_dir
 from mmw.core.resolve import available_mirrors, network_mirrors
 
@@ -70,20 +71,29 @@ def mirror_names(net: config.NetworkConfig, cfg: config.Config) -> set[str]:
 
 
 def clear_ledger(mirror_dir: Path, name: str) -> str | None:
-    """Delete a removed network's bundle ledger. **Blocking.**
+    """Delete a removed network's bundle ledger, and its snapshots, bundle
+    log and publish records from the pool. **Blocking.**
 
-    Not served content and not shared, so it goes without a prompt — otherwise
-    a network added later under the same name would inherit stale delta
-    history. A ledger is one manifest per bundle ever produced, so on a
-    long-lived network this is not the two files it looks like."""
+    Not served content and not shared, so it goes with the network —
+    otherwise a network added later under the same name would inherit stale
+    delta history, and the snapshots would pin their files in the pool with
+    no command able to reach them. A ledger is one manifest per bundle ever
+    produced, so on a long-lived network this is not the two files it looks
+    like."""
+    problems = []
+    if (mirror_dir / ".pool" / "mmw.db").exists():
+        try:
+            with Pool(mirror_dir) as pool:
+                pool.forget_network(name)
+        except Exception as e:  # noqa: BLE001 — reported, never fatal to the removal
+            problems.append(f"Could not remove the snapshots of '{name}': {e}")
     ledger = ledger_dir(mirror_dir, name)
-    if not ledger.exists():
-        return None
-    try:
-        shutil.rmtree(ledger)
-    except OSError as e:
-        return f"Could not remove bundle history for '{name}': {e}"
-    return None
+    if ledger.exists():
+        try:
+            shutil.rmtree(ledger)
+        except OSError as e:
+            problems.append(f"Could not remove bundle history for '{name}': {e}")
+    return "; ".join(problems) or None
 
 
 def exclusive_publish_dirs(

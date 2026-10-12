@@ -641,8 +641,13 @@ def apply(bundle, root, dry_run=False, verify=False):
                                     "warning: %r still contains %s after "
                                     "substitution\n" % (rel, ROOT_PLACEHOLDER))
             current = STATE_FILE
-            with open(os.path.join(root, STATE_FILE), "w") as fh:
+            # Staged and renamed: a state file cut short by a full disk or a
+            # kill reads as "at nothing", and every later delta is refused as
+            # out of order until someone carries a full bundle across.
+            state = os.path.join(root, STATE_FILE)
+            with open(state + ".tmp", "w") as fh:
                 fh.write(header["created"] + "\n" + (header.get("created_label") or "") + "\n")
+            os.rename(state + ".tmp", state)
 
         if verify:
             return verify_tree(root, manifest)

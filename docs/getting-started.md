@@ -306,6 +306,9 @@ freshness check; the GPG signature is still verified.
 
 The index knows about a package the tree does not hold. Run `mmw verify` on the
 connected side — that is exactly what it catches — then sync and publish again.
+If it reports the pool complete but a client still gets a bad file,
+`mmw verify --deep --repair` finds pool files that are damaged on disk and drops
+them, and the next sync downloads them again.
 
 ---
 
@@ -345,7 +348,10 @@ takes one (see [airgap](airgap.md#between-any-two-snapshots)).
 
 `mmw prune` never deletes a file a snapshot lists; `mmw snapshot delete` /
 `clean --keep N` let it go (the next prune frees it). A snapshot some directory
-serves cannot be deleted. In the TUI: `n` on a network opens its snapshots, and
+serves cannot be deleted. Renaming a network carries its snapshots along, and
+removing it in the TUI removes them; a network deleted from `mmw.toml` by hand
+leaves them behind — `mmw prune` names it, and
+`mmw snapshot clean -n OLD --keep 0 --yes` clears them. In the TUI: `n` on a network opens its snapshots, and
 `p` asks what to publish and where.
 
 ---

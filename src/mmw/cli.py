@@ -466,7 +466,13 @@ def cmd_snapshot_clean(network: str = _SNAP_NET,
 @app.command("verify")
 def cmd_verify(
     network: str = typer.Option(None, "--network", "-n", help="Verify only this network's mirrors"),
+    deep: bool = typer.Option(False, "--deep", help="Also stat every blob (slow: one stat per file)"),
+    rehash: bool = typer.Option(False, "--rehash",
+                                help="Also re-hash every blob (slowest: reads the whole pool)"),
+    repair: bool = typer.Option(False, "--repair",
+                                help="Drop damaged blobs so the next sync downloads them again "
+                                     "(implies --deep)"),
 ):
-    """Check the pool holds every blob its mirrors' refs want (read-only)."""
+    """Check the pool holds every blob its mirrors' refs want (read-only unless --repair)."""
     from mmw.commands.verify import run
-    raise typer.Exit(run(_cfg_dir(), network=network))
+    raise typer.Exit(run(_cfg_dir(), network=network, deep=deep, rehash=rehash, repair=repair))

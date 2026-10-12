@@ -10,12 +10,19 @@ rather than raising an error, and the gap only surfaces as a 404 during
 this, but before this module it was reachable only by driving
 the TUI's verify stage — undoable from cron. This check is
 read-only: it never downloads anything.
+
+`--deep` also stats every blob and `--rehash` re-reads and hashes it — the
+only checks that see a file truncated or deleted underneath the pool, and
+O(pool) disk I/O, so never implicit. `--repair` drops what they find damaged
+(`Pool.forget_blobs`), so the next `mmw sync` downloads it again; it is the
+one write this command can make.
 """
 from pathlib import Path
 
 from mmw.commands.common import eprint, interruptible, load_config_or_none
 from mmw.core import resolve
-from mmw.core.pool import Pool
+from mmw.core.format import fmt_size
+from mmw.core.pool import Pool, PoolBusy
 
 # Imported at module level, not inside _verify_all: tests monkeypatch this as
 # a module attribute (`verify_cmd.verify_mirror = ...`), and an import inside
@@ -25,7 +32,8 @@ from mmw.core.pool import Pool
 from mmw.core.verify import VerifyResult, verify_mirror
 
 
-def _verify_all(cfg, mirror_dir: Path, network: str | None) -> list[VerifyResult]:
+def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
+                deep: bool = False, rehash: bool = False) -> list[VerifyResult]:
     """Verify every mirror the pool holds, or one network's slice of them.
 
     Split out from `run()` so tests can stub this one seam instead of
@@ -41,14 +49,30 @@ def _verify_all(cfg, mirror_dir: Path, network: str | None) -> list[VerifyResult
 
     pool = Pool(mirror_dir, read_only=True)
     try:
-        return [verify_mirror(m, mirror_dir, pool) for m in mirrors]
+        return [verify_mirror(m, mirror_dir, pool, deep=deep, rehash=rehash) for m in mirrors]
     finally:
         pool.close()
 
 
+def _describe(r: VerifyResult) -> str:
+    """What is wrong with an incomplete mirror, in one line."""
+    parts = []
+    if r.missing_count:
+        parts.append(f"{r.missing_count:,} of {r.total:,} missing")
+    if r.missing_refs_count:
+        parts.append(f"{r.missing_refs_count:,} wanted file(s) not in the pool")
+    if r.corrupt:
+        parts.append(f"{len(r.corrupt):,} damaged blob(s)")
+    return ", ".join(parts) or "incomplete"
+
+
 @interruptible
-def run(cfg_dir: Path = Path("."), network: str | None = None) -> int:
-    """Verify pool completeness for one or all mirrors. Returns a process exit code."""
+def run(cfg_dir: Path = Path("."), network: str | None = None, deep: bool = False,
+        rehash: bool = False, repair: bool = False) -> int:
+    """Verify pool completeness for one or all mirrors. Returns a process exit code.
+
+    `deep` stats every blob, `rehash` (implies `deep`) hashes it; `repair`
+    (implies `deep`) drops the damaged ones so the next sync fetches them."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
@@ -57,8 +81,9 @@ def run(cfg_dir: Path = Path("."), network: str | None = None) -> int:
         eprint(f"Network '{network}' not found.")
         return 1
 
+    deep = deep or rehash or repair
     try:
-        results = _verify_all(cfg, cfg.settings.mirror_dir, network)
+        results = _verify_all(cfg, cfg.settings.mirror_dir, network, deep=deep, rehash=rehash)
     except OSError as e:
         eprint(f"Cannot read the pool in {cfg.settings.mirror_dir}: {e.strerror or e}")
         return 1
@@ -75,13 +100,32 @@ def run(cfg_dir: Path = Path("."), network: str | None = None) -> int:
         elif r.complete:
             print(f"  {r.mirror_name:<40} complete · {r.total:,} files")
         else:
-            eprint(f"  {r.mirror_name:<40} {r.missing_count:,} of {r.total:,} missing")
+            eprint(f"  {r.mirror_name:<40} {_describe(r)}")
+            for line in r.corrupt[:5]:
+                eprint(f"      ✗ {line}")
+            if len(r.corrupt) > 5:
+                eprint(f"      … and {len(r.corrupt) - 5:,} more")
             ok = False
 
     complete_count = sum(1 for r in results if r.complete)
     print(f"\n{complete_count}/{len(results)} mirror(s) complete.")
 
+    damaged = {c for r in results for c in r.corrupt_checksums}
+    if damaged and repair:
+        try:
+            with Pool(cfg.settings.mirror_dir) as pool:
+                count, size = pool.forget_blobs(damaged)
+        except PoolBusy as e:
+            eprint(str(e))
+            return 1
+        print(f"Dropped {count:,} damaged blob(s) ({fmt_size(size)}) — "
+              "run `mmw sync` to download them again.")
+    elif damaged:
+        eprint(f"{len(damaged):,} damaged blob(s) — `mmw verify --repair` drops them so "
+               "the next `mmw sync` downloads them again.")
+
     # A completeness problem is an exit-1 condition — same rule
     # `mmw sync --quiet` documents: a cron job that silently reported nothing
-    # wrong on an incomplete pool is worse than one that fails loudly.
+    # wrong on an incomplete pool is worse than one that fails loudly. A
+    # repaired pool is still short until the next sync.
     return 0 if ok else 1

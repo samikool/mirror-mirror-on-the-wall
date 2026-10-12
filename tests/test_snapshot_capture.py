@@ -75,3 +75,35 @@ def test_two_snapshots_in_the_same_second_get_distinct_ids(two_mirrors):  # noqa
     a = take_snapshot(net, cfg, mirror_dir)
     b = take_snapshot(net, cfg, mirror_dir)
     assert a.stamp != b.stamp
+
+
+def test_taking_a_snapshot_holds_the_pool_against_prune(tmp_path, monkeypatch):
+    """Frozen keys are pool rows with no ref and no snapshot row until the
+    snapshot commits — orphans, to a prune running in that window."""
+    import threading
+
+    from mmw.core import config as config_mod
+    from mmw.core import publisher
+    from mmw.core.pool import pool_is_busy
+    from mmw.core.snapshots import take_snapshot
+
+    mirror_dir = tmp_path / "mirror"
+    cfg = config_mod.Config(settings=config_mod.Settings(mirror_dir=mirror_dir))
+    net = config_mod.NetworkConfig(name="lab")
+    walking, release = threading.Event(), threading.Event()
+
+    def slow_walk(*a, **k):
+        walking.set()
+        assert release.wait(10)
+        return []
+    monkeypatch.setattr(publisher, "walk_network", slow_walk)
+
+    t = threading.Thread(target=take_snapshot, args=(net, cfg, mirror_dir))
+    t.start()
+    assert walking.wait(10)
+    try:
+        assert pool_is_busy(mirror_dir), "a prune could run while the snapshot is being taken"
+    finally:
+        release.set()
+        t.join(10)
+    assert not pool_is_busy(mirror_dir)

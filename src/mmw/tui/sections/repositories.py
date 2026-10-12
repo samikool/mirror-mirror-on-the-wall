@@ -413,15 +413,13 @@ class RepositoriesPage(Page):
                 "Published network trees keep their own hardlinks until republished.",
                 "Prune")):
             return
-        mirror_dir = self.app.cfg.settings.mirror_dir
-        identities = [s.identity for s in self.app.cfg.sources]
         self.set_status("Pruning…")
         try:
-            removed, freed = await asyncio.to_thread(
-                repositories.prune_pool, mirror_dir, identities)
-        except pool_mod.PoolBusy as e:
-            # A running sync's downloads are unreferenced until it reconciles;
-            # pruning now would delete its work.
+            removed, freed = await asyncio.to_thread(repositories.prune_pool, self.app.cfg)
+        except (pool_mod.PoolBusy, ValueError) as e:
+            # A running sync's downloads are unreferenced until it reconciles,
+            # and with nothing configured every blob looks unwanted: either
+            # way pruning now would delete what must be kept.
             self.set_status(str(e), "error")
             return
         if removed == 0:

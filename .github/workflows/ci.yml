@@ -89,13 +89,14 @@ jobs:
           /tmp/bare/bin/python -c "from mmw.resources import apply_script_bytes; assert apply_script_bytes()"
 
   apply-script-compat:
-    # `resources/apply.py` is the only part of mmw that runs on the far side of
-    # an airgap: no mmw install, no pip, sometimes Python 3.6 (RHEL 8). 3.8 is
+    # `resources/apply.py` and `resources/sign.py` are the only parts of mmw
+    # that run on the far side of an airgap: no mmw install, no pip, sometimes
+    # Python 3.6 (RHEL 8). 3.8 is
     # the oldest interpreter GitHub-hosted runners still provide, so this job
     # catches 3.9+ syntax but NOT a 3.7/3.8-only construct. The residual gap
     # (3.6, 3.7) is unguarded here — `tests/` enforces the stdlib-only import
     # allowlist, and nothing in CI can exercise the real RHEL 8 interpreter.
-    name: apply.py compiles on the oldest available interpreter
+    name: far-side scripts compile on the oldest available interpreter
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -106,4 +107,5 @@ jobs:
       - name: py_compile under Python 3.8
         run: |
           uv python install 3.8
-          uv run --python 3.8 --no-project python -m py_compile src/mmw/resources/apply.py
+          uv run --python 3.8 --no-project python -m py_compile \
+            src/mmw/resources/apply.py src/mmw/resources/sign.py

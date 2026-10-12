@@ -209,3 +209,20 @@ def test_a_failed_reinitialise_is_reported_not_fatal(tmp_path, monkeypatch):
         assert app.is_running and app.cfg is not None
         assert any("read-only" in n for n in notes), notes
     _run(tmp_path, check, cfg=_cfg_at(tmp_path), initial_section="settings")
+
+
+def test_one_url_added_as_both_shapes_is_a_notice_not_a_crash(tmp_path):
+    async def check(app, pilot):
+        page = app.screen
+        page.query_one("#mirror-dir", Input).value = str(tmp_path / "pool")
+        page.query_one("#btn-wizard-next", Button).press()
+        await _settle(pilot)
+        app.screen.dismiss([_source()])
+        await _settle(pilot)
+        page.query_one("#btn-setup-add", Button).press()
+        await _settle(pilot)
+        app.screen.dismiss([config.SourceConfig(url=SRC, provider="apt-flat")])
+        await _settle(pilot)
+        assert app.is_running and isinstance(app.screen, SetupPage)
+        assert [s.provider for s in _setup_page(app)._planned] == ["apt"]
+    _run(tmp_path, check)

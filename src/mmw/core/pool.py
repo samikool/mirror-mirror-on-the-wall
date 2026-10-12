@@ -675,9 +675,10 @@ class Pool:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(refs)")}
         self._kind_filter = "AND r.kind = 'pkg' " if "kind" in cols else ""
         self._has_source = "source" in cols
-        self._has_mirrors_table = bool(self._conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mirrors'"
-        ).fetchone())
+        self._has_mirrors_table = self._has_table("mirrors")
+        # A read-only open of a pool from before snapshots has no such table;
+        # checked once here, not per query on a connection a writer may hold.
+        self._has_snapshot_blobs = self._has_table("snapshot_blobs")
 
     @property
     def _tmp_dir(self) -> Path:
@@ -1386,14 +1387,13 @@ class Pool:
         """Packages no ref passing `ref_filter` wants and no snapshot holds —
         the one definition of an orphan, shared by the prune and its preview."""
         held = ("AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
-                "WHERE b.checksum = packages.checksum)")
-        if not self._has_table("snapshot_blobs"):
-            held = ""                                  # a read-only pre-snapshot pool
+                "WHERE b.checksum = packages.checksum)" if self._has_snapshot_blobs else "")
         return (f"SELECT {columns} FROM packages "
                 "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum "
                 f"AND {ref_filter}) {held}")
 
     def _has_table(self, name: str) -> bool:
+        """Init-time schema probe — not for use once the pool is shared."""
         return bool(self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
 

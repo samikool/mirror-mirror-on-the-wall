@@ -209,13 +209,25 @@ def replace_source(cfg: config.Config, original_identity: str,
     # Replace by identity, never merge: `config.merge_sources()` is union-only
     # by design, so it can widen a selection but never narrow one — which is
     # the entire reason editing exists.
-    return cfg.model_copy(update={"sources": [
-        edited if s.identity == original_identity else s for s in cfg.sources]})
+    #
+    # A changed URL is carried into every network that selected the old one.
+    # Left alone, those `[[networks.select]]` entries matched nothing: the
+    # network silently stopped publishing the repository, and its next
+    # pruning publish deleted the repository's tree from the root.
+    networks = cfg.networks
+    if edited.identity != original_identity:
+        networks = [n.model_copy(update={"select": [
+            sel.model_copy(update={"source": edited.url})
+            if config.normalize_url(sel.source) == original_identity else sel
+            for sel in n.select]}) for n in cfg.networks]
+    return cfg.model_copy(update={
+        "sources": [edited if s.identity == original_identity else s for s in cfg.sources],
+        "networks": networks})
 
 
 def pool_scale(mirror_dir: Path) -> tuple[int, int] | None:
     """(packages, bytes) in the pool, or None when it cannot be read.
-    **Blocking** — `stats()` is a full table scan."""
+    **Blocking** — opens SQLite on the pool's disk."""
     if not (mirror_dir / ".pool").exists():
         return None
     try:

@@ -11,6 +11,7 @@ from mmw.core.format import fmt_size as _fmt_size
 from mmw.core.pool import Pool
 from mmw.commands.mirror import resolve_and_report
 from mmw.core.sync_engine import classify_mirror
+from mmw.core.item_progress import ItemProgressSession
 
 
 def _pct(part: int, total: int) -> str:
@@ -57,6 +58,7 @@ async def _check_all_inner(cfg: config.Config, executor) -> int:
     typer.echo()
     typer.echo(_rule("═"))
     mirrors, resolve_errors = resolve_and_report(cfg)
+    items = ItemProgressSession(mirrors)
     typer.echo(f"  mmw dry-run  —  {len(mirrors)} mirror(s)")
     typer.echo(f"  mirror dir : {mirror_dir}")
     typer.echo(_rule("═"))
@@ -81,7 +83,7 @@ async def _check_all_inner(cfg: config.Config, executor) -> int:
                 typer.echo(f"  ERROR fetching metadata: {e}", err=True)
                 mirror_errors.append(f"{mirror.name}: {e}")
                 continue
-            typer.echo(f"  {stats.total:,} packages  ({time.monotonic() - t0:.1f}s)")
+            typer.echo(f"  {stats.total:,} {stats.item_label}  ({time.monotonic() - t0:.1f}s)")
 
             grand_pkgs       += stats.total
             grand_size       += stats.total_size
@@ -89,9 +91,11 @@ async def _check_all_inner(cfg: config.Config, executor) -> int:
             grand_fetch_size += stats.fetch_size
             grand_pool_n     += stats.in_pool
             grand_pool_size  += stats.pool_size
+            if stats.inventory is not None:
+                await items.classify_async(mirror.name, stats.inventory)
 
             col = 18
-            typer.echo(f"  {'Packages':<{col}} {stats.total:>8,}")
+            typer.echo(f"  {stats.item_label.capitalize():<{col}} {stats.total:>8,}")
             if stats.sizes_known:
                 typer.echo(f"  {'Full size':<{col}} {_fmt_size(stats.total_size):>10}")
             else:
@@ -107,7 +111,7 @@ async def _check_all_inner(cfg: config.Config, executor) -> int:
 
             if stats.no_checksum:
                 typer.echo()
-                typer.echo(f"  ⚠  {stats.no_checksum} package(s) have no known checksum —")
+                typer.echo(f"  ⚠  {stats.no_checksum} file(s) have no known checksum —")
                 typer.echo("     size and pool status unknown until download.")
 
         typer.echo()
@@ -116,15 +120,19 @@ async def _check_all_inner(cfg: config.Config, executor) -> int:
         typer.echo(_rule("═"))
 
         pool_stats = pool.stats()
+        if items.counts:
+            totals = items.totals
+            grand_pkgs, grand_pool_n, grand_fetch_n = totals.total, totals.pooled, totals.downloaded
+        label = items.totals.label
         col = 22
         typer.echo(f"  {'Mirrors checked':<{col}} {len(mirrors):,}")
-        typer.echo(f"  {'Total packages':<{col}} {grand_pkgs:,}")
+        typer.echo(f"  {'Total ' + label:<{col}} {grand_pkgs:,}")
         typer.echo(f"  {'Total repo size':<{col}} {_fmt_size(grand_size)}")
         typer.echo()
         typer.echo(f"  {'Already in pool':<{col}} {grand_pool_n:,}  ({_fmt_size(grand_pool_size)} saved)")
         typer.echo(f"  {'To download':<{col}} {grand_fetch_n:,}  ({_fmt_size(grand_fetch_size)})")
         typer.echo()
-        typer.echo(f"  {'Pool (all mirrors)':<{col}} {pool_stats['packages']:,} packages  /  {_fmt_size(pool_stats['total_size'])}")
+        typer.echo(f"  {'Pool (all mirrors)':<{col}} {pool_stats['packages']:,} files  /  {_fmt_size(pool_stats['total_size'])}")
         typer.echo(_rule("═"))
         typer.echo()
 

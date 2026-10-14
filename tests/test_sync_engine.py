@@ -80,6 +80,39 @@ def test_classify_mirror(monkeypatch, tmp_path):
         pool.close()
 
 
+def test_grouped_dry_run_counts_partial_item_once_and_keeps_file_sizes(monkeypatch, tmp_path):
+    with Pool(tmp_path) as pool:
+        content = b'cached asset'
+        checksum = hashlib.sha256(content).hexdigest()
+        pool.add(content, checksum, 'sha256', 'cached', len(content))
+        packages = [
+            PackageInfo('asset', 'url', checksum, 'sha256', len(content), 'cached', 'cached', item_id='one'),
+            PackageInfo('asset', 'url', '0' * 64, 'sha256', 500, 'missing', 'missing', item_id='one'),
+        ]
+        monkeypatch.setattr(sync_engine, 'fetch_packages_threaded', lambda *a: packages)
+        async def scenario():
+            with concurrent.futures.ThreadPoolExecutor(2) as executor:
+                return await classify_mirror(_mirror(), pool, executor)
+        stats = asyncio.run(scenario())
+        assert (stats.total, stats.in_pool, stats.to_fetch) == (1, 0, 1)
+        assert stats.fetch_size == 500
+        assert stats.pool_size == len(content)
+        assert stats.total_size == 500 + len(content)
+
+
+def test_grouped_dry_run_does_not_trust_refs_to_missing_blobs(monkeypatch, tmp_path):
+    with Pool(tmp_path) as pool:
+        pool.reconcile_refs('m', [('0' * 64, 'missing', 'pkg')])
+        packages = [PackageInfo('asset', 'url', '', 'sha256', 0, 'missing', 'missing',
+                                checksum_known=False, item_id='one')]
+        monkeypatch.setattr(sync_engine, 'fetch_packages_threaded', lambda *a: packages)
+        async def scenario():
+            with concurrent.futures.ThreadPoolExecutor(2) as executor:
+                return await classify_mirror(_mirror(), pool, executor)
+        stats = asyncio.run(scenario())
+        assert (stats.total, stats.in_pool, stats.to_fetch) == (1, 0, 1)
+
+
 # ── inline GPG keys need no fetch ────────────────────────────────────────────
 
 ARMOUR = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQINBGXf\n-----END PGP PUBLIC KEY BLOCK-----"

@@ -9,7 +9,7 @@ import pytest
 from mmw.core import config, downloader
 from mmw.core.pool import Pool
 from mmw.core.resolve import resolve_sources
-from mmw.core.sync_engine import sync_mirror
+from mmw.core.sync_engine import SyncEvents, classify_mirror, sync_mirror
 from mmw.core.verify import verify_mirror
 from mmw.providers.vscode import marketplace as mp
 from mmw.providers.vscode import provider as prov
@@ -88,3 +88,75 @@ def test_dry_run_command_reports_vscode_units(up, tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["--config", str(tmp_path), "dry-run"])
     assert r.exit_code == 0, r.output
     assert "vscode-extensions-linux-x64" in r.output and "vscode-server-linux-x64-stable" in r.output
+
+
+def test_extension_progress_counts_items_and_resync_counts_them_as_pooled(up, tmp_path):
+    from mmw.core.item_progress import ItemProgressSession
+    src = config.VscodeSource(provider='vscode', kinds=['extensions'], platforms=['linux-x64'],
+                             extensions={'ids': ['ms-python.python']})
+    units, _, errors = resolve_sources([src])
+    assert not errors
+    from mmw.providers import get_provider
+    provider = get_provider('vscode')
+    expected = {u.name: {p.item_id for p in provider.fetch_all(u, up.client())[0]} for u in units}
+    unique = set().union(*expected.values())
+
+    async def go():
+        with Pool(tmp_path) as pool, concurrent.futures.ThreadPoolExecutor(4) as executor:
+            for resync in (False, True):
+                session = ItemProgressSession(units)
+                for unit in units:
+                    inventories, events, files = [], [], []
+                    summary = await sync_mirror(unit, pool=pool, mirror_dir=tmp_path, max_connections=4,
+                                                executor=executor, items_session=session, events=SyncEvents(
+                                                    items_started=inventories.append, item_progress=events.append,
+                                                    progress=lambda name, r: files.append((name, r))))
+                    assert summary.ok
+                    assert inventories[0].ids == expected[unit.name]
+                    assert summary.items.total == len(expected[unit.name])
+                    assert len(events) == summary.items.total
+                    assert len(files) == summary.total
+                    if resync:
+                        assert summary.items.pooled == summary.items.total
+                        assert summary.bytes_transferred == 0
+                    else:
+                        assert summary.items.downloaded == summary.items.total
+                        assert sum(e.result.bytes_transferred for e in events) == summary.bytes_transferred
+                    stats = await classify_mirror(unit, pool, executor)
+                    assert stats.total == stats.in_pool == len(expected[unit.name])
+                    assert stats.to_fetch == 0
+                    assert stats.item_label == 'extensions'
+                assert session.totals.total == len(unique)
+                assert session.totals.completed == len(unique)
+    asyncio.run(go())
+
+
+def test_one_failed_extension_asset_reports_one_failed_item(up, tmp_path, monkeypatch):
+    from mmw.providers import get_provider
+    src = config.VscodeSource(provider='vscode', kinds=['extensions'], platforms=['linux-x64'],
+                             extensions={'ids': ['ms-python.python']})
+    units, _, errors = resolve_sources([src])
+    assert not errors
+    provider = get_provider('vscode')
+    unit = next(u for u in units if provider.fetch_all(u, up.client())[0])
+    packages = provider.fetch_all(unit, up.client())[0]
+    broken = packages[0]
+    original = downloader._download_sync
+    def download(package, *args, **kwargs):
+        if package.repo_path == broken.repo_path:
+            raise downloader.PermanentFetchError('asset unavailable')
+        return original(package, *args, **kwargs)
+    monkeypatch.setattr(downloader, '_download_sync', download)
+    async def scenario():
+        with Pool(tmp_path) as pool, concurrent.futures.ThreadPoolExecutor(4) as executor:
+            events = []
+            summary = await sync_mirror(unit, pool=pool, mirror_dir=tmp_path, max_connections=4,
+                                        executor=executor, events=SyncEvents(item_progress=events.append))
+            assert not summary.ok
+            assert summary.items.failed == 1
+            failed = [e for e in events if e.result.status == downloader.Status.FAILED]
+            assert len(failed) == 1
+            assert failed[0].id == broken.item_id
+            assert failed[0].result.error == 'asset unavailable'
+            assert summary.items.completed == summary.items.total
+    asyncio.run(scenario())

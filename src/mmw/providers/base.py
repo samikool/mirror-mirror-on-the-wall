@@ -18,6 +18,18 @@ class PackageInfo:
     repo_path: str          # relative path within repo
     filename: str
     checksum_known: bool = True
+    item_id: str = ""       # related assets share an ID; empty counts this file as one item
+
+
+@dataclass(frozen=True)
+class ProgressUnit:
+    """Provider-owned vocabulary and scope for logical progress.
+
+    A shared scope deduplicates items across sync units. Empty scope keeps
+    each unit independent (the existing package-counting behavior).
+    """
+    label: str = "packages"
+    scope: str = ""
 
 
 @dataclass
@@ -131,6 +143,9 @@ class BaseProvider(ABC):
     publishes: bool = True  # publish/bundle support
     carries_history: bool = False  # fetch_all reads `history`; refetches must pass it too
     fields: tuple[SourceField, ...] = ()
+
+    def progress_unit(self, mirror) -> ProgressUnit:
+        return ProgressUnit()
 
     def dimension(self, name: str) -> Dimension | None:
         return next((d for d in self.dimensions if d.name == name), None)

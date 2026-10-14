@@ -26,6 +26,7 @@ from mmw.core.downloader import (
 from mmw.core import upstream
 from mmw.core.keys import KeySyncResult, sync_custom_key, write_key
 from mmw.core.pool import Pool
+from mmw.core.item_progress import ItemInventory, ItemProgressSession, ItemResult, ItemTracker, item_id
 from mmw.providers import get_provider
 
 
@@ -38,10 +39,12 @@ class SyncEvents:
     (post a message / bump a locked counter; never touch UI state directly).
     """
     phase: Callable[[str], None] | None = None          # human-readable status line
-    started: Callable[[int], None] | None = None        # package count known; downloads begin
+    started: Callable[[int], None] | None = None        # legacy file count, when items_started is absent
     progress: ProgressCallback | None = None            # per-package outcome
     chunk: ChunkCallback | None = None                  # per 64 KB network chunk
     download_started: Callable[[], None] | None = None  # a thread began an actual download
+    items_started: Callable[[ItemInventory], None] | None = None
+    item_progress: Callable[[ItemResult], None] | None = None  # every asset of an item has finished
 
 
 @dataclass
@@ -55,6 +58,8 @@ class DryRunStats:
     pool_size: int = 0
     no_checksum: int = 0         # to fetch, with no checksum to look up
     sizes_known: bool = True     # every package states its size
+    item_label: str = "packages"
+    inventory: ItemInventory | None = None
 
 
 class KeySyncCoordinator:
@@ -160,21 +165,30 @@ async def classify_mirror(
         # A package with no upstream checksum is "had" when the unit's last
         # sync recorded its path — the same rule `download_mirror` applies.
         refmap = pool.ref_map(mirror.name) if any(not p.checksum for p in packages) else {}
+        if refmap:
+            available = pool.batch_contains(list(refmap.values()))
+            refmap = {path: checksum for path, checksum in refmap.items() if checksum in available}
         missing = [p for p in packages
                    if not (p.checksum and p.checksum in pooled)
                    and not (not p.checksum and p.repo_path in refmap)]
         total_size = sum(p.size for p in packages)
         fetch_size = sum(p.size for p in missing)
+        tracker = ItemTracker(mirror, packages, provider.progress_unit(mirror))
+        missing_items = {item_id(p) for p in missing}
+        inventory = ItemInventory(tracker.inventory.label, tracker.inventory.scope,
+                                  tracker.inventory.ids, tracker.inventory.ids - missing_items)
         return DryRunStats(
-            total=len(packages),
-            in_pool=len(packages) - len(missing),
-            to_fetch=len(missing),
+            total=len(inventory.ids),
+            in_pool=len(inventory.pooled),
+            to_fetch=len(missing_items),
             fetch_size=fetch_size,
             has_unknown=any(p.size == 0 for p in missing),
             total_size=total_size,
             pool_size=total_size - fetch_size,
             no_checksum=sum(1 for p in missing if not p.checksum),
             sizes_known=all(p.size > 0 for p in packages),
+            item_label=inventory.label,
+            inventory=inventory,
         )
 
     return await loop.run_in_executor(executor, _classify)
@@ -191,6 +205,7 @@ async def sync_mirror(
     sem: asyncio.Semaphore | None = None,
     stop_event: threading.Event | None = None,
     keys: KeySyncCoordinator | None = None,
+    items_session: ItemProgressSession | None = None,
 ) -> MirrorSummary:
     """Full pipeline for one mirror: fetch index → download → metadata → GPG keys.
 
@@ -211,7 +226,19 @@ async def sync_mirror(
                                    history=history),
     )
 
-    if events.started:
+    def item_finished(event: ItemResult) -> None:
+        if items_session is not None:
+            items_session.complete(mirror.name, event)
+        if events.item_progress:
+            events.item_progress(event)
+
+    tracker = await loop.run_in_executor(
+        executor, lambda: ItemTracker(mirror, packages, provider.progress_unit(mirror), item_finished))
+    if items_session is not None:
+        await items_session.register_async(mirror.name, tracker.inventory)
+    if events.items_started:
+        events.items_started(tracker.inventory)
+    elif events.started:
         events.started(len(packages))
 
     def _refetch_metadata() -> list:
@@ -241,7 +268,9 @@ async def sync_mirror(
         executor=executor,
         sem=sem,
         stop_event=stop_event,
+        file_progress=tracker.complete,
     )
+    summary.items = tracker.counts
 
     if keys is not None and not (stop_event and stop_event.is_set()):
         if events.phase:

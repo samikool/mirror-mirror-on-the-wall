@@ -12,7 +12,10 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from mmw.core.item_progress import ItemCounts
 
 import httpx
 
@@ -98,6 +101,7 @@ class MirrorSummary:
     # pointed at packages the `refs ⋈ packages` join could not find, publish
     # shipped a short tree, and the sync exited 0.
     pool_write_errors: list[str] = field(default_factory=list)
+    items: "ItemCounts | None" = None  # logical counts; file accounting above stays authoritative
 
     @property
     def ok(self) -> bool:
@@ -457,6 +461,7 @@ async def download_mirror(
     executor: concurrent.futures.Executor | None = None,
     sem: asyncio.Semaphore | None = None,
     stop_event: threading.Event | None = None,
+    file_progress: Callable[[PackageInfo, DownloadResult], None] | None = None,
 ) -> MirrorSummary:
     """Sync one mirror into the pool: blobs + a desired-state refs snapshot.
 
@@ -466,6 +471,12 @@ async def download_mirror(
     """
     summary = MirrorSummary(mirror=mirror_name, total=len(packages))
     loop = asyncio.get_running_loop()
+
+    def _progress(package: PackageInfo, result: DownloadResult) -> None:
+        if progress:
+            progress(package.name, result)
+        if file_progress:
+            file_progress(package, result)
 
     _owns_executor = executor is None
     if _owns_executor:
@@ -492,7 +503,7 @@ async def download_mirror(
     try:
         # ── Phase 1: classify — batch SQL, no per-package I/O ─────────────────
         if phase_callback:
-            phase_callback(f"Checking pool for {len(packages):,} packages...")
+            phase_callback(f"Checking pool for {len(packages):,} files...")
         known_checksums = [p.checksum for p in packages if p.checksum_known and p.checksum]
         pooled_set: set[str] = await loop.run_in_executor(executor, pool.batch_contains, known_checksums)
 
@@ -519,8 +530,7 @@ async def download_mirror(
             if not is_safe_repo_path(pkg.repo_path):
                 summary.failed += 1
                 summary.errors.append(f"{pkg.name}: unsafe path in upstream metadata: {pkg.repo_path!r}")
-                if progress:
-                    progress(pkg.name, DownloadResult(Status.FAILED, Path(pkg.filename), error="unsafe path"))
+                _progress(pkg, DownloadResult(Status.FAILED, Path(pkg.filename), error="unsafe path"))
                 continue
 
             if pkg.checksum_known and pkg.checksum:
@@ -529,21 +539,19 @@ async def download_mirror(
                 pkg_entries.append((pkg.checksum, pkg.repo_path, KIND_PKG))
                 if pkg.checksum in pooled_set:
                     summary.pooled += 1
-                    if progress:
-                        progress(pkg.name, DownloadResult(Status.POOLED, Path(pkg.repo_path)))
+                    _progress(pkg, DownloadResult(Status.POOLED, Path(pkg.repo_path)))
                 else:
                     to_download.append(pkg)
             elif not pkg.checksum_known and pkg.repo_path in legacy_known:
                 pkg_entries.append((legacy_known[pkg.repo_path], pkg.repo_path, KIND_PKG))
                 summary.skipped += 1
-                if progress:
-                    progress(pkg.name, DownloadResult(Status.SKIPPED, Path(pkg.repo_path)))
+                _progress(pkg, DownloadResult(Status.SKIPPED, Path(pkg.repo_path)))
             else:
                 to_download.append(pkg)
 
         # ── Phase 2: package downloads → pool ─────────────────────────────────
         if phase_callback and not (stop_event and stop_event.is_set()):
-            phase_callback(f"Downloading {len(to_download):,} packages...")
+            phase_callback(f"Downloading {len(to_download):,} files...")
 
         if not dry_run and to_download and not (stop_event and stop_event.is_set()):
             # Refuse up front when the disk plainly cannot hold this.
@@ -639,8 +647,7 @@ async def download_mirror(
                         summary.failed += 1
                         summary.errors.append(f"{pkg.name}: {result.error}")
 
-                if progress:
-                    progress(pkg.name, result)
+                _progress(pkg, result)
 
             # A fixed pool of consumers, NOT one task per package.
             #

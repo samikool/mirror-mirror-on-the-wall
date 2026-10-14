@@ -53,13 +53,29 @@ top_n = 200
 ids   = ["golang.go", "ms-python.python"]
 ```
 
-Add or edit the VS Code source with `mmw add vscode` or `mmw.toml`.
-The TUI lists configured VS Code sources; dedicated Add/Edit forms are
-planned but not available yet.
+In `mmw manage`, open **Sources → Add → VS Code**. The same form is
+available through **Edit** on an existing VS Code source and during first-run
+setup. Set the name, label, kinds, platforms and qualities; an empty dimension
+means all of its choices. Add starts with no extensions selected. Choose
+Top N, enter extension IDs (one per line, with optional `#` comments), or
+enable All. These extension choices form a union, including dependencies and
+extension-pack members. All requires acknowledgement of its size and time
+warning before enumeration starts.
+
+**Look up IDs** shows display names and missing IDs for the entered list.
+The confirmation checks the complete selection and reports sync units,
+extensions and resolution notes. Byte sizes remain unknown until sync.
+If checking fails, **Save without checking** explicitly allows saving the
+locally valid policy offline. Edit and adding the same source again replace
+its selection; they preserve networks' references to the source. Cancel
+keeps the saved configuration unchanged.
 
 `mmw sync` then fills the pool like any other source: one sync unit per
 kind × platform (× quality), e.g. `vscode-extensions-linux-x64`,
 `vscode-server-linux-x64-stable`. `mmw dry-run` shows the size first.
+Interactive sync shows source resolution and Marketplace retry messages in
+the Sync section before the unit cards appear. Stop discards a pending
+resolution result; an upstream request already in progress finishes first.
 
 ## A network with VS Code
 
@@ -83,6 +99,9 @@ platforms = ["linux-x64"]
 
 One network can carry apt repositories and VS Code together: one tree, one
 bundle, one nginx file, one certificate.
+In network Add/Edit, **Gallery port** appears when VS Code is selected.
+Deselecting VS Code hides the field and preserves its saved value. Network
+details show the served hostnames, including both Marketplace wildcards.
 
 ## What publish and bundle produce
 
@@ -109,6 +128,9 @@ Publishing needs Docker on the connected machine the first time, to pull
 `{mirror_dir}/vscode-gallery-image/`; without Docker, the cached tar is used,
 and with neither, publish reports an error and still publishes everything else
 — the far side then needs `python:3.13-slim` loaded some other way.
+The Publish/Bundle view shows **Gallery image** progress while pulling,
+inspecting, saving or using the cached tar. Stop is checked between Docker
+operations; a Docker command already running finishes within its timeout.
 
 The gallery is the only moving part: extension search, the update check and
 "commit" redirects are dynamic, so `gallery.py` (stdlib Python, no

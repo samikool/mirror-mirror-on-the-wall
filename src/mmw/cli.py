@@ -243,17 +243,8 @@ def cmd_sync(
             typer.echo(f"Profile written to {prof}")
         raise typer.Exit(code)
 
-    # "all" dimensions need the network to resolve, and the sync TUI builds its
-    # cards in compose() — so resolve before the app starts, echoing what a
-    # blank suites/components/arches list expanded to.
-    from mmw.commands.mirror import resolve_and_report
-    mirrors, errors = resolve_and_report(cfg)
-    if not mirrors:
-        typer.echo("Nothing to sync." if not errors else "No mirrors could be resolved.", err=bool(errors))
-        raise typer.Exit(1 if errors else 0)
-
     with _profiling(profile) as prof:
-        _run_tui(_open_app(cfg, cfg_dir, "sync", start_sync_with=(mirrors, dry_run)))
+        _run_tui(_open_app(cfg, cfg_dir, "sync", start_sync_selection=(([], []), dry_run)))
     if prof is not None:
         typer.echo(f"Profile written to {prof}")
 

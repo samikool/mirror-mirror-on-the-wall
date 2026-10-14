@@ -16,6 +16,7 @@ class AddEntry:
     step_title: str                                  # its wizard step's name
     make_step: Callable[[set[str]], object]          # existing identities → WizardStep
     offer_source_packages: bool                      # Confirm shows the deb-src box
+    make_confirm: Callable[[list], object] | None = None
 
 
 def _apt_step(existing_urls: set[str]):
@@ -28,14 +29,31 @@ def _apt_edit(source, existing_names, existing_urls):
     return EditSourcePage(source, existing_names=existing_names, existing_urls=existing_urls)
 
 
+def _vscode_step(existing_urls):
+    from mmw.tui.vscode_source import StepVscode
+    return StepVscode(existing_urls)
+
+
+def _vscode_confirm(sources):
+    from mmw.tui.vscode_source import VscodeConfirmStep
+    return VscodeConfirmStep(sources)
+
+
+def _vscode_edit(source, existing_names, existing_urls):
+    from mmw.tui.vscode_source import EditVscodePage
+    return EditVscodePage(source, existing_names=existing_names, existing_urls=existing_urls)
+
+
 # provider name → (Add entry or None, Edit page factory). apt's step adds
 # flat repositories too (probing tells them apart), so apt-flat has no entry.
 _ADD: dict[str, AddEntry] = {
     "apt": AddEntry("apt", "APT repository",
                     "Debian, Ubuntu or vendor apt repository — dists/ tree or flat",
                     "Repository", _apt_step, offer_source_packages=True),
+    "vscode": AddEntry("vscode", "VS Code", "Marketplace extensions, desktop and server builds",
+                       "VS Code", _vscode_step, False, _vscode_confirm),
 }
-_EDIT: dict[str, Callable] = {"apt": _apt_edit, "apt-flat": _apt_edit}
+_EDIT: dict[str, Callable] = {"apt": _apt_edit, "apt-flat": _apt_edit, "vscode": _vscode_edit}
 
 _DETECT = AddEntry("detect", "Detect from URL or paste…",
                    "A repository URL, a .list / .sources file, or pasted config",

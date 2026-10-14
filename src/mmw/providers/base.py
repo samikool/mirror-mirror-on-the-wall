@@ -39,6 +39,16 @@ class MetadataFile:
 
 
 @dataclass(frozen=True)
+class SourceField:
+    """Pure metadata for a source form; widget factories live in tui/."""
+    path: str
+    label: str
+    kind: str
+    choices: tuple[str, ...] = ()
+    hint: str = ""
+
+
+@dataclass(frozen=True)
 class Dimension:
     """One named axis a provider's sources are narrowed along. Empty means all.
 
@@ -120,6 +130,7 @@ class BaseProvider(ABC):
     by_hash: bool = False   # publish index files under by-hash/SHA256/ too
     publishes: bool = True  # publish/bundle support
     carries_history: bool = False  # fetch_all reads `history`; refetches must pass it too
+    fields: tuple[SourceField, ...] = ()
 
     def dimension(self, name: str) -> Dimension | None:
         return next((d for d in self.dimensions if d.name == name), None)
@@ -129,6 +140,13 @@ class BaseProvider(ABC):
     def group(self, source) -> str:
         """The heading a source is listed under (apt: its host)."""
         return (urlparse(source.identity).hostname or "?").lower()
+
+    def search_text(self, source) -> str:
+        return " ".join((source.name, source.label, source.identity, self.label))
+
+    def source_summary(self, source) -> str:
+        arches = getattr(source, "arches", [])
+        return ", ".join(arches) if arches else "all arches"
 
     @abstractmethod
     def describe(self, source) -> SourceDescription:

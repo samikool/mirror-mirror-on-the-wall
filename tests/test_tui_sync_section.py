@@ -41,7 +41,7 @@ def _run(tmp_path, monkeypatch, check):
                                      arches=["amd64"])],
     )
     config.save(cfg, tmp_path)
-    monkeypatch.setattr(R, "resolve_selection", lambda c, sel: ([_mirror()], []))
+    monkeypatch.setattr(R, "resolve_selection", lambda c, sel, **kw: ([_mirror()], []))
     monkeypatch.setattr(sync_mod, "sync_mirror", _fake_sync_mirror)
 
     async def go():

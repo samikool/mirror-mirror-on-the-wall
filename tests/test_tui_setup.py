@@ -181,7 +181,7 @@ def test_a_sync_resolving_when_setup_starts_does_not_start(tmp_path, monkeypatch
         release = threading.Event()
         started = threading.Event()
 
-        def slow_resolve(cfg, sel):
+        def slow_resolve(cfg, sel, **kw):
             started.set()
             release.wait(5)
             return [config.MirrorConfig(name="debian-bookworm-main-amd64", provider="apt",

@@ -34,7 +34,8 @@ class AddSourcePage(Wizard):
         if self._entry is None:
             raise ValueError(f"no Add entry {key!r} — known: "
                              + ", ".join(e.key for e in self.entries))
-        self._sources: list[config.SourceConfig] = []
+        self._sources: list[config.AnySource] = []
+        self._confirmation = None
         # One step widget per entry for the page's life: Back must find a
         # step exactly as it was left (pasted text, probe results, picks).
         self._steps: dict[str, object] = {}
@@ -72,6 +73,8 @@ class AddSourcePage(Wizard):
         for key, widget in self._steps.items():
             widget.display = on_entry_step and key == self._entry.key
         confirm = self.query_one("#confirm-slot")
+        if self._confirmation is not None and hasattr(self._confirmation, "invalidate_checks"):
+            self._confirmation.invalidate_checks()
         await confirm.remove_children()
         if step == 0 and not self._fixed:
             lst = self.query_one("#add-entry-list", OptionList)
@@ -81,10 +84,16 @@ class AddSourcePage(Wizard):
             self._sources = []
             self._steps[self._entry.key].focus_first()
         else:
-            await confirm.mount(StepConfirm(
-                self._sources, offer_source_packages=self._entry.offer_source_packages))
+            self._confirmation = (self._entry.make_confirm(self._sources) if self._entry.make_confirm
+                                  else StepConfirm(self._sources,
+                                                   offer_source_packages=self._entry.offer_source_packages))
+            await confirm.mount(self._confirmation)
 
     async def leave(self, step: int) -> bool:
+        if step == len(self.STEPS) - 1 and hasattr(self._confirmation, "can_finish"):
+            if not self._confirmation.can_finish():
+                self.set_status("Check the selection or explicitly save without checking after a failure.", "error")
+                return False
         if step == 0 and not self._fixed:
             index = self.query_one("#add-entry-list", OptionList).highlighted
             self._entry = self.entries[index if index is not None else 0]
@@ -103,9 +112,10 @@ class AddSourcePage(Wizard):
         event.stop()
         self.query_one("#btn-wizard-next").press()
 
-    def result(self) -> list[config.SourceConfig]:
-        include = self.query_one(StepConfirm).get_include_sources()
+    def result(self) -> list[config.AnySource]:
         if self._entry.offer_source_packages:
+            include = self._confirmation.get_include_sources()
             for s in self._sources:
-                s.include_sources = include
+                if hasattr(s, "include_sources"):
+                    s.include_sources = include
         return self._sources

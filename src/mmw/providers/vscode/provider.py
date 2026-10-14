@@ -15,7 +15,7 @@ import httpx
 
 from mmw.core.history import UnitHistory
 from mmw.core.pool import KIND_PKG, KIND_RELEASE
-from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, Site, SourceDescription
+from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, Site, SourceDescription, SourceField
 from mmw.providers.vscode import marketplace as mp
 from mmw.providers.vscode import image as gallery_image
 from mmw.providers.vscode import publish as vpub
@@ -83,6 +83,29 @@ class VscodeProvider(BaseProvider):
     publishes = True
     carries_history = True
     site_per_base = False
+    fields = (
+        SourceField("name", "Name", "text"),
+        SourceField("label", "Label", "text"),
+        SourceField("kinds", "Kinds", "multi", KINDS, "Empty means all kinds."),
+        SourceField("platforms", "Platforms", "multi", TARGET_PLATFORMS, "Empty means all platforms."),
+        SourceField("qualities", "Qualities", "multi", QUALITIES, "Empty means stable and insider."),
+        SourceField("extensions.top_n", "Top N", "optional-positive-int", hint="Most-installed extensions; blank disables."),
+        SourceField("extensions.ids", "Extension IDs", "textarea", hint="publisher.name, one per line; # comments allowed."),
+        SourceField("extensions.all", "All extensions", "toggle", hint="Very large: may take substantial disk space and time."),
+        SourceField("extensions.prerelease", "Prerelease", "toggle", hint="Allow prerelease extension versions."),
+    )
+
+    def group(self, source):
+        return "VS Code · Marketplace"
+
+    def source_summary(self, source):
+        return (f"{', '.join(source.kinds) or 'all kinds'} · "
+                f"{', '.join(source.platforms) or 'all platforms'} · "
+                f"{_selection_text(source.extensions)} extensions")
+
+    def search_text(self, source):
+        return " ".join((super().search_text(source), self.group(source), self.source_summary(source),
+                         *source.extensions.ids))
 
     def __init__(self):
         self.catalog: dict[str, dict[str, dict]] = {}
@@ -299,7 +322,11 @@ class VscodeProvider(BaseProvider):
             ctx.sink.write(rel, data)
         written = set(files)
         problems = MirrorPublishResult(mirror_name="vscode gallery")
-        img = gallery_image.gallery_image(ctx.mirror_dir / IMAGE_CACHE)
+        img = gallery_image.gallery_image(
+            ctx.mirror_dir / IMAGE_CACHE, stop_event=ctx.stop_event,
+            progress=(lambda phase: ctx.progress(d, f"gallery-image:{phase}")) if ctx.progress else None)
+        if ctx.stop_event is not None and ctx.stop_event.is_set():
+            return
         if img.path is None:
             # A warning, not an error: a bundling machine without Docker is
             # the ordinary airgap case, and an error would refuse the snapshot.

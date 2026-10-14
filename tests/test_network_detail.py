@@ -82,3 +82,19 @@ def test_a_failed_load_says_so_instead_of_loading_forever(monkeypatch):
             await settle(pilot)
             assert "pool unreadable" in _text(app)
     asyncio.run(go())
+
+
+def test_current_hostnames_render_and_stale_hostnames_are_dropped(monkeypatch):
+    async def check(app, pilot):
+        pane = app.query_one(NetworkDetail)
+        pane.show(config.NetworkConfig(name='old'), _cfg())
+        stale = pane._detail_gen
+        pane.show(config.NetworkConfig(name='new'), _cfg())
+        pane._on_hosts(stale, ['old.example'])
+        pane._on_hosts(pane._detail_gen, ['*.gallery.vsassets.io', 'marketplace.visualstudio.com'])
+        await settle(pilot)
+        text = _text(app)
+        assert 'old.example' not in text
+        assert '*.gallery.vsassets.io' in text
+        assert 'marketplace.visualstudio.com' in text
+    _run(check, monkeypatch)

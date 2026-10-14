@@ -33,10 +33,9 @@ def test_the_network_form_edits_it():
 
     class _Host(ThemedApp):
         def on_mount(self):
-            unit = config.MirrorConfig(name="u-noble-main-amd64", provider="apt",
-                                       source="https://archive.ubuntu.com/ubuntu",
-                                       source_url="https://archive.ubuntu.com/ubuntu",
-                                       suite="noble", component="main", arch="amd64")
+            unit = config.MirrorConfig(name="vscode-server-linux-x64-stable", provider="vscode",
+                                       source=config.MARKETPLACE_URL, source_url=config.MARKETPLACE_URL,
+                                       dims={"kind": "server", "platform": "linux-x64", "quality": "stable"})
             self.push_screen(EditNetworkPage(config.NetworkConfig(name="lab"), [unit]), got.append)
 
     async def go():
@@ -59,3 +58,70 @@ def test_the_network_form_edits_it():
 def test_the_port_field_parses_ascii_ports_only(text, want):
     from mmw.tui.network_screens import parse_port
     assert parse_port(text) == want
+
+
+def test_gallery_port_visibility_tracks_selected_provider_and_preserves_hidden_value():
+    import asyncio
+    from textual.widgets import Input, SelectionList
+    from mmw.providers import get_provider
+    from mmw.tui.network_screens import EditNetworkPage, NetworkForm
+    from test_add_source import _Harness
+    from waiting import until
+    apt = config.SourceConfig(url='https://apt.example/repo', suites=['stable'],
+                              components=['main'], arches=['amd64'])
+    vs = config.VscodeSource(provider='vscode', kinds=['server'], platforms=['linux-x64'])
+    units = apt.to_mirrors() + get_provider('vscode').expand(vs)
+    net = config.NetworkConfig(name='lab', gallery_port=9876,
+                               select=[config.NetworkSelect(source=apt.identity)])
+    async def scenario():
+        app = _Harness(lambda: EditNetworkPage(net, units))
+        async with app.run_test(size=(100, 40)) as pilot:
+            await until(pilot, lambda: app.screen.query(NetworkForm))
+            form = app.screen.query_one(NetworkForm)
+            field = form.query_one('#field-inp-gallery-port')
+            assert not field.display
+            form.query_one('#inp-gallery-port', Input).value = 'bad'
+            result, error, _ = form.result()
+            assert error is None
+            assert result.gallery_port == 9876
+            checklist = form.query_one('#repo-checklist', SelectionList)
+            checklist.select(vs.identity)
+            await until(pilot, lambda: field.display)
+            assert form.result()[0] is None
+            form.query_one('#inp-gallery-port', Input).value = '9001'
+            checklist.deselect(vs.identity)
+            await until(pilot, lambda: not field.display)
+            checklist.select(vs.identity)
+            await until(pilot, lambda: field.display)
+            assert form.result()[0].gallery_port == 9001
+    asyncio.run(scenario())
+
+
+def test_add_network_hidden_port_uses_default_and_visible_port_is_validated():
+    import asyncio
+    from textual.widgets import Input, SelectionList
+    from mmw.providers import get_provider
+    from mmw.tui.network_screens import AddNetworkPage
+    from test_add_source import _Harness
+    from waiting import settle
+    apt = config.SourceConfig(url='https://apt.example/repo', suites=['stable'],
+                              components=['main'], arches=['amd64'])
+    vs = config.VscodeSource(provider='vscode', kinds=['server'], platforms=['linux-x64'])
+    units = apt.to_mirrors() + get_provider('vscode').expand(vs)
+    async def scenario():
+        app = _Harness(lambda: AddNetworkPage(units))
+        async with app.run_test() as pilot:
+            await settle(pilot)
+            form = app.screen.form
+            form.query_one('#inp-net-name', Input).value = 'lab'
+            form.query_one('#repo-checklist', SelectionList).select(apt.identity)
+            await pilot.pause()
+            form.query_one('#inp-gallery-port', Input).value = 'bad'
+            net, error, _ = form.result()
+            assert error is None and net.gallery_port == 8765
+            form.query_one('#repo-checklist', SelectionList).select(vs.identity)
+            await pilot.pause()
+            assert form.result()[0] is None
+            form.query_one('#inp-gallery-port', Input).value = '9876'
+            assert form.result()[0].gallery_port == 9876
+    asyncio.run(scenario())

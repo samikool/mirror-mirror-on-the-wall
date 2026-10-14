@@ -28,10 +28,11 @@ class _Harness(ThemedApp):
 
 def test_entries_are_providers_with_an_add_step_then_detect():
     entries = add_entries()
-    assert [e.key for e in entries] == ["apt", "detect"]
+    assert [e.key for e in entries] == ["apt", "vscode", "detect"]
     assert entries[0].label == "APT repository"
-    assert entries[1].label == "Detect from URL or paste…"
-    assert all(e.step_title == "Repository" for e in entries)
+    assert entries[1].label == "VS Code"
+    assert entries[2].label == "Detect from URL or paste…"
+    assert [e.step_title for e in entries] == ["Repository", "VS Code", "Repository"]
 
 
 def test_picker_comes_first_and_lists_every_entry():

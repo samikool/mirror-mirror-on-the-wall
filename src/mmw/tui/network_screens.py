@@ -147,6 +147,7 @@ class NetworkForm(Vertical):
         super().__init__(id="network-form")
         self.mode = mode
         self._network = network
+        self._providers = {m.source: m.provider for m in mirrors}
         self._existing = set(existing_names or ()) - ({network.name} if network else set())
         self._axes = build_axes(mirrors, network.select if network else None)
         if network is None:
@@ -236,6 +237,10 @@ class NetworkForm(Vertical):
                 self.query_one("#" + axis.block_id()).display = axis.source in self._checked_sources
             except Exception:
                 pass
+        self.query_one("#field-inp-gallery-port").display = self.has_gallery()
+
+    def has_gallery(self) -> bool:
+        return any(self._providers.get(s) == "vscode" for s in self._checked_sources)
 
     @on(SelectionList.SelectedChanged, "#repo-checklist")
     def _repo_checklist_changed(self, event: SelectionList.SelectedChanged) -> None:
@@ -318,7 +323,8 @@ class NetworkForm(Vertical):
         if problem:
             return None, problem, "repo-checklist" if not selects else "inp-net-name"
         bundle = self._value("inp-bundle-dir")
-        port = parse_port(self._value("inp-gallery-port") or "8765")
+        port = (parse_port(self._value("inp-gallery-port") or "8765") if self.has_gallery()
+                else self._network.gallery_port if self._network else 8765)
         if port is None:
             return None, "Gallery port must be a number from 1 to 65535.", "inp-gallery-port"
         return config.NetworkConfig.model_validate({

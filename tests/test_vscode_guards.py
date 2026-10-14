@@ -36,9 +36,10 @@ def test_an_explicitly_selected_vscode_source_is_published(tmp_path, monkeypatch
     assert (tmp_path / "pub" / "vscode-gallery" / "catalog.json").exists()
 
 
-def test_edit_on_a_vscode_source_explains_instead_of_crashing(tmp_path):
+def test_edit_on_a_vscode_source_opens_its_form(tmp_path):
     from mmw.tui import provider_ui
-    assert provider_ui.edit_page(_cfg(tmp_path).sources[0], set(), set()) is None
+    from mmw.tui.vscode_source import EditVscodePage
+    assert isinstance(provider_ui.edit_page(_cfg(tmp_path).sources[0], set(), set()), EditVscodePage)
 
 
 def test_the_sources_page_lists_a_vscode_source(tmp_path):
@@ -59,5 +60,6 @@ def test_the_sources_page_lists_a_vscode_source(tmp_path):
             notes = []
             app.notify = lambda message, **kw: notes.append(str(message))
             await pilot.press("e")
-            await until(pilot, lambda: any("mmw.toml" in n for n in notes))
+            from mmw.tui.vscode_source import EditVscodePage
+            await until(pilot, lambda: isinstance(app.screen, EditVscodePage))
     asyncio.run(go())

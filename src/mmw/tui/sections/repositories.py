@@ -46,7 +46,9 @@ def source_line(model: RepositoryList, src: config.SourceConfig) -> str:
         count = f"  [dim]({len(model.mirrors_of(src))})[/]"
     # The path, not the whole URL: the row sits under its host heading, and
     # the path is what tells /debian from /debian-security.
-    path = (urlparse(src.url).path or "").rstrip("/")
+    provider = get_provider(src.provider)
+    path = (provider.source_summary(src) if provider.fields
+            else (urlparse(src.url).path or "").rstrip("/"))
     where = f"  [$mmw-path]{escape(path)}[/]" if path else ""
     return f" {tick} {arrow} [b]{escape(src.name)}[/]{count}{where}"
 
@@ -327,11 +329,17 @@ class RepositoriesPage(Page):
             self.notify(f"{get_provider(src.provider).label} sources are edited in mmw.toml "
                         "(or with `mmw add vscode`) for now.", severity="warning")
             return
+        from mmw.tui.vscode_source import EditVscodePage
+        if isinstance(page, EditVscodePage):
+            async def save_source(edited):
+                await self.app.save_config(lambda c: replace_source(c, src.identity, edited))
+            page.save_source = save_source
         edited = await self.app.push_screen_wait(page)
         if edited is None:
             return
         try:
-            await self.app.save_config(lambda c: replace_source(c, src.identity, edited))
+            if not isinstance(page, EditVscodePage):
+                await self.app.save_config(lambda c: replace_source(c, src.identity, edited))
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.set_status(f"Not saved: {e}", "error")
             return

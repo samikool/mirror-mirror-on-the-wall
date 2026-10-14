@@ -15,6 +15,7 @@ from mmw.core import config
 from mmw.tui import repositories as R
 from mmw.tui.app import MmwApp
 from mmw.tui.sections.repositories import RepositoriesPage
+from waiting import settle
 
 
 def _cfg(tmp_path, *sources):
@@ -40,8 +41,8 @@ def _closed_source(name="pinned", host="pinned.example.com"):
 
 
 async def _settle(pilot, n=6):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(tmp_path, cfg, check):

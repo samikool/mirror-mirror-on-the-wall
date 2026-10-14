@@ -15,6 +15,7 @@ from textual.widgets import Button, Checkbox, SelectionList
 
 from mmw.core import config
 from mmw.tui.network_screens import AddNetworkPage, EditNetworkPage, NetworkForm
+from waiting import settle
 
 
 def _mirror(name, source, arch="arm64", suite="noble", component="main"):
@@ -32,8 +33,8 @@ def _mirrors():
 
 
 async def _settle(pilot, tries: int = 25):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(scenario):
@@ -278,7 +279,7 @@ def test_edit_persists_every_networkconfig_field(tmp_path):
         name="renamed", root=tmp_path / "srv", bundle_dir=tmp_path / "usb",
         select=[config.NetworkSelect(source="https://deb.example.com/debian")],
         prune=False, dist_upgrade=True, certs=True,
-        nginx=False,
+        nginx=False, gallery_port=9100,
     )
     defaults = config.NetworkConfig(name="x")
     unchanged = [f for f in config.NetworkConfig.model_fields
@@ -385,7 +386,8 @@ def test_edit_page_controls_are_one_row_and_a_bad_name_is_refused_in_place():
         async with app.run_test(size=(80, 24)) as pilot:
             await _settle(pilot)
             page = app.screen
-            assert all(w.region.height == 1 for w in page.query("Input, Button, Checkbox"))
+            assert all(w.region.height == 1 for w in page.query("Input, Button, Checkbox")
+                       if all(a.display for a in w.ancestors_with_self))
             page.query_one("#inp-net-name", Input).value = "a/b"
             page.query_one("#btn-save", Button).press()
             await _settle(pilot)

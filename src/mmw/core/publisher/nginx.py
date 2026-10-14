@@ -11,6 +11,7 @@ archive.ubuntu.com and security.ubuntu.com unconditionally, so an arm64 network
 — which mirrors ports.ubuntu.com and neither of those — was told to point DNS
 at two hostnames it had no copy of.
 """
+import re
 from urllib.parse import urlparse
 
 from mmw.core.config import MirrorConfig
@@ -71,6 +72,67 @@ _MAIN = """\
 {sites}"""
 
 
+_SITE_BLOCK = """\
+server {{
+    listen 80;
+{tls}    server_name {server_name};
+{body}}}
+"""
+
+_STATIC_BODY = """
+    root {root}/{dir};
+    autoindex on;
+    autoindex_exact_size off;
+    sendfile on;
+    tcp_nopush on;
+
+    location / {{
+        try_files $uri $uri/ =404;
+    }}
+"""
+
+_PROXY_BODY = """
+    location {eq}{path} {{
+        proxy_pass http://127.0.0.1:{port};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+"""
+
+
+def _render_site(site, root: str, tls_block: str, port: int) -> str:
+    body = ""
+    if site.root is not None:
+        body += _STATIC_BODY.format(root=root, dir=site.root)
+    for path in site.proxy:
+        body += _PROXY_BODY.format(eq="= " if site.exact else "", path=path, port=port)
+    if site.root is None and "/" not in site.proxy:
+        body += "\n    location / {\n        return 404;\n    }\n"
+    return _SITE_BLOCK.format(tls=tls_block, server_name=site.server_name, body=body)
+
+
+_WILDCARD_RE = re.compile(r"^~\^\[\^\.\]\+\\\.(.+)\$$")
+
+
+def _dns_name(server_name: str) -> str:
+    r"""What DNS needs for a server_name: `~^[^.]+\.example\.com$` (the regex
+    a provider writes for one label of wildcard) reads `*.example.com`."""
+    m = _WILDCARD_RE.match(server_name)
+    return "*." + m.group(1).replace("\\.", ".") if m else server_name
+
+
+def split_for_nginx(units, port: int) -> tuple[list, list]:
+    """(units served by a static block per `mirror_base`, provider `Site`s)."""
+    from mmw.providers import all_providers, get_provider
+    static = [u for u in units if get_provider(u.provider).site_per_base]
+    sites = []
+    for provider in all_providers():
+        mine = [u for u in units if u.provider == provider.name]
+        if mine:
+            sites.extend(provider.nginx_sites(mine, port))
+    return static, sites
+
+
 def hostnames(mirrors: list[MirrorConfig]) -> list[str]:
     """Distinct *directory* names this network serves, from its own mirrors —
     `mirror_base`'s first path segment, which is also what `root {root}/{h}`
@@ -112,7 +174,8 @@ def _server_names(mirrors: list[MirrorConfig]) -> dict[str, str]:
 def nginx_files(mirrors: list[MirrorConfig], root: str, *,
                 tls: tuple[str, str] | None = None,
                 tls_include: str | None = None,
-                extra_hosts: list[str] | tuple[str, ...] = ()) -> dict[str, bytes]:
+                extra_hosts: list[str] | tuple[str, ...] = (),
+                sites=(), port: int = 8765) -> dict[str, bytes]:
     """Sink-relative path → file content (always exactly `nginx/mirror.conf`).
 
     `root` is the absolute directory the tree lives in. Pass ROOT_PLACEHOLDER
@@ -131,7 +194,11 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
     `extra_hosts` are directories published beside the mirrors that are also
     their own hostname — `changelogs.ubuntu.com` for a `dist_upgrade` network,
     which no mirror's URL names.
+
+    `sites` are provider-declared blocks (`providers.base.Site`) rendered
+    after the per-host ones, proxying to the gallery on 127.0.0.1:`port`.
     """
+    provider_sites = list(sites)
     server_names = _server_names(mirrors)
     for h in extra_hosts:
         # A directory name, mangled `host_port` for a non-standard port
@@ -146,6 +213,10 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
                      tls=tls_block)
         for host in hosts
     )
+    if provider_sites:
+        rendered = "\n".join(_render_site(s, root, tls_block, port) for s in provider_sites)
+        sites = f"{sites}\n{rendered}" if sites else rendered
+        hosts = hosts + [_dns_name(s.server_name) for s in provider_sites]
     tls_note = ("#\n# HTTPS: every host also listens on 443 with\n"
                 f"#   {tls[0]}\n") if tls else (
         "#\n# HTTPS: on once a signed certificate is installed — apply.py then\n"
@@ -174,10 +245,13 @@ def recorded_nginx_files(settings: str, root: str, *,
     if not rec_net.get("nginx", True):
         return {}
     mirrors = [MirrorConfig.model_validate(m) for m in recorded.get("mirrors", [])]
+    port = rec_net.get("gallery_port", 8765)
+    mirrors, sites = split_for_nginx(mirrors, port)
     extra = list(recorded.get("upstream_hosts", []))
     if "extra_hosts" in recorded:
         extra += [h for h in recorded["extra_hosts"] if h not in extra]
     elif rec_net.get("dist_upgrade"):
         # Recorded before providers named their extra hosts.
         extra.append(CHANGELOGS_HOST)
-    return nginx_files(mirrors, root, tls=tls, tls_include=tls_include, extra_hosts=extra)
+    return nginx_files(mirrors, root, tls=tls, tls_include=tls_include, extra_hosts=extra,
+                       sites=sites, port=port)

@@ -374,3 +374,14 @@ DeleteProgressModal Horizontal { align: center middle; height: auto; margin-top:
     height: auto;
     max-height: 100%;
 }
+
+/* Provider source forms share the existing compact field/page kit. */
+ProviderSourceForm, VscodeEditor, VscodeCheckView, StepVscode, VscodeConfirmStep {
+    height: auto;
+}
+VscodeEditor Label, VscodeCheckView Label, StepVscode Label {
+    height: auto;
+}
+#vs-all-warning, #vs-check-warning { color: $warning; }
+#vs-lookup-status, #vs-check-status { margin-top: 1; }
+#vs-edit-check-slot { height: auto; }

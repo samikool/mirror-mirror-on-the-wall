@@ -13,12 +13,12 @@ from mmw.tui.ui.dialog import ConfirmDialog
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
 from pickers import confirm_picker, press_bundle, press_publish
-from waiting import until
+from waiting import settle, until
 
 
 async def _settle(pilot, n=6):
-    for _ in range(n):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 async def _until(pilot, cond, tries=None):
@@ -167,8 +167,8 @@ def test_browsing_keeps_it_running_and_the_sidebar_shows_it(two_mirrors, slow_pu
         await _until(pilot, lambda: app.active_transfer is not None
                      and app.active_transfer._transferring)
         await pilot.press("1")
-        await _settle(pilot)
-        assert app.current_mode == "repositories" and app.active_transfer.running
+        await _until(pilot, lambda: app.current_mode == "repositories")
+        assert app.active_transfer.running
         await pilot.pause(0.6)
         assert "4 Publish ▸" in str(app.screen.query_one("#nav-publish").render())
         # A second transfer is refused, not stacked.
@@ -189,10 +189,9 @@ def test_quit_while_publishing_asks_and_no_keeps_it(two_mirrors, slow_publish): 
         await _until(pilot, lambda: app.active_transfer is not None
                      and app.active_transfer._transferring)
         await pilot.press("q")
-        await _settle(pilot)
-        assert isinstance(app.screen, ConfirmDialog)
+        await _until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
         await pilot.press("escape")
-        await _settle(pilot)
+        await _until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
         assert app.is_running and app.active_transfer.running
         slow_publish.set()
         await _until(pilot, lambda: not app.active_transfer.running)

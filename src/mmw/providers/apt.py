@@ -224,6 +224,15 @@ class _AptCommon(BaseProvider):
     def covers(self, source, unit) -> bool:
         return source.covers(unit)
 
+    def merge(self, existing, new):
+        from mmw.core.config import _merge_apt_into
+        _merge_apt_into(existing, new)
+        return existing
+
+    def to_toml(self, source) -> dict:
+        from mmw.core.config import _apt_source_to_dict
+        return _apt_source_to_dict(source)
+
     def _describe_fields(self, source) -> list:
         return [("Provider", source.provider), ("Label", source.label),
                 ("Arches", list(source.arches))]
@@ -304,7 +313,7 @@ class AptFlatProvider(_AptCommon):
             return result
         return _check_checksums(pool, result, checksums)
 
-    def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None):
+    def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None, history=None):
         """One fetch of the index, handed to both halves.
 
         A flat repository has no Release checksum block, so there is no
@@ -575,7 +584,7 @@ class AptProvider(_AptCommon):
         from mmw.core import discover
         return discover.detect_repository(url)
 
-    def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None):
+    def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None, history=None):
         """Packages and metadata from ONE upstream snapshot, and one fetch.
 
         The inherited default calls `fetch_packages()` then `fetch_metadata()`,

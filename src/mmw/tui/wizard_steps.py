@@ -74,7 +74,8 @@ class StepConfirm(WizardStep):
         self._sources = sources
         self._mirror_dir = mirror_dir
         self._max_connections = max_connections
-        self._has_apt = offer_source_packages and bool(sources)
+        self._apt_sources = [s for s in sources if hasattr(s, "include_sources")]
+        self._has_apt = offer_source_packages and bool(self._apt_sources)
         self._total_mirrors = sum(len(get_provider(s.provider).expand(s)) for s in sources)
         # `to_mirrors()` is pure and offline: with `components = []` or
         # `arches = []` — the documented "empty means all", and the ordinary
@@ -103,8 +104,8 @@ class StepConfirm(WizardStep):
         )
         with ScrollableContainer(id="confirm-list"):
             for s in self._sources:
-                arches = ", ".join(s.arches) if s.arches else "all arches"
-                src = "  [dim]+ deb-src[/]" if s.include_sources else ""
+                arches = get_provider(s.provider).source_summary(s)
+                src = "  [dim]+ deb-src[/]" if getattr(s, "include_sources", False) else ""
                 yield Label(
                     f"[$primary]●[/] {escape(s.name)}  [$accent]{escape(arches)}[/]{src}  "
                     f"[dim]{escape(s.url)}[/dim]",
@@ -117,7 +118,7 @@ class StepConfirm(WizardStep):
                 # `deb-src` had this on, and forcing it off would silently
                 # drop it on the way through Confirm.
                 yield Checkbox("Include source packages (deb-src)",
-                               value=any(s.include_sources for s in self._sources),
+                               value=any(s.include_sources for s in self._apt_sources),
                                id="src-switch", compact=True)
                 yield Label(
                     "Downloads .dsc, .orig.tar.*, .debian.tar.* for every package. "

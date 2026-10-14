@@ -14,6 +14,7 @@ from mmw.tui.ui.dialog import ConfirmDialog
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
 from pickers import press_publish
 from test_tui_publish_section import _finished, _run, _settle, _until
+from waiting import until
 
 SRC = "https://deb.example.com/debian"
 
@@ -42,11 +43,9 @@ def test_a_finished_sync_stops_ticking_after_a_final_pool_scan(tmp_path, monkeyp
         app = MmwApp(cfg, tmp_path, initial_section="sync", start_sync_with=([mirror], False))
         async with app.run_test(size=(100, 30)) as pilot:
             view = None
-            for _ in range(200):
-                await pilot.pause(0.02)
-                view = app.active_sync
-                if view is not None and view._complete_shown and view._final_scan_done:
-                    break
+            await until(pilot, lambda: app.active_sync is not None
+                        and app.active_sync._complete_shown and app.active_sync._final_scan_done)
+            view = app.active_sync
             assert view._complete_shown and view._final_scan_done, "no final pool scan"
             assert scans, "the footer's totals were never re-read at the end"
             before = len(ticks)
@@ -120,13 +119,13 @@ def test_networks_detail_refreshes_when_a_transfer_ends_while_shown(two_mirrors,
         await _until(pilot, lambda: app.active_transfer is not None
                      and app.active_transfer._transferring)
         await pilot.press("2")                    # back to Networks, as a user would
-        await _settle(pilot)
+        await _until(pilot, lambda: app.current_mode == "networks")
         assert app.current_mode == "networks" and app.active_transfer.running, (
             app.active_transfer.outcome, app.active_transfer.summary())
         before = len(shows)
         release.set()
         await _until(pilot, lambda: not app.active_transfer.running)
-        await _settle(pilot, 10)
+        await _until(pilot, lambda: len(shows) > before)
         assert len(shows) > before, "detail not refreshed after the publish finished"
     _run(cfg, mirror_dir.parent, check)
 
@@ -150,11 +149,9 @@ def test_x_asks_to_stop_and_the_button_is_disabled_once_confirmed(two_mirrors, m
                      and app.active_transfer._transferring)
         section = app.screen
         await pilot.press("x")
-        await _settle(pilot)
-        assert isinstance(app.screen, ConfirmDialog)
+        await _until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
         app.screen.query_one("#confirm").press()
-        await _settle(pilot)
-        assert section.query_one("#btn-transfer-stop", Button).disabled
+        await _until(pilot, lambda: section.query_one("#btn-transfer-stop", Button).disabled)
         await _until(pilot, lambda: not app.active_transfer.running)
     _run(cfg, mirror_dir.parent, check)
 
@@ -167,13 +164,9 @@ def test_x_asks_to_stop_a_sync_too(tmp_path, monkeypatch):
     async def go():
         app = MmwApp(cfg, tmp_path, initial_section="sync", start_sync_with=([_mirror()], False))
         async with app.run_test(size=(100, 30)) as pilot:
-            for _ in range(100):
-                await pilot.pause(0.02)
-                if app.active_sync is not None and app.active_sync.running:
-                    break
+            await until(pilot, lambda: app.active_sync is not None and app.active_sync.running)
             await pilot.press("x")
-            await _settle(pilot)
-            assert isinstance(app.screen, ConfirmDialog)
+            await until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
             app.screen.query_one("#confirm").press()
             await _settle(pilot)
             assert app.screen.query_one("#btn-sync-stop", Button).disabled

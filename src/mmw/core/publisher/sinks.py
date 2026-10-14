@@ -49,7 +49,7 @@ _ANNOUNCE_LARGE_FILE_BYTES = 50 * 1024 * 1024
 # by `publish_network`/`bundle_network`); `changelogs.ubuntu.com/` belongs to
 # the dist-upgrade step; `.mmw/` is apply.py's staging area and `.mmw-state`
 # its ledger cursor — deleting either from a far side would be catastrophic.
-NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw"})
+NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw", "vscode-gallery"})
 
 # Where a `certs` network's certificate and key land on the far side:
 # under `.mmw/`, which no generated server block serves (each one's root is a
@@ -148,6 +148,8 @@ class Sink(Protocol):
                        live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
         """Reconcile the destination under `base` to hold exactly `keep`.
 
+        Preserve the base directory itself, even when it becomes empty.
+
         Returns (files_pruned, bytes_pruned) for THIS group only. A sink may be
         reused across every group in one network publish (`TreeSink` is, so
         by-hash retirement and destination pruning share one instance across a
@@ -155,6 +157,14 @@ class Sink(Protocol):
         `publish_group` adds the return value straight onto that group's own
         `MirrorPublishResult`. `BundleSink` returns
         (len(deletions recorded for this group), 0).
+        """
+        ...
+
+    def drop_if_empty(self, base: str) -> None:
+        """Remove an empty directory explicitly; never remove the publish root.
+
+        Callers only invoke this when pruning. Non-tree sinks have no
+        directories to remove; their file deletions are handled separately.
         """
         ...
 
@@ -282,6 +292,15 @@ class TreeSink:
                 self._progress(base, f"by-hash:{bh_pruned}")
             self._progress(base, f"prune-scan-done:{checked}:{group_pruned}")
         return group_pruned, group_pruned_bytes
+
+    def drop_if_empty(self, base: str) -> None:
+        dst = self.root / base
+        if dst == self.root:
+            return
+        try:
+            dst.rmdir()
+        except OSError:
+            pass                        # not empty, or already gone
 
     def prune_stale_bases(self, live_bases: set[str]) -> tuple[int, int]:
         """See the Sink protocol. Walks down from the root only as far as the
@@ -488,6 +507,10 @@ class BundleSink:
                 seen.add(checksum)
             total += size
         return total
+
+    def drop_if_empty(self, base: str) -> None:
+        # The manifest tracks files only; apply.py cleans up empty directories.
+        pass
 
     def finalize_group(self, base: str, keep: set[str],
                        live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:

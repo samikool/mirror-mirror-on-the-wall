@@ -15,6 +15,7 @@ from mmw.core import config, discover
 from mmw.tui.custom_repo import StepCustom
 from mmw.tui.add_source import AddSourcePage
 from mmw.tui.wizard_steps import StepConfirm, WizardStep
+from waiting import settle, until
 
 URL = "http://archive.example.com/ubuntu"
 
@@ -87,16 +88,13 @@ def _stub_nothing(monkeypatch):
 
 
 async def _await_step(pilot, tries: int = 80):
-    for _ in range(tries):
-        if pilot.app.screen.query_one("#page-body").query(WizardStep):
-            return
-        await pilot.pause()
-    raise AssertionError("step never finished loading")
+    """`tries` is ignored: wait for the step itself (tests/waiting.py)."""
+    await until(pilot, lambda: pilot.app.screen.query_one("#page-body").query(WizardStep))
 
 
 async def _settle(pilot, tries: int = 30):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 async def _press(pilot, button_id: str):
@@ -531,10 +529,7 @@ def test_a_probed_repository_reaches_confirm_and_dismisses(monkeypatch):
             await _press(pilot, "#btn-wizard-next")
             assert screen.step == 1
             await _press(pilot, "#btn-wizard-next")
-            for _ in range(40):
-                if app.result is not None:
-                    break
-                await pilot.pause()
+            await until(pilot, lambda: app.result is not None)
 
         assert app.result and app.result[0].suites == ["noble"]
 
@@ -557,10 +552,7 @@ def test_confirm_hosts_the_deb_src_switch(monkeypatch):
             app.screen.query_one(StepConfirm).query_one("#src-switch", Checkbox).value = True
             await pilot.pause()
             await _press(pilot, "#btn-wizard-next")
-            for _ in range(40):
-                if app.result is not None:
-                    break
-                await pilot.pause()
+            await until(pilot, lambda: app.result is not None)
 
         assert app.result and all(s.include_sources for s in app.result)
 

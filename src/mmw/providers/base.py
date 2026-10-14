@@ -39,6 +39,16 @@ class MetadataFile:
 
 
 @dataclass(frozen=True)
+class SourceField:
+    """Pure metadata for a source form; widget factories live in tui/."""
+    path: str
+    label: str
+    kind: str
+    choices: tuple[str, ...] = ()
+    hint: str = ""
+
+
+@dataclass(frozen=True)
 class Dimension:
     """One named axis a provider's sources are narrowed along. Empty means all.
 
@@ -74,6 +84,18 @@ class SourceDescription:
     location: str
 
 
+@dataclass(frozen=True)
+class Site:
+    """One nginx server block a provider needs beyond a static block per
+    `mirror_base`. `server_name` is exact or `~regex`; `root` a directory under
+    the publish root (`$host` allowed) served statically; `proxy` locations go
+    to the network's gallery (`/` = everything); `exact` = `location = …`."""
+    server_name: str
+    root: str | None = None
+    proxy: tuple = ()
+    exact: bool = False
+
+
 @dataclass
 class PublishContext:
     """What a provider's `contribute()` may use while a network is laid out.
@@ -89,6 +111,11 @@ class PublishContext:
     sink: Any
     result: Any
     units: list
+    prune: bool = False
+    progress: Any = None
+    stop_event: Any = None
+    keep_extra: frozenset = frozenset()
+    mirror_start_callback: Any = None
 
 
 class BaseProvider(ABC):
@@ -101,6 +128,9 @@ class BaseProvider(ABC):
     description: str = ""
     dimensions: tuple[Dimension, ...] = ()
     by_hash: bool = False   # publish index files under by-hash/SHA256/ too
+    publishes: bool = True  # publish/bundle support
+    carries_history: bool = False  # fetch_all reads `history`; refetches must pass it too
+    fields: tuple[SourceField, ...] = ()
 
     def dimension(self, name: str) -> Dimension | None:
         return next((d for d in self.dimensions if d.name == name), None)
@@ -110,6 +140,13 @@ class BaseProvider(ABC):
     def group(self, source) -> str:
         """The heading a source is listed under (apt: its host)."""
         return (urlparse(source.identity).hostname or "?").lower()
+
+    def search_text(self, source) -> str:
+        return " ".join((source.name, source.label, source.identity, self.label))
+
+    def source_summary(self, source) -> str:
+        arches = getattr(source, "arches", [])
+        return ", ".join(arches) if arches else "all arches"
 
     @abstractmethod
     def describe(self, source) -> SourceDescription:
@@ -127,6 +164,18 @@ class BaseProvider(ABC):
         """Can `expand(source)` list this source's units offline? False when an
         open dimension waits for a sync to resolve it."""
         return True
+
+    # ── config ──────────────────────────────────────────────────────────────
+
+    def merge(self, existing, new):
+        """Fold `new` into an already-configured source with the same identity.
+        Default: `new` replaces it (a provider whose sources are a selection
+        policy has nothing to union)."""
+        return new
+
+    @abstractmethod
+    def to_toml(self, source) -> dict:
+        """The source's minimal TOML form (what `mmw.toml` stores)."""
 
     # ── config → units ───────────────────────────────────────────────────────
 
@@ -166,8 +215,12 @@ class BaseProvider(ABC):
     def fetch_all(
         self, mirror_config, client: httpx.Client,
         status_callback: Callable[[str], None] | None = None,
+        history=None,
     ) -> tuple[list[PackageInfo], list[MetadataFile]]:
         """Fetch packages and metadata from one consistent upstream snapshot.
+
+        `history` is the unit's previous refs (`mmw.core.history.UnitHistory`);
+        providers that carry state forward read it, others ignore it.
 
         Default: sequential calls.  Providers whose package list and metadata
         derive from a single index override this so both
@@ -199,9 +252,45 @@ class BaseProvider(ABC):
         nginx, certs and snapshots all ask)."""
         return []
 
+    def publish(self, ctx: PublishContext, units: list) -> tuple[list, set[str]]:
+        """Lay this provider's `units` into `ctx.sink`; return (per-group
+        results, the bases published). Default: one group per `mirror_base`,
+        packages → indexes → release files, then a prune of that base.
+
+        Nested-base protection (a base inside another must not be pruned by
+        it) spans this provider's units only: providers publish under
+        disjoint hosts — apt repositories vs Microsoft's — in practice."""
+        from mmw.core.publisher.links import publish_group
+        groups: dict[str, list] = {}
+        for unit in units:
+            groups.setdefault(unit.mirror_base, []).append(unit)
+        all_bases = set(groups)
+        results = []
+        for idx, (base, members) in enumerate(groups.items()):
+            if ctx.stop_event and ctx.stop_event.is_set():
+                break
+            if ctx.mirror_start_callback:
+                ctx.mirror_start_callback(members[0].name, idx + 1, len(groups))
+            nested = {b for b in all_bases if b != base and b.startswith(base + "/")}
+            results.append(publish_group(
+                members, ctx.sink, ctx.pool, progress=ctx.progress, stop_event=ctx.stop_event,
+                prune=ctx.prune, prune_exclude=nested, keep_extra=set(ctx.keep_extra)))
+        return results, all_bases
+
     def preview(self, network, cfg, pool, mirror_dir, result) -> None:
         """Dry-run additions to a `NetworkPublishResult` (read-only)."""
         return None
+
+    site_per_base: bool = True   # nginx: one static block per unit `mirror_base`
+
+    def nginx_sites(self, units, port: int) -> list:
+        """Server blocks beyond the per-`mirror_base` ones (`Site`s)."""
+        return []
+
+    def cert_names(self, network, units) -> list[str]:
+        """Names the network's certificate must cover beyond its units' own
+        hosts (wildcards allowed). Default: the extra hosts."""
+        return self.extra_hosts(network, units)
 
     def contribute(self, ctx: PublishContext) -> None:
         """Publish-time additions through `ctx.sink` (called for every

@@ -88,6 +88,46 @@ jobs:
           # wheel, bundling produces an archive the far side cannot apply.
           /tmp/bare/bin/python -c "from mmw.resources import apply_script_bytes; assert apply_script_bytes()"
 
+  vscode-client:
+    name: VS Code client (isolated offline network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Sync test dependencies
+        run: uv sync --python 3.13
+
+      # Only tooling preparation uses the internet. The test's Compose
+      # network is internal, images never pull, and no host port is exposed.
+      - name: Prepare gallery, nginx and Microsoft client images
+        run: |
+          mkdir -p .superpowers/work
+          docker pull python:3.13-slim
+          docker pull nginx:1.27-alpine
+          docker build -t mmw-vscode-client:local -f tests/e2e/client.Dockerfile tests/e2e \
+            > .superpowers/work/vscode-client-build.log 2>&1
+
+      - name: Real client against live publish and applied bundle
+        env:
+          MMW_VSCODE_E2E: "1"
+        run: |
+          uv run --python 3.13 pytest -q tests/test_vscode_client_e2e.py \
+            --basetemp=.superpowers/work/vscode-client-e2e
+
+      - name: Upload client and server logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vscode-client-logs
+          include-hidden-files: true
+          path: |
+            .superpowers/work/vscode-client-build.log
+            .superpowers/work/vscode-client-e2e/**/*.log
+            .superpowers/work/vscode-client-e2e/**/probe.json
+
   apply-script-compat:
     # `resources/apply.py` and `resources/sign.py` are the only parts of mmw
     # that run on the far side of an airgap: no mmw install, no pip, sometimes

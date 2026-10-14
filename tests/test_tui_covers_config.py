@@ -51,6 +51,7 @@ EDITORS = {
     # One list per provider dimension (suites/components/arches for apt),
     # all edited by the network editor's per-repository axis block.
     ("NetworkSelect", "dims"): ("network_screens.py", "axis-block"),
+    ("NetworkConfig", "gallery_port"): ("network_screens.py", "inp-gallery-port"),
 }
 
 MODELS = [config.Settings, config.SourceConfig, config.SuiteOverride,

@@ -157,7 +157,12 @@ async def classify_mirror(
         # `mmw dry-run` (which used to carry its own copy).
         known = [p.checksum for p in packages if p.checksum]
         pooled = pool.batch_contains(known)
-        missing = [p for p in packages if not (p.checksum and p.checksum in pooled)]
+        # A package with no upstream checksum is "had" when the unit's last
+        # sync recorded its path — the same rule `download_mirror` applies.
+        refmap = pool.ref_map(mirror.name) if any(not p.checksum for p in packages) else {}
+        missing = [p for p in packages
+                   if not (p.checksum and p.checksum in pooled)
+                   and not (not p.checksum and p.repo_path in refmap)]
         total_size = sum(p.size for p in packages)
         fetch_size = sum(p.size for p in missing)
         return DryRunStats(
@@ -198,9 +203,12 @@ async def sync_mirror(
 
     if events.phase:
         events.phase("Fetching metadata...")
+    from mmw.core.history import UnitHistory
+    history = await loop.run_in_executor(executor, UnitHistory, pool, mirror.name)
     packages, metadata = await loop.run_in_executor(
         executor,
-        lambda: fetch_all_threaded(provider, mirror, status_callback=events.phase),
+        lambda: fetch_all_threaded(provider, mirror, status_callback=events.phase,
+                                   history=history),
     )
 
     if events.started:
@@ -208,7 +216,10 @@ async def sync_mirror(
 
     def _refetch_metadata() -> list:
         """Re-read the upstream index. Called only when the snapshot we started
-        from went stale during a long package phase."""
+        from went stale during a long package phase. A provider that carries
+        state forward needs its history here too, or the refetch drops it."""
+        if provider.carries_history:
+            return fetch_all_threaded(provider, mirror, history=history)[1]
         return fetch_metadata_threaded(provider, mirror)
 
     # The pool is the authority on what exists; remember what this mirror is so

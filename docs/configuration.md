@@ -134,6 +134,45 @@ one's index reconcile would silently delete the first one's. Duplicate source
 
 A flat (`apt-flat`) source is a single sync unit and is never arch-expanded.
 
+### VS Code: `provider = "vscode"`
+
+The Microsoft Marketplace — extensions, desktop builds and server builds — as
+one source. Units are `{name}-extensions-{platform}` and
+`{name}-{desktop|server}-{platform}-{quality}`.
+
+```toml
+[[sources]]
+provider  = "vscode"
+kinds     = ["extensions", "server"]
+platforms = ["linux-x64"]
+
+[sources.extensions]
+top_n = 200
+ids   = ["golang.go", "ms-python.python"]
+```
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `provider` | `vscode` | **required** | `"vscode"` — the Microsoft Marketplace. At most one per config. |
+| `name` | string | `'vscode'` | Prefix of the sync-unit names (`vscode-extensions-linux-x64`, …). |
+| `label` | string | `'vscode'` | Grouping label. Rarely worth changing. |
+| `url` | string | `'https://marketplace.visualstudio.com'` | Fixed to `https://marketplace.visualstudio.com`; any other value is refused (Open VSX would be its own provider). |
+| `kinds` | list of string | `[]` — *all* | `extensions` (VSIX and their assets), `desktop` (installers, archives, .deb/.rpm), `server` (VS Code Server + CLI builds Remote-SSH installs; the latest and the two previous commits are kept so clients a release behind can still connect). |
+| `platforms` | list of string | `[]` — *all* | Target platforms: `linux-x64`, `linux-arm64`, `linux-armhf`, `alpine-x64`, `alpine-arm64`, `win32-x64`, `win32-arm64`, `darwin-x64`, `darwin-arm64`, `web`. Platform-neutral (universal) extensions are always included. |
+| `qualities` | list of string | `[]` — *all* | `stable`, `insider` — for desktop and server builds. |
+| `extensions` | table | nothing selected | The `[sources.extensions]` table — which extensions to mirror. |
+
+
+#### `[sources.extensions]`
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `top_n` | int | *(unset)* | The N most-installed extensions, re-evaluated every sync. |
+| `ids` | list of string | `[]` | Extension ids, `publisher.name` (case-insensitive). Their dependencies and extension-pack members are added automatically; an id that does not exist is reported, not fatal. |
+| `all` | bool | `false` | Every extension on the marketplace — over 100,000. Very large; check `mmw dry-run` first. |
+| `prerelease` | bool | `false` | Mirror prerelease versions too. Off: the newest release per platform, even when the newest build is a prerelease. |
+
+
 ## `[[networks]]`
 
 A network is a named downselect of the mirror — what one site gets. `publish`
@@ -151,6 +190,7 @@ destination is unset says so rather than inventing one.
 | `dist_upgrade` | bool | `false` | Publish `changelogs.ubuntu.com/meta-release*` to the network root and write an `UPGRADE.md` with the DNS entries this network actually needs (derived from its own mirrors) and the LTS upgrade paths parsed out of the mirrored meta-release file. Needs `dist_upgrade = true` on the Ubuntu source too, or there is nothing to publish. |
 | `certs` | bool | `false` | Generate a 4096-bit TLS key and a CSR for this network's hostnames (plus `changelogs.ubuntu.com` with `dist_upgrade`) at `{mirror_dir}/certs/{name}/`, **deliberately outside `root`** so a misconfigured web server can never serve the private key. An existing `mirror.key` is never overwritten (that would invalidate an already-signed certificate); only the CSR is refreshed. Sign it with `mmw certs --ca CA.crt --ca-key CA.key`; once `mirror.crt` exists, publish serves every host over HTTPS as well as HTTP. Every bundle carries the **private key**, the signing request and `sign.py` to `{root}/.mmw/tls/` on the far side (0600, in a 0700 directory no generated server block serves), plus the certificate if one was signed here. A CA on the airgapped side signs there — `sign.py` does every mirror at once — and `apply.py` turns HTTPS on once a certificate fits the key. Keep it off for a network whose transfer media must not hold the key. (The old `bundle_tls` key is accepted and ignored.) |
 | `nginx` | bool | `true` | Write one `{root}/nginx/mirror.conf` with a server block per mirrored hostname, `server_name` derived from the real upstream hostname and `root` pointing at the published directory — plus `listen 443 ssl` once the network has a signed certificate. One file, so it works included, or dropped into `conf.d/` or `sites-enabled/`. Set `false` if you maintain your own configuration. See [How clients find the mirror](../README.md#how-clients-find-the-mirror). |
+| `gallery_port` | int | `8765` | Port the network's VS Code gallery container listens on (127.0.0.1); nginx proxies the Marketplace's dynamic paths to it. Only used by networks that publish a VS Code source; two networks served from one host need different ports. |
 
 
 ### `[[networks.select]]`
@@ -162,9 +202,7 @@ a dimension filter keeps following the repository.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `source` | string | **required** | The repository URI this selection applies to — must match a `[[sources]]` `url`. Normalized before comparison, so a trailing slash or an upper-case host still matches. |
-| `suites` | list of string | `[]` — *all* | Suites of that repository to publish. Empty = every suite mirrored for it. |
-| `components` | list of string | `[]` — *all* | Components to publish. Empty = every component mirrored for it. |
-| `arches` | list of string | `[]` — *all* | Architectures to publish. Empty = every architecture mirrored for it, **and it keeps meaning that** as new architectures appear upstream — which is the whole reason selection is by dimension rather than by a frozen list of mirror names. A flat repository whose URL names no architecture matches any filter. |
+| `dims` | dict[str, list[str]] | every dimension *all* | Not a key itself: write one list per dimension of that source's provider, as flat keys — apt: `suites`, `components`, `arches`; apt-flat: `arches`; vscode: `kinds`, `platforms`, `qualities`. Empty = everything mirrored for it on that dimension, **and it keeps meaning that** as new suites or architectures appear upstream — the reason selection is by dimension rather than by a frozen list of mirror names. A key that is not a dimension of the source's provider is a load error. A flat repository whose URL names no architecture matches any `arches` filter; a VS Code extensions unit (no quality) matches any `qualities` filter. |
 
 
 ## Where things live

@@ -87,6 +87,39 @@ def test_tree_sink_finalize_group_honours_exclude(tmp_path):
     assert sink.pruned == 0
 
 
+def test_tree_sink_finalize_group_preserves_empty_base(tmp_path):
+    """An empty selected APT repository keeps its published base directory."""
+    root = tmp_path / "pub"
+    sink = TreeSink(root)
+    sink.write("host/repo/dists/stale", b"old")
+
+    assert sink.finalize_group("host/repo", set(), set(), set()) == (1, 3)
+
+    assert (root / "host/repo").is_dir()
+    assert list((root / "host/repo").iterdir()) == []
+
+
+def test_tree_sink_drop_if_empty_only_removes_empty_directory(tmp_path):
+    root = tmp_path / "pub"
+    sink = TreeSink(root)
+    sink.write("vscode-gallery/catalog.json", b"{}")
+    sink.drop_if_empty("vscode-gallery")
+    assert (root / "vscode-gallery/catalog.json").read_bytes() == b"{}"
+
+    sink.finalize_group("vscode-gallery", set(), set(), set())
+    sink.drop_if_empty("vscode-gallery")
+    assert not (root / "vscode-gallery").exists()
+    sink.drop_if_empty("vscode-gallery")  # Already absent is harmless.
+
+
+@pytest.mark.parametrize("base", ["", "."])
+def test_tree_sink_drop_if_empty_preserves_publish_root(tmp_path, base):
+    root = tmp_path / "pub"
+    root.mkdir()
+    TreeSink(root).drop_if_empty(base)
+    assert root.is_dir()
+
+
 def test_tree_sink_finalize_group_returns_this_groups_count(tmp_path):
     """The return value is THIS call's own count, not the sink's running
     total — a shared sink across several groups must not hand one group

@@ -269,9 +269,10 @@ class TransferView(Vertical):
             text = f"{r.linked:,} linked, {r.skipped:,} already current"
             if getattr(r, "pruned", 0):
                 text += f", {r.pruned:,} pruned"
-        warnings = getattr(r, "dist_upgrade_warnings", None) or []
+        warnings = [*(getattr(r, "dist_upgrade_warnings", None) or []),
+                    *(getattr(r, "warnings", None) or [])]
         if warnings:
-            text += f", {len(warnings)} dist-upgrade warning(s)"
+            text += f", {len(warnings)} warning(s)"
         return text
 
     def summary(self) -> str:
@@ -302,7 +303,8 @@ class TransferView(Vertical):
         if outcome == "error":
             return "error"
         if outcome == "ok" and not self.error_count and not (
-                getattr(self._result, "dist_upgrade_warnings", None)):
+                getattr(self._result, "dist_upgrade_warnings", None)
+                or getattr(self._result, "warnings", None)):
             return "information"
         return "warning"
 
@@ -414,7 +416,12 @@ class TransferView(Vertical):
         parts = dst.split("/")
         short = "/".join(parts[-4:]) if len(parts) >= 4 else dst
         with self._lock:
-            if status == "linked":
+            if status.startswith("gallery-image:"):
+                from mmw.providers.vscode.image import IMAGE
+                phase = status.split(":", 1)[1]
+                self._phase = "" if phase == "done" else f"Gallery image · {IMAGE} · {phase}"
+                self._log_pending.append(f"  [dim]Gallery image · {IMAGE} · {escape(phase)}[/]")
+            elif status == "linked":
                 self._linked += 1
                 self._mirror_linked += 1
                 self._log_pending.append(f"  [$mmw-ok]→[/] {short}")

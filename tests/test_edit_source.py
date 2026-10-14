@@ -14,6 +14,7 @@ from textual.widgets import Button, Checkbox, Input, SelectionList
 from mmw.core import config
 from mmw.tui.ui.base import ThemedApp
 from mmw.tui.source_screens import EditSourcePage
+from waiting import settle
 
 
 def _source(**overrides) -> config.SourceConfig:
@@ -30,8 +31,8 @@ def _source(**overrides) -> config.SourceConfig:
 
 
 async def _settle(pilot, tries: int = 25):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _host_app(screen):
@@ -335,14 +336,12 @@ def test_edit_source_page_fields_are_one_row_and_name_clash_is_refused_in_place(
     async def go():
         app = _Host()
         async with app.run_test(size=(80, 24)) as pilot:
-            for _ in range(3):
-                await pilot.pause()
+            await settle(pilot)
             page = app.screen
             assert all(w.region.height == 1 for w in page.query("Input, Button, Checkbox"))
             page.query_one("#edit-source-name").value = "taken"
             page.query_one("#btn-save-source").press()
-            for _ in range(3):
-                await pilot.pause()
+            await settle(pilot)
             assert "already the name" in str(page.query_one("#page-status").render())
             assert app.focused.id == "edit-source-name"
             assert result == []

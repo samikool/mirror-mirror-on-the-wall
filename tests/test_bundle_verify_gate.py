@@ -20,6 +20,7 @@ import hashlib
 from mmw.core import config
 from mmw.core.pool import KIND_META, KIND_PKG, Pool
 from mmw.tui.app import MmwApp
+from waiting import settle, until
 
 
 def _cfg_with_incomplete_mirror(tmp_path) -> config.Config:
@@ -70,8 +71,8 @@ class _RecordingApp(MmwApp):
 
 
 async def _settle(pilot, tries: int = 40):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
@@ -96,19 +97,13 @@ def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
             await _settle(pilot)
             # The from/to picker is now on top -- take its defaults to reach
             # the verify gate this test is actually about.
-            for _ in range(200):
-                if app.screen.query("#btn-pick-go"):
-                    break
-                await pilot.pause(0.02)
+            await until(pilot, lambda: app.screen.query("#btn-pick-go"))
             app.screen.query_one("#btn-pick-go", Button).press()
             await _settle(pilot)
             # The refusal is on the Publish panel now, not a pop-up.
             from mmw.tui.transfer import TransferView
-            for _ in range(200):
-                views = app.screen.query(TransferView)
-                if views and views.first()._done_displayed:
-                    break
-                await pilot.pause(0.02)
+            await until(pilot, lambda: app.screen.query(TransferView)
+                        and app.screen.query(TransferView).first()._done_displayed)
             view = app.screen.query_one(TransferView)
             outcome = view.outcome
             status = str(app.screen.query_one("#page-status").render())

@@ -17,6 +17,7 @@ from mmw.core.publisher.manifest import ledger_dir
 from mmw.tui.app import MmwApp
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.widgets import Button
+from waiting import settle
 
 
 def _cfg(tmp_path) -> config.Config:
@@ -33,8 +34,8 @@ def _App(cfg: config.Config, cfg_dir):
 
 
 async def _settle(pilot, tries: int = 40):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _make_ledger(tmp_path, name="lab") -> Path:

@@ -38,7 +38,7 @@ codes — see [airgap.md](airgap.md#exit-codes).
 
 | Command | What it does |
 |---------|--------------|
-| [`mmw add`](#mmw-add) | Add sources from a sources.list or deb822 .sources file |
+| [`mmw add`](#mmw-add) | Add sources from a sources.list or deb822 .sources file — or the VS Code source |
 | [`mmw bundle`](#mmw-bundle) | Write a network's mirrors to a transferable bundle — between any two snapshots (see `mmw snapshot list`) |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
@@ -52,7 +52,7 @@ codes — see [airgap.md](airgap.md#exit-codes).
 
 ### `mmw add`
 
-Add sources from a sources.list or deb822 .sources file.
+Add sources from a sources.list or deb822 .sources file — or the VS Code source.
 
 Everything is taken from the file — no discovery, no prompts:
 
@@ -60,15 +60,25 @@ Everything is taken from the file — no discovery, no prompts:
   cat ubuntu.sources | mmw add
   mmw add --url https://example.com/repo.list --dry-run
   mmw add -f /etc/apt/sources.list.d --keys-dir /path/to/keyrings
+  mmw add vscode --kind extensions --top-n 200 --platform linux-x64
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `WHAT` |  | `vscode` to add (or replace) the VS Code source; omit for apt files. |
 | `--file`, `-f` |  | apt config file(s) or a directory of them ('-' for stdin). Repeatable; joined with blank lines so records never run together. Defaults to stdin. |
 | `--url` |  | Fetch the config file from a URL. |
 | `--label` |  | Override the key-grouping label (default: the host's domain name). |
 | `--arch` |  | Architecture to use when the file does not state one (default: leave unset — every architecture upstream serves). |
 | `--keys-dir` |  | Directory of keyrings (searched recursively). A `Signed-By:` path is matched by basename; .gpg and .asc are both accepted. |
 | `--dry-run` |  | Print the resulting [[sources]] TOML without writing. |
+| `--kind` |  | vscode: extensions, desktop, server (repeatable; default all). |
+| `--platform` |  | vscode: target platform, e.g. linux-x64 (repeatable; default all). |
+| `--quality` |  | vscode: stable or insider (repeatable; default both). |
+| `--top-n` |  | vscode: the N most-installed extensions. |
+| `--id` |  | vscode: an extension id, publisher.name (repeatable). |
+| `--ids-file` |  | vscode: a file of extension ids, one per line. |
+| `--all` |  | vscode: every extension on the marketplace (very large). |
+| `--prerelease` |  | vscode: allow prerelease versions. |
 
 ### `mmw bundle`
 

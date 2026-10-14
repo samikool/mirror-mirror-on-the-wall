@@ -6,6 +6,7 @@ from textual.widgets import Label
 
 from mmw.tui.ui.base import ThemedApp
 from mmw.tui.ui.wizard import Wizard
+from waiting import settle, until
 
 
 class _Two(Wizard):
@@ -44,11 +45,9 @@ def _drive(actions):
 
         app = _Host()
         async with app.run_test(size=(80, 24)) as pilot:
-            for _ in range(3):
-                await pilot.pause()
+            await settle(pilot)
             await actions(app, pilot)
-            for _ in range(3):
-                await pilot.pause()
+            await settle(pilot)
         return got
     return asyncio.run(go())
 
@@ -98,8 +97,8 @@ def test_a_double_press_of_next_does_not_skip_a_step():
         btn = app.screen.query_one("#btn-wizard-next")
         btn.press()
         btn.press()
-        for _ in range(4):
-            await pilot.pause()
+        await until(pilot, lambda: app.screen.step >= 1)
+        await settle(pilot)
         assert app.screen.step == 1
         _press(app, "next")                      # a deliberate later press still works
     assert _drive(act) == ["finished"]

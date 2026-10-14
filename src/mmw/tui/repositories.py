@@ -91,7 +91,7 @@ class RepositoryList:
         if self.filter:
             needle = self.filter.lower()
             sources = [s for s in sources
-                       if needle in s.name.lower() or needle in s.url.lower()]
+                       if needle in get_provider(s.provider).search_text(s).lower()]
         return sorted(sources, key=lambda s: (self.host_of(s), s.name.lower()))
 
     def source_for_mirror(self, mirror: config.MirrorConfig) -> config.SourceConfig | None:
@@ -404,10 +404,20 @@ def narrow_to_selection(mirrors: list[config.MirrorConfig], errors: list[str], s
     return mirrors, None, False
 
 
-def resolve_selection(cfg: config.Config, selection) -> tuple[list[config.MirrorConfig], list[str]]:
+def resolve_selection(cfg: config.Config, selection, *, progress=None) -> tuple[list[config.MirrorConfig], list[str]]:
     """Expand "all" dimensions by listing upstream, then narrow to `selection`.
-    Quiet — the notes come back as messages. **Blocking** (network)."""
-    mirrors, notes, errors = resolve_sources(cfg.sources, progress=None)
+    Quiet — the notes come back as messages. **Blocking** (network).
+
+    Only the sources the selection touches are resolved: ticking one apt
+    repository must not ask the Marketplace for its top 200 first. A mirror
+    name belongs to the source whose name prefixes it (over-matching a
+    prefix-sharing neighbour only resolves one source too many)."""
+    ids, names = split_selection(selection)
+    sources = cfg.sources
+    if ids or names:
+        sources = [s for s in cfg.sources if s.identity in ids
+                   or any(n == s.name or n.startswith(s.name + "-") for n in names)]
+    mirrors, notes, errors = resolve_sources(sources, progress=progress)
     messages = [*notes, *(f"⚠ {e}" for e in errors)]
     chosen, problem, _ = narrow_to_selection(mirrors, errors, selection)
     if problem:

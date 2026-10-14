@@ -1,11 +1,13 @@
 from mmw.providers.apt import AptFlatProvider, AptProvider
 from mmw.providers.base import BaseProvider
+from mmw.providers.vscode.provider import VscodeProvider
 
 # Registry order is meaningful: it is the order providers are offered in, the
 # order their `contribute()` runs, and the order select keys are written.
 _REGISTRY: dict[str, BaseProvider] = {
     "apt": AptProvider(),
     "apt-flat": AptFlatProvider(),
+    "vscode": VscodeProvider(),
 }
 
 

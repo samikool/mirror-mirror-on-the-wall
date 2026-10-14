@@ -243,17 +243,8 @@ def cmd_sync(
             typer.echo(f"Profile written to {prof}")
         raise typer.Exit(code)
 
-    # "all" dimensions need the network to resolve, and the sync TUI builds its
-    # cards in compose() — so resolve before the app starts, echoing what a
-    # blank suites/components/arches list expanded to.
-    from mmw.commands.mirror import resolve_and_report
-    mirrors, errors = resolve_and_report(cfg)
-    if not mirrors:
-        typer.echo("Nothing to sync." if not errors else "No mirrors could be resolved.", err=bool(errors))
-        raise typer.Exit(1 if errors else 0)
-
     with _profiling(profile) as prof:
-        _run_tui(_open_app(cfg, cfg_dir, "sync", start_sync_with=(mirrors, dry_run)))
+        _run_tui(_open_app(cfg, cfg_dir, "sync", start_sync_selection=(([], []), dry_run)))
     if prof is not None:
         typer.echo(f"Profile written to {prof}")
 
@@ -301,6 +292,8 @@ def cmd_publish(
 
 @app.command("add")
 def cmd_add(
+    what: str = typer.Argument(
+        None, help="`vscode` to add (or replace) the VS Code source; omit for apt files.", metavar="[vscode]"),
     file: list[Path] = typer.Option(
         None, "--file", "-f",
         help="apt config file(s) or a directory of them ('-' for stdin). "
@@ -325,8 +318,20 @@ def cmd_add(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the resulting [[sources]] TOML without writing.",
     ),
+    kind: list[str] = typer.Option(
+        None, "--kind", help="vscode: extensions, desktop, server (repeatable; default all)."),
+    platform: list[str] = typer.Option(
+        None, "--platform", help="vscode: target platform, e.g. linux-x64 (repeatable; default all)."),
+    quality: list[str] = typer.Option(
+        None, "--quality", help="vscode: stable or insider (repeatable; default both)."),
+    top_n: int = typer.Option(None, "--top-n", min=1, help="vscode: the N most-installed extensions."),
+    ext_id: list[str] = typer.Option(
+        None, "--id", help="vscode: an extension id, publisher.name (repeatable)."),
+    ids_file: Path = typer.Option(None, "--ids-file", help="vscode: a file of extension ids, one per line."),
+    all_: bool = typer.Option(False, "--all", help="vscode: every extension on the marketplace (very large)."),
+    prerelease: bool = typer.Option(False, "--prerelease", help="vscode: allow prerelease versions."),
 ):
-    """Add sources from a sources.list or deb822 .sources file.
+    """Add sources from a sources.list or deb822 .sources file — or the VS Code source.
 
     Everything is taken from the file — no discovery, no prompts:
 
@@ -334,10 +339,21 @@ def cmd_add(
       cat ubuntu.sources | mmw add
       mmw add --url https://example.com/repo.list --dry-run
       mmw add -f /etc/apt/sources.list.d --keys-dir /path/to/keyrings
+      mmw add vscode --kind extensions --top-n 200 --platform linux-x64
     """
+    if what is not None:
+        if what != "vscode":
+            typer.echo(f"Unknown source kind {what!r} — use `mmw add vscode`, or no argument "
+                       "for apt files.", err=True)
+            raise typer.Exit(2)
+        from mmw.commands.add_vscode import run as run_vscode
+        raise typer.Exit(run_vscode(
+            _cfg_dir(), kinds=kind, platforms=platform, qualities=quality, top_n=top_n,
+            ids=ext_id, ids_file=ids_file, all_=all_, prerelease=prerelease,
+            dry_run=dry_run, echo=typer.echo))
     from mmw.commands.add import run
     code = run(file=file, url=url, label=label, arch=arch, keys_dir=keys_dir,
-               dry_run=dry_run, echo=typer.echo)
+               dry_run=dry_run, cfg_dir=_cfg_dir(), echo=typer.echo)
     raise typer.Exit(code)
 
 

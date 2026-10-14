@@ -38,7 +38,8 @@ class MmwApp(ThemedApp):
     def __init__(self, cfg: "config.Config | None", cfg_dir: Path, *,
                  initial_section: str = "repositories", mirror_dir: Path | None = None,
                  max_connections: int | None = None,
-                 start_sync_with: "tuple[list[config.MirrorConfig], bool] | None" = None):
+                 start_sync_with: "tuple[list[config.MirrorConfig], bool] | None" = None,
+                 start_sync_selection: "tuple[object, bool] | None" = None):
         if initial_section not in (*SECTION_MODES, "setup"):
             raise ValueError(f"unknown section {initial_section!r} "
                              f"(one of: {', '.join(SECTION_MODES)})")
@@ -48,6 +49,10 @@ class MmwApp(ThemedApp):
         # `mmw sync`: mirrors already resolved (and reported) by the CLI, and
         # whether it is a dry run. Started once the Sync section is showing.
         self._start_sync_with = start_sync_with
+        self._start_sync_selection = start_sync_selection
+        self._resolving = False
+        self._resolve_gen = 0
+        self._resolve_section = None
         self.setup_defaults = {"mirror_dir": mirror_dir or Path("./mirror"),
                                "max_connections": max_connections}
         # Every mmw.toml write goes through this, and each builds its config
@@ -72,6 +77,9 @@ class MmwApp(ThemedApp):
         if self._start_sync_with is not None and self.cfg is not None:
             mirrors, dry_run = self._start_sync_with
             await self.screen.start(self.cfg, mirrors, dry_run=dry_run)
+        elif self._start_sync_selection is not None and self.cfg is not None:
+            selection, dry_run = self._start_sync_selection
+            self.run_worker(self.start_sync(selection, dry_run=dry_run), group="source-resolution")
         for note in self._startup_notes:
             self.notify(note, severity="warning", timeout=10)
         # Subscribed only now: the theme applied in __init__ — including a
@@ -191,6 +199,7 @@ class MmwApp(ThemedApp):
         # mmw at an empty pool and download everything again.
         self.setup_defaults = {"mirror_dir": self.cfg.settings.mirror_dir,
                                "max_connections": self.cfg.settings.max_connections}
+        self.cancel_resolution()
         self.cfg = None
         await self._fresh_modes("setup")
         await self.switch_mode("setup")
@@ -211,11 +220,24 @@ class MmwApp(ThemedApp):
         await self.switch_mode("publish")
         await self.screen.start(verb, net, choice=choice)
 
-    async def start_sync(self, selection) -> None:
+    def cancel_resolution(self) -> None:
+        self._resolve_gen += 1
+        if self._resolve_section is not None:
+            self._resolve_section.end_resolution("Resolution cancelled; the current request is finishing.")
+
+    def _resolution_phase(self, gen, text):
+        if gen == self._resolve_gen and self._resolve_section is not None:
+            self._resolve_section.resolution_progress(text)
+
+    async def start_sync(self, selection, *, dry_run=False) -> None:
         """Resolve `selection` (off the loop — it lists upstream), then run it
         in the Sync section. One session at a time; a selection that resolves
         to nothing is reported, never widened to everything."""
         from mmw.tui.repositories import resolve_selection
+
+        if self._resolving:
+            self.notify("Already resolving sources — see Sync.", severity="warning")
+            return
 
         if self.active_sync is not None and self.active_sync.running:
             self.notify("A sync is already running — see the Sync section.", severity="warning")
@@ -227,20 +249,39 @@ class MmwApp(ThemedApp):
             self.notify("The last sync is still finishing its downloads — try again in a "
                         "moment.", severity="warning")
             return
-        if not self.cfg.sources:
+        if self.cfg is None or not self.cfg.sources:
             self.notify("No sources configured — press a in Sources to add one.",
                         severity="warning")
             return
-        self.notify("Resolving what to sync…")
-        mirrors, messages = await asyncio.to_thread(resolve_selection, self.cfg, selection)
-        if self.cfg is None:
-            return              # re-initialised while resolving: there is no config to sync
-        for message in messages:
-            self.notify(message, timeout=10)
-        if not mirrors:
+        cfg = self.cfg
+        self._resolving = True
+        self._resolve_gen += 1
+        gen = self._resolve_gen
+        try:
+            await self.switch_mode("sync")
+            section = self.screen
+            self._resolve_section = section
+            section.begin_resolution()
+            from mmw.core.sync_engine import SyncEvents
+            events = SyncEvents(phase=lambda text: self.call_from_thread(self._resolution_phase, gen, text))
+            mirrors, messages = await asyncio.to_thread(resolve_selection, cfg, selection, progress=events.phase)
+            if self.cfg is None or gen != self._resolve_gen:
+                if gen == self._resolve_gen:
+                    section.end_resolution("Resolution cancelled; configuration was reset.")
+                return
+            for message in messages:
+                self.notify(message, timeout=10)
+            if not mirrors:
+                section.end_resolution("No sync units resolved. " + " ".join(messages))
+                return
+            section.end_resolution("\n".join(message for message in messages if message.startswith("⚠")))
+            await section.start(cfg, mirrors, dry_run=dry_run, resolution_gen=gen)
+        except Exception as exc:
+            if gen == self._resolve_gen and self._resolve_section is not None:
+                self._resolve_section.end_resolution(f"Resolution failed: {exc}")
             return
-        await self.switch_mode("sync")
-        await self.screen.start(self.cfg, mirrors)
+        finally:
+            self._resolving = False
 
     def _sync_label(self) -> None:
         """The sidebar's Sync and Publish links carry progress while they run."""

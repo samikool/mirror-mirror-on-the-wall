@@ -127,6 +127,7 @@ class NetworkDetail(Widget):
         self._snapshots: str | None = None        # the one-line summary, once loaded
         self._detail_gen = 0
         self._progress: tuple[int, int] | None = None      # indexes read / total
+        self._hosts: list[str] = []
         # (network name, root) -> (index signature, stat_tree answer)
         self._cache: dict[tuple, tuple] = {}
         self._rebuild_pending = False
@@ -152,6 +153,7 @@ class NetworkDetail(Widget):
         self._bundle_loaded = False
         self._snapshots = None
         self._progress = None
+        self._hosts = []
         self._detail_gen += 1
         self._rebuild()
         if network is None or cfg is None:
@@ -164,6 +166,9 @@ class NetworkDetail(Widget):
     @work(thread=True, exit_on_error=False, group="network-detail")
     def _load(self, gen: int, net: config.NetworkConfig, cfg: config.Config) -> None:
         try:
+            from mmw.core.certs import collect_hostnames
+            hosts = collect_hostnames(net, cfg)
+            self.app.call_from_thread(self._on_hosts, gen, hosts)
             mirror_map = {m.name: m for m in network_mirrors(net, cfg, cfg.settings.mirror_dir)}
             selected = list(mirror_map)
             # The list now; the sizes when they are read.
@@ -193,6 +198,12 @@ class NetworkDetail(Widget):
         if gen != self._detail_gen:
             return
         self._selected = selected
+        self._rebuild()
+
+    def _on_hosts(self, gen: int, hosts: list[str]) -> None:
+        if gen != self._detail_gen:
+            return
+        self._hosts = hosts
         self._rebuild()
 
     def _on_progress(self, gen: int, done: int, total: int) -> None:
@@ -277,6 +288,12 @@ class NetworkDetail(Widget):
         async with self._rebuild_lock:
             self._rebuild_pending = False
             await self.remove_children()
+            # Removal waits only for children whose task started; a child
+            # mounted while the app is shutting down never starts, so it
+            # outlives the removal and the rebuild would collide on its id.
+            # Nothing is shown any more — leave it.
+            if self.children:
+                return
             self._mount_detail()
 
     def _meta(self, label: str, value: str) -> Label:
@@ -293,6 +310,10 @@ class NetworkDetail(Widget):
         self.mount(self._meta("Prune", _on_off(n.prune)))
         self.mount(self._meta("Dist-upgrade", _on_off(n.dist_upgrade)))
         self.mount(self._meta("Certs", _on_off(n.certs)))
+        if self._hosts:
+            self.mount(Label("Served hostnames", classes="section-hdr"))
+            for host in self._hosts:
+                self.mount(Label(escape(host), classes="detail-meta"))
         # A bundle-only network still needs to show something other than
         # "publish disabled": its destination and the newest ledger entry.
         if n.bundle_dir is not None:

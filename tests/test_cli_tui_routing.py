@@ -55,16 +55,14 @@ def test_init_with_a_config_opens_repositories_and_force_opens_setup(tmp_path, c
     assert [a._initial_section for a in captured] == ["repositories", "setup"]
 
 
-def test_sync_opens_the_sync_section_with_the_resolved_mirrors(tmp_path, captured, monkeypatch):
-    import mmw.commands.mirror as mirror_cmd
-    cfg = _cfg(tmp_path)
-    mirrors = cfg.mirrors
-    monkeypatch.setattr(mirror_cmd, "resolve_and_report", lambda c: (mirrors, []))
+def test_sync_opens_the_sync_section_before_resolution(tmp_path, captured):
+    _cfg(tmp_path)
     result = _invoke(tmp_path, "sync", "--dry-run")
     assert result.exit_code == 0, result.output
     app = captured[0]
     assert app._initial_section == "sync"
-    assert app._start_sync_with == (mirrors, True)
+    assert app._start_sync_selection == (([], []), True)
+    assert app._start_sync_with is None
 
 
 def test_the_development_ui_command_is_gone(tmp_path, captured):

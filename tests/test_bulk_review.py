@@ -14,6 +14,7 @@ from mmw.core.apt_sources import parse_apt_sources
 from mmw.core.draft import drafts_from_entries
 from mmw.tui.bulk_review import BulkReviewPage, RepoRow
 from mmw.tui.key_modal import KeyPage
+from waiting import settle
 
 ARMOUR = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQINBGXf\n-----END PGP PUBLIC KEY BLOCK-----\n"
 
@@ -59,8 +60,8 @@ class _Harness(App):
 
 
 async def _settle(pilot, tries: int = 25):
-    for _ in range(tries):
-        await pilot.pause()
+    """Until no work is in flight — see tests/waiting.py. The count is ignored."""
+    await settle(pilot)
 
 
 def _run(scenario):
@@ -462,8 +463,7 @@ def test_key_page_is_a_scrolling_page_with_one_row_controls():
     async def go():
         app = _Host()
         async with app.run_test(size=(80, 24)) as pilot:
-            for _ in range(3):
-                await pilot.pause()
+            await settle(pilot)
             assert app.screen.TITLE == "GPG key — debian"
             assert all(w.region.height == 1 for w in app.screen.query("Input, Button"))
     asyncio.run(go())
@@ -487,8 +487,7 @@ def test_bulk_review_page_rows_escape_markup_and_controls_are_one_row():
     async def go():
         app = _Host()
         async with app.run_test(size=(80, 24)) as pilot:
-            for _ in range(3):
-                await pilot.pause()
+            await settle(pilot)
             assert "x[b]y" in str(app.screen.query_one(".repo-url").render())
             assert all(b.region.height == 1 for b in app.screen.query("Button"))
     asyncio.run(go())

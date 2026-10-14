@@ -51,6 +51,7 @@ def openssl(args, env=None):
 
 
 def _dns_names(text):
+    # Wildcard SANs (`*.gallerycdn.vsassets.io`) pass through unchanged.
     return sorted(set(re.findall(r"DNS:([^\s,]+)", text)))
 
 

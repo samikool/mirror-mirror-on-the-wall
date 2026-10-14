@@ -230,3 +230,17 @@ def test_the_snapshots_button_opens_the_page(two_mirrors):  # noqa: F811
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage")
         assert app.screen.subtitle == "oak"
     _run(cfg, mirror_dir.parent, check)
+
+
+def test_leaving_the_snapshots_page_open_at_exit_never_crashes(two_mirrors):  # noqa: F811
+    """The network pane's stats load could land while the app shut down; the
+    rebuild mounted beside children removal could no longer detach (they
+    never started) and crashed on a duplicate `#stats-progress`. It took a
+    few exits to hit — hence the loop."""
+    cfg, net, mirror_dir = two_mirrors
+
+    async def check(app, pilot):
+        app.screen.query_one("#btn-net-snapshots").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage")
+    for _ in range(12):
+        _run(cfg, mirror_dir.parent, check)

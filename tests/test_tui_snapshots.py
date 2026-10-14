@@ -20,7 +20,7 @@ Sizes match `test_tui_geometry.py`: 80x24 is the POSIX default and the floor
 mmw should stay usable at.
 """
 from mmw.core import config
-from waiting import until
+from waiting import settle, until
 
 # One representative size per screen rather than the geometry file's three.
 # Snapshots are for catching visual drift, and three baselines per screen
@@ -214,8 +214,7 @@ async def _then_settle(pilot, n=3):
     for w in pilot.app.screen.query("Input, TextArea"):
         if isinstance(w, (Input, TextArea)):
             w.cursor_blink = False
-    for _ in range(n):
-        await pilot.pause()
+    await settle(pilot)
 
 
 async def _tick_first(pilot):
@@ -327,3 +326,55 @@ def test_snapshot_mmw_publish_idle(snap_compare, tmp_path):
     from mmw.tui.app import MmwApp
     assert snap_compare(MmwApp(_repos_cfg(), tmp_path, initial_section="publish"),
                         terminal_size=SNAP_SIZE)
+
+
+@_pytest.mark.parametrize('size', [(80, 24), (100, 32), (120, 40)])
+def test_snapshot_vscode_edit(snap_compare, size):
+    from mmw.tui.vscode_source import EditVscodePage
+    source = config.VscodeSource(provider='vscode', platforms=['linux-x64'],
+                                 extensions={'top_n': 200, 'ids': ['ms-python.python', 'golang.go']})
+    assert snap_compare(_app(lambda: EditVscodePage(source, existing_names=set(), existing_urls=set())),
+                        terminal_size=size)
+
+
+@_pytest.mark.parametrize('size', [(80, 24), (100, 32), (120, 40)])
+def test_snapshot_vscode_add(snap_compare, size):
+    from mmw.tui.add_source import AddSourcePage
+    assert snap_compare(_app(lambda: AddSourcePage(entry='vscode')), terminal_size=size)
+
+
+def test_snapshot_vscode_lookup(snap_compare, monkeypatch):
+    from mmw.tui import vscode_source as vs
+    monkeypatch.setattr(vs, 'lookup_ids', lambda source, **kw: [
+        ('ms-python.python', 'Python'), ('missing.extension', None)])
+    source = config.VscodeSource(provider='vscode', extensions={'ids': ['ms-python.python', 'missing.extension']})
+    async def lookup(pilot):
+        await until(pilot, lambda: pilot.app.screen.query('#btn-vs-lookup'))
+        pilot.app.screen.query_one('#btn-vs-lookup').press()
+        await until(pilot, lambda: 'not found' in str(
+            pilot.app.screen.query_one('#vs-lookup-status').render()))
+        pilot.app.screen.query_one('#vs-lookup-status').scroll_visible()
+    assert snap_compare(_app(lambda: vs.EditVscodePage(source, existing_names=set(), existing_urls=set())),
+                        terminal_size=SNAP_SIZE, run_before=lookup)
+
+
+def test_snapshot_mixed_sources(snap_compare, tmp_path):
+    from mmw.tui.app import MmwApp
+    cfg = _repos_cfg()
+    cfg.sources.append(config.VscodeSource(provider='vscode', kinds=['server'], platforms=['linux-x64'],
+                                           extensions={'ids': ['golang.go']}))
+    assert snap_compare(MmwApp(cfg, tmp_path, initial_section='repositories'),
+                        terminal_size=SNAP_SIZE, run_before=_list_ready)
+
+
+def test_snapshot_network_with_vscode(snap_compare):
+    from mmw.tui.network_screens import EditNetworkPage
+    source = config.VscodeSource(provider='vscode', kinds=['server'], platforms=['linux-x64'])
+    from mmw.providers import get_provider
+    units = get_provider('vscode').expand(source)
+    net = config.NetworkConfig(name='lab', gallery_port=9876)
+    async def show_options(pilot):
+        await until(pilot, lambda: pilot.app.screen.query('#inp-gallery-port'))
+        pilot.app.screen.query_one('#inp-gallery-port').focus()
+    assert snap_compare(_app(lambda: EditNetworkPage(net, [*_mirrors(), *units])),
+                        terminal_size=SNAP_SIZE, run_before=show_options)

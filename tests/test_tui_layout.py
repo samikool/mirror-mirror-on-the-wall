@@ -16,6 +16,7 @@ from textual.widgets import Button
 
 from mmw.tui.ui.base import ThemedApp
 from mmw.core import config
+from waiting import until
 
 CFG = """
 [settings]
@@ -256,10 +257,7 @@ def test_escape_cancels_confirm_modal():
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             await pilot.press("escape")
-            for _ in range(20):
-                if app.result != "unset":
-                    break
-                await pilot.pause()
+            await until(pilot, lambda: app.result != "unset")
         assert app.result is False
 
     asyncio.run(scenario())

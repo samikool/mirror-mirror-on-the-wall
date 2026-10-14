@@ -23,27 +23,30 @@ EXPIRY_WARNING = timedelta(days=30)
 
 
 def collect_hostnames(network: NetworkConfig, cfg: Config) -> list[str]:
-    """Return sorted unique hostnames the network serves: every mirror's host,
-    plus every provider's extra hosts (changelogs.ubuntu.com for a
-    dist-upgrade network)."""
+    """Return sorted unique hostnames the network serves: the host of every
+    unit whose provider serves a static block per `mirror_base`, plus every
+    provider's certificate names (changelogs.ubuntu.com for a dist-upgrade
+    network; VS Code's six, two of them wildcards)."""
     selected_mirrors = network_mirrors(network, cfg, cfg.settings.mirror_dir)
     mirror_map = {m.name: m for m in selected_mirrors}
     selected = list(mirror_map)
     seen: set[str] = set()
     hostnames: list[str] = []
+    from mmw.providers import all_providers, get_provider
     for name in selected:
         mirror = mirror_map.get(name)
-        if mirror is None:
+        if mirror is None or not get_provider(mirror.provider).site_per_base:
             continue
         host = urlparse(mirror.source_url).hostname
         if host and host not in seen:
             seen.add(host)
             hostnames.append(host)
-    from mmw.providers import extra_hosts
-    for host in extra_hosts(network, selected_mirrors):
-        if host not in seen:
-            hostnames.append(host)
-            seen.add(host)
+    for provider in all_providers():
+        mine = [m for m in selected_mirrors if m.provider == provider.name]
+        for host in provider.cert_names(network, mine):
+            if host not in seen:
+                hostnames.append(host)
+                seen.add(host)
     # Keys published at their upstream path are served from their own host,
     # which need not be any mirror's (nvidia.github.io/libnvidia-container/
     # gpgkey sits outside the repository it signs).

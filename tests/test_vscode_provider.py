@@ -46,7 +46,7 @@ def test_presentation():
     assert ("Extensions", "top 5 + 1 listed") in d.fields and d.location_label == "Upstream"
     (u,) = vs.expand(_src(kinds=["server"], platforms=["linux-x64"], qualities=["stable"]))
     assert vs.unit_label(u) == ("server · linux-x64 · stable", "")
-    assert vs.publishes is False and vs.by_hash is False
+    assert vs.publishes is True and vs.by_hash is False      # publishing arrived in stage 4
 
 
 def test_resolve_unions_selections_and_follows_dependencies(up):

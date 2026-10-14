@@ -57,29 +57,41 @@ def _mixed(tmp_path):
     return cfg
 
 
-def test_a_network_without_select_publishes_apt_and_skips_vscode_quietly(tmp_path):
+def _with_fake_docker(tmp_path, monkeypatch):
+    from mmw.providers.vscode import image
+    from test_gallery_image import _fake_docker
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(image, "DOCKER", _fake_docker(bin_dir)[0])
+
+
+def test_a_network_without_select_publishes_apt_and_vscode(tmp_path, monkeypatch):
+    """Stage 3 skipped VS Code units in an implicit network; stage 4 publishes them."""
     from mmw.core.certs import collect_hostnames
-    from mmw.core.publisher import dry_run_network, publish_network
+    from mmw.core.publisher import publish_network
     from mmw.core.snapshots import take_snapshot
+    _with_fake_docker(tmp_path, monkeypatch)
     cfg = _mixed(tmp_path)
     net = config.NetworkConfig(name="lab", root=tmp_path / "pub")
     result = publish_network(net, cfg, cfg.settings.mirror_dir)
     assert not [e for r in result.mirrors for e in r.errors]
     assert (tmp_path / "pub" / "archive.ubuntu.com").exists()
-    assert not (tmp_path / "pub" / "marketplace.visualstudio.com").exists()
+    assert (tmp_path / "pub" / "h.example" / "build").exists()
+    assert (tmp_path / "pub" / "vscode-gallery").is_dir()
     take_snapshot(net, cfg, cfg.settings.mirror_dir)              # does not raise
-    assert "marketplace.visualstudio.com" not in collect_hostnames(net, cfg)
-    names = [r.mirror_name for r in dry_run_network(net, cfg, cfg.settings.mirror_dir).mirrors]
-    assert not any(n.startswith("vscode-") for n in names)
+    assert "marketplace.visualstudio.com" in collect_hostnames(net, cfg)
 
 
-def test_selecting_vscode_explicitly_is_still_refused_loudly(tmp_path):
+def test_selecting_vscode_explicitly_publishes_it(tmp_path, monkeypatch):
     from mmw.core.publisher import publish_network
+    _with_fake_docker(tmp_path, monkeypatch)
     cfg = _mixed(tmp_path)
     net = config.NetworkConfig(name="lab", root=tmp_path / "pub", select=[
         config.NetworkSelect(source=config.MARKETPLACE_URL)])
     result = publish_network(net, cfg, cfg.settings.mirror_dir)
-    assert any("stage 4" in e for r in result.mirrors for e in r.errors)
+    assert not [e for r in result.mirrors for e in r.errors]
+    assert (tmp_path / "pub" / "h.example" / "build").exists()
+    assert not (tmp_path / "pub" / "archive.ubuntu.com").exists()
 
 
 # ── Important 2: a network failure is reported, not a traceback ──────────────

@@ -10,26 +10,30 @@ def _cfg(tmp_path):
                                                       platforms=["linux-x64"])])
 
 
-def test_publishing_a_vscode_unit_is_refused_clearly(tmp_path):
+def test_an_explicitly_selected_vscode_source_is_published(tmp_path, monkeypatch):
+    """Stage 4: what stage 3 refused is published — at the payload's own host."""
+    import hashlib
     from mmw.core.pool import KIND_PKG, Pool
     from mmw.core.publisher import publish_network
     from mmw.providers import get_provider
+    from mmw.providers.vscode import image
+    from test_gallery_image import _fake_docker
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setattr(image, "DOCKER", _fake_docker(bin_dir)[0])
     cfg = _cfg(tmp_path)
     (unit, *_) = get_provider("vscode").expand(cfg.sources[0])
-    import hashlib
     cs = hashlib.sha256(b"x").hexdigest()
     with Pool(cfg.settings.mirror_dir) as pool:
         pool.add(b"x", cs, "sha256", "x", 1)
         pool.reconcile_refs(unit.name, [(cs, "h.example/x", KIND_PKG)], source=unit.source)
         pool.record_mirror(unit)
-    # Named explicitly: refused loudly. (An implicit "everything" network
-    # skips VS Code units quietly — see test_vscode_review_fixes.py.)
     net = config.NetworkConfig(name="lab", root=tmp_path / "pub",
                                select=[config.NetworkSelect(source=config.MARKETPLACE_URL)])
     result = publish_network(net, cfg, cfg.settings.mirror_dir)
-    errors = [e for r in result.mirrors for e in r.errors]
-    assert any("stage 4" in e for e in errors)
-    assert not (tmp_path / "pub" / "marketplace.visualstudio.com").exists()
+    assert not [e for r in result.mirrors for e in r.errors]
+    assert (tmp_path / "pub" / "h.example" / "x").read_bytes() == b"x"
+    assert (tmp_path / "pub" / "vscode-gallery" / "catalog.json").exists()
 
 
 def test_edit_on_a_vscode_source_explains_instead_of_crashing(tmp_path):

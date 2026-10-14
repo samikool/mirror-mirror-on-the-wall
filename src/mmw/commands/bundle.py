@@ -106,7 +106,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         # frontend divergence this command exists to close. They are warnings,
         # not failures, so they do not set `ok` — `mmw publish` treats the
         # same list the same way.
-        for w in result.dist_upgrade_warnings:
+        for w in [*result.dist_upgrade_warnings, *result.warnings]:
             eprint(f"    ⚠ {w}")
         if result.errors:
             ok = False

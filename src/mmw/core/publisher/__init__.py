@@ -137,6 +137,19 @@ _INDEX_DIRS = frozenset({"dists", "repodata", "by-hash"})
 _INDEX_PREFIXES = ("Packages", "Sources", "Translation", "Contents")
 
 
+# Generated outside any base, but an index all the same: the gallery's catalog
+# and update index name payload files, so they land after them.
+_INDEX_EXTRAS = frozenset({"vscode-gallery/catalog.json", "vscode-gallery/updates.json"})
+
+
+def replay_kind(rel: str, base: "str | None") -> str:
+    """`_snapshot_kind` for a row inside a base; outside one, a package
+    unless it is one of the generated indexes in `_INDEX_EXTRAS`."""
+    if base is None:
+        return KIND_RELEASE if rel in _INDEX_EXTRAS else KIND_PKG
+    return _snapshot_kind(rel)
+
+
 def _snapshot_kind(rel: str) -> str:
     """pkg / meta / release for a snapshot row, which keeps no kind: read from
     the path. Only the publish ORDER depends on it (packages, then indexes,
@@ -224,11 +237,12 @@ def publish_snapshot(
                 if base is not None and base != current and mirror_start_callback:
                     current = base
                     mirror_start_callback(base, sorted(bases).index(base) + 1, len(bases))
-                kind = _snapshot_kind(rel) if base else KIND_PKG
+                kind = replay_kind(rel, base)
                 if kind == KIND_PKG:
                     place(row, base)
                 else:
-                    live[base].add(row[1])
+                    if base is not None:
+                        live[base].add(row[1])
                     deferred[kind].append((row, base))
             for kind in (KIND_META, KIND_RELEASE):
                 for i, (row, base) in enumerate(deferred[kind]):
@@ -254,14 +268,16 @@ def publish_snapshot(
                         r.pruned, r.pruned_bytes = sink.finalize_group(
                             b, keep[b], live[b], nested)
                     extra = keep[None]
-                    for prefix in ("keys", CHANGELOGS_DIR):
+                    for prefix in ("keys", CHANGELOGS_DIR, "vscode-gallery"):
                         reconcile_extra_prefix(
                             sink, prefix, {p for p in extra if p.startswith(prefix + "/")})
+                    sink.drop_if_empty("vscode-gallery")
                     reconcile_extra_prefix(sink, "nginx", nginx_rels)
                     if "UPGRADE.md" not in extra:
                         (Path(root) / "UPGRADE.md").unlink(missing_ok=True)
                     upstream = {p: None for p in extra
-                                if not p.startswith(("keys/", CHANGELOGS_DIR + "/"))}
+                                if not p.startswith(("keys/", CHANGELOGS_DIR + "/",
+                                                     "vscode-gallery/"))}
                     sink.prune_stale_bases(set(bases) | upstream_file_live_dirs(
                         upstream, set(bases)))
         finally:
@@ -303,49 +319,42 @@ def walk_network(
     for name in held_back:
         r = MirrorPublishResult(mirror_name=name)
         r.errors.append(f"{get_provider(name).label} sources cannot be published yet — "
-                        "publishing support arrives with stage 4")
+                        "this provider has no publishing support")
         result.mirrors.append(r)
     mirror_map = {n: m for n, m in mirror_map.items() if m.provider not in held_back}
     selected_names = list(mirror_map)
 
-    # Group by mirror_base, preserving selection order.
-    groups: dict[str, list] = {}
-    for name in selected_names:
-        mirror = mirror_map.get(name)
-        if mirror is None:
-            r = MirrorPublishResult(mirror_name=name)
-            r.errors.append(f"mirror '{name}' not found in config")
-            result.mirrors.append(r)
-            continue
-        groups.setdefault(mirror.mirror_base, []).append(mirror)
-
-    # A mirror whose publish base nests inside another's (custom repos at
-    # host/repo and host/repo/sub) must never be pruned by the outer group.
-    all_bases = set(groups)
     published_mirrors = [mirror_map[n] for n in selected_names if n in mirror_map]
-    # Known before any group runs: a key inside a repository's directory must
-    # be in that group's `keep`, not pruned and relinked every publish.
+    # Known before any unit is laid out: a key inside a repository's directory
+    # must be in that group's `keep`, not pruned and relinked every publish.
     upstream_paths = upstream_files(mirror_dir, published_mirrors)
 
-    total_groups = len(groups)
-    for idx, (base, mirrors) in enumerate(groups.items()):
-        if stop_event and stop_event.is_set():
-            break
+    from mmw.providers import all_providers
+    from mmw.providers.base import PublishContext
+    ctx = PublishContext(network=network, cfg=cfg, mirror_dir=mirror_dir, pool=pool,
+                         sink=sink, result=result, units=published_mirrors, prune=prune,
+                         progress=progress, stop_event=stop_event,
+                         keep_extra=frozenset(upstream_paths),
+                         mirror_start_callback=mirror_start_callback)
+    all_bases: set[str] = set()
+    started = 0                         # groups numbered by earlier providers
+    for provider in all_providers():
+        mine = [m for m in published_mirrors if m.provider == provider.name]
+        if not mine:
+            continue
         if mirror_start_callback:
-            mirror_start_callback(mirrors[0].name, idx + 1, total_groups)
-        nested = {b for b in all_bases if b != base and b.startswith(base + "/")}
-        result.mirrors.append(publish_group(
-            mirrors, sink, pool,
-            progress=progress, stop_event=stop_event,
-            prune=prune, prune_exclude=nested,
-            keep_extra=set(upstream_paths),
-        ))
+            # Each provider counts its own groups; carry the count across so a
+            # mixed network's progress runs on (apt 1–3/3, then VS Code 4/7…).
+            ctx.mirror_start_callback = (
+                lambda off: lambda name, i, n: mirror_start_callback(name, off + i, off + n)
+            )(started)
+        group_results, bases = provider.publish(ctx, mine)
+        started += len(group_results)
+        result.mirrors.extend(group_results)
+        all_bases |= bases
+    result.bases = sorted(all_bases)
 
     if not (stop_event and stop_event.is_set()):
-        from mmw.providers import all_providers
-        from mmw.providers.base import PublishContext
-        ctx = PublishContext(network=network, cfg=cfg, mirror_dir=mirror_dir, pool=pool,
-                             sink=sink, result=result, units=published_mirrors)
         for provider in all_providers():
             provider.contribute(ctx)
 
@@ -357,8 +366,10 @@ def walk_network(
             from mmw.core.publisher.nginx import nginx_files
             from mmw.providers import extra_hosts
             extra = upstream_file_hosts(upstream_paths) + extra_hosts(network, published_mirrors)
-            for rel, data in nginx_files(published_mirrors, nginx_root,
-                                         tls=tls, extra_hosts=extra).items():
+            from mmw.core.publisher.nginx import split_for_nginx
+            static, sites = split_for_nginx(published_mirrors, network.gallery_port)
+            for rel, data in nginx_files(static, nginx_root, tls=tls, extra_hosts=extra,
+                                         sites=sites, port=network.gallery_port).items():
                 sink.write(rel, data)
                 nginx_rels.add(rel)
 

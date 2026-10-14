@@ -133,7 +133,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         # someone watching a modal but silent in cron is exactly the kind of
         # frontend divergence this command exists to close. They are
         # warnings, not failures, so they never set `ok`.
-        for w in result.dist_upgrade_warnings:
+        for w in [*result.dist_upgrade_warnings, *result.warnings]:
             eprint(f"    ⚠ {w}")
 
         # `net.certs` is the TUI's cue too (publish_flows.PublishFlows._execute_publish

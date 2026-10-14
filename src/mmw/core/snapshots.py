@@ -58,6 +58,9 @@ class RecordingSink:
     def finalize_group(self, base, keep, live_checksums, exclude) -> tuple[int, int]:
         return 0, 0
 
+    def drop_if_empty(self, base: str) -> None:
+        pass                            # snapshots record files, not directories
+
     def prune_stale_bases(self, live_bases) -> tuple[int, int]:
         return 0, 0
 
@@ -99,6 +102,7 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
                                progress=progress, stop_event=stop_event)
         if warnings is not None:
             warnings.extend(result.dist_upgrade_warnings)     # reported, never dropped
+            warnings.extend(result.warnings)
         if stop_event is not None and stop_event.is_set():
             raise InterruptedError("snapshot stopped — nothing was recorded")
         problems = sink.errors + result.errors
@@ -112,6 +116,9 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
             "mirrors": [m.legacy_dict() for m in mirrors],
             # nginx needs a server block per upstream-file host.
             "upstream_hosts": upstream_file_hosts(upstream_files(mirror_dir, mirrors)),
+            # The bases the walk published (providers choose them); replay and
+            # bundles read these rather than re-deriving them from mirror_base.
+            "bases": result.bases,
             # Hosts providers serve beyond their units' own (changelogs.ubuntu.com
             # for dist-upgrade), so a snapshot's nginx is regenerated exactly.
             "extra_hosts": extra_hosts(network, mirrors),
@@ -123,13 +130,16 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
 
 
 def recorded_bases(settings: str) -> list[str]:
-    """The mirror_bases of a snapshot's recorded mirrors, longest first — so
-    the first that prefixes a path is the one it belongs to. (`mirror_base`
-    is a property: derived from each mirror, not stored.)"""
+    """The bases a snapshot's tree was published under, longest first — so the
+    first that prefixes a path is the one it belongs to. Recorded since
+    providers choose their own bases; derived from each recorded mirror's
+    `mirror_base` for snapshots taken before that."""
     from mmw.core.config import MirrorConfig
-    mirrors = json.loads(settings or "{}").get("mirrors", [])
-    return sorted({MirrorConfig.model_validate(m).mirror_base for m in mirrors},
-                  key=len, reverse=True)
+    data = json.loads(settings or "{}")
+    bases = data.get("bases")
+    if bases is None:
+        bases = {MirrorConfig.model_validate(m).mirror_base for m in data.get("mirrors", [])}
+    return sorted(set(bases), key=len, reverse=True)
 
 
 # ── finding, cleaning, importing ─────────────────────────────────────────────

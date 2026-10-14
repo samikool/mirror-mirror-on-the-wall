@@ -92,9 +92,9 @@ def _capture(tmp_path: Path) -> dict:
         config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", dist_upgrade=True),
         cfg, mirror_dir)
     bundled = {}
-    with tarfile.open(result.out_path, mode="r|") as tar:
+    with tarfile.open(result.out_path) as tar:
         for member in tar:
-            if member.isfile() and not member.name.startswith(".mmw/"):
+            if (member.isfile() or member.islnk()) and not member.name.startswith(".mmw/"):
                 bundled[member.name] = hashlib.sha256(tar.extractfile(member).read()).hexdigest()
     return {"published": published, "bundled": bundled}
 
@@ -112,4 +112,11 @@ def test_seam_publish_and_bundle_are_unchanged(tmp_path):
     if os.environ.get("MMW_UPDATE_GOLDEN") == "1":
         GOLDEN.parent.mkdir(parents=True, exist_ok=True)
         GOLDEN.write_text(json.dumps(actual, indent=2, sort_keys=True) + "\n")
-    assert actual == json.loads(GOLDEN.read_text())
+    expected = json.loads(GOLDEN.read_text())
+    # The original capture omitted hardlinks (the by-hash aliases). Compare
+    # the whole logical tree: their original bytes are already recorded in
+    # published. Bundle-specific bytes, such as nginx's root placeholder,
+    # still come from bundled. Which alias carries the tar payload is not
+    # significant, and changed when release files began shipping last.
+    expected["bundled"] = expected["published"] | expected["bundled"]
+    assert actual == expected

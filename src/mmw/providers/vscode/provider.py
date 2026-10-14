@@ -14,8 +14,11 @@ from urllib.parse import urlsplit
 import httpx
 
 from mmw.core.history import UnitHistory
-from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, SourceDescription
+from mmw.core.pool import KIND_PKG, KIND_RELEASE
+from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, Site, SourceDescription
 from mmw.providers.vscode import marketplace as mp
+from mmw.providers.vscode import image as gallery_image
+from mmw.providers.vscode import publish as vpub
 from mmw.providers.vscode import updates
 from mmw.providers.vscode.platforms import KINDS, QUALITIES, TARGET_PLATFORMS, builds
 
@@ -25,6 +28,7 @@ def _client() -> httpx.Client:
 
 
 MALICIOUS_URL = "https://main.vscode-cdn.net/extensions/marketplace.json"
+IMAGE_CACHE = "vscode-gallery-image"      # under mirror_dir: the saved python image
 
 
 def asset_repo_path(url: str) -> str | None:
@@ -76,8 +80,9 @@ class VscodeProvider(BaseProvider):
         Dimension("platforms", "platform", "Platforms", absent_matches=True),
         Dimension("qualities", "quality", "Qualities", absent_matches=True),
     )
-    publishes = False
+    publishes = True
     carries_history = True
+    site_per_base = False
 
     def __init__(self):
         self.catalog: dict[str, dict[str, dict]] = {}
@@ -235,6 +240,97 @@ class VscodeProvider(BaseProvider):
         stale = [i for i, e in exts.items() if any(mp.is_prerelease(v) for v in e.get("versions", []))]
         if stale:
             exts.update(mp.by_names(client, stale, flags=mp.FLAGS_ALL_VERSIONS, on_wait=say))
+
+    # ── publish ─────────────────────────────────────────────────────────────
+
+    def publish(self, ctx, units):
+        """Every payload at its upstream host/path, grouped by host (each host
+        is a base); provider JSON under `.vscode-meta/` is never published."""
+        from mmw.core.publisher.links import _dedup_rows, _link_rows
+        from mmw.core.publisher.results import MirrorPublishResult
+        rows = [r for r in _dedup_rows(ctx.pool.mirror_files([u.name for u in units]))
+                if not r[0].startswith(".vscode-meta/")]
+        by_host: dict[str, list] = {}
+        for repo_path, pool_path, size, kind, checksum in rows:
+            host, rest = repo_path.split("/", 1)
+            by_host.setdefault(host, []).append((rest, pool_path, size, kind, checksum))
+        results = []
+        for idx, host in enumerate(sorted(by_host)):
+            if ctx.stop_event and ctx.stop_event.is_set():
+                break
+            if ctx.mirror_start_callback:
+                ctx.mirror_start_callback(host, idx + 1, len(by_host))
+            result = MirrorPublishResult(mirror_name=host)
+            host_rows = by_host[host]
+            ordered = [r for r in host_rows if r[3] != KIND_RELEASE] + \
+                      [r for r in host_rows if r[3] == KIND_RELEASE]
+            if not _link_rows(ordered, host, ctx.sink, result, ctx.progress, ctx.stop_event,
+                              by_hash=False):
+                results.append(result)
+                break
+            if ctx.prune:
+                keep = {f"{host}/{r[0]}" for r in host_rows}
+                result.pruned, result.pruned_bytes = ctx.sink.finalize_group(
+                    host, keep, set(), set())
+            results.append(result)
+        return results, set(by_host)
+
+    def contribute(self, ctx) -> None:
+        from mmw.core.publisher.links import reconcile_extra_prefix
+        from mmw.core.publisher.results import MirrorPublishResult
+        from mmw.resources import gallery_script_bytes
+        units = [u for u in ctx.units if u.provider == self.name]
+        if not units:
+            if ctx.prune:
+                reconcile_extra_prefix(ctx.sink, vpub.GALLERY_DIR, set())
+                ctx.sink.drop_if_empty(vpub.GALLERY_DIR)
+            return
+        d = vpub.GALLERY_DIR
+        updates = vpub.updates(ctx.pool, units)
+        files = {
+            f"{d}/catalog.json": json.dumps(vpub.catalog(ctx.pool, units), sort_keys=True).encode(),
+            f"{d}/updates.json": json.dumps(updates, sort_keys=True).encode(),
+            f"{d}/gallery.py": gallery_script_bytes(),
+            f"{d}/compose.yaml": vpub.compose_yaml(ctx.network.gallery_port, gallery_image.IMAGE,
+                                                  ctx.network.name),
+            f"{d}/VSCODE.md": vpub.vscode_md(ctx.network, gallery_image.TAR_NAME, updates),
+        }
+        for rel, data in files.items():
+            ctx.sink.write(rel, data)
+        written = set(files)
+        problems = MirrorPublishResult(mirror_name="vscode gallery")
+        img = gallery_image.gallery_image(ctx.mirror_dir / IMAGE_CACHE)
+        if img.path is None:
+            # A warning, not an error: a bundling machine without Docker is
+            # the ordinary airgap case, and an error would refuse the snapshot.
+            ctx.result.warnings.append(
+                f"{img.error} — the gallery image is not included; the far side "
+                f"needs {gallery_image.IMAGE} ({gallery_image.PLATFORM}) loaded some other way")
+        else:
+            rel = f"{d}/{gallery_image.TAR_NAME}"
+            if ctx.sink.link(img.path, rel, img.path.stat().st_size, img.checksum,
+                             KIND_PKG) == "error":
+                problems.errors.append(f"{rel}: could not be placed")
+            else:
+                written.add(rel)
+        if problems.errors:
+            ctx.result.mirrors.append(problems)
+        if ctx.prune:
+            reconcile_extra_prefix(ctx.sink, d, written)
+
+    def nginx_sites(self, units, port):
+        return [
+            Site(r"~^[^.]+\.gallerycdn\.vsassets\.io$", root="$host"),
+            *[Site(h, root=h) for h in vpub.STATIC_HOSTS],
+            Site("update.code.visualstudio.com", proxy=("/",)),
+            Site("marketplace.visualstudio.com",
+                 proxy=("/_apis/public/gallery/extensionquery",), exact=True),
+            Site(r"~^[^.]+\.gallery\.vsassets\.io$", proxy=("/",)),
+        ]
+
+    def cert_names(self, network, units) -> list[str]:
+        """The six names — only for a network that publishes VS Code units."""
+        return list(vpub.HOSTS) if units else []
 
     # ── presentation ────────────────────────────────────────────────────────
 

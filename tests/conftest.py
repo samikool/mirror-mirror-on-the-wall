@@ -44,3 +44,12 @@ def _no_paste_debounce(monkeypatch):
     `test_wizard_repository_flow.py` covers the coalescing behaviour itself.
     """
     monkeypatch.setattr(custom_repo, "_PASTE_DEBOUNCE", 0.01, raising=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_docker(monkeypatch):
+    """No test may run the real Docker CLI (it pulls from the network and
+    writes to the host's image store). Publishing a VS Code network without
+    a fake (`test_gallery_image._fake_docker`) reports "no Docker" instead."""
+    from mmw.providers.vscode import image
+    monkeypatch.setattr(image, "DOCKER", "mmw-test-has-no-docker", raising=True)

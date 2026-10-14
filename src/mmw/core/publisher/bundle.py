@@ -18,7 +18,7 @@ import hashlib
 from pathlib import Path
 
 from mmw.core.config import Config, NetworkConfig
-from mmw.core.pool import Pool
+from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 
 from mmw.core.publisher.manifest import (
     MANIFEST_SUFFIX,
@@ -179,11 +179,11 @@ def bundle_network(
                     f"snapshot {dest.stamp} is history only (imported from a bundle made "
                     "before snapshots existed; its files may be gone) — it can be a "
                     "starting point, never a destination")
-    du_warnings: list[str] = []
+    snap_warnings: list[str] = []
     if to_ref == "now":
         bundle_output_path(network, "x", out_path)   # destination check
         dest = take_snapshot(network, cfg, mirror_dir, kind="bundle", stop_event=stop_event,
-                             warnings=du_warnings)
+                             warnings=snap_warnings)
     if start is not None and start.id == dest.id:
         raise ValueError(f"from and to are the same snapshot ({dest.stamp}) — nothing to send")
 
@@ -200,7 +200,7 @@ def bundle_network(
                             created_label=dest.label)
     result = BundleResult(network_name=network.name, out_path=target, created=dest.stamp,
                           previous=header.previous, full=header.full)
-    result.dist_upgrade_warnings = du_warnings
+    result.warnings = snap_warnings
 
     with Pool(mirror_dir, read_only=True) as pool:
         missing = pool.snapshot_missing(dest.id)
@@ -220,6 +220,11 @@ def bundle_network(
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
         current_base, seen_bases = None, 0
+        # Packages as the rows stream past; indexes, then release files after
+        # — the order publish uses, so a far side mid-apply never serves an
+        # index naming a file not there yet.
+        from mmw.core.publisher import replay_kind
+        deferred: dict[str, list] = {KIND_META: [], KIND_RELEASE: []}
         for i, (rel, checksum, pool_path, size) in enumerate(pool.snapshot_blob_rows(dest.id)):
             if stop_event is not None and i % 1000 == 0 and stop_event.is_set():
                 break
@@ -228,7 +233,14 @@ def bundle_network(
                 current_base, seen_bases = base, seen_bases + 1
                 mirror_start_callback(base, seen_bases, len(bases))
             dest_paths.add(rel)
-            sink.link(Path(pool_path), rel, size, checksum, "pkg")
+            kind = replay_kind(rel, base)
+            if kind == KIND_PKG:
+                sink.link(Path(pool_path), rel, size, checksum, kind)
+            else:
+                deferred[kind].append((rel, checksum, pool_path, size))
+        for kind in (KIND_META, KIND_RELEASE):
+            for rel, checksum, pool_path, size in deferred[kind]:
+                sink.link(Path(pool_path), rel, size, checksum, kind)
         if stop_event is not None and stop_event.is_set():
             result.own_errors.append("stopped before the bundle was written")
             return result

@@ -760,6 +760,10 @@ class NetworkConfig(_StrictModel):
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
     certs: bool = False       # TLS key/CSR; serve HTTPS wherever it lands — bundles carry cert + key
     nginx: bool = True        # generate conf.d-style nginx site files
+    # Where this network's VS Code gallery container listens on 127.0.0.1;
+    # the generated nginx proxies to it. Two networks served from one host
+    # need different ports.
+    gallery_port: int = Field(default=8765, ge=1, le=65535)
 
     @model_validator(mode="before")
     @classmethod
@@ -1221,6 +1225,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
                 if n.select else {}
             ),
             **({"nginx": False} if not n.nginx else {}),
+            **({"gallery_port": n.gallery_port} if n.gallery_port != 8765 else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
         }

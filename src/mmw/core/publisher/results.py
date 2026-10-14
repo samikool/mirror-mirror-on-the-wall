@@ -76,6 +76,9 @@ class NetworkPublishResult:
     dry_run: bool = False
     dist_upgrade_paths: list[tuple[str, str]] = field(default_factory=list)
     dist_upgrade_warnings: list[str] = field(default_factory=list)
+    # Anything else worth telling that is not a failure (a missing gallery
+    # image): printed and notified like dist-upgrade warnings, never sets `ok`.
+    warnings: list[str] = field(default_factory=list)
     pool_pruned: int = 0
     pool_pruned_bytes: int = 0
     # Files removed by the network-wide reconcile steps that belong to no
@@ -86,6 +89,9 @@ class NetworkPublishResult:
     # truth about what publish deleted.
     extra_pruned: int = 0
     extra_pruned_bytes: int = 0
+    # Every base the walk published (`BaseProvider.publish` decides them);
+    # recorded in snapshots so replay and bundles need not re-derive them.
+    bases: list[str] = field(default_factory=list)
     # Set by a dry run: the totals below then count shared files once
     # instead of summing the per-mirror estimates.
     totals: NetworkTotals | None = None
@@ -160,6 +166,7 @@ class BundleResult:
     mirrors: list[MirrorPublishResult] = field(default_factory=list)
     errors: list[str] = _FoldedErrors()
     dist_upgrade_warnings: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def own_errors(self) -> list[str]:

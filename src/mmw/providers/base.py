@@ -74,6 +74,18 @@ class SourceDescription:
     location: str
 
 
+@dataclass(frozen=True)
+class Site:
+    """One nginx server block a provider needs beyond a static block per
+    `mirror_base`. `server_name` is exact or `~regex`; `root` a directory under
+    the publish root (`$host` allowed) served statically; `proxy` locations go
+    to the network's gallery (`/` = everything); `exact` = `location = …`."""
+    server_name: str
+    root: str | None = None
+    proxy: tuple = ()
+    exact: bool = False
+
+
 @dataclass
 class PublishContext:
     """What a provider's `contribute()` may use while a network is laid out.
@@ -89,6 +101,11 @@ class PublishContext:
     sink: Any
     result: Any
     units: list
+    prune: bool = False
+    progress: Any = None
+    stop_event: Any = None
+    keep_extra: frozenset = frozenset()
+    mirror_start_callback: Any = None
 
 
 class BaseProvider(ABC):
@@ -101,7 +118,7 @@ class BaseProvider(ABC):
     description: str = ""
     dimensions: tuple[Dimension, ...] = ()
     by_hash: bool = False   # publish index files under by-hash/SHA256/ too
-    publishes: bool = True  # publish/bundle support (stage 4 turns VS Code on)
+    publishes: bool = True  # publish/bundle support
     carries_history: bool = False  # fetch_all reads `history`; refetches must pass it too
 
     def dimension(self, name: str) -> Dimension | None:
@@ -217,9 +234,45 @@ class BaseProvider(ABC):
         nginx, certs and snapshots all ask)."""
         return []
 
+    def publish(self, ctx: PublishContext, units: list) -> tuple[list, set[str]]:
+        """Lay this provider's `units` into `ctx.sink`; return (per-group
+        results, the bases published). Default: one group per `mirror_base`,
+        packages → indexes → release files, then a prune of that base.
+
+        Nested-base protection (a base inside another must not be pruned by
+        it) spans this provider's units only: providers publish under
+        disjoint hosts — apt repositories vs Microsoft's — in practice."""
+        from mmw.core.publisher.links import publish_group
+        groups: dict[str, list] = {}
+        for unit in units:
+            groups.setdefault(unit.mirror_base, []).append(unit)
+        all_bases = set(groups)
+        results = []
+        for idx, (base, members) in enumerate(groups.items()):
+            if ctx.stop_event and ctx.stop_event.is_set():
+                break
+            if ctx.mirror_start_callback:
+                ctx.mirror_start_callback(members[0].name, idx + 1, len(groups))
+            nested = {b for b in all_bases if b != base and b.startswith(base + "/")}
+            results.append(publish_group(
+                members, ctx.sink, ctx.pool, progress=ctx.progress, stop_event=ctx.stop_event,
+                prune=ctx.prune, prune_exclude=nested, keep_extra=set(ctx.keep_extra)))
+        return results, all_bases
+
     def preview(self, network, cfg, pool, mirror_dir, result) -> None:
         """Dry-run additions to a `NetworkPublishResult` (read-only)."""
         return None
+
+    site_per_base: bool = True   # nginx: one static block per unit `mirror_base`
+
+    def nginx_sites(self, units, port: int) -> list:
+        """Server blocks beyond the per-`mirror_base` ones (`Site`s)."""
+        return []
+
+    def cert_names(self, network, units) -> list[str]:
+        """Names the network's certificate must cover beyond its units' own
+        hosts (wildcards allowed). Default: the extra hosts."""
+        return self.extra_hosts(network, units)
 
     def contribute(self, ctx: PublishContext) -> None:
         """Publish-time additions through `ctx.sink` (called for every

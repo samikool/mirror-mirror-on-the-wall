@@ -31,6 +31,10 @@ would online.)
   invalidates a signature.
 - **Bundling across an airgap** — one plain `.tar` per network carrying only what
   changed, plus a stdlib-only applier that runs on Python 3.6.
+- **VS Code too** — the Microsoft Marketplace (top N, chosen ids, or all),
+  desktop installers and Remote-SSH server builds, served offline at
+  Microsoft's own hostnames by nginx and a small gallery container. Same
+  pool, same networks, same bundles — see [docs/vscode.md](docs/vscode.md).
 - **Two frontends, one engine** — a full Textual TUI and cron-safe headless
   commands with meaningful exit codes.
 - **Defensive by default** — upstream-supplied paths are validated against
@@ -93,6 +97,7 @@ end, from zero to a client running `apt update` against your mirror.
 | [Airgapped operation](docs/airgap.md) | Bundle, transfer, `apply.py`, nginx, DNS, GPG import on the far side, troubleshooting |
 | [Configuration](docs/configuration.md) | Every `mmw.toml` key and default, generated from the models |
 | [CLI reference](docs/cli.md) | Every command and flag, generated from the CLI |
+| [VS Code](docs/vscode.md) | Mirror the VS Code Marketplace, installers and Remote-SSH server builds |
 
 ## How clients find the mirror
 

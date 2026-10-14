@@ -277,6 +277,12 @@ class NetworkDetail(Widget):
         async with self._rebuild_lock:
             self._rebuild_pending = False
             await self.remove_children()
+            # Removal waits only for children whose task started; a child
+            # mounted while the app is shutting down never starts, so it
+            # outlives the removal and the rebuild would collide on its id.
+            # Nothing is shown any more — leave it.
+            if self.children:
+                return
             self._mount_detail()
 
     def _meta(self, label: str, value: str) -> Label:

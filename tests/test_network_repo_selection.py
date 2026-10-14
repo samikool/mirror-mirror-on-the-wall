@@ -279,7 +279,7 @@ def test_edit_persists_every_networkconfig_field(tmp_path):
         name="renamed", root=tmp_path / "srv", bundle_dir=tmp_path / "usb",
         select=[config.NetworkSelect(source="https://deb.example.com/debian")],
         prune=False, dist_upgrade=True, certs=True,
-        nginx=False,
+        nginx=False, gallery_port=9100,
     )
     defaults = config.NetworkConfig(name="x")
     unchanged = [f for f in config.NetworkConfig.model_fields

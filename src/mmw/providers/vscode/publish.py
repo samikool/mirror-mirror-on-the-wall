@@ -3,6 +3,7 @@ gallery's data (catalog, update index), its script, its compose file, and the
 DNS / TLS guide — all under `vscode-gallery/` in the network root."""
 import json
 import re
+from urllib.parse import urlsplit
 
 GALLERY_DIR = "vscode-gallery"
 STATIC_HOSTS = ("vscode.download.prss.microsoft.com", "main.vscode-cdn.net")
@@ -130,7 +131,30 @@ prints `200` — not `000` (DNS or certificate), not `502` (the container is
 not running)."""
 
 
-def vscode_md(network, tar_name: str, updates: dict) -> bytes:
+def _publisher_dns(catalogue) -> str:
+    hosts = set()
+    for extension in catalogue:
+        for version in extension.get('versions', []):
+            urls = [version.get('assetUri', ''), version.get('fallbackAssetUri', ''),
+                    *(file.get('source', '') for file in version.get('files', []))]
+            for url in urls:
+                host = urlsplit(url).hostname or ''
+                if re.fullmatch(r'[a-z0-9-]+\.(?:gallerycdn|gallery)\.vsassets\.io', host):
+                    hosts.add(host)
+    if not hosts:
+        return ''
+    publishers = {}
+    for host in sorted(hosts):
+        publishers.setdefault(host.split('.', 1)[0], []).append(host)
+    lines = ['MIRROR_IP ' + ' '.join(names) for names in publishers.values()]
+    return '\n'.join([
+        'For a site without wildcard DNS, these hosts-file entries cover the',
+        'publishers in this network (also add the four exact hostnames above):',
+        '', '```', *lines, '```', '',
+        'Regenerate these entries when the selection gains a publisher.', ''])
+
+
+def vscode_md(network, tar_name: str, updates: dict, *, catalogue=()) -> bytes:
     exact = [h for h in HOSTS if not h.startswith("*.")]
     return f"""\
 # VS Code on network `{network.name}`
@@ -153,12 +177,20 @@ dnsmasq (`/etc/dnsmasq.d/vscode.conf`) — each line also covers subdomains:
 BIND: one zone per name above (`*` records for the two wildcard zones), each
 with `@` and `*` pointing at the mirror.
 
+{_publisher_dns(catalogue)}
 ## 2. TLS
 
 VS Code only talks HTTPS. Sign a certificate covering every name above
 (`mmw certs` / `sign.py` include both wildcards) with a CA the clients trust,
 and install that CA on every client (Windows: Local Machine → Trusted Root;
 macOS: System keychain, Always Trust; Linux: the system store — VS Code uses it).
+
+For a CLI whose bundled Node runtime does not read that system store, trust
+the same CA explicitly when running it:
+
+```
+NODE_EXTRA_CA_CERTS=/path/to/site-ca.crt code --install-extension publisher.name
+```
 
 ## 3. The gallery container
 

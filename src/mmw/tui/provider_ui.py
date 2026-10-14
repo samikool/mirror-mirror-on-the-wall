@@ -17,6 +17,7 @@ class AddEntry:
     make_step: Callable[[set[str]], object]          # existing identities → WizardStep
     offer_source_packages: bool                      # Confirm shows the deb-src box
     make_confirm: Callable[[list], object] | None = None
+    confirm_required: bool = True
 
 
 def _apt_step(existing_urls: set[str]):
@@ -34,11 +35,6 @@ def _vscode_step(existing_urls):
     return StepVscode(existing_urls)
 
 
-def _vscode_confirm(sources):
-    from mmw.tui.vscode_source import VscodeConfirmStep
-    return VscodeConfirmStep(sources)
-
-
 def _vscode_edit(source, existing_names, existing_urls):
     from mmw.tui.vscode_source import EditVscodePage
     return EditVscodePage(source, existing_names=existing_names, existing_urls=existing_urls)
@@ -51,7 +47,7 @@ _ADD: dict[str, AddEntry] = {
                     "Debian, Ubuntu or vendor apt repository — dists/ tree or flat",
                     "Repository", _apt_step, offer_source_packages=True),
     "vscode": AddEntry("vscode", "VS Code", "Marketplace extensions, desktop and server builds",
-                       "VS Code", _vscode_step, False, _vscode_confirm),
+                       "VS Code", _vscode_step, False, confirm_required=False),
 }
 _EDIT: dict[str, Callable] = {"apt": _apt_edit, "apt-flat": _apt_edit, "vscode": _vscode_edit}
 

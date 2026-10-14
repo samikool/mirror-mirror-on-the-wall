@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from mmw.core.config import ExtensionSelection
 from mmw.core.history import UnitHistory
 from mmw.core.pool import KIND_PKG, KIND_RELEASE
 from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, Site, SourceDescription, SourceField
@@ -215,11 +216,23 @@ class VscodeProvider(BaseProvider):
                 wanted |= mp.dependencies(chosen[i], prerelease=sel.prerelease)
             wanted -= set(chosen)
             wanted -= malicious
+            invalid = set()
+            for ident in wanted:
+                try:
+                    ExtensionSelection(ids=[ident])
+                except ValueError:
+                    invalid.add(ident)
+            if invalid:
+                notes.append(f"{source.name}: skipped {len(invalid)} malformed upstream dependency ID(s): "
+                             + ", ".join(sorted(invalid)[:5]) + ("…" if len(invalid) > 5 else ""))
+                wanted -= invalid
             if not wanted:
                 break
             found = mp.by_names(client, sorted(wanted), on_wait=say)
-            for gone in sorted(wanted - set(found)):
-                notes.append(f"{source.name}: dependency {gone} is not on the marketplace")
+            missing = sorted(wanted - set(found))
+            if missing:
+                notes.append(f"{source.name}: {len(missing)} dependencies not on the marketplace: "
+                             + ", ".join(missing[:5]) + ("…" if len(missing) > 5 else ""))
             self._refresh_prereleases(client, found, sel.prerelease, say)
             chosen.update(found)
             frontier = set(found)
@@ -310,13 +323,14 @@ class VscodeProvider(BaseProvider):
             return
         d = vpub.GALLERY_DIR
         updates = vpub.updates(ctx.pool, units)
+        catalogue = vpub.catalog(ctx.pool, units)
         files = {
-            f"{d}/catalog.json": json.dumps(vpub.catalog(ctx.pool, units), sort_keys=True).encode(),
+            f"{d}/catalog.json": json.dumps(catalogue, sort_keys=True).encode(),
             f"{d}/updates.json": json.dumps(updates, sort_keys=True).encode(),
             f"{d}/gallery.py": gallery_script_bytes(),
             f"{d}/compose.yaml": vpub.compose_yaml(ctx.network.gallery_port, gallery_image.IMAGE,
                                                   ctx.network.name),
-            f"{d}/VSCODE.md": vpub.vscode_md(ctx.network, gallery_image.TAR_NAME, updates),
+            f"{d}/VSCODE.md": vpub.vscode_md(ctx.network, gallery_image.TAR_NAME, updates, catalogue=catalogue),
         }
         for rel, data in files.items():
             ctx.sink.write(rel, data)

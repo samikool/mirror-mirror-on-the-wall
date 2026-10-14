@@ -144,3 +144,14 @@ def test_progress_names_every_group_and_never_restarts_its_count(tmp_path, up, d
     assert "vscode.download.prss.microsoft.com" in [c[0] for c in calls]
     assert [c[1] for c in calls] == list(range(1, len(calls) + 1))
     assert calls[-1][2] == len(calls)
+
+
+def test_generated_guide_lists_actual_publishers_for_sites_without_wildcard_dns():
+    from mmw.providers.vscode.publish import vscode_md
+    from vscode_client_fixtures import ClientUpstream
+    catalogue = list(ClientUpstream().catalog.values())
+    guide = vscode_md(config.NetworkConfig(name='lab'), 'image.tar', {}, catalogue=catalogue).decode()
+    assert 'MIRROR_IP github.gallery.vsassets.io github.gallerycdn.vsassets.io' in guide
+    assert 'MIRROR_IP mmw-fixture.gallery.vsassets.io mmw-fixture.gallerycdn.vsassets.io' in guide
+    assert 'Regenerate these entries when the selection gains a publisher' in guide
+    assert 'NODE_EXTRA_CA_CERTS' in guide

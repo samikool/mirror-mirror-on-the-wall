@@ -274,7 +274,7 @@ class MmwApp(ThemedApp):
             if not mirrors:
                 section.end_resolution("No sync units resolved. " + " ".join(messages))
                 return
-            section.end_resolution("")
+            section.end_resolution("\n".join(message for message in messages if message.startswith("⚠")))
             await section.start(cfg, mirrors, dry_run=dry_run, resolution_gen=gen)
         except Exception as exc:
             if gen == self._resolve_gen and self._resolve_section is not None:

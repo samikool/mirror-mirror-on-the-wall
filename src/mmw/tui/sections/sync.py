@@ -27,6 +27,7 @@ class SyncSection(Page):
     def __init__(self):
         super().__init__()
         self.view: SyncView | None = None
+        self.resolution_errors = False
 
     def compose_body(self) -> ComposeResult:
         yield Static(_IDLE, id="sync-idle", markup=False)
@@ -36,6 +37,7 @@ class SyncSection(Page):
         self.query_one("#sync-resolve").display = False
 
     def begin_resolution(self):
+        self.resolution_errors = False
         self.query_one("#sync-idle").display = False
         self.query_one("#sync-resolve").display = True
         self.resolution_progress("Resolving sources…")
@@ -46,6 +48,7 @@ class SyncSection(Page):
         self.query_one("#sync-resolve", Static).update(text)
 
     def end_resolution(self, text):
+        self.resolution_errors = "⚠" in text
         self.resolution_progress(text)
         self.query_one("#sync-resolve").display = bool(text)
         self.query_one("#btn-sync-stop", Button).disabled = True
@@ -76,7 +79,10 @@ class SyncSection(Page):
         self.query_one("#btn-sync-stop", Button).disabled = True
         self.refresh_bindings()
         stopped = event.view._stop_event.is_set()
-        self.set_status(event.view.summary(), "info" if stopped else "ok")
+        summary = event.view.summary()
+        if self.resolution_errors:
+            summary += " Sources failed to resolve; sync is incomplete."
+        self.set_status(summary, "error" if self.resolution_errors else "info" if stopped else "ok")
 
     @on(Button.Pressed, "#btn-sync-stop")
     def _stop_pressed(self) -> None:

@@ -13,6 +13,7 @@ def up(monkeypatch):
     fake = FakeUpstream()
     monkeypatch.setattr(prov, "_client", fake.client)
     monkeypatch.setattr(mp, "BACKOFF", 0.0)
+    monkeypatch.setattr(mp, "RATE_LIMIT_WAIT", 0.0)
     return fake
 
 
@@ -77,3 +78,35 @@ def test_a_selection_that_resolves_to_nothing_is_an_error(up):
 def test_no_extension_selection_at_all_is_fine_for_builds(up):
     r = get_provider("vscode").resolve(_src(kinds=["server"]))
     assert not r.errors and r.mirrors
+
+
+def test_all_policy_survives_transient_gallery_refusal_and_keeps_extension_units(up):
+    up.status_queue = [403]
+    provider = prov.VscodeProvider()
+    src = _src(platforms=['linux-x64'], qualities=['stable'], extensions={'all': True})
+    result = provider.resolve(src)
+    assert not result.errors
+    assert {u.dims['kind'] for u in result.mirrors} == {'extensions', 'desktop', 'server'}
+    assert set(up.catalog) <= set(provider.catalog[src.identity])
+
+
+def test_all_ignores_malformed_upstream_dependencies_without_dropping_extensions(up, monkeypatch):
+    import copy
+    import json
+    extension = copy.deepcopy(next(iter(up.catalog.values())))
+    extension['versions'] = [{'version': '1.0.0', 'files': [], 'properties': [{
+        'key': mp.DEPENDENCIES_KEY, 'value': 'eslint,publisher.extensionn ame,.broken,ms-python.vscode-pylance'}]}]
+    up.catalog[mp.ext_id(extension)] = extension
+    monkeypatch.setattr(mp, "search_all", lambda *a, **kw: [extension])
+    provider = prov.VscodeProvider()
+    src = _src(platforms=['linux-x64'], qualities=['stable'], extensions={'all': True})
+    result = provider.resolve(src)
+    assert not result.errors
+    assert any('malformed upstream dependency' in note and 'eslint' in note for note in result.notes)
+    assert {u.dims['kind'] for u in result.mirrors} == {'extensions', 'desktop', 'server'}
+    assert {mp.ext_id(extension), 'ms-python.vscode-pylance'} <= set(provider.catalog[src.identity])
+    for request in up.requests:
+        if request.method == 'POST':
+            names = [c['value'] for c in json.loads(request.content)['filters'][0]['criteria']
+                     if c['filterType'] == 7]
+            assert not {'eslint', 'publisher.extensionn ame', '.broken'} & set(names)

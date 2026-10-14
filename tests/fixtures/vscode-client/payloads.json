@@ -1,0 +1,119 @@
+[
+  {
+    "assetType": "Microsoft.VisualStudio.Code.Manifest",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Code.Manifest",
+    "bytes": 2627,
+    "sha256": "60b15b3e62eba9d8e16ce2551d52277dfdd1fde47a4ac883caa0c0f0d5f2cd3d"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Services.Content.Changelog",
+    "bytes": 16859,
+    "sha256": "e153f9d747f5df7292874ab770fcc810c2dff97154ae84f6885ab70c0e03f1b7"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Services.Content.Details",
+    "bytes": 3146,
+    "sha256": "edda7c48d3eef6170c862140679ec0d07461eaf86f2ccbd85aa3bcbf8226a400"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Content.License",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Services.Content.License",
+    "bytes": 1063,
+    "sha256": "e2c871bb6effe9f6ec8d94d6596db33c4bfe4dd94969a6a9a2fb0473ebe6442e"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Services.Icons.Default",
+    "bytes": 42481,
+    "sha256": "416be5e8413ec71edec7434e43e78dfc5a73ef7fadc076f41e4958039efd6d5b"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Services.Icons.Small",
+    "bytes": 8583,
+    "sha256": "25788586fda72eb3b804cc6beb0382b261daaf6aa67d313cca0f755b8e76d87c"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Services.VsixManifest",
+    "bytes": 2839,
+    "sha256": "cb882f5489ba4a290f4b50c9388f210bcdf2c8ce5236929ed8ffaa091fe9d74f"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Services.VSIXPackage",
+    "bytes": 91191,
+    "sha256": "74e69da1804f718ae9ce6a8ea49c06fbf9cfc137c9b65b0e14353715cb5d474a"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.5/1727933603062/Microsoft.VisualStudio.Services.VsixSignature",
+    "bytes": 10395,
+    "sha256": "e17889b7913db8c55c83cd23b1e67111e4d0c6af4550be4f8ed3e485d947e9bd"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Code.Manifest",
+    "file": "6.3.4/Microsoft.VisualStudio.Code.Manifest",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Code.Manifest",
+    "bytes": 2627,
+    "sha256": "f8525318fc94e93ad1b05b3c0d3240e302d2c0c097263278c3d748a3becea3d9"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Content.Changelog",
+    "file": "6.3.4/Microsoft.VisualStudio.Services.Content.Changelog",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Services.Content.Changelog",
+    "bytes": 16550,
+    "sha256": "0db1d3ff977c72014f31d8b6e7113cc9192c514d41474c9d5d28bcc4147d4db9"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Content.Details",
+    "file": "6.3.4/Microsoft.VisualStudio.Services.Content.Details",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Services.Content.Details",
+    "bytes": 3146,
+    "sha256": "edda7c48d3eef6170c862140679ec0d07461eaf86f2ccbd85aa3bcbf8226a400"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Content.License",
+    "file": "6.3.4/Microsoft.VisualStudio.Services.Content.License",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Services.Content.License",
+    "bytes": 1063,
+    "sha256": "e2c871bb6effe9f6ec8d94d6596db33c4bfe4dd94969a6a9a2fb0473ebe6442e"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Icons.Default",
+    "file": "6.3.4/Microsoft.VisualStudio.Services.Icons.Default",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Services.Icons.Default",
+    "bytes": 42481,
+    "sha256": "416be5e8413ec71edec7434e43e78dfc5a73ef7fadc076f41e4958039efd6d5b"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.Icons.Small",
+    "file": "6.3.4/Microsoft.VisualStudio.Services.Icons.Small",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Services.Icons.Small",
+    "bytes": 8583,
+    "sha256": "25788586fda72eb3b804cc6beb0382b261daaf6aa67d313cca0f755b8e76d87c"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.VsixManifest",
+    "file": "6.3.4/Microsoft.VisualStudio.Services.VsixManifest",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Services.VsixManifest",
+    "bytes": 2839,
+    "sha256": "e990e1d1f4892022d7150249ae145192e4313989464bb0a59fce77bc916d90ec"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+    "file": "6.3.4/Microsoft.VisualStudio.Services.VSIXPackage",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Services.VSIXPackage",
+    "bytes": 91111,
+    "sha256": "25b23407b8f1b7fda9360fe1323004e690416b72db51d8be185d221195035033"
+  },
+  {
+    "assetType": "Microsoft.VisualStudio.Services.VsixSignature",
+    "file": "6.3.4/Microsoft.VisualStudio.Services.VsixSignature",
+    "url": "https://GitHub.gallerycdn.vsassets.io/extensions/github/github-vscode-theme/6.3.4/1680003819182/Microsoft.VisualStudio.Services.VsixSignature",
+    "bytes": 10249,
+    "sha256": "b2508ad7376971499dc3cfd10a64d2e51e198b1acd1229ed947d7a0720bc3d7c"
+  }
+]

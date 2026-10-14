@@ -11,6 +11,7 @@ from vscode_fakes import FakeUpstream, load
 @pytest.fixture(autouse=True)
 def _no_backoff(monkeypatch):
     monkeypatch.setattr(mp, "BACKOFF", 0.0)
+    monkeypatch.setattr(mp, "RATE_LIMIT_WAIT", 0.0)
 
 
 def test_query_sends_what_vscodeoffline_sends():
@@ -98,3 +99,58 @@ def test_recorded_python_dependencies_are_found():
     assert deps                      # the recorded release declares pack members
     assert recorded and recorded <= deps | mp.dependencies(
         load("names-python.json")["results"][0]["extensions"][0], prerelease=True)
+
+
+def test_transient_403_is_retried_without_dropping_extensions():
+    up = FakeUpstream()
+    up.status_queue = [403]
+    phases = []
+    assert mp.search_all(up.client(), on_wait=phases.append)
+    assert any('HTTP 403' in phase for phase in phases)
+    assert any('listed' in phase for phase in phases)
+
+
+def test_persistent_403_still_fails_with_bounded_retries():
+    up = FakeUpstream()
+    up.status_queue = [403] * 50
+    with pytest.raises(mp.MarketplaceError, match='403'):
+        mp.search_all(up.client())
+    assert len(up.requests) == mp.ATTEMPTS
+
+
+def test_rate_limit_respects_retry_after(monkeypatch):
+    import httpx
+    waits = []
+    monkeypatch.setattr(mp.time, 'sleep', waits.append)
+    up = FakeUpstream()
+    calls = []
+    def respond(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={'Retry-After': '196'})
+        return up(request)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        assert mp.top_n(client, 1)
+    assert waits == [196]
+
+
+def test_all_pages_in_publication_order_while_top_n_uses_install_counts(monkeypatch):
+    import httpx
+    monkeypatch.setattr(mp, 'PAGE', 1)
+    extensions = load('top3.json')['results'][0]['extensions']
+    queries = []
+    def respond(request):
+        query = json.loads(request.content)['filters'][0]
+        queries.append(query)
+        offset = (query['pageNumber'] - 1) * query['pageSize']
+        return httpx.Response(200, json={'results': [{
+            'extensions': extensions[offset:offset + query['pageSize']],
+            'resultMetadata': [{'metadataType': 'ResultCount',
+                                'metadataItems': [{'count': len(extensions)}]}]}]})
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        assert mp.search_all(client) == extensions
+        assert [q['pageNumber'] for q in queries] == [1, 2, 3]
+        assert all((q['sortBy'], q['sortOrder']) == (10, 1) for q in queries)
+        queries.clear()
+        assert mp.top_n(client, 1) == extensions[:1]
+        assert (queries[0]['sortBy'], queries[0]['sortOrder']) == (4, 2)

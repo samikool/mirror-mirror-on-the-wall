@@ -200,3 +200,29 @@ def test_sync_reservation_covers_removal_of_finished_cards(tmp_path, monkeypatch
                 assert section.query(sync_module.SyncView)
                 section.view.stop()
     asyncio.run(scenario())
+
+
+def test_partial_sync_keeps_extension_resolution_failure_visible(tmp_path, monkeypatch):
+    from mmw.tui import repositories
+    from mmw.tui import sync as sync_module
+    from mmw.tui.sections.sync import SyncSection
+    from test_tui_sync_section import _mirror, _fake_sync_mirror, SRC
+    error = '⚠ vscode: extensions not resolved — gallery answered HTTP 403'
+    monkeypatch.setattr(repositories, 'resolve_selection', lambda *a, **kw: ([_mirror()], [error]))
+    monkeypatch.setattr(sync_module, 'sync_mirror', _fake_sync_mirror)
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path/'m'),
+                        sources=[config.SourceConfig(url=SRC)])
+    async def scenario():
+        app = MmwApp(cfg, tmp_path, initial_section='sync')
+        async with app.run_test() as pilot:
+            await app.start_sync([])
+            section = app.screen
+            assert isinstance(section, SyncSection)
+            section.view.stop()
+            await until(pilot, lambda: 'sync is incomplete' in str(section.query_one('#page-status').render()))
+            assert section.query_one('#sync-resolve').display
+            assert 'extensions not resolved' in str(section.query_one('#sync-resolve').render())
+            # A new request clears the preceding failure.
+            section.begin_resolution()
+            assert not section.resolution_errors
+    asyncio.run(scenario())

@@ -18,6 +18,7 @@ def up(monkeypatch):
     fake = FakeUpstream()
     monkeypatch.setattr(prov, "_client", fake.client)
     monkeypatch.setattr(mp, "BACKOFF", 0.0)
+    monkeypatch.setattr(mp, "RATE_LIMIT_WAIT", 0.0)
     return fake
 
 

@@ -27,18 +27,6 @@ def test_lookup_names_and_missing_ids(upstream):
     assert rows['missing.id'] is None
 
 
-def test_check_uses_private_provider(upstream):
-    from mmw.providers import get_provider
-    from mmw.tui.vscode_source import check_source
-    provider = get_provider('vscode')
-    before = dict(provider.catalog)
-    result = check_source(config.VscodeSource(provider='vscode', platforms=['linux-x64'],
-                                             extensions={'ids': ['ms-python.python']}))
-    assert not result.errors
-    assert result.extension_count >= 1
-    assert provider.catalog == before
-
-
 def test_cancel_edit_preserves_source():
     from mmw.tui.vscode_source import EditVscodePage
     src = config.VscodeSource(provider='vscode', platforms=['linux-x64'])
@@ -102,73 +90,17 @@ def test_lookup_discards_old_answer_after_input_change(monkeypatch, fails):
         release.set()
 
 
-def test_confirmation_failure_requires_explicit_unchecked_choice(monkeypatch):
-    from mmw.tui import vscode_source as vs
-    def check(source, **kw):
-        return vs.SourceCheck([], [], ['offline'], 0)
-    monkeypatch.setattr(vs, 'check_source', check)
-    class Host(ThemedApp):
-        def compose(self):
-            yield vs.VscodeConfirmStep([config.VscodeSource(provider='vscode')])
-    async def scenario():
-        app = Host()
-        async with app.run_test() as pilot:
-            view = app.query_one(vs.VscodeConfirmStep)
-            await until(pilot, lambda: view.check.finished)
-            assert not view.can_finish()
-            view.query_one('#vs-save-unchecked', Checkbox).value = True
-            await pilot.pause()
-            assert view.can_finish()
-    asyncio.run(scenario())
-
-
-def test_all_policy_waits_for_warning_acknowledgement(monkeypatch):
-    from mmw.tui import vscode_source as vs
-    calls = []
-    def check(source, **kw):
-        calls.append(source)
-        return vs.SourceCheck([], [], [], 100)
-    monkeypatch.setattr(vs, 'check_source', check)
-    class Host(ThemedApp):
-        def compose(self):
-            yield vs.VscodeConfirmStep([config.VscodeSource(provider='vscode', extensions={'all': True})])
-    async def scenario():
-        app = Host()
-        async with app.run_test() as pilot:
-            view = app.query_one(vs.VscodeConfirmStep)
-            await pilot.pause()
-            assert not calls
-            assert not view.can_finish()
-            view.query_one('#vs-all-ack', Checkbox).value = True
-            view.query_one('#btn-vs-check').press()
-            await until(pilot, lambda: view.check.finished)
-            assert view.can_finish()
-    asyncio.run(scenario())
-
-
-def test_add_vscode_persists_validated_policy_and_back_keeps_inputs(upstream):
+def test_add_all_extensions_saves_without_marketplace_check(upstream):
     from mmw.tui.add_source import AddSourcePage
-    from textual.widgets import Input
     async def scenario():
         app = _Harness(lambda: AddSourcePage(entry='vscode'))
         async with app.run_test(size=(100, 32)) as pilot:
-            await until(pilot, lambda: app.screen.query('#vs-top-n'))
-            page = app.screen
-            page.query_one('#vs-top-n', Input).value = '2'
-            page.query_one('#vs-ids', TextArea).text = 'golang.go'
-            page.query_one('#btn-wizard-next').press()
-            await until(pilot, lambda: page.step == 1)
-            page.query_one('#btn-wizard-back').press()
-            await until(pilot, lambda: page.step == 0)
-            assert page.query_one('#vs-top-n', Input).value == '2'
-            page.query_one('#btn-wizard-next').press()
-            await until(pilot, lambda: page.step == 1)
-            from mmw.tui.vscode_source import VscodeConfirmStep
-            await until(pilot, lambda: page.query_one(VscodeConfirmStep).check.finished)
-            page.query_one('#btn-wizard-next').press()
+            await until(pilot, lambda: app.screen.query('#vs-all'))
+            app.screen.query_one('#vs-all', Checkbox).value = True
+            app.screen.query_one('#btn-wizard-next').press()
             await until(pilot, lambda: app.result != 'unset')
-            assert app.result[0].extensions.top_n == 2
-            assert app.result[0].extensions.ids == ['golang.go']
+            assert app.result[0].extensions.all
+            assert not upstream.requests
     asyncio.run(scenario())
 
 
@@ -318,8 +250,6 @@ def test_sources_edit_vscode_persists_or_preserves_inputs(tmp_path, upstream, mo
                 assert config.config_path(tmp_path).read_bytes() == before
                 return
             page.query_one('#btn-save').press()
-            await until(pilot, lambda: page.check is not None and page.check.finished)
-            page.query_one('#btn-save').press()
             if fail_save:
                 await until(pilot, lambda: 'read-only' in str(page.query_one('#page-status').render()))
                 assert app.screen is page
@@ -342,7 +272,6 @@ def test_first_setup_adds_vscode_and_writes_policy(tmp_path, upstream, mixed):
     from textual.widgets import Input
     from mmw.tui.app import MmwApp
     from mmw.tui.add_source import AddSourcePage
-    from mmw.tui.vscode_source import VscodeConfirmStep
     from pickers import choose_add_entry
     from waiting import settle
     async def scenario():
@@ -368,11 +297,6 @@ def test_first_setup_adds_vscode_and_writes_policy(tmp_path, upstream, mixed):
                 app.screen.query_one('#btn-done').press()
                 await until(pilot, lambda: app.screen is add)
             add.query_one('#vs-ids', TextArea).text = 'ms-python.python'
-            await pilot.pause()
-            add.query_one('#btn-wizard-next').press()
-            await until(pilot, lambda: add.query(VscodeConfirmStep)
-                        and add.query_one(VscodeConfirmStep).check.finished)
-            assert not add.query_one(VscodeConfirmStep).check.report.errors
             await pilot.pause()
             add.query_one('#btn-wizard-next').press()
             await until(pilot, lambda: app.screen is setup)

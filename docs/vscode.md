@@ -59,22 +59,20 @@ setup. Set the name, label, kinds, platforms and qualities; an empty dimension
 means all of its choices. Add starts with no extensions selected. Choose
 Top N, enter extension IDs (one per line, with optional `#` comments), or
 enable All. These extension choices form a union, including dependencies and
-extension-pack members. All requires acknowledgement of its size and time
-warning before enumeration starts.
+extension-pack members. Add and Save validate and store the policy immediately;
+Marketplace enumeration runs when you sync.
 
 **Look up IDs** shows display names and missing IDs for the entered list.
-The confirmation checks the complete selection and reports sync units,
-extensions and resolution notes. Byte sizes remain unknown until sync.
-If checking fails, **Save without checking** explicitly allows saving the
-locally valid policy offline. Edit and adding the same source again replace
-its selection; they preserve networks' references to the source. Cancel
+Edit and adding the same source again replace its selection; they preserve
+networks' references to the source. Cancel
 keeps the saved configuration unchanged.
 
 `mmw sync` then fills the pool like any other source: one sync unit per
 kind × platform (× quality), e.g. `vscode-extensions-linux-x64`,
 `vscode-server-linux-x64-stable`. `mmw dry-run` shows the size first.
 Interactive sync shows source resolution and Marketplace retry messages in
-the Sync section before the unit cards appear. Stop discards a pending
+the Sync section before the unit cards appear. Resolution failures stay visible
+and mark a partial sync incomplete. Stop discards a pending
 resolution result; an upstream request already in progress finishes first.
 
 ## A network with VS Code
@@ -177,6 +175,18 @@ Install the CA on every client: Windows — Local Machine → Trusted Root
 Certification Authorities; macOS — the System keychain, Always Trust; Linux —
 the system store, which VS Code reads.
 
+If `code --install-extension` reports a certificate error despite system
+trust, its bundled Node runtime may need the same CA explicitly:
+
+```bash
+NODE_EXTRA_CA_CERTS=/path/to/site-ca.crt code --install-extension publisher.name
+```
+
+This adds trusted CA certificates while keeping TLS verification enabled.
+See [Node's CA option](https://nodejs.org/api/cli.html#node_extra_ca_certsfile).
+The generated `VSCODE.md` also lists per-publisher hosts-file entries for
+sites without wildcard DNS; regenerate those entries as publishers are added.
+
 ### 3. The gallery container
 
 ```bash
@@ -225,3 +235,7 @@ mirrored update first.
 | A name resolves to Microsoft | DNS lacks a record — usually one of the wildcards |
 | Remote-SSH fails to download the server | The client's commit is older than the three kept; update the client from the mirror first |
 | An extension is missing | It is not in the selection — add its id, or raise `top_n` — or it has no build for the client's platform |
+
+For maintainers, the [real-client test](../tests/e2e/README.md) runs a stock
+Microsoft CLI, nginx and gallery on an isolated offline network, including
+signed extension installation/update and bundle replay.

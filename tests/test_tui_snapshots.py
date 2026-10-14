@@ -343,16 +343,6 @@ def test_snapshot_vscode_add(snap_compare, size):
     assert snap_compare(_app(lambda: AddSourcePage(entry='vscode')), terminal_size=size)
 
 
-def test_snapshot_vscode_all_confirmation(snap_compare):
-    from mmw.tui.vscode_source import VscodeConfirmStep
-    from mmw.tui.ui.page import Page
-    class ConfirmHost(Page):
-        TITLE = 'Confirm VS Code'
-        def compose_body(self):
-            yield VscodeConfirmStep([config.VscodeSource(provider='vscode', extensions={'all': True})])
-    assert snap_compare(_app(ConfirmHost), terminal_size=SNAP_SIZE)
-
-
 def test_snapshot_vscode_lookup(snap_compare, monkeypatch):
     from mmw.tui import vscode_source as vs
     monkeypatch.setattr(vs, 'lookup_ids', lambda source, **kw: [
@@ -366,23 +356,6 @@ def test_snapshot_vscode_lookup(snap_compare, monkeypatch):
         pilot.app.screen.query_one('#vs-lookup-status').scroll_visible()
     assert snap_compare(_app(lambda: vs.EditVscodePage(source, existing_names=set(), existing_urls=set())),
                         terminal_size=SNAP_SIZE, run_before=lookup)
-
-
-@_pytest.mark.parametrize('failure', [False, True])
-def test_snapshot_vscode_resolution(snap_compare, monkeypatch, failure):
-    from mmw.tui import vscode_source as vs
-    from mmw.tui.ui.page import Page
-    report = vs.SourceCheck([object(), object()], ['1 dependency included'],
-                            ['Marketplace unavailable; try again later.'] if failure else [], 3)
-    monkeypatch.setattr(vs, 'check_source', lambda source, **kw: report)
-    class ConfirmHost(Page):
-        TITLE = 'Confirm VS Code'
-        def compose_body(self):
-            yield vs.VscodeConfirmStep([config.VscodeSource(provider='vscode')])
-    async def ready(pilot):
-        await until(pilot, lambda: pilot.app.screen.query(vs.VscodeCheckView)
-                    and pilot.app.screen.query_one(vs.VscodeCheckView).finished)
-    assert snap_compare(_app(ConfirmHost), terminal_size=SNAP_SIZE, run_before=ready)
 
 
 def test_snapshot_mixed_sources(snap_compare, tmp_path):

@@ -21,6 +21,7 @@ BATCH = 50
 BATCH_ALL_VERSIONS = 10
 PAGE = 500
 ATTEMPTS = 6
+RATE_LIMIT_WAIT = 60.0             # gallery throttles can outlast exponential backoff
 BACKOFF = 1.0                      # seconds, doubled per retry; tests set 0
 
 _BASE_CRITERIA = [{"filterType": 8, "value": "Microsoft.VisualStudio.Code"},
@@ -50,9 +51,10 @@ def query(client, criteria: list[dict], *, page_size: int, page: int = 1,
           on_wait=None) -> tuple[list[dict], int]:
     """One page of one query → (extensions, total).
 
-    Retries 429, 5xx and transport failures (connection refused, DNS, proxy,
-    timeouts) with jittered exponential backoff, reporting each wait through
-    `on_wait`; anything else, or exhausting the retries, raises
+    Retries transient 403, 429, 5xx and transport failures with jittered
+    exponential backoff. Rate limits honor Retry-After (up to five minutes),
+    or wait one minute without it. Reports each wait through `on_wait`;
+    anything else, or exhausting the retries, raises
     `MarketplaceError` — never a raw httpx exception."""
     body = {"filters": [{"criteria": [*_BASE_CRITERIA, *criteria], "pageNumber": page,
                          "pageSize": page_size, "sortBy": sort_by, "sortOrder": sort_order}],
@@ -60,6 +62,7 @@ def query(client, criteria: list[dict], *, page_size: int, page: int = 1,
     delay = BACKOFF
     last = ""
     for attempt in range(ATTEMPTS):
+        retry_after = 0.0
         try:
             resp = client.post(GALLERY_URL, json=body, headers=_headers())
         except httpx.HTTPError as e:
@@ -68,10 +71,18 @@ def query(client, criteria: list[dict], *, page_size: int, page: int = 1,
             if resp.status_code == 200:
                 break
             last = f"HTTP {resp.status_code}"
-            if resp.status_code != 429 and resp.status_code < 500:
+            if resp.status_code == 429:
+                try:
+                    retry_after = min(300.0, max(0.0, float(resp.headers.get("retry-after", str(RATE_LIMIT_WAIT)))))
+                except ValueError:
+                    retry_after = RATE_LIMIT_WAIT
+            # The public gallery can intermittently reject an otherwise valid
+            # anonymous query with 403. Retry within the same bounded budget;
+            # a persistent refusal still fails clearly.
+            if resp.status_code not in (403, 429) and resp.status_code < 500:
                 raise MarketplaceError(f"gallery answered {last}")
         if attempt < ATTEMPTS - 1:
-            wait = delay * (1 + random.random() / 2)
+            wait = max(retry_after, delay * (1 + random.random() / 2))
             if on_wait:
                 on_wait(f"marketplace: {last} — retrying in {wait:.0f}s")
             time.sleep(wait)
@@ -99,6 +110,8 @@ def _paged(client, criteria, *, limit: int | None, on_wait=None, **kw) -> list[d
         exts, total = query(client, criteria, page_size=size, page=page, on_wait=on_wait, **kw)
         for e in exts:
             out.setdefault(ext_id(e), e)
+        if on_wait:
+            on_wait(f"marketplace: listed {len(out):,} of {total:,} extensions (page {page})")
         if not exts or page * size >= total or (limit is not None and len(out) >= limit):
             break
         page += 1
@@ -115,7 +128,10 @@ def top_n(client, n: int, *, on_wait=None) -> list[dict]:
 
 def search_all(client, *, on_wait=None) -> list[dict]:
     """Every extension the gallery lists."""
-    return _paged(client, [], limit=None, sort_by=4, sort_order=2, on_wait=on_wait)
+    # Install counts change during enumeration and ties can reorder pages,
+    # skipping entries. Oldest published first keeps new entries at the end.
+    # VS Code gallery manifest: PublishedDate=10, Ascending=1.
+    return _paged(client, [], limit=None, sort_by=10, sort_order=1, on_wait=on_wait)
 
 
 def by_names(client, ids: list[str], *, flags: int = FLAGS_LATEST,
@@ -131,6 +147,8 @@ def by_names(client, ids: list[str], *, flags: int = FLAGS_LATEST,
                         page_size=len(batch), flags=flags, on_wait=on_wait)
         for e in exts:
             found[ext_id(e)] = e
+        if on_wait:
+            on_wait(f"marketplace: resolved {min(i + step, len(wanted)):,} of {len(wanted):,} extension IDs")
     return found
 
 

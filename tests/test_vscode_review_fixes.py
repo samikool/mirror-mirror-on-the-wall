@@ -21,6 +21,7 @@ APT = "https://archive.ubuntu.com/ubuntu"
 @pytest.fixture(autouse=True)
 def _fast(monkeypatch):
     monkeypatch.setattr(mp, "BACKOFF", 0.0)
+    monkeypatch.setattr(mp, "RATE_LIMIT_WAIT", 0.0)
     monkeypatch.setattr(updates, "BACKOFF", 0.0, raising=False)
 
 

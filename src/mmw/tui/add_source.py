@@ -43,7 +43,8 @@ class AddSourcePage(Wizard):
 
     def _step_names(self) -> tuple[str, ...]:
         head = () if self._fixed else ("What",)
-        return (*head, self._entry.step_title, "Confirm")
+        tail = ("Confirm",) if self._entry.confirm_required else ()
+        return (*head, self._entry.step_title, *tail)
 
     @property
     def _offset(self) -> int:

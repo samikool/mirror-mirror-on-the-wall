@@ -432,6 +432,10 @@ class _DeferredWriter:
         with self._pending_lock:
             return set(self._pending)
 
+    def contains_pending(self, checksum: str) -> bool:
+        with self._pending_lock:
+            return checksum in self._pending
+
     def submit_task(self, fn, done) -> None:
         """Run `fn()` on the writer thread once pending rows are committed.
 
@@ -783,7 +787,7 @@ class Pool:
         self.close()
 
     def contains(self, checksum: str) -> bool:
-        if self._writer is not None and checksum in self._writer.pending():
+        if self._writer is not None and self._writer.contains_pending(checksum):
             return True
         with self._read() as _c:
             row = _c.execute(

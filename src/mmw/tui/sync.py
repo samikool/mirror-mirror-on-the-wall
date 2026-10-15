@@ -22,6 +22,7 @@ from mmw.core.format import (
 from mmw.core.downloader import Status
 from mmw.core.pool import Pool
 from mmw.core.item_progress import ItemCounts, ItemInventory, ItemProgressSession
+from mmw.core.download_coordinator import DownloadCoordinator
 from mmw.core.sync_engine import KeySyncCoordinator, SyncEvents, classify_mirror, sync_mirror
 from mmw.tui.ui.widgets import ThemedLog
 
@@ -102,6 +103,7 @@ class MirrorCard(Static, can_focus=True):
         self._total = 0
         self._item_label = "packages"
         self._logical_progress = False
+        self._separate_transfer_events = False
         self._downloaded = 0
         self._pooled = 0
         self._skipped = 0
@@ -177,6 +179,11 @@ class MirrorCard(Static, can_focus=True):
         with self._in_flight_lock:
             self._in_flight += 1
 
+    def dec_in_flight(self) -> None:
+        """A physical download ended, even if a fallback ultimately pools it."""
+        with self._in_flight_lock:
+            self._in_flight = max(0, self._in_flight - 1)
+
     @property
     def current_speed(self) -> float:
         return 0.0 if self._done else self._speed_ema
@@ -188,7 +195,7 @@ class MirrorCard(Static, can_focus=True):
             return
         if status == Status.DOWNLOADED:
             self._pending_bytes += bytes_xfr
-        if status in (Status.DOWNLOADED, Status.FAILED):
+        if not self._separate_transfer_events and status in (Status.DOWNLOADED, Status.FAILED):
             with self._in_flight_lock:
                 self._in_flight = max(0, self._in_flight - 1)
         if status == Status.FAILED and pkg_name:
@@ -435,7 +442,11 @@ class MirrorCard(Static, can_focus=True):
         speed = self._speed_ema
 
         warmup = max(10, self._total // 50)
-        stalled = self._last_chunk_time > 0 and (now - self._last_chunk_time) > self._STALL_TIMEOUT
+        with self._in_flight_lock:
+            in_flight = self._in_flight
+        # An idle unit may be waiting on another unit's shared download. Its
+        # old chunk timestamp is not evidence that a network request stalled.
+        stalled = in_flight > 0 and self._last_chunk_time > 0 and (now - self._last_chunk_time) > self._STALL_TIMEOUT
         if stalled:
             eta = _ETA_STALLED
         elif completed >= warmup and self._start:
@@ -512,7 +523,7 @@ class StatsFooter(Static):
 
         self.update(
             item_text + f"[bold]Pool[/]  {stats['packages']:,} files  "
-            f"saved {_fmt_size(stats['total_size'])}  [dim]│[/]  "
+            f"stored {_fmt_size(stats['total_size'])}  [dim]│[/]  "
             f"[bold]Transferred[/]  {_fmt_size(total_bytes)}  "
             f"@ {_fmt_speed(speed)}  [dim]│[/]  "
             f"[bold]Mirrors[/]  {sum(1 for c in cards if c._done)}/{len(cards)} done"
@@ -559,6 +570,7 @@ class SyncView(Vertical):
         self._sem: asyncio.Semaphore | None = None
         self._dry_run = dry_run
         self._items = ItemProgressSession(self._mirrors)
+        self._downloads = DownloadCoordinator()
         self._complete_shown = False
         # The end-of-run pool scan: "" (not yet), "queued" (waiting for an
         # earlier scan to land) or "running"; `_final_scan_done` once the
@@ -911,6 +923,7 @@ class SyncView(Vertical):
         def _on_items_started(inventory: ItemInventory) -> None:
             if card:
                 card._logical_progress = True
+                card._separate_transfer_events = True
             self.post_message(MirrorStarted(mirror.name, len(inventory.ids), inventory.label))
 
         events = SyncEvents(
@@ -919,6 +932,7 @@ class SyncView(Vertical):
             progress=(lambda pkg, res: card.record_file(pkg, res.status, res.bytes_transferred)) if card else None,
             chunk=card.add_chunk_bytes if card else None,
             download_started=card.inc_in_flight if card else None,
+            download_finished=card.dec_in_flight if card else None,
             items_started=_on_items_started,
             item_progress=(lambda event: card.accumulate(event.name, event.result.status,
                                                        event.result.bytes_transferred, track_transfer=False)) if card else None,
@@ -936,6 +950,7 @@ class SyncView(Vertical):
                 stop_event=self._stop_event,
                 keys=self._keys_coord,
                 items_session=self._items,
+                downloads=self._downloads,
             )
         except Exception as e:
             self.post_message(MirrorError(mirror.name, str(e) or type(e).__name__))

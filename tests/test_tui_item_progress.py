@@ -67,9 +67,27 @@ def test_grouped_progress_keeps_file_transfers_and_deduplicates_units(tmp_path, 
                 assert all(card.has_class('error') for card in view._cards.values())
                 await until(pilot, lambda: 'failed widgets: 1' in str(app.screen.query_one('#page-status').render()))
             assert sum(c.bytes_transferred for c in view._cards.values()) == sum(network_bytes)
+            assert len(network_bytes) == (1 if fails else 2)  # each successful asset fetched once across both units
+            assert all(card._in_flight == 0 for card in view._cards.values())
             assert 'Widgets' in str(view.query_one(StatsFooter).render())
             assert 'files' in str(view.query_one(StatsFooter).render())
     try:
         asyncio.run(scenario())
     finally:
         release.set()
+
+
+def test_waiting_unit_is_not_marked_stalled_from_its_previous_transfer(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mmw.tui.sync import MirrorCard
+    card = MirrorCard(config.MirrorConfig(name='one', provider='apt', source_url='https://example.test/apt'))
+    rendered = []
+    monkeypatch.setattr(card, 'query_one', lambda *args, **kwargs: SimpleNamespace(update=rendered.append))
+    card._total, card._downloaded = 100, 20
+    card._start, card._last_chunk_time = 1, 2
+    card._refresh_stats(100)
+    assert 'ETA --:--' not in rendered[-1]
+    card.inc_in_flight()
+    card._last_chunk_time = 2
+    card._refresh_stats(100)
+    assert 'ETA --:--' in rendered[-1]

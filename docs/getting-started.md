@@ -140,6 +140,18 @@ detail panel. Card borders tell you the outcome at a glance: green is clean,
 yellow means stopped or "metadata was not updated" (with reasons in the
 expanded log), red is an error.
 
+Parallel units share package downloads by checksum. When another unit is
+already fetching the same content, the duplicate request waits without using
+a download slot. After verification, each unit records its own reference;
+the downloading unit counts it as downloaded and the others count it as
+pooled, with zero transferred bytes. Without an upstream checksum, only
+requests for the exact same URL share a download. A queued download rechecks
+the pool before fetching, so content added since the index was read is reused.
+
+The footer's **stored** size is the pool's current content size, not a measure
+of avoided downloads. **Transferred** measures network bytes, including
+retries; pooled requests do not inflate it.
+
 This fills **only the pool**. Nothing browsable appears on disk:
 
 ```

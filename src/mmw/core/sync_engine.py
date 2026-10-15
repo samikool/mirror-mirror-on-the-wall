@@ -27,6 +27,7 @@ from mmw.core import upstream
 from mmw.core.keys import KeySyncResult, sync_custom_key, write_key
 from mmw.core.pool import Pool
 from mmw.core.item_progress import ItemInventory, ItemProgressSession, ItemResult, ItemTracker, item_id
+from mmw.core.download_coordinator import DownloadCoordinator
 from mmw.providers import get_provider
 
 
@@ -45,6 +46,7 @@ class SyncEvents:
     download_started: Callable[[], None] | None = None  # a thread began an actual download
     items_started: Callable[[ItemInventory], None] | None = None
     item_progress: Callable[[ItemResult], None] | None = None  # every asset of an item has finished
+    download_finished: Callable[[], None] | None = None  # matches download_started, independent of pooled outcomes
 
 
 @dataclass
@@ -206,6 +208,7 @@ async def sync_mirror(
     stop_event: threading.Event | None = None,
     keys: KeySyncCoordinator | None = None,
     items_session: ItemProgressSession | None = None,
+    downloads: DownloadCoordinator | None = None,
 ) -> MirrorSummary:
     """Full pipeline for one mirror: fetch index → download → metadata → GPG keys.
 
@@ -269,6 +272,8 @@ async def sync_mirror(
         sem=sem,
         stop_event=stop_event,
         file_progress=tracker.complete,
+        downloads=downloads,
+        finish_callback=events.download_finished,
     )
     summary.items = tracker.counts
 

@@ -3,6 +3,7 @@ verify, then a re-sync that sees a new server commit."""
 import asyncio
 import concurrent.futures
 import hashlib
+import threading
 
 import pytest
 
@@ -54,6 +55,48 @@ def test_sync_then_verify(up, tmp_path):
         for u in units:
             r = verify_mirror(u, tmp_path, pool)
             assert r.complete, (u.name, r.describe())
+
+
+def test_interrupted_extensions_sync_reuses_completed_assets_after_restart(up, tmp_path):
+    from mmw.providers import get_provider
+    src = config.VscodeSource(provider='vscode', kinds=['extensions'], platforms=['linux-x64'],
+                             extensions={'ids': ['ms-python.python']})
+    units, _, errors = resolve_sources([src])
+    assert not errors
+    provider = get_provider('vscode')
+    unit = next(u for u in units if provider.fetch_all(u, up.client())[0])
+    unit_name = unit.name
+    asset_urls = {p.url for p in provider.fetch_all(unit, up.client())[0]}
+    stop = threading.Event()
+    completed = []
+    def halt(name, result):
+        if result.status == downloader.Status.DOWNLOADED:
+            completed.append(result.checksum)
+            stop.set()
+
+    async def interrupted():
+        with Pool(tmp_path) as pool, concurrent.futures.ThreadPoolExecutor(1) as executor:
+            summary = await sync_mirror(unit, pool=pool, mirror_dir=tmp_path, max_connections=1,
+                                        executor=executor, stop_event=stop, events=SyncEvents(progress=halt))
+            assert summary.stopped and summary.downloaded == 1
+            assert not pool.ref_map(unit.name)
+    asyncio.run(interrupted())
+    assert len(completed) == 1
+    first_urls = {str(r.url) for r in up.requests if r.method == 'GET'} & asset_urls
+    assert len(first_urls) == 1
+    up.requests.clear()
+    # Re-resolve as a new invocation does, and reopen the pool.
+    units, _, errors = resolve_sources([src])
+    assert not errors
+    unit = next(u for u in units if u.name == unit_name)
+    async def restarted():
+        with Pool(tmp_path) as pool, concurrent.futures.ThreadPoolExecutor(2) as executor:
+            summary = await sync_mirror(unit, pool=pool, mirror_dir=tmp_path, max_connections=2, executor=executor)
+            assert summary.ok and summary.pooled >= 1
+            assert summary.items.completed == summary.items.total
+            assert verify_mirror(unit, tmp_path, pool).complete
+    asyncio.run(restarted())
+    assert first_urls.isdisjoint({str(r.url) for r in up.requests if r.method == 'GET'})
 
 
 def test_resync_keeps_previous_server_commits(up, tmp_path):

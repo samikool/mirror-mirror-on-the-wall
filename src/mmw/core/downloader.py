@@ -431,7 +431,8 @@ def _download_sync(
         if pkg.checksum_known and checksum != pkg.checksum:
             tmp.unlink(missing_ok=True)   # a resumed partial may be the culprit
             return DownloadResult(status=Status.FAILED, path=tmp, error="checksum mismatch")
-        pool_path = pool.add(tmp, checksum, pkg.checksum_type, pkg.filename, bytes_written)
+        pool_path = pool.add(tmp, checksum, pkg.checksum_type, pkg.filename, bytes_written,
+                             source_url=pkg.url if not pkg.checksum_known else "")
         return DownloadResult(
             status=Status.DOWNLOADED, path=pool_path,
             bytes_transferred=bytes_written, checksum=checksum,
@@ -516,10 +517,14 @@ async def download_mirror(
         # Providers with no upstream checksums: previous refs map paths to the
         # checksums computed when those paths were last downloaded.
         legacy_known: dict[str, str] = {}
+        source_known: dict[tuple[str, str], str] = {}
         if any(not p.checksum_known for p in packages):
             refmap = await loop.run_in_executor(executor, pool.ref_map, mirror_name)
             have = await loop.run_in_executor(executor, pool.batch_contains, list(refmap.values()))
             legacy_known = {path: cs for path, cs in refmap.items() if cs in have}
+            source_known = await loop.run_in_executor(
+                executor, pool.download_checksums,
+                [(p.url, p.checksum_type) for p in packages if not p.checksum_known])
 
         to_download: list[PackageInfo] = []
         emitted = 0
@@ -548,10 +553,17 @@ async def download_mirror(
                     _progress(pkg, DownloadResult(Status.POOLED, Path(pkg.repo_path)))
                 else:
                     to_download.append(pkg)
-            elif not pkg.checksum_known and pkg.repo_path in legacy_known:
-                pkg_entries.append((legacy_known[pkg.repo_path], pkg.repo_path, KIND_PKG))
-                summary.skipped += 1
-                _progress(pkg, DownloadResult(Status.SKIPPED, Path(pkg.repo_path)))
+            elif not pkg.checksum_known and (
+                    (pkg.url, pkg.checksum_type.lower()) in source_known or pkg.repo_path in legacy_known):
+                checksum = source_known.get((pkg.url, pkg.checksum_type.lower())) or legacy_known[pkg.repo_path]
+                pkg_entries.append((checksum, pkg.repo_path, KIND_PKG))
+                if (pkg.url, pkg.checksum_type.lower()) in source_known:
+                    summary.pooled += 1
+                    status = Status.POOLED
+                else:
+                    summary.skipped += 1
+                    status = Status.SKIPPED
+                _progress(pkg, DownloadResult(status, Path(pkg.repo_path), checksum=checksum))
             else:
                 to_download.append(pkg)
 
@@ -611,6 +623,10 @@ async def download_mirror(
                         if stop_event and stop_event.is_set():
                             return None
                         checksum = pkg.checksum if pkg.checksum_known else cached_checksum
+                        if not checksum and not pkg.checksum_known:
+                            key = (url, pkg.checksum_type.lower())
+                            sources = await loop.run_in_executor(executor, pool.download_checksums, [key])
+                            checksum = sources.get(key, "")
                         if checksum and await loop.run_in_executor(executor, pool.contains, checksum):
                             return DownloadResult(Status.POOLED, Path(pkg.repo_path), checksum=checksum)
                         return await _fetch(candidate)

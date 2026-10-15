@@ -170,9 +170,12 @@ async def classify_mirror(
         if refmap:
             available = pool.batch_contains(list(refmap.values()))
             refmap = {path: checksum for path, checksum in refmap.items() if checksum in available}
+        unknown_sources = [(p.url, p.checksum_type) for p in packages if not p.checksum_known]
+        sources = pool.download_checksums(unknown_sources) if unknown_sources else {}
         missing = [p for p in packages
                    if not (p.checksum and p.checksum in pooled)
-                   and not (not p.checksum and p.repo_path in refmap)]
+                   and not (not p.checksum and (p.repo_path in refmap or
+                                                (p.url, p.checksum_type.lower()) in sources))]
         total_size = sum(p.size for p in packages)
         fetch_size = sum(p.size for p in missing)
         tracker = ItemTracker(mirror, packages, provider.progress_unit(mirror))

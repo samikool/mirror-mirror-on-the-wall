@@ -148,6 +148,14 @@ pooled, with zero transferred bytes. Without an upstream checksum, only
 requests for the exact same URL share a download. A queued download rechecks
 the pool before fetching, so content added since the index was read is reused.
 
+Completed downloads without upstream checksums also store their URL and
+computed checksum in the pool database. Restarting an interrupted sync can
+reuse them as pooled items even before the unit has finished its first sync.
+This resume information is committed with the blob records in the normal
+write batches; it does not publish a partially synced unit or change its
+previous index. Files interrupted partway through downloading are not
+completed assets.
+
 The footer's **stored** size is the pool's current content size, not a measure
 of avoided downloads. **Transferred** measures network bytes, including
 retries; pooled requests do not inflate it.

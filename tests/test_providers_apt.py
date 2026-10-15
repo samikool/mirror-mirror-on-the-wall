@@ -213,6 +213,41 @@ def test_fetch_all_still_reports_an_unreadable_release():
         AptProvider().fetch_all(_mirror(), _Dead())
 
 
+@pytest.mark.parametrize("include_sources", [False, True])
+def test_fetch_all_accepts_listed_skeleton_without_release_indexes(include_sources):
+    class SkeletonRepo(_Repo):
+        def get(self, url, **kw):
+            if url.endswith("/dists/noble/"):
+                return _Resp(200, b'<a href="main/">main/</a><a href="updates/">updates/</a>')
+            return super().get(url, **kw)
+
+    messages = []
+    packages, metadata = AptProvider().fetch_all(
+        _mirror(component="updates", include_sources=include_sources), SkeletonRepo(), messages.append,
+    )
+    assert packages == []
+    assert metadata and all(m.is_release for m in metadata)
+    assert "empty skeleton" in messages[-1]
+
+
+@pytest.mark.parametrize("component,arch", [("typo", "amd64"), ("main", "arm64")])
+def test_fetch_all_missing_component_or_arch_still_fails(component, arch):
+    with pytest.raises(ValueError, match="lists no"):
+        AptProvider().fetch_all(_mirror(component=component, arch=arch), _Repo())
+
+
+def test_verify_accepts_synced_skeleton_but_rejects_missing_populated_index(tmp_path, monkeypatch):
+    from mmw.core import verify
+
+    release = tmp_path / "Release"
+    release.write_text(_Repo().release_text())
+    monkeypatch.setattr(verify, "_resolve_first", lambda pool, name, paths: (
+        release if any(p.endswith("InRelease") for p in paths) else None
+    ))
+    assert AptProvider().verify_witness(_mirror(component="updates"), None).complete
+    assert "Packages index not in pool" in AptProvider().verify_witness(_mirror(), None).error
+
+
 # ── flat repositories: same contract ─────────────────────────────────────────
 
 

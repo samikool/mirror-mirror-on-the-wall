@@ -569,6 +569,11 @@ class AptProvider(_AptCommon):
         base = f"dists/{suite}/{component}/binary-{unit.arch}/Packages"
         pkg_file = _resolve_first(pool, unit.name, [base + ".xz", base + ".gz", base])
         if pkg_file is None:
+            release = _resolve_first(pool, unit.name, [f"dists/{suite}/InRelease", f"dists/{suite}/Release"])
+            if release is not None:
+                entries = _parse_release_files(release.read_text())
+                if entries and not any(path.startswith(component + "/") for _, path, _ in entries):
+                    return result  # successfully synced metadata-only skeleton
             result.error = "Packages index not in pool — has this mirror been synced?"
             return result
         try:
@@ -635,6 +640,21 @@ class AptProvider(_AptCommon):
             if mf is None:
                 if parse is _parse_sources:
                     continue        # deb-src is optional; absence is not an error
+                # A suite listing can include a skeleton such as Debian's
+                # updates/. Only accept it when the Release names no files
+                # in that subtree AND the parent listing confirms it exists.
+                # A missing index in a populated component still fails.
+                releases = [f for f in files if f.is_release and f.content and not f.repo_path.endswith(".gpg")]
+                entries = _parse_release_files(releases[0].content.decode()) if releases else []
+                if entries and not any(path.startswith(component + "/") for _, path, _ in entries):
+                    from mmw.core.discover import _listed_dirs
+                    parent, _, name = component.rpartition("/")
+                    listing_url = f"{base}/dists/{mirror_config.suite}/" + (parent + "/" if parent else "")
+                    listing = client.get(listing_url)
+                    if listing.status_code == 200 and name in _listed_dirs(listing.text):
+                        if status_callback:
+                            status_callback(f"{component}: empty skeleton (metadata only)")
+                        return [], files
                 raise ValueError(
                     f"{base}: the Release file for suite '{mirror_config.suite}' "
                     f"lists no {suffix} — is component '{component}' or arch "

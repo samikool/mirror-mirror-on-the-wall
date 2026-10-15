@@ -8,6 +8,7 @@ import typer
 from mmw.commands.common import eprint, interruptible, load_config_or_none
 from mmw.core import config
 from mmw.core.downloader import DownloadResult, MirrorSummary, Status
+from mmw.core.download_coordinator import DownloadCoordinator
 from mmw.core.format import fmt_size as _fmt_size
 from mmw.core.pool import Pool
 from mmw.core.resolve import resolve_sources
@@ -80,6 +81,8 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
     keys_coord = KeySyncCoordinator(mirror_dir)
 
     mirrors, resolve_errors = resolve_and_report(cfg)
+    from mmw.core.item_progress import ItemProgressSession
+    items = ItemProgressSession(mirrors)
 
     try:
         pool_cm = Pool(mirror_dir)
@@ -88,12 +91,15 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
         return 1
 
     with pool_cm as pool:
+        downloads = DownloadCoordinator()
         for mirror in mirrors:
             typer.echo(f"\nMirroring {mirror.name} ...")
             typer.echo("  fetching metadata...")
             t0 = time.monotonic()
             events = SyncEvents(
                 started=lambda n, t0=t0: typer.echo(f"  {n:,} packages  ({time.monotonic() - t0:.1f}s)"),
+                items_started=lambda inventory, t0=t0: typer.echo(
+                    f"  {len(inventory.ids):,} {inventory.label}  ({time.monotonic() - t0:.1f}s)"),
                 progress=_make_progress(mirror.name),
             )
             try:
@@ -105,17 +111,20 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
                     executor=executor,
                     events=events,
                     keys=keys_coord,
+                    items_session=items,
+                    downloads=downloads,
                 )
             except Exception as e:
                 typer.echo(f"  ERROR: {e}", err=True)
                 mirror_errors.append(f"{mirror.name}: {e}")
                 continue
             summaries.append(summary)
+            counts = summary.items or summary
 
             typer.echo(
-                f"  Done — ↓{summary.downloaded} downloaded  "
-                f"={summary.pooled} from pool  "
-                f"✗{summary.failed} failed"
+                f"  Done — ↓{counts.downloaded} downloaded  "
+                f"={counts.pooled} from pool  "
+                f"✗{counts.failed} failed"
             )
             if summary.metadata_missing:
                 typer.echo(f"  note: {summary.metadata_missing} index-listed metadata file(s) absent upstream (404)")
@@ -143,13 +152,17 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
         total_failed += s.failed
         total_key_errors += len(s.key_errors)
         meta_flag = "" if s.metadata_ok else "  ⚠ metadata stale"
+        counts = s.items or s
         typer.echo(
             f"  {s.mirror:<35} "
-            f"↓{s.downloaded:>5}  ={s.pooled:>5}  ✗{s.failed:>3}{meta_flag}"
+            f"↓{counts.downloaded:>5}  ={counts.pooled:>5}  ✗{counts.failed:>3}{meta_flag}"
         )
         if not s.metadata_ok:
             metadata_failed.append(s.mirror)
 
+    for counts in items.snapshot():
+        typer.echo(f"  {counts.total:,} {counts.label}: ↓{counts.downloaded:,} downloaded  "
+                   f"={counts.pooled:,} from pool  ✗{counts.failed:,} failed")
     typer.echo(f"\n  Transferred: {_fmt_size(total_bytes)}")
 
     if total_key_errors:

@@ -9,10 +9,14 @@ import shutil
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from mmw.core.item_progress import ItemCounts
+    from mmw.core.download_coordinator import DownloadCoordinator
 
 import httpx
 
@@ -98,6 +102,7 @@ class MirrorSummary:
     # pointed at packages the `refs ⋈ packages` join could not find, publish
     # shipped a short tree, and the sync exited 0.
     pool_write_errors: list[str] = field(default_factory=list)
+    items: "ItemCounts | None" = None  # logical counts; file accounting above stays authoritative
 
     @property
     def ok(self) -> bool:
@@ -426,7 +431,8 @@ def _download_sync(
         if pkg.checksum_known and checksum != pkg.checksum:
             tmp.unlink(missing_ok=True)   # a resumed partial may be the culprit
             return DownloadResult(status=Status.FAILED, path=tmp, error="checksum mismatch")
-        pool_path = pool.add(tmp, checksum, pkg.checksum_type, pkg.filename, bytes_written)
+        pool_path = pool.add(tmp, checksum, pkg.checksum_type, pkg.filename, bytes_written,
+                             source_url=pkg.url if not pkg.checksum_known else "")
         return DownloadResult(
             status=Status.DOWNLOADED, path=pool_path,
             bytes_transferred=bytes_written, checksum=checksum,
@@ -457,6 +463,9 @@ async def download_mirror(
     executor: concurrent.futures.Executor | None = None,
     sem: asyncio.Semaphore | None = None,
     stop_event: threading.Event | None = None,
+    file_progress: Callable[[PackageInfo, DownloadResult], None] | None = None,
+    downloads: "DownloadCoordinator | None" = None,
+    finish_callback: Callable[[], None] | None = None,
 ) -> MirrorSummary:
     """Sync one mirror into the pool: blobs + a desired-state refs snapshot.
 
@@ -466,6 +475,15 @@ async def download_mirror(
     """
     summary = MirrorSummary(mirror=mirror_name, total=len(packages))
     loop = asyncio.get_running_loop()
+    if downloads is None:
+        from mmw.core.download_coordinator import DownloadCoordinator
+        downloads = DownloadCoordinator()
+
+    def _progress(package: PackageInfo, result: DownloadResult) -> None:
+        if progress:
+            progress(package.name, result)
+        if file_progress:
+            file_progress(package, result)
 
     _owns_executor = executor is None
     if _owns_executor:
@@ -492,17 +510,21 @@ async def download_mirror(
     try:
         # ── Phase 1: classify — batch SQL, no per-package I/O ─────────────────
         if phase_callback:
-            phase_callback(f"Checking pool for {len(packages):,} packages...")
+            phase_callback(f"Checking pool for {len(packages):,} files...")
         known_checksums = [p.checksum for p in packages if p.checksum_known and p.checksum]
         pooled_set: set[str] = await loop.run_in_executor(executor, pool.batch_contains, known_checksums)
 
         # Providers with no upstream checksums: previous refs map paths to the
         # checksums computed when those paths were last downloaded.
         legacy_known: dict[str, str] = {}
+        source_known: dict[tuple[str, str], str] = {}
         if any(not p.checksum_known for p in packages):
             refmap = await loop.run_in_executor(executor, pool.ref_map, mirror_name)
             have = await loop.run_in_executor(executor, pool.batch_contains, list(refmap.values()))
             legacy_known = {path: cs for path, cs in refmap.items() if cs in have}
+            source_known = await loop.run_in_executor(
+                executor, pool.download_checksums,
+                [(p.url, p.checksum_type) for p in packages if not p.checksum_known])
 
         to_download: list[PackageInfo] = []
         emitted = 0
@@ -519,8 +541,7 @@ async def download_mirror(
             if not is_safe_repo_path(pkg.repo_path):
                 summary.failed += 1
                 summary.errors.append(f"{pkg.name}: unsafe path in upstream metadata: {pkg.repo_path!r}")
-                if progress:
-                    progress(pkg.name, DownloadResult(Status.FAILED, Path(pkg.filename), error="unsafe path"))
+                _progress(pkg, DownloadResult(Status.FAILED, Path(pkg.filename), error="unsafe path"))
                 continue
 
             if pkg.checksum_known and pkg.checksum:
@@ -529,21 +550,26 @@ async def download_mirror(
                 pkg_entries.append((pkg.checksum, pkg.repo_path, KIND_PKG))
                 if pkg.checksum in pooled_set:
                     summary.pooled += 1
-                    if progress:
-                        progress(pkg.name, DownloadResult(Status.POOLED, Path(pkg.repo_path)))
+                    _progress(pkg, DownloadResult(Status.POOLED, Path(pkg.repo_path)))
                 else:
                     to_download.append(pkg)
-            elif not pkg.checksum_known and pkg.repo_path in legacy_known:
-                pkg_entries.append((legacy_known[pkg.repo_path], pkg.repo_path, KIND_PKG))
-                summary.skipped += 1
-                if progress:
-                    progress(pkg.name, DownloadResult(Status.SKIPPED, Path(pkg.repo_path)))
+            elif not pkg.checksum_known and (
+                    (pkg.url, pkg.checksum_type.lower()) in source_known or pkg.repo_path in legacy_known):
+                checksum = source_known.get((pkg.url, pkg.checksum_type.lower())) or legacy_known[pkg.repo_path]
+                pkg_entries.append((checksum, pkg.repo_path, KIND_PKG))
+                if (pkg.url, pkg.checksum_type.lower()) in source_known:
+                    summary.pooled += 1
+                    status = Status.POOLED
+                else:
+                    summary.skipped += 1
+                    status = Status.SKIPPED
+                _progress(pkg, DownloadResult(status, Path(pkg.repo_path), checksum=checksum))
             else:
                 to_download.append(pkg)
 
         # ── Phase 2: package downloads → pool ─────────────────────────────────
         if phase_callback and not (stop_event and stop_event.is_set()):
-            phase_callback(f"Downloading {len(to_download):,} packages...")
+            phase_callback(f"Downloading {len(to_download):,} files...")
 
         if not dry_run and to_download and not (stop_event and stop_event.is_set()):
             # Refuse up front when the disk plainly cannot hold this.
@@ -578,25 +604,50 @@ async def download_mirror(
             _sem = sem if sem is not None else asyncio.Semaphore(max_connections)
 
             async def _do_one(pkg: PackageInfo) -> None:
-                async with _sem:
+                started = False
+
+                def _started():
+                    nonlocal started
+                    if not started:
+                        started = True
+                        if start_callback:
+                            start_callback()
+
+                def _finished():
+                    if started and finish_callback:
+                        finish_callback()
+
+                async def _fetch_candidate(url, cached_checksum):
+                    candidate = replace(pkg, url=url)
+                    async with _sem:
+                        if stop_event and stop_event.is_set():
+                            return None
+                        checksum = pkg.checksum if pkg.checksum_known else cached_checksum
+                        if not checksum and not pkg.checksum_known:
+                            key = (url, pkg.checksum_type.lower())
+                            sources = await loop.run_in_executor(executor, pool.download_checksums, [key])
+                            checksum = sources.get(key, "")
+                        if checksum and await loop.run_in_executor(executor, pool.contains, checksum):
+                            return DownloadResult(Status.POOLED, Path(pkg.repo_path), checksum=checksum)
+                        return await _fetch(candidate)
+
+                async def _fetch(candidate):
                     result = DownloadResult(Status.FAILED, Path(pkg.filename), error="not attempted")
                     delay = _PKG_BACKOFF
-                    partial = _partial_path(pool, pkg)    # this download's own, across retries
+                    partial = _partial_path(pool, candidate)  # private to this URL and its retries
                     for attempt in range(_PKG_RETRIES):
                         if stop_event and stop_event.is_set():
-                            summary.stopped = True
-                            return  # teardown — not a download failure
+                            return None  # teardown — not a download failure
                         try:
                             fn = functools.partial(
-                                _download_sync, pkg, pool,
-                                chunk_callback, start_callback if attempt == 0 else None,
+                                _download_sync, candidate, pool,
+                                chunk_callback, _started if attempt == 0 else None,
                                 stop_event, attempt > 0,     # resume after the first try
                                 partial=partial,
                             )
                             result = await loop.run_in_executor(executor, fn)
                         except InterruptedError:
-                            summary.stopped = True
-                            return  # stopped mid-stream — not a download failure
+                            return None  # stopped mid-stream — not a download failure
                         except PermanentFetchError as exc:
                             # A real answer (404/403/410): the package was
                             # pulled from the archive mid-sync, or we are not
@@ -621,26 +672,34 @@ async def download_mirror(
                             slept = 0.0
                             while slept < delay:
                                 if stop_event and stop_event.is_set():
-                                    summary.stopped = True
-                                    return
+                                    return None
                                 step = min(_STOP_POLL, delay - slept)
                                 await asyncio.sleep(step)
                                 slept += step
                             delay *= 2
+                    return result
+
+                result = await downloads.run(pool, pkg, _fetch_candidate, stop_event, _finished)
+                if result is None:
+                    summary.stopped = True
+                    return
 
                 match result.status:
                     case Status.DOWNLOADED:
                         summary.downloaded += 1
                         summary.bytes_transferred += result.bytes_transferred
-                        if not pkg.checksum_known and result.checksum:
-                            # legacy package: identity only known post-download
-                            pkg_entries.append((result.checksum, pkg.repo_path, KIND_PKG))
+                    case Status.POOLED:
+                        summary.pooled += 1
                     case Status.FAILED:
                         summary.failed += 1
                         summary.errors.append(f"{pkg.name}: {result.error}")
 
-                if progress:
-                    progress(pkg.name, result)
+                if result.status in (Status.DOWNLOADED, Status.POOLED) and not pkg.checksum_known and result.checksum:
+                    # Each waiter needs its own ref, even when another unit
+                    # downloaded the shared URL and computed its checksum.
+                    pkg_entries.append((result.checksum, pkg.repo_path, KIND_PKG))
+
+                _progress(pkg, result)
 
             # A fixed pool of consumers, NOT one task per package.
             #

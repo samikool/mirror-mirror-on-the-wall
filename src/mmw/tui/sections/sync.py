@@ -82,7 +82,8 @@ class SyncSection(Page):
         summary = event.view.summary()
         if self.resolution_errors:
             summary += " Sources failed to resolve; sync is incomplete."
-        self.set_status(summary, "error" if self.resolution_errors else "info" if stopped else "ok")
+        failed = self.resolution_errors or getattr(event.view, "item_failures", 0)
+        self.set_status(summary, "error" if failed else "info" if stopped else "ok")
 
     @on(Button.Pressed, "#btn-sync-stop")
     def _stop_pressed(self) -> None:

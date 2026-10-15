@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS packages (
 -- ALTER-added columns must be created after the ALTER instead.
 CREATE INDEX IF NOT EXISTS idx_packages_size ON packages(size);
 
+-- Resume identity for downloads without an upstream checksum. Kept separate
+-- from publish refs, which only become visible when a unit finishes syncing.
+CREATE TABLE IF NOT EXISTS download_sources (
+    url           TEXT NOT NULL,
+    checksum_type TEXT NOT NULL,
+    checksum      TEXT NOT NULL,
+    PRIMARY KEY (url, checksum_type)
+);
+
 CREATE TABLE IF NOT EXISTS refs (
     checksum     TEXT NOT NULL,
     mirror_name  TEXT NOT NULL,
@@ -369,6 +378,15 @@ def exclusive_pool_lock(mirror_dir: Path, what: str = "operation"):
 _TMP_MAX_AGE = 24 * 3600  # crash leftovers older than this are reaped at init
 
 
+def _write_download_sources(conn: sqlite3.Connection, rows: list[tuple]) -> None:
+    """Write source identities inside the caller's locked blob transaction."""
+    conn.executemany(
+        "INSERT INTO download_sources (url, checksum_type, checksum) VALUES (?, ?, ?) "
+        "ON CONFLICT(url, checksum_type) DO UPDATE SET checksum=excluded.checksum",
+        [(row[5], row[1].lower(), row[0]) for row in rows if len(row) > 5 and row[5]],
+    )
+
+
 class _DeferredWriter:
     """Drains package-table rows on one thread, committing in batches.
 
@@ -414,6 +432,7 @@ class _DeferredWriter:
         # that is already hardlinked on disk is never re-downloaded just because
         # its row has not landed yet.
         self._pending: set[str] = set()
+        self._pending_sources: dict[tuple[str, str], str] = {}
         self._pending_lock = threading.Lock()
         self._errors: list[str] = []
         self._idle = threading.Event()
@@ -425,12 +444,22 @@ class _DeferredWriter:
     def submit(self, row: tuple) -> None:
         with self._pending_lock:
             self._pending.add(row[0])
+            if len(row) > 5 and row[5]:
+                self._pending_sources[(row[5], row[1].lower())] = row[0]
         self._idle.clear()
         self._q.put(row)
 
     def pending(self) -> set[str]:
         with self._pending_lock:
             return set(self._pending)
+
+    def contains_pending(self, checksum: str) -> bool:
+        with self._pending_lock:
+            return checksum in self._pending
+
+    def pending_sources(self, sources: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
+        with self._pending_lock:
+            return {key: self._pending_sources[key] for key in sources if key in self._pending_sources}
 
     def submit_task(self, fn, done) -> None:
         """Run `fn()` on the writer thread once pending rows are committed.
@@ -504,8 +533,9 @@ class _DeferredWriter:
                     "ON CONFLICT(checksum) DO UPDATE SET "
                     "checksum_type=excluded.checksum_type, filename=excluded.filename, "
                     "size=excluded.size, pool_path=excluded.pool_path",
-                    rows,
+                    [row[:5] for row in rows],
                 )
+                _write_download_sources(self._pool._conn, rows)
                 self._pool._conn.commit()
         except Exception as e:                      # never lose the sync to this
             # Rollback explicitly: a failed `executemany` leaves the write
@@ -521,6 +551,11 @@ class _DeferredWriter:
         finally:
             with self._pending_lock:
                 self._pending.difference_update(r[0] for r in rows)
+                for row in rows:
+                    if len(row) > 5 and row[5]:
+                        key = (row[5], row[1].lower())
+                        if self._pending_sources.get(key) == row[0]:
+                            self._pending_sources.pop(key, None)
 
     def _checkpoint(self, mode: str) -> None:
         """Fold the WAL back into the main file. Never lose the sync to this —
@@ -726,6 +761,7 @@ class Pool:
         # A read-only open of a pool from before snapshots has no such table;
         # checked once here, not per query on a connection a writer may hold.
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
+        self._has_download_sources = self._has_table("download_sources")
 
     @property
     def _tmp_dir(self) -> Path:
@@ -783,7 +819,7 @@ class Pool:
         self.close()
 
     def contains(self, checksum: str) -> bool:
-        if self._writer is not None and checksum in self._writer.pending():
+        if self._writer is not None and self._writer.contains_pending(checksum):
             return True
         with self._read() as _c:
             row = _c.execute(
@@ -820,6 +856,31 @@ class Pool:
 
     # ── Pool-first API (v2): blobs + desired-state refs ──────────────────────
 
+    def download_checksums(self, sources: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
+        """Batch indexed URL/hash-algorithm lookups, including queued writes.
+
+        A stale mapping is ignored when its package has been pruned. Older
+        read-only pools can answer without needing a schema migration.
+        """
+        sources = list(dict.fromkeys((url, algorithm.lower()) for url, algorithm in sources))
+        found = self._writer.pending_sources(sources) if self._writer is not None else {}
+        if not sources or not self._has_download_sources:
+            return found
+        for index in range(0, len(sources), _CHUNK // 2):
+            chunk = sources[index:index + _CHUNK // 2]
+            placeholders = ','.join('(?,?)' for _ in chunk)
+            with self._read() as conn:
+                rows = conn.execute(
+                    f"WITH requested(url, checksum_type) AS (VALUES {placeholders}) "
+                    "SELECT d.url, d.checksum_type, d.checksum FROM requested q "
+                    "JOIN download_sources d ON d.url=q.url AND d.checksum_type=q.checksum_type "
+                    "JOIN packages p ON p.checksum=d.checksum AND lower(p.checksum_type)=d.checksum_type",
+                    [value for key in chunk for value in key],
+                ).fetchall()
+            for url, algorithm, checksum in rows:
+                found.setdefault((url, algorithm), checksum)
+        return found
+
     def add(
         self,
         source: Path | bytes,
@@ -827,6 +888,8 @@ class Pool:
         checksum_type: str,
         filename: str,
         size: int,
+        *,
+        source_url: str = "",
     ) -> Path:
         """Add content to the pool without linking it anywhere else.
 
@@ -856,7 +919,7 @@ class Pool:
         finally:
             tmp.unlink(missing_ok=True)
 
-        row = (checksum, checksum_type, filename, size, str(pool_dest))
+        row = (checksum, checksum_type, filename, size, str(pool_dest), source_url)
         if self._writer is not None:
             # The blob is already hardlinked into place, so the durable fact is
             # on disk before the row is queued. Returning here is what frees the
@@ -864,15 +927,20 @@ class Pool:
             self._writer.submit(row)
             return pool_dest
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO packages (checksum, checksum_type, filename, size, pool_path) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(checksum) DO UPDATE SET "
-                "checksum_type=excluded.checksum_type, filename=excluded.filename, "
-                "size=excluded.size, pool_path=excluded.pool_path",
-                row,
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    "INSERT INTO packages (checksum, checksum_type, filename, size, pool_path) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(checksum) DO UPDATE SET "
+                    "checksum_type=excluded.checksum_type, filename=excluded.filename, "
+                    "size=excluded.size, pool_path=excluded.pool_path",
+                    row[:5],
+                )
+                _write_download_sources(self._conn, [row])
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         return pool_dest
 
     def flush_writes(self, timeout: float = 60.0) -> list[str]:

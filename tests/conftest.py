@@ -6,9 +6,21 @@ to add three real seconds to every failure-path test the moment it was
 introduced.
 """
 import pytest
+from pathlib import Path
 
 from mmw.core import downloader
 from mmw.tui import custom_repo
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cli_config(monkeypatch):
+    """CLI invocations in different tests represent different processes.
+
+    An explicit --config updates module state. Leaking it into a later test
+    can publish the wrong fixture or make a sync contact a real upstream.
+    """
+    from mmw import cli
+    monkeypatch.setattr(cli, '_CFG_DIR', Path('.'))
 
 
 @pytest.fixture(autouse=True)

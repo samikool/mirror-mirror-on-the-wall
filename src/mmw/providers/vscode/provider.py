@@ -16,7 +16,7 @@ import httpx
 from mmw.core.config import ExtensionSelection
 from mmw.core.history import UnitHistory
 from mmw.core.pool import KIND_PKG, KIND_RELEASE
-from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, Site, SourceDescription, SourceField
+from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, ProgressUnit, Site, SourceDescription, SourceField
 from mmw.providers.vscode import marketplace as mp
 from mmw.providers.vscode import image as gallery_image
 from mmw.providers.vscode import publish as vpub
@@ -414,6 +414,11 @@ class VscodeProvider(BaseProvider):
 
     # ── fetch (Task 6) ──────────────────────────────────────────────────────
 
+    def progress_unit(self, mirror) -> ProgressUnit:
+        if mirror.dims.get("kind") == "extensions":
+            return ProgressUnit("extensions", mirror.source)
+        return ProgressUnit("builds")
+
     def fetch_all(self, mirror_config, client, status_callback=None, history=None):
         history = history or UnitHistory.empty()
         kind = mirror_config.dims.get("kind")
@@ -445,7 +450,8 @@ class VscodeProvider(BaseProvider):
                     packages.append(PackageInfo(
                         name=f"{ident}@{v['version']} {f.get('assetType', '')}",
                         url=f["source"], checksum="", checksum_type="sha256", size=0,
-                        repo_path=rel, filename=rel.rsplit("/", 1)[-1], checksum_known=False))
+                        repo_path=rel, filename=rel.rsplit("/", 1)[-1], checksum_known=False,
+                        item_id=ident))
             stored = copy.deepcopy(ext)
             stored["versions"] = versions
             metadata.append(_json_meta(

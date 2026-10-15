@@ -21,6 +21,8 @@ from mmw.core.format import (
 )
 from mmw.core.downloader import Status
 from mmw.core.pool import Pool
+from mmw.core.item_progress import ItemCounts, ItemInventory, ItemProgressSession
+from mmw.core.download_coordinator import DownloadCoordinator
 from mmw.core.sync_engine import KeySyncCoordinator, SyncEvents, classify_mirror, sync_mirror
 from mmw.tui.ui.widgets import ThemedLog
 
@@ -35,9 +37,10 @@ class MirrorStatus(Message):
 
 
 class MirrorStarted(Message):
-    def __init__(self, mirror_name: str, total: int):
+    def __init__(self, mirror_name: str, total: int, label: str = "packages"):
         self.mirror_name = mirror_name
         self.total = total
+        self.label = label
         super().__init__()
 
 
@@ -65,13 +68,15 @@ class MirrorError(Message):
 
 
 class MirrorDryRunResult(Message):
-    def __init__(self, mirror_name: str, total: int, in_pool: int, to_fetch: int, fetch_size: int, has_unknown: bool):
+    def __init__(self, mirror_name: str, total: int, in_pool: int, to_fetch: int, fetch_size: int, has_unknown: bool,
+                 inventory: ItemInventory | None = None):
         self.mirror_name = mirror_name
         self.total = total
         self.in_pool = in_pool
         self.to_fetch = to_fetch
         self.fetch_size = fetch_size
         self.has_unknown = has_unknown
+        self.inventory = inventory
         super().__init__()
 
 
@@ -96,6 +101,9 @@ class MirrorCard(Static, can_focus=True):
         self._mirror = mirror
         self._status_text = "Classifying packages..."  # shown until the first phase message
         self._total = 0
+        self._item_label = "packages"
+        self._logical_progress = False
+        self._separate_transfer_events = False
         self._downloaded = 0
         self._pooled = 0
         self._skipped = 0
@@ -133,8 +141,9 @@ class MirrorCard(Static, can_focus=True):
         )
         yield Label("  Fetching metadata...", classes="card-waiting", id="waiting-msg")
 
-    def start(self, total: int):
+    def start(self, total: int, label: str = "packages"):
         self._total = total
+        self._item_label = label
         self._start = time.monotonic()
         try:
             self.query_one("#waiting-msg", Label).remove()
@@ -170,17 +179,36 @@ class MirrorCard(Static, can_focus=True):
         with self._in_flight_lock:
             self._in_flight += 1
 
+    def dec_in_flight(self) -> None:
+        """A physical download ended, even if a fallback ultimately pools it."""
+        with self._in_flight_lock:
+            self._in_flight = max(0, self._in_flight - 1)
+
     @property
     def current_speed(self) -> float:
         return 0.0 if self._done else self._speed_ema
 
-    def accumulate(self, pkg_name: str, status: Status, bytes_xfr: int):
+    def record_file(self, pkg_name: str, status: Status, bytes_xfr: int):
+        """Transfer accounting stays per file, independent of item progress."""
+        if not self._logical_progress:
+            self.accumulate(pkg_name, status, bytes_xfr)
+            return
+        if status == Status.DOWNLOADED:
+            self._pending_bytes += bytes_xfr
+        if not self._separate_transfer_events and status in (Status.DOWNLOADED, Status.FAILED):
+            with self._in_flight_lock:
+                self._in_flight = max(0, self._in_flight - 1)
+        if status == Status.FAILED and pkg_name:
+            self._log_pending.append(f"  [$mmw-error]✗[/] {escape(pkg_name)} (file)")
+
+    def accumulate(self, pkg_name: str, status: Status, bytes_xfr: int, *, track_transfer: bool = True):
         """Called at download rate — counters only, no DOM work."""
         if status == Status.DOWNLOADED:
             self._pending_downloaded += 1
-            self._pending_bytes += bytes_xfr
-            with self._in_flight_lock:
-                self._in_flight = max(0, self._in_flight - 1)
+            if track_transfer:
+                self._pending_bytes += bytes_xfr
+                with self._in_flight_lock:
+                    self._in_flight = max(0, self._in_flight - 1)
             if pkg_name:
                 self._log_pending.append(
                     f"  [$mmw-ok]↓[/] {escape(pkg_name)}  [dim]{_fmt_size(bytes_xfr)}[/]"
@@ -189,8 +217,9 @@ class MirrorCard(Static, can_focus=True):
             self._pending_pooled += 1
         elif status == Status.FAILED:
             self._pending_failed += 1
-            with self._in_flight_lock:
-                self._in_flight = max(0, self._in_flight - 1)
+            if track_transfer:
+                with self._in_flight_lock:
+                    self._in_flight = max(0, self._in_flight - 1)
             if pkg_name:
                 self._log_pending.append(f"  [$mmw-error]✗[/] {escape(pkg_name)}")
         elif status == Status.SKIPPED:
@@ -216,12 +245,13 @@ class MirrorCard(Static, can_focus=True):
         speed_updated = self._update_speed(now)
 
         n = self._pending_downloaded + self._pending_pooled + self._pending_failed + self._pending_skipped
+        self._bytes += self._pending_bytes
+        self._pending_bytes = 0
         if n > 0:
             self._downloaded += self._pending_downloaded
             self._pooled += self._pending_pooled
             self._skipped += self._pending_skipped
             self._failed += self._pending_failed
-            self._bytes += self._pending_bytes
             last_pkg = self._pending_pkg
             self._pending_downloaded = self._pending_pooled = self._pending_failed = self._pending_skipped = self._pending_bytes = 0
             self._pending_pkg = ""
@@ -296,10 +326,14 @@ class MirrorCard(Static, can_focus=True):
         if stopped:
             self.add_class("warn")
             line = f"  ⚠ Stopped after {_fmt_eta(elapsed)}  —  {_fmt_size(self._bytes)} transferred"
+        elif self._failed:
+            self.add_class("error")
+            line = (f"  ✗ Failed {escape(self._item_label)}: {self._failed:,}"
+                    f"  —  {_fmt_size(self._bytes)} transferred  (expand for detail)")
         elif not metadata_ok:
             self.add_class("warn")
             line = (
-                f"  ⚠ Packages synced, metadata NOT updated"
+                f"  ⚠ {escape(self._item_label.capitalize())} synced, metadata NOT updated"
                 f"  —  {_fmt_size(self._bytes)} transferred  (expand for detail)"
             )
         else:
@@ -322,7 +356,7 @@ class MirrorCard(Static, can_focus=True):
         unknown_note = "  [$mmw-warn]⚠ some sizes unknown[/]" if has_unknown else ""
         try:
             self.mount(Label(
-                f"  [dim]{total:,} packages[/]"
+                f"  [dim]{total:,} {escape(self._item_label)}[/]"
                 f"  [$secondary]= {in_pool:,}[/] in pool ({pct_pool})"
                 f"  [$mmw-ok]↓ {to_fetch:,}[/] to fetch ({pct_fetch})"
                 f"  [bold]{size_str}[/]"
@@ -408,7 +442,11 @@ class MirrorCard(Static, can_focus=True):
         speed = self._speed_ema
 
         warmup = max(10, self._total // 50)
-        stalled = self._last_chunk_time > 0 and (now - self._last_chunk_time) > self._STALL_TIMEOUT
+        with self._in_flight_lock:
+            in_flight = self._in_flight
+        # An idle unit may be waiting on another unit's shared download. Its
+        # old chunk timestamp is not evidence that a network request stalled.
+        stalled = in_flight > 0 and self._last_chunk_time > 0 and (now - self._last_chunk_time) > self._STALL_TIMEOUT
         if stalled:
             eta = _ETA_STALLED
         elif completed >= warmup and self._start:
@@ -420,12 +458,12 @@ class MirrorCard(Static, can_focus=True):
 
         already = self._pooled + self._skipped
         stats = (
+            f"  [dim]{completed:,}/{self._total:,} {escape(self._item_label)}[/]"
             f"  [$mmw-ok]↓ {self._downloaded:,}[/] downloaded"
             f"  [$secondary]= {already:,}[/] pooled"
             f"  [$mmw-error]✗ {self._failed}[/] failed"
             f"  [dim]•[/]  [bold]{_fmt_speed(speed)}[/]"
             f"  [dim]ETA {_fmt_eta(eta)}[/]"
-            f"  [dim]{completed:,}/{self._total:,}[/]"
         )
         try:
             self.query_one("#stats", Label).update(stats)
@@ -458,18 +496,18 @@ class StatsFooter(Static):
         super().__init__("")
 
     def refresh_dry_run(self, cards: list["MirrorCard"], total: int, in_pool: int,
-                        to_fetch: int, fetch_size: int):
+                        to_fetch: int, fetch_size: int, label: str = "packages"):
         done = sum(1 for c in cards if c._done)
         n_cards = len(cards)
         self.update(
             f"[bold]Dry Run[/]  {done}/{n_cards} mirrors checked  [dim]│[/]  "
-            f"[bold]Packages[/]  {total:,} total  "
+            f"[bold]{escape(label.capitalize())}[/]  {total:,} total  "
             f"[$secondary]{in_pool:,}[/] in pool  "
             f"[$mmw-ok]{to_fetch:,}[/] to fetch  "
             f"[bold]{_fmt_size(fetch_size)}[/] estimated"
         )
 
-    def refresh_stats(self, stats: dict, cards: list[MirrorCard]):
+    def refresh_stats(self, stats: dict, cards: list[MirrorCard], items: list[ItemCounts] | None = None):
         """Render the footer from an already-fetched snapshot.
 
         **This must never query the pool.** `pool.stats()` is a full table scan
@@ -479,10 +517,13 @@ class StatsFooter(Static):
         """
         total_bytes = sum(c.bytes_transferred for c in cards)
         speed = sum(c.current_speed for c in cards)
+        item_text = "".join(f"[bold]{escape(c.label.capitalize())}[/]  {c.completed:,}/{c.total:,}"
+                            + (f" ({c.failed:,} failed)" if c.failed else "") + "  [dim]│[/]  "
+                            for c in items or [])
 
         self.update(
-            f"[bold]Pool[/]  {stats['packages']:,} packages  "
-            f"saved {_fmt_size(stats['total_size'])}  [dim]│[/]  "
+            item_text + f"[bold]Pool[/]  {stats['packages']:,} files  "
+            f"stored {_fmt_size(stats['total_size'])}  [dim]│[/]  "
             f"[bold]Transferred[/]  {_fmt_size(total_bytes)}  "
             f"@ {_fmt_speed(speed)}  [dim]│[/]  "
             f"[bold]Mirrors[/]  {sum(1 for c in cards if c._done)}/{len(cards)} done"
@@ -528,6 +569,8 @@ class SyncView(Vertical):
         self._pool_stats_inflight: bool = False
         self._sem: asyncio.Semaphore | None = None
         self._dry_run = dry_run
+        self._items = ItemProgressSession(self._mirrors)
+        self._downloads = DownloadCoordinator()
         self._complete_shown = False
         # The end-of-run pool scan: "" (not yet), "queued" (waiting for an
         # earlier scan to land) or "running"; `_final_scan_done` once the
@@ -739,10 +782,11 @@ class SyncView(Vertical):
             cards = list(self._cards.values())
             if self._dry_run:
                 footer.refresh_dry_run(
-                    cards, self._dr_total, self._dr_in_pool, self._dr_to_fetch, self._dr_fetch_size
+                    cards, self._dr_total, self._dr_in_pool, self._dr_to_fetch, self._dr_fetch_size,
+                    self._item_label()
                 )
             elif self._pool:
-                footer.refresh_stats(self._pool_stats, cards)
+                footer.refresh_stats(self._pool_stats, cards, self._items.snapshot())
         except Exception:
             pass
 
@@ -754,7 +798,7 @@ class SyncView(Vertical):
     @on(MirrorStarted)
     def on_mirror_started(self, msg: MirrorStarted):
         if card := self._cards.get(msg.mirror_name):
-            card.start(msg.total)
+            card.start(msg.total, msg.label)
 
     @on(MirrorFinished)
     def on_mirror_finished(self, msg: MirrorFinished):
@@ -770,12 +814,19 @@ class SyncView(Vertical):
         self._check_all_done()
 
     @on(MirrorDryRunResult)
-    def on_mirror_dry_run_result(self, msg: MirrorDryRunResult):
+    async def on_mirror_dry_run_result(self, msg: MirrorDryRunResult):
         self._dr_total      += msg.total
         self._dr_in_pool    += msg.in_pool
         self._dr_to_fetch   += msg.to_fetch
         self._dr_fetch_size += msg.fetch_size
+        if msg.inventory is not None:
+            await self._items.classify_async(msg.mirror_name, msg.inventory)
+            counts = self._items.snapshot()
+            self._dr_total = sum(c.total for c in counts)
+            self._dr_in_pool = sum(c.pooled for c in counts)
+            self._dr_to_fetch = sum(c.downloaded for c in counts)
         if card := self._cards.get(msg.mirror_name):
+            card._item_label = msg.inventory.label if msg.inventory else "packages"
             card.show_dry_run(msg.total, msg.in_pool, msg.to_fetch, msg.fetch_size, msg.has_unknown)
         self._check_all_done()
 
@@ -812,18 +863,27 @@ class SyncView(Vertical):
         self._final_scan_done = True
         self._ticker.stop()
 
+    def _item_label(self) -> str:
+        return self._items.totals.label
+
+    @property
+    def item_failures(self) -> int:
+        return self._items.totals.failed or sum(card._failed for card in self._cards.values())
+
     def summary(self) -> str:
         """One line for the hosting page once every mirror is done."""
         if not self._dry_run:
             done, total = self.progress()
             if self._stop_event.is_set():
                 return f"Sync stopped — {done}/{total} mirrors finished or stopped."
+            if self.item_failures:
+                return f"Sync finished — {done}/{total} mirrors; failed {self._item_label()}: {self.item_failures:,}."
             return f"Sync complete — {done}/{total} mirrors."
         if not self._dr_total:
             return "Dry run complete."
         pct_pool = f"{self._dr_in_pool / self._dr_total * 100:.0f}%"
         pct_fetch = f"{self._dr_to_fetch / self._dr_total * 100:.0f}%"
-        return (f"Dry run complete — {self._dr_total:,} packages: {self._dr_in_pool:,} in pool "
+        return (f"Dry run complete — {self._dr_total:,} {self._item_label()}: {self._dr_in_pool:,} in pool "
                 f"({pct_pool}), {self._dr_to_fetch:,} to download ({pct_fetch}), "
                 f"{_fmt_size(self._dr_fetch_size)} estimated.")
 
@@ -850,6 +910,7 @@ class SyncView(Vertical):
                 to_fetch=stats.to_fetch,
                 fetch_size=stats.fetch_size,
                 has_unknown=stats.has_unknown,
+                inventory=stats.inventory,
             ))
             return
 
@@ -859,12 +920,22 @@ class SyncView(Vertical):
             # Phase text ("Checking pool…", "Linking…") follows from the engine.
             self.post_message(MirrorStarted(mirror.name, total))
 
+        def _on_items_started(inventory: ItemInventory) -> None:
+            if card:
+                card._logical_progress = True
+                card._separate_transfer_events = True
+            self.post_message(MirrorStarted(mirror.name, len(inventory.ids), inventory.label))
+
         events = SyncEvents(
             phase=lambda text: self.post_message(MirrorStatus(mirror.name, text)),
             started=_on_started,
-            progress=(lambda pkg, res: card.accumulate(pkg, res.status, res.bytes_transferred)) if card else None,
+            progress=(lambda pkg, res: card.record_file(pkg, res.status, res.bytes_transferred)) if card else None,
             chunk=card.add_chunk_bytes if card else None,
             download_started=card.inc_in_flight if card else None,
+            download_finished=card.dec_in_flight if card else None,
+            items_started=_on_items_started,
+            item_progress=(lambda event: card.accumulate(event.name, event.result.status,
+                                                       event.result.bytes_transferred, track_transfer=False)) if card else None,
         )
 
         try:
@@ -878,6 +949,8 @@ class SyncView(Vertical):
                 sem=self._sem,
                 stop_event=self._stop_event,
                 keys=self._keys_coord,
+                items_session=self._items,
+                downloads=self._downloads,
             )
         except Exception as e:
             self.post_message(MirrorError(mirror.name, str(e) or type(e).__name__))

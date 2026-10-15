@@ -75,6 +75,12 @@ the Sync section before the unit cards appear. Resolution failures stay visible
 and mark a partial sync incomplete. Stop discards a pending
 resolution result; an upstream request already in progress finishes first.
 
+Sync progress counts extensions, not individual assets. An extension finishes
+when all its selected assets are downloaded or already pooled; a failed asset
+makes that extension fail. Session totals count each extension once across
+platform units. Dry-run uses the same grouping. Transferred bytes and speed
+still measure file transfers, and the pool's storage count is labeled files.
+
 ## A network with VS Code
 
 A network publishes the VS Code source unless its `select` leaves it out — so

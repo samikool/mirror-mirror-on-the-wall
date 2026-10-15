@@ -61,10 +61,12 @@ def _no_paste_debounce(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_real_docker(monkeypatch):
     """Ordinary tests never run the real Docker CLI (it pulls from the network and
-    writes to the host's image store). Publishing a VS Code network without
-    a fake (`test_gallery_image._fake_docker`) reports "no Docker" instead.
+    writes to the host's image store). Publishing nginx or a VS Code network
+    without a fake reports "no Docker" instead.
     The explicit MMW_VSCODE_E2E opt-in restores Docker in its own fixture and
     permits only cached-image inspect/save/load; its test network is internal.
     """
     from mmw.providers.vscode import image
+    from mmw.core.publisher import nginx_container
     monkeypatch.setattr(image, "DOCKER", "mmw-test-has-no-docker", raising=True)
+    monkeypatch.setattr(nginx_container, "DOCKER", "mmw-test-has-no-docker", raising=True)

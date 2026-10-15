@@ -145,24 +145,43 @@ have already been removed.
 
 ## 4. Serve it
 
-Every bundle carries its own nginx configuration, with the real `--root`
-already substituted in:
+Every nginx-enabled network includes `nginx:latest` for Linux amd64, a Compose
+file, the generated `mirror.conf`, and a guide in `nginx/README.md`. The config
+always uses `/srv/mmw` inside the container, regardless of the host folder.
+
+After applying the bundle, run from its `nginx/` directory:
 
 ```bash
-ln -s /srv/www/nginx/mirror.conf /etc/nginx/conf.d/mmw-mirror.conf
-nginx -t && systemctl reload nginx
+docker load -i nginx-latest-linux-amd64.tar
+cp compose.yaml /path/to/oak-compose.yaml
+# Edit host-side mount paths in that deployment copy, then:
+docker compose -f /path/to/oak-compose.yaml run --rm nginx nginx -t
+docker compose -f /path/to/oak-compose.yaml up -d --force-recreate
 ```
 
-`mirror.conf` is one self-contained file with a server block per host, so it
-works linked into `conf.d/` or `sites-enabled/` alike — link the file, never
-the `nginx/` folder. (Bundles from before 1.0 shipped a `sites/` folder beside
-it; Debian's `include sites-enabled/*` matches that folder too, and nginx
-refuses to start on "is a directory". Applying a newer bundle deletes it.)
+The Compose file uses simple bind mounts such as
+`/path/to/oak:/srv/mmw:ro` and
+`/path/to/oak/nginx:/etc/nginx/conf.d:ro`.
+Replace the host sources with the actual network folder; keep container
+targets fixed. Keep your edited deployment copy outside the published folder
+so later publishes do not overwrite it and manifest verification still passes.
 
-With `certs = true` and a signed certificate (see [HTTPS](#https) below) every
-host also listens on 443. Set `nginx = false` on the network if you would rather write your own.
+Compose uses bridge networking with `80:80` and `443:443` port mappings.
+Change the left side to use other host ports, for example `8080:80` and
+`8443:443`. Clients must use the selected ports. VS Code networks include
+the gallery in this same stack; nginx reaches it at `gallery:8080` without
+publishing the gallery port. Load the gallery image too, as shown in the
+generated guide. Do not also start its separate Compose file. Point client
+DNS at this host and trust the network CA for HTTPS.
 
----
+After applying another bundle, load any changed image and recreate the
+container using your deployment copy. Image bytes travel in a delta
+only when they change; replaying an existing snapshot uses its frozen image.
+On the connected side, publish/bundle pulls the latest image and caches exports
+by image ID in `{mirror_dir}/nginx-image/`. If Docker or the registry is
+unavailable, a cached export is used with a warning. With no cache, a warning
+identifies the missing image; load `nginx:latest` (linux/amd64) separately on
+the far side. `nginx = false` omits the container setup and generated config.
 
 ## 5. Point DNS at it
 
@@ -304,12 +323,12 @@ directory of them, or `.csr` files; `sign.py` sits beside each bundle (and in
 python3 sign.py --ca site-ca.crt --ca-key site-ca.key /srv/www   # every root under it
 # lab  signed (no certificate yet): 7 hostname(s), until Oct 11 14:10:00 2028 GMT
 # oak  signed (no certificate yet): 7 hostname(s), until Oct 11 14:10:00 2028 GMT
-python3 apply.py --tls --root /srv/www/lab                       # then reload nginx
+python3 apply.py --tls --root /srv/www/lab                       # then recreate nginx
 ```
 
 Each certificate lands beside its request as `mirror.crt`. `apply.py --tls`
 (and every later apply) turns HTTPS on in the generated config: each server
-block includes `{root}/.mmw/tls/https*.conf`, a wildcard nginx ignores while
+block includes `/srv/mmw/.mmw/tls/https*.conf`, a wildcard nginx ignores while
 nothing matches, and `apply.py` writes `https.conf` — `listen 443 ssl` and the
 certificate paths — only once the certificate fits the key. So the config
 loads before, during and after; plain HTTP never stops. Later bundles never
@@ -362,10 +381,10 @@ prints the exact `mmw bundle -n … --from … --to …` to run on the connected
 side. `--full` also works and bypasses the check.
 
 **`apply.py --verify` reports mismatches.**
-If it names files under `nginx/`, check that `--root` is the same directory you
-applied to previously — those files have the root substituted into them, and
-verifying against a different root reports every one of them as wrong.
-Otherwise, re-check the `.sha256` and re-transfer.
+Keep generated files unchanged; edit Compose mount sources in a deployment
+copy outside the published folder. Re-check the `.sha256` and re-transfer damaged
+files. Older bundles used host-root config substitution, so verify those
+against the same `--root` you originally applied to.
 
 **`apt install` 404s on a package `apt update` listed.**
 The bundle shipped an index without its package. Run `mmw verify` on the

@@ -98,7 +98,7 @@ source    = "https://marketplace.visualstudio.com"
 kinds     = ["extensions", "server"]
 platforms = ["linux-x64"]
 
-# gallery_port = 8765          # change only if two networks share a host
+# gallery_port = 8765          # optional standalone gallery host port
 ```
 
 One network can carry apt repositories and VS Code together: one tree, one
@@ -193,26 +193,31 @@ See [Node's CA option](https://nodejs.org/api/cli.html#node_extra_ca_certsfile).
 The generated `VSCODE.md` also lists per-publisher hosts-file entries for
 sites without wildcard DNS; regenerate those entries as publishers are added.
 
-### 3. The gallery container
+### 3. Load the images
 
 ```bash
-cd /srv/www/lab/vscode-gallery
-docker load -i python-3.13-slim-linux-amd64.tar     # first time, and when a bundle brings a new one
-docker compose -f compose.yaml up -d
+cd /srv/www/lab/nginx
+docker load -i nginx-latest-linux-amd64.tar
+docker load -i ../vscode-gallery/python-3.13-slim-linux-amd64.tar
 ```
 
-It mounts the published root read-only and listens on
-`127.0.0.1:{gallery_port}`. A later publish or `apply.py` swaps the catalog;
-the gallery notices by itself — no restart.
+The generated nginx Compose file includes the gallery. A publish or
+`apply.py` swaps the catalog; the gallery notices by itself, without a restart.
 
-### 4. nginx
-
-The same include as any mmw network:
+### 4. Start nginx and the gallery
 
 ```bash
-ln -s /srv/www/lab/nginx/mirror.conf /etc/nginx/conf.d/mmw-mirror.conf
-nginx -t && systemctl reload nginx
+cp compose.yaml /path/to/lab-compose.yaml
+# Edit host-side bind mounts and optional host port mappings in that copy.
+docker compose -f /path/to/lab-compose.yaml up -d --force-recreate
 ```
+
+The network folder mounts at `/srv/mmw` inside nginx. Both containers use a
+shared bridge network, and nginx proxies to `gallery:8080`; no gallery host
+port is published. Do not start `vscode-gallery/compose.yaml` as well.
+Host mappings default to `80:80` and `443:443`; edit the left side for other
+host ports and configure clients accordingly. See `nginx/README.md` for TLS
+source mounts on a signed live publish.
 
 ### 5. Check it
 
@@ -236,7 +241,7 @@ mirrored update first.
 | Symptom | Likely cause |
 |---------|--------------|
 | Extensions view search is empty or errors | The gallery container is not running (`docker compose ps` in `vscode-gallery/`), or nginx was not reloaded after the first publish |
-| `502 Bad Gateway` on the update check | Same — nginx is up, the gallery behind it is not; check `gallery_port` matches |
+| `502 Bad Gateway` on the update check | Check the gallery service health and that nginx and gallery belong to the same Compose stack |
 | Certificate errors in VS Code | The CA is not trusted on the client, or the certificate predates the network's VS Code source — re-sign so it covers the wildcards |
 | A name resolves to Microsoft | DNS lacks a record — usually one of the wildcards |
 | Remote-SSH fails to download the server | The client's commit is older than the three kept; update the client from the mirror first |

@@ -6,6 +6,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Nginx-enabled networks include the official `nginx:latest` amd64 Docker
+  image, an offline Compose setup, and network-specific instructions in
+  publish outputs and bundles. Container paths are fixed at `/srv/mmw`;
+  image exports are cached and frozen in snapshots.
+
 ## [1.0.0]
 
 The first stable release. Upgrading from 0.10: if you synced in the TUI,

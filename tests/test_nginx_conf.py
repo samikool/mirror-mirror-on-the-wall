@@ -72,11 +72,11 @@ def test_non_standard_port_host_uses_real_hostname_for_server_name():
 
 
 def test_install_instructions_name_this_exact_file():
-    """The header must tell the admin to include mirror.conf itself by its
-    real published path, and must not tell them to `cp -r` anything."""
+    """The generated header points to the container setup and its mounts."""
     conf = _conf([_m("https://ports.ubuntu.com/", "a")], root="/srv/lab")
     assert "cp -r" not in conf
-    assert "include /srv/lab/nginx/mirror.conf;" in conf
+    assert "Used by nginx/compose.yaml" in conf
+    assert "nginx/ directory at /etc/nginx/conf.d" in conf
 
 
 def test_no_tls_means_plain_http_only():

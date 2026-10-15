@@ -92,13 +92,15 @@ def _write_checksum_file(target: Path) -> Path:
     return dest
 
 
-def _far_nginx(settings: str, certs: bool) -> dict[str, bytes]:
-    """The far side's nginx config for a snapshot, with the root left as a
-    placeholder (apply.py fills it in). A certs network's server blocks
-    include `.mmw/tls/https*.conf`, which apply.py writes once a certificate
-    signed on the far side matches the key."""
+def _far_nginx(settings: str, certs: bool, *, previous: bool = False) -> dict[str, bytes]:
+    """Fixed container config, or the legacy previous-manifest form.
+
+    apply.py enables HTTPS after validating the far-side certificate/key.
+    """
     include = f"{ROOT_PLACEHOLDER}/{TLS_DIR}/https*.conf" if certs else None
-    return recorded_nginx_files(settings, ROOT_PLACEHOLDER, tls_include=include)
+    import json
+    legacy = previous and not json.loads(settings or "{}").get("nginx_container", False)
+    return recorded_nginx_files(settings, ROOT_PLACEHOLDER, tls_include=include, legacy=legacy)
 
 
 _LAST = object()        # from_ref default: where the last bundle of this network went
@@ -209,11 +211,17 @@ def bundle_network(
                              "the pool — it cannot be bundled to")
         prev = dict(pool.snapshot_files(start.id)) if start else {}
         if start is not None:
-            # Snapshots never store the nginx config (it embeds a root), so the
-            # start's is regenerated the same way: unchanged, it isn't resent;
-            # gone, it is deleted by the ordinary rule below.
+            # Generated setup is reconstructed from the start's recorded
+            # format, including the old host-root form during upgrades.
             prev.update({rel: hashlib.sha256(data).hexdigest()
-                         for rel, data in _far_nginx(start.settings, network.certs).items()})
+                         for rel, data in _far_nginx(start.settings, network.certs, previous=True).items()})
+            import json
+            if json.loads(start.settings or "{}").get("nginx_container") != 2:
+                # Older deployments used host networking (or host roots).
+                # Always ship their replacement setup in the next delta.
+                for rel in prev:
+                    if rel.startswith("nginx/") and not rel.endswith(".tar"):
+                        prev[rel] = ""
         sink = BundleSink(target, header, prev, apply_script_bytes(),
                           prune=network.prune, full=start is None,
                           progress=progress, tls_files=tls_files)

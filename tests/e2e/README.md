@@ -12,7 +12,7 @@ Prepare tooling once, with internet access (Docker Engine/Compose, Linux x64):
 
 ```bash
 docker pull python:3.13-slim
-docker pull nginx:1.27-alpine
+docker pull nginx:latest
 docker build -t mmw-vscode-client:local -f tests/e2e/client.Dockerfile tests/e2e
 ```
 

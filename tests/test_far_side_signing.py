@@ -109,10 +109,10 @@ def test_sign_on_the_far_side_then_https_turns_on(seeded, tmp_path):  # noqa: F8
     assert (collected / "ca.crt").read_bytes() == ca.read_bytes()
 
     on = _run(tmp_path / "out" / "apply.py", "--tls", "--root", root)
-    assert "HTTPS on — reload nginx" in on.stdout
+    assert "HTTPS on — recreate the nginx container" in on.stdout
     https = (tls / "https.conf").read_text()
-    assert "listen 443 ssl;" in https and f"ssl_certificate {tls}/mirror.crt;" in https
-    assert f"include {tls}/https*.conf;" in (root / "nginx" / "mirror.conf").read_text()
+    assert "listen 443 ssl;" in https and "ssl_certificate /srv/mmw/.mmw/tls/mirror.crt;" in https
+    assert "include /srv/mmw/.mmw/tls/https*.conf;" in (root / "nginx" / "mirror.conf").read_text()
 
     again = _run(tmp_path / "out" / "sign.py", "--ca", ca, "--ca-key", ca_key, root)
     assert "current — left alone" in again.stdout

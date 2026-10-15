@@ -219,7 +219,7 @@ def test_publish_writes_nginx_conf(tmp_path, pool, mirror_dir):
     assert result.errors == []
 
     content = (net.root / "nginx" / "mirror.conf").read_text()
-    assert f"root {net.root}/example.com;" in content
+    assert "root /srv/mmw/example.com;" in content
     assert "__MMW_ROOT__" not in content
     assert not (net.root / "nginx" / "sites").exists()
 

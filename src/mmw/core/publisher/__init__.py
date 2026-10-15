@@ -178,9 +178,8 @@ def publish_snapshot(
     network's root) exactly as it was — old packages come back, newer ones
     go (with `prune`). **Blocking.**
 
-    The rows are the complete tree minus nginx, which is regenerated for
-    `root` from the snapshot's recorded mirrors (same hostnames: a second
-    directory needs its own address). Each mirror_base is finalized the way
+    The rows include the frozen nginx image. Its container config and Compose
+    setup are regenerated from the snapshot's recorded mirrors. Each mirror_base is finalized the way
     `publish_group` does it, so by-hash retention is the same.
     """
     from mmw.core.certs import CHANGELOGS_HOST as CHANGELOGS_DIR
@@ -251,7 +250,7 @@ def publish_snapshot(
                     place(row, base)
 
             if not (stop_event and stop_event.is_set()):
-                nginx_rels: set[str] = set()
+                nginx_rels = {rel for rel in keep[None] if rel.startswith("nginx/")}
                 if network.nginx:
                     from mmw.core.certs import servable_paths
                     from mmw.core.publisher.nginx import recorded_nginx_files
@@ -307,8 +306,8 @@ def walk_network(
     mirror_start_callback=None,
 ) -> list:
     """Lay a network's complete tree into `sink` from `pool`: every group,
-    dist-upgrade, nginx (only with `nginx_root` — its config embeds the
-    destination), keys and mirrored upstream files. `publish_network` passes a
+    dist-upgrade, nginx (only with `nginx_root`; snapshots record its settings
+    and image instead), keys and mirrored upstream files. `publish_network` passes a
     `TreeSink`; taking a snapshot passes a recording sink. Returns the mirrors
     walked.
     """
@@ -362,14 +361,18 @@ def walk_network(
     # whole archive there, so anything written after close is dropped.
     if not (stop_event and stop_event.is_set()):
         nginx_rels: set[str] = set()
+        if network.nginx:
+            from mmw.core.publisher.nginx_container import publish_image
+            nginx_rels |= publish_image(mirror_dir, sink, result, progress=progress, stop_event=stop_event)
         if network.nginx and nginx_root is not None:
-            from mmw.core.publisher.nginx import nginx_files
+            from mmw.core.publisher.nginx import deployment_nginx_files
             from mmw.providers import extra_hosts
             extra = upstream_file_hosts(upstream_paths) + extra_hosts(network, published_mirrors)
             from mmw.core.publisher.nginx import split_for_nginx
             static, sites = split_for_nginx(published_mirrors, network.gallery_port)
-            for rel, data in nginx_files(static, nginx_root, tls=tls, extra_hosts=extra,
-                                         sites=sites, port=network.gallery_port).items():
+            for rel, data in deployment_nginx_files(static, network_name=network.name,
+                                                   tls=tls, extra_hosts=extra, sites=sites,
+                                                   port=network.gallery_port).items():
                 sink.write(rel, data)
                 nginx_rels.add(rel)
 

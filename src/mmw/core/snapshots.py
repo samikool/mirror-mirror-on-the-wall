@@ -9,8 +9,8 @@ of writing files. So a snapshot cannot drift from what publish lays out.
 - Package, index and by-hash files are pool blobs already: recorded by checksum.
 - Keys and mirrored upstream files live outside the pool and a later sync
   rewrites them: they are copied into the pool first (frozen), then recorded.
-- The nginx config embeds its destination root: never recorded, regenerated
-  from the settings stored with the snapshot.
+- The nginx image is frozen like any other file; generated container setup
+  is regenerated from the settings stored with the snapshot.
 
 Every checksum a snapshot lists is a pool GC root (see `Pool.prune_orphans`).
 """
@@ -49,7 +49,7 @@ class RecordingSink:
 
     def write(self, rel: str, data: bytes) -> None:
         if rel.startswith("nginx/"):
-            return                  # embeds the destination root: regenerated
+            return                  # generated setup; image arrives through link()
         checksum = hashlib.sha256(data).hexdigest()
         if not self.pool.contains(checksum):
             self.pool.add(data, checksum, "sha256", Path(rel).name, len(data))
@@ -112,6 +112,7 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
         from mmw.core.publisher.links import upstream_file_hosts, upstream_files
         from mmw.providers import extra_hosts
         settings = json.dumps({
+            "nginx_container": 2,
             "network": network.model_dump(mode="json"),
             "mirrors": [m.legacy_dict() for m in mirrors],
             # nginx needs a server block per upstream-file host.

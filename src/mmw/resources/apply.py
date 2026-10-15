@@ -224,6 +224,12 @@ def substitute_root(root, path):
         fh.write(data.replace(ROOT_PLACEHOLDER.encode(), root.encode()))
 
 
+def _nginx_root_config(rel):
+    # nginx/ also holds a potentially large Docker image. Never buffer or
+    # rewrite binary payloads while substituting generated config paths.
+    return rel.startswith("nginx/") and rel.endswith(".conf")
+
+
 def _link_or_copy(target, dest, tmp):
     """Recreate a by-hash duplicate. os.link is nearly free (the pool key IS
     the sha256, so the two paths are byte-identical); fall back to a copy
@@ -392,6 +398,8 @@ def https_state(root):
                                  % (", ".join(missing), sign))
     elif os.path.isfile(os.path.join(d, "mirror.csr")):
         notes.append("HTTPS waits for a signed certificate: %s" % sign)
+    if want is not None:
+        want = want.replace(crt, "/srv/mmw/.mmw/tls/mirror.crt").replace(key, "/srv/mmw/.mmw/tls/mirror.key")
     current = None
     if os.path.isfile(conf):
         with open(conf) as fh:
@@ -399,13 +407,13 @@ def https_state(root):
     if want != current:
         if want is None:
             os.unlink(conf)
-            notes.append("HTTPS off — reload nginx")
+            notes.append("HTTPS off — recreate the nginx container")
         else:
             tmp = conf + ".tmp"
             with open(tmp, "w") as fh:
                 fh.write(want)
             os.rename(tmp, conf)
-            notes.append("HTTPS on — reload nginx")
+            notes.append("HTTPS on — recreate the nginx container")
     return notes
 
 
@@ -627,7 +635,7 @@ def apply(bundle, root, dry_run=False, verify=False):
 
         if not dry_run:
             for rel in manifest:
-                if rel.startswith("nginx/"):
+                if _nginx_root_config(rel):
                     current = rel
                     target = os.path.join(root, rel)
                     if os.path.exists(target):
@@ -731,14 +739,18 @@ def verify_tree(root, manifest):
             missing.append(rel)
             continue
         h = hashlib.sha256()
-        if rel.startswith("nginx/"):
+        if _nginx_root_config(rel):
             # These files are tiny generated configs — reading the whole
             # thing to reverse one substitution is fine; nothing else here
             # gets that treatment, so the streaming read below still bounds
             # memory for every real payload file.
             with open(path, "rb") as fh:
                 data = fh.read()
-            h.update(data.replace(root_bytes, placeholder_bytes))
+            h.update(data)
+            if h.hexdigest() != want:
+                # Older bundles embedded the host root; current configs use
+                # the fixed container path and already equal the recorded bytes.
+                h = hashlib.sha256(data.replace(root_bytes, placeholder_bytes))
         else:
             with open(path, "rb") as fh:
                 while True:

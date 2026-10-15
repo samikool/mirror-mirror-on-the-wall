@@ -76,20 +76,21 @@ def test_gallery_image_event_does_not_count_as_payload():
 
 def test_stop_during_image_save_preserves_previous_cache(tmp_path, monkeypatch):
     from mmw.providers.vscode import image
+    from mmw.core import container_image
     from test_gallery_image import _fake_docker
     docker, _ = _fake_docker(tmp_path, 'sha256:old')
     monkeypatch.setattr(image, 'DOCKER', docker)
     cached = image.gallery_image(tmp_path/'cache').path
     docker, _ = _fake_docker(tmp_path, 'sha256:new')
     monkeypatch.setattr(image, 'DOCKER', docker)
-    original = image._run
+    original = container_image._run
     stop = threading.Event()
     def run(*args, **kwargs):
         result = original(*args, **kwargs)
-        if args[0] == 'save':
+        if args[1] == 'save':
             stop.set()
         return result
-    monkeypatch.setattr(image, '_run', run)
+    monkeypatch.setattr(container_image, '_run', run)
     result = image.gallery_image(tmp_path/'cache', stop_event=stop)
     assert result.path is None
     assert cached.is_file()

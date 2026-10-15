@@ -144,7 +144,7 @@ def test_second_bundle_of_unchanged_pool_sends_nothing(seeded, tmp_path):
 def test_changed_ref_is_carried_and_manifest_stays_complete(seeded, tmp_path):
     mirror_dir, cfg = seeded
     net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
-    bundle_network(net, cfg, mirror_dir)
+    first = bundle_network(net, cfg, mirror_dir)
 
     # Republish the index with new content, as an upstream sync would.
     pool = Pool(mirror_dir)
@@ -184,14 +184,13 @@ def test_changed_ref_is_carried_and_manifest_stays_complete(seeded, tmp_path):
 
     from mmw.core.publisher.manifest import read_manifest
     _, files = read_manifest(second.manifest_path)
-    # The manifest lists the network's whole state (6 rows: pkg, meta
-    # canonical + by-hash, release canonical + by-hash, and the one
-    # unchanged-since-last-bundle nginx/mirror.conf) — but the tar only
-    # carries what's new since the last bundle (5: the 2 changed payload
-    # files plus the 3 `.mmw/` control files), since mirror.conf is identical
-    # to what the far side already has from the first bundle and is never
-    # re-sent. +1 is exactly that gap, not a coincidence.
-    assert len(files) == len(_tree(applied)) + 1   # whole tree, not the delta
+    # The manifest describes the full tree, including unchanged packages,
+    # releases and nginx deployment files that the delta does not resend.
+    with tarfile.open(first.out_path) as archive:
+        original = {m.name for m in archive if (m.isfile() or m.islnk()) and not m.name.startswith(".mmw/")}
+    old_hash = hashlib.sha256(b"pkg-index").hexdigest()
+    old_by_hash = {path for path in original if path.endswith("/by-hash/SHA256/" + old_hash)}
+    assert set(files) == (original - old_by_hash) | payload
 
 
 def test_full_ignores_the_ledger(seeded, tmp_path):
@@ -249,7 +248,7 @@ def test_apply_reproduces_the_published_tree(seeded, tmp_path):
     # The nginx root is a placeholder in the tarball and real once applied.
     conf = (dest / "nginx" / "mirror.conf").read_text()
     assert "__MMW_ROOT__" not in conf
-    assert f"root {dest}/archive.ubuntu.com;" in conf
+    assert "root /srv/mmw/archive.ubuntu.com;" in conf
 
 
 def test_apply_refuses_out_of_order(seeded, tmp_path):
@@ -497,15 +496,16 @@ def _sign_lab_cert(tmp_path: Path, mirror_dir: Path, hostnames: list[str]) -> Pa
 
 def test_publish_serves_https_once_signed(seeded, tmp_path):
     mirror_dir, cfg = seeded
-    crt = _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
+    _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
     root = tmp_path / "published"
     publish_network(config.NetworkConfig(name="lab", root=root, certs=True), cfg, mirror_dir)
     conf = (root / "nginx" / "mirror.conf").read_text()
-    assert "listen 443 ssl;" in conf
-    assert f"ssl_certificate {crt};" in conf
-    assert f"ssl_certificate_key {crt.parent / 'mirror.key'};" in conf
-    # The key is referenced where it lives — never copied into the served tree.
-    assert not any(p.name == "mirror.key" for p in root.rglob("*"))
+    assert "include /srv/mmw/.mmw/tls/https*.conf;" in conf
+    https = (root / ".mmw/tls/https.conf").read_text()
+    assert "listen 443 ssl;" in https
+    assert "ssl_certificate /srv/mmw/.mmw/tls/mirror.crt;" in https
+    assert (root / ".mmw/tls/mirror.key").is_file()
+    assert (root / "sign.py").is_file()
 
 
 def test_publish_without_a_signed_cert_stays_http(seeded, tmp_path):
@@ -538,7 +538,7 @@ def test_dist_upgrade_network_serves_changelogs(seeded, tmp_path):
                     cfg, mirror_dir)
     conf = (root / "nginx" / "mirror.conf").read_text()
     assert "server_name changelogs.ubuntu.com;" in conf
-    assert f"root {root}/changelogs.ubuntu.com;" in conf
+    assert "root /srv/mmw/changelogs.ubuntu.com;" in conf
 
 
 def test_a_certs_bundle_needs_nothing_signed_here(seeded, tmp_path):
@@ -553,7 +553,7 @@ def test_a_certs_bundle_needs_nothing_signed_here(seeded, tmp_path):
     tls = sorted(p.name for p in (applied / ".mmw" / "tls").iterdir())
     assert tls == ["mirror.cnf", "mirror.csr", "mirror.key", "sign.py"]
     conf = (applied / "nginx" / "mirror.conf").read_text()
-    assert "include __MMW_ROOT__/.mmw/tls/https*.conf;" in conf
+    assert "include /srv/mmw/.mmw/tls/https*.conf;" in conf
     assert "listen 443" not in conf
     assert (tmp_path / "out" / "sign.py").exists()
 
@@ -586,11 +586,11 @@ def test_certs_bundle_round_trip(seeded, tmp_path):
     assert stat.S_IMODE(os.stat(tls).st_mode) == 0o700
 
     conf = (dest / "nginx" / "mirror.conf").read_text()
-    assert f"include {tls}/https*.conf;" in conf
+    assert "include /srv/mmw/.mmw/tls/https*.conf;" in conf
     assert "__MMW_ROOT__" not in conf
     https = (tls / "https.conf").read_text()
-    assert f"ssl_certificate {tls}/mirror.crt;" in https
-    assert f"ssl_certificate_key {tls}/mirror.key;" in https
+    assert "ssl_certificate /srv/mmw/.mmw/tls/mirror.crt;" in https
+    assert "ssl_certificate_key /srv/mmw/.mmw/tls/mirror.key;" in https
 
 
 def test_certs_ride_every_delta(seeded, tmp_path):

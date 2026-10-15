@@ -192,16 +192,26 @@ the same CA explicitly when running it:
 NODE_EXTRA_CA_CERTS=/path/to/site-ca.crt code --install-extension publisher.name
 ```
 
-## 3. The gallery container
+## 3. Start nginx and the gallery
+
+The network's `nginx/compose.yaml` starts both containers on a shared bridge
+network. Load both images, then edit the host-side bind mounts in a deployment
+copy of that file:
 
 ```
-cd vscode-gallery
-docker load -i {tar_name}          # once, and again when a bundle brings a new one
-docker compose -f compose.yaml up -d
+cd nginx
+docker load -i nginx-latest-linux-amd64.tar
+docker load -i ../vscode-gallery/{tar_name}
+cp compose.yaml /path/to/{network.name}-compose.yaml
+# Edit host mount paths and, optionally, host port mappings in the copy.
+docker compose -f /path/to/{network.name}-compose.yaml up -d --force-recreate
 ```
 
-It listens on 127.0.0.1:{network.gallery_port}; `nginx/mirror.conf` proxies
-the Marketplace's dynamic paths to it.
+nginx proxies the gallery at `gallery:8080` inside the Compose network; the
+gallery needs no published host port. Do not also start the separate gallery
+Compose file. A publish or bundle swaps the catalog and the gallery notices
+without a restart. Host ports default to `80:80` and `443:443`; change the left
+side for other ports and configure clients to use those ports.
 
 ## 4. Check
 

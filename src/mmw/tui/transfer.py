@@ -416,7 +416,12 @@ class TransferView(Vertical):
         parts = dst.split("/")
         short = "/".join(parts[-4:]) if len(parts) >= 4 else dst
         with self._lock:
-            if status.startswith("gallery-image:"):
+            if status.startswith("nginx-image:"):
+                from mmw.core.publisher.nginx_container import IMAGE
+                phase = status.split(":", 1)[1]
+                self._phase = "" if phase == "done" else f"Nginx image · {IMAGE} · {phase}"
+                self._log_pending.append(f"  [dim]Nginx image · {IMAGE} · {escape(phase)}[/]")
+            elif status.startswith("gallery-image:"):
                 from mmw.providers.vscode.image import IMAGE
                 phase = status.split(":", 1)[1]
                 self._phase = "" if phase == "done" else f"Gallery image · {IMAGE} · {phase}"

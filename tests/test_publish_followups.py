@@ -60,8 +60,16 @@ def test_stop_during_certs_keeps_a_finished_publish_finished(two_mirrors, monkey
     import mmw.core.certs as certs
     cfg, net, mirror_dir = two_mirrors
     gate, entered = threading.Event(), threading.Event()
+    generate = certs.generate_certs
+    calls = 0
 
     def slow_certs(net, cfg):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # TLS is now part of the portable publish itself. Only block the
+            # optional UI follow-up, after the deployment finished.
+            return generate(net, cfg)
         entered.set()
         gate.wait(5)
         return ["example.com"], "k", "c", "r", "m"

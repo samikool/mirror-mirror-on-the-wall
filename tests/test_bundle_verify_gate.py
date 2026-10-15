@@ -104,6 +104,9 @@ def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
             from mmw.tui.transfer import TransferView
             await until(pilot, lambda: app.screen.query(TransferView)
                         and app.screen.query(TransferView).first()._done_displayed)
+            # Completion and the page-status render arrive in separate UI
+            # messages; wait for the refusal text before reading it.
+            await until(pilot, lambda: "incomplete" in str(app.screen.query_one("#page-status").render()))
             view = app.screen.query_one(TransferView)
             outcome = view.outcome
             status = str(app.screen.query_one("#page-status").render())

@@ -19,9 +19,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-from mmw.core import certs, config, downloader
+from mmw.core import certs, config, downloader, container_image
 from mmw.core.pool import Pool
 from mmw.core.publisher import bundle_network, publish_network
+from mmw.core.publisher import nginx_container
 from mmw.core.verify import verify_mirror
 from mmw.providers.vscode import image, provider
 from test_seam_golden import _build
@@ -74,10 +75,10 @@ class Stack:
         self.expected.mkdir(exist_ok=True)
         self.nginx_conf = scratch/('nginx-'+root.name+'.conf')
         self.nginx_conf.write_text('events {}\nhttp {\n access_log /dev/stdout;\n error_log /dev/stderr info;\n'
-                                  f' include {root}/nginx/mirror.conf;\n}}\n')
+                                  ' include /srv/mmw/nginx/mirror.conf;\n}\n')
         self.override = scratch/('compose-'+root.name+'.yaml')
         client_image = os.environ.get('MMW_VSCODE_CLIENT_IMAGE', 'mmw-vscode-client:local')
-        nginx_image = os.environ.get('MMW_VSCODE_NGINX_IMAGE', 'nginx:1.27-alpine')
+        nginx_image = os.environ.get('MMW_VSCODE_NGINX_IMAGE', 'nginx:latest')
         client_volumes = [{'type': 'bind', 'source': str(ca),
                            'target': '/usr/local/share/ca-certificates/mmw-e2e.crt', 'read_only': True},
                           {'type': 'bind', 'source': str(CHECKS.resolve()), 'target': '/scripts', 'read_only': True},
@@ -92,7 +93,7 @@ class Stack:
                    'mmw-fixture.gallerycdn.vsassets.io', 'mmw-fixture.gallery.vsassets.io',
                    'github.gallerycdn.vsassets.io', 'github.gallery.vsassets.io',
                    'archive.ubuntu.com', 'uncovered.fixture.invalid']
-        nginx_volumes = [{'type': 'bind', 'source': str(scratch), 'target': str(scratch), 'read_only': True},
+        nginx_volumes = [{'type': 'bind', 'source': str(root), 'target': '/srv/mmw', 'read_only': True},
                          {'type': 'bind', 'source': str(self.nginx_conf), 'target': '/etc/nginx/nginx.conf',
                           'read_only': True}]
         health = {'interval': '1s', 'timeout': '5s', 'retries': 30, 'start_period': '1s'}
@@ -209,12 +210,13 @@ def test_stock_client_live_publish_and_applied_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(provider, '_client', fake.client)
     monkeypatch.setattr(downloader, '_thread_client', fake.client)
     monkeypatch.setattr(image, 'DOCKER', 'docker')  # Explicit opt-in; never enable Docker for ordinary tests.
-    original_run = image._run
-    def cached_images_only(*args, **kwargs):
+    monkeypatch.setattr(nginx_container, 'DOCKER', 'docker')
+    original_run = container_image._run
+    def cached_images_only(docker, *args, **kwargs):
         if args[0] == 'pull':
             return ''
-        return original_run(*args, **kwargs)
-    monkeypatch.setattr(image, '_run', cached_images_only)
+        return original_run(docker, *args, **kwargs)
+    monkeypatch.setattr(container_image, '_run', cached_images_only)
     mirror_dir, apt_cfg = _build(scratch/'apt')
     src = source()
     cfg = apt_cfg.model_copy(update={'sources': [*apt_cfg.sources, src]})

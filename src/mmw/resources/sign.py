@@ -2,8 +2,8 @@
 """Sign mirror certificates with your CA — on the airgapped side, where the CA
 lives. Nothing has to go back across.
 
-Every bundle of a `certs = true` network carries the mirror's key and its
-certificate signing request; apply.py installs them in {root}/.mmw/tls/. This
+Both published trees and bundles of a `certs = true` network carry the
+key and certificate signing request in {root}/.mmw/tls/. This
 signs those requests, any number in one go:
 
     python3 sign.py --ca ca.crt --ca-key ca.key /srv/www/lab /srv/www/oak
@@ -11,8 +11,8 @@ signs those requests, any number in one go:
     python3 sign.py --ca ca.crt --ca-key ca.key some/mirror.csr --out ./certs
 
 Each certificate is written beside its request as mirror.crt — where the
-bundle's nginx config looks for it; then `python3 apply.py --tls --root ROOT`
-turns HTTPS on (reload nginx). `--out DIR` also collects NAME.crt and NAME.key
+deployment's nginx config looks for it; then `python3 apply.py --tls --root ROOT`
+turns HTTPS on (recreate the container). `--out DIR` also collects NAME.crt and NAME.key
 per mirror, plus ca.crt, for Nginx Proxy Manager or wherever you load
 certificates.
 

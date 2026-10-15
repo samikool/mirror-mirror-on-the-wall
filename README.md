@@ -39,7 +39,8 @@ would online.)
   commands with meaningful exit codes.
 - **Defensive by default** — upstream-supplied paths are validated against
   directory traversal, unknown config keys are hard errors, and TLS private
-  keys live outside every published tree.
+  keys are protected in private `.mmw/tls/` deployment directories, outside
+  the generated web roots.
 
 ## Requirements
 
@@ -183,26 +184,58 @@ directory, not the host — but "zero client-side configuration" no longer
 applies: every client needs editing, and every client needs re-editing if you
 ever move the mirror.
 
+Publish and bundle have the same deployable contents, including `apply.py`,
+container images/configs, and TLS/signing assets when enabled. Published trees
+can be copied directly to a drive. Publishing never creates a snapshot
+automatically; publish snapshots are manual, while bundling current content
+creates its snapshot automatically.
+
 ## Serving it
 
-`publish` writes the web server configuration for you. By default
-(`nginx = true`) it produces one file, `{network.root}/nginx/mirror.conf`,
-with a server block per hostname. One line hooks it up:
+With `nginx = true`, publish and bundle include the official `nginx:latest`
+Docker image for Linux amd64, `nginx/compose.yaml`, `nginx/mirror.conf`, and
+setup instructions in `nginx/README.md`. Configs always use `/srv/mmw` inside
+nginx; the host's folder can be anywhere.
+
+From the network's `nginx/` directory on the serving host:
 
 ```bash
-sudo ln -s /srv/lab/nginx/mirror.conf /etc/nginx/conf.d/mmw.conf   # or sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+docker load -i nginx-latest-linux-amd64.tar
+cp compose.yaml /path/to/oak-compose.yaml
+# Edit the host paths in that deployment copy, then:
+docker compose -f /path/to/oak-compose.yaml run --rm nginx nginx -t
+docker compose -f /path/to/oak-compose.yaml up -d --force-recreate
 ```
 
-Each server block has the correct `server_name` (the real upstream hostname,
-not the port-mangled directory name), the correct `root`, and `autoindex on`.
-A `dist_upgrade` network also gets one for `changelogs.ubuntu.com`, and every
-host serves the network's signing keys at `/mmw-keys/{label}/`. A repository's
-key URL and any `extra_files` (a vendor's `.list`, a key outside the repository)
-are also published at their own upstream path, so a vendor's install
-instructions — NVIDIA's, Microsoft's — work unchanged; see
-[docs/airgap.md](docs/airgap.md#vendor-install-instructions). Set
-`nginx = false` on the network if you maintain your own configuration.
+Compose uses simple read-only bind mounts:
+
+```yaml
+volumes:
+  - "/path/to/oak:/srv/mmw:ro"
+  - "/path/to/oak/nginx:/etc/nginx/conf.d:ro"
+```
+
+Replace the host-side paths with your network folder; container paths stay
+fixed. Keep the edited deployment copy outside the published folder so
+publishes and bundle verification leave it alone. Publish and bundle carry
+the same deployment scripts and private TLS assets; no external certificate
+mounts or access to the original pool are needed.
+Compose uses bridge networking with editable `80:80` and `443:443` port
+mappings. Change the left side for other host ports, such as `8080:80`.
+VS Code networks include the gallery in the same stack at `gallery:8080`,
+without publishing its internal port; load its image too as described in
+the generated guide. Compose never pulls on the serving host.
+
+Publish pulls the latest image and caches exports by image ID. Bundles
+include it; deltas resend image bytes only when they change, and snapshots
+preserve their recorded image. If Docker is unavailable, a cached export is
+used with a warning; with no cache, the guide explains how to load the image
+separately. `nginx = false` omits the container setup.
+
+Each server block has the real upstream hostname and `autoindex on`. A
+`dist_upgrade` network also serves `changelogs.ubuntu.com`; repository keys
+remain available at `/mmw-keys/{label}/`. See
+[Airgapped operation](docs/airgap.md#4-serve-it) for setup details.
 
 ### HTTPS
 
@@ -215,12 +248,14 @@ the client trusts, which in an airgap means one signed by your own CA. With
 uv run mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key
 ```
 
-signs a certificate for every hostname the network serves, and from the next
-`publish` on, `mirror.conf` listens on 443 as well as 80. The private key stays
-in `{mirror_dir}/certs/`, outside every served tree. For a bundled network
-whose CA lives on the airgapped side, nothing is signed here: bundles carry the
-key and signing request, and `sign.py` signs every mirror's request over there
-in one go — see [docs/airgap.md](docs/airgap.md#https).
+signs a certificate for every hostname the network serves. Both publish and
+bundle deployments carry the key, signing request, certificate when available,
+and signing tools in private `.mmw/tls/` (key 0600, directory 0700). No
+generated web root serves that directory. The same container config enables
+HTTPS when the certificate fits the key. A published tree can be copied
+directly to a drive and signed offline using its included `sign.py` and
+`apply.py --tls`, just like an applied bundle. Source key material is kept in
+`{mirror_dir}/certs/`. See [Airgapped operation](docs/airgap.md#https).
 
 ## Recommended operational order
 

@@ -41,7 +41,7 @@ def test_another_directory_leaves_the_root_alone(states, tmp_path):  # noqa: F81
     assert _tree(root) == published[3]
     assert _tree(other) == published[2]
     conf = (other / "nginx" / "mirror.conf").read_text()
-    assert f"root {other}/archive.ubuntu.com;" in conf and str(root) + "/" not in conf
+    assert "root /srv/mmw/archive.ubuntu.com;" in conf and str(root) + "/" not in conf
 
 
 def test_what_each_directory_serves_is_recorded(states, tmp_path):  # noqa: F811

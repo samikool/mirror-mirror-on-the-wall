@@ -94,18 +94,18 @@ def publish_network(
         return result
 
     _check_destination(network.root, mirror_dir)
-    from mmw.core.certs import servable_paths
-    # Served straight from cert_dir: a publish destination is on this
-    # machine, and the key never enters a served tree.
-    tls_paths = servable_paths(network, cfg) if network.nginx else None
-    tls = (str(tls_paths[0]), str(tls_paths[1])) if tls_paths else None
+    from mmw.core.publisher.deployment import prepare_tree
     sink = TreeSink(network.root, progress=progress, stop_event=stop_event)
     try:
         with Pool(mirror_dir, read_only=True) as pool:
             walk_network(network, cfg, mirror_dir, sink, pool, result,
-                         nginx_root=str(network.root), tls=tls, prune=network.prune,
+                         nginx_root=str(network.root), prune=network.prune,
                          progress=progress, stop_event=stop_event,
                          mirror_start_callback=mirror_start_callback)
+        if not (stop_event and stop_event.is_set()):
+            prepare_tree(network.root, network, cfg)
+            if network.prune and not network.certs:
+                (network.root / "sign.py").unlink(missing_ok=True)
     finally:
         sink.close()
     if not (stop_event and stop_event.is_set()):
@@ -178,9 +178,8 @@ def publish_snapshot(
     network's root) exactly as it was — old packages come back, newer ones
     go (with `prune`). **Blocking.**
 
-    The rows are the complete tree minus nginx, which is regenerated for
-    `root` from the snapshot's recorded mirrors (same hostnames: a second
-    directory needs its own address). Each mirror_base is finalized the way
+    The rows include the frozen nginx image. Its container config and Compose
+    setup are regenerated from the snapshot's recorded mirrors. Each mirror_base is finalized the way
     `publish_group` does it, so by-hash retention is the same.
     """
     from mmw.core.certs import CHANGELOGS_HOST as CHANGELOGS_DIR
@@ -251,16 +250,17 @@ def publish_snapshot(
                     place(row, base)
 
             if not (stop_event and stop_event.is_set()):
-                nginx_rels: set[str] = set()
-                if network.nginx:
-                    from mmw.core.certs import servable_paths
-                    from mmw.core.publisher.nginx import recorded_nginx_files
-                    tls_paths = servable_paths(network, cfg)
-                    tls = (str(tls_paths[0]), str(tls_paths[1])) if tls_paths else None
-                    for rel, data in recorded_nginx_files(snap.settings, str(root),
-                                                          tls=tls).items():
-                        sink.write(rel, data)
-                        nginx_rels.add(rel)
+                nginx_rels = {rel for rel in keep[None] if rel.startswith("nginx/")}
+                from mmw.core.publisher.deployment import prepare_tree, write_scripts
+                write_scripts(sink, network.certs, existing=keep[None])
+                prepare_tree(root, network, cfg)
+                # Regenerate nginx from the recorded snapshot settings.
+                from mmw.core.publisher.nginx import recorded_nginx_files
+                from mmw.core.publisher.nginx_container import TLS_INCLUDE
+                for rel, data in recorded_nginx_files(snap.settings, str(root),
+                                                      tls_include=TLS_INCLUDE if network.certs else None).items():
+                    sink.write(rel, data)
+                    nginx_rels.add(rel)
                 if network.prune:
                     for b in bases:
                         nested = {x for x in bases if x != b and x.startswith(b + "/")}
@@ -300,15 +300,14 @@ def walk_network(
     result: NetworkPublishResult,
     *,
     nginx_root: str | None,
-    tls: tuple[str, str] | None = None,
     prune: bool = False,
     progress=None,
     stop_event=None,
     mirror_start_callback=None,
 ) -> list:
     """Lay a network's complete tree into `sink` from `pool`: every group,
-    dist-upgrade, nginx (only with `nginx_root` — its config embeds the
-    destination), keys and mirrored upstream files. `publish_network` passes a
+    dist-upgrade, nginx (only with `nginx_root`; snapshots record its settings
+    and image instead), keys and mirrored upstream files. `publish_network` passes a
     `TreeSink`; taking a snapshot passes a recording sink. Returns the mirrors
     walked.
     """
@@ -362,14 +361,22 @@ def walk_network(
     # whole archive there, so anything written after close is dropped.
     if not (stop_event and stop_event.is_set()):
         nginx_rels: set[str] = set()
+        from mmw.core.publisher.deployment import write_scripts
+        write_scripts(sink, network.certs)
+        if network.nginx:
+            from mmw.core.publisher.nginx_container import publish_image
+            nginx_rels |= publish_image(mirror_dir, sink, result, progress=progress, stop_event=stop_event)
         if network.nginx and nginx_root is not None:
-            from mmw.core.publisher.nginx import nginx_files
+            from mmw.core.publisher.nginx import deployment_nginx_files
+            from mmw.core.publisher.nginx_container import TLS_INCLUDE
             from mmw.providers import extra_hosts
             extra = upstream_file_hosts(upstream_paths) + extra_hosts(network, published_mirrors)
             from mmw.core.publisher.nginx import split_for_nginx
             static, sites = split_for_nginx(published_mirrors, network.gallery_port)
-            for rel, data in nginx_files(static, nginx_root, tls=tls, extra_hosts=extra,
-                                         sites=sites, port=network.gallery_port).items():
+            for rel, data in deployment_nginx_files(static, network_name=network.name,
+                                                   tls_include=TLS_INCLUDE if network.certs else None,
+                                                   extra_hosts=extra, sites=sites,
+                                                   port=network.gallery_port).items():
                 sink.write(rel, data)
                 nginx_rels.add(rel)
 

@@ -3,7 +3,9 @@
 
 Shipped inside every bundle and written beside it (`.mmw/apply.py` in the
 tar, and a plain copy next to the bundle on our side so a first transfer has
-something to run at all). This is the ONLY piece of mmw that runs on the far
+something to run at all). Also included as top-level apply.py in published
+trees and bundle payloads, so directly copied trees carry the same tools.
+This is the ONLY piece of mmw that runs on the far
 side of the airgap: no mmw install, often no pip, sometimes Python 3.6
 (RHEL 8). Every other component in this feature fails loudly on our side of
 the wire; this one fails on someone else's, in a facility no one here can
@@ -224,6 +226,12 @@ def substitute_root(root, path):
         fh.write(data.replace(ROOT_PLACEHOLDER.encode(), root.encode()))
 
 
+def _nginx_root_config(rel):
+    # nginx/ also holds a potentially large Docker image. Never buffer or
+    # rewrite binary payloads while substituting generated config paths.
+    return rel.startswith("nginx/") and rel.endswith(".conf")
+
+
 def _link_or_copy(target, dest, tmp):
     """Recreate a by-hash duplicate. os.link is nearly free (the pool key IS
     the sha256, so the two paths are byte-identical); fall back to a copy
@@ -392,6 +400,8 @@ def https_state(root):
                                  % (", ".join(missing), sign))
     elif os.path.isfile(os.path.join(d, "mirror.csr")):
         notes.append("HTTPS waits for a signed certificate: %s" % sign)
+    if want is not None:
+        want = want.replace(crt, "/srv/mmw/.mmw/tls/mirror.crt").replace(key, "/srv/mmw/.mmw/tls/mirror.key")
     current = None
     if os.path.isfile(conf):
         with open(conf) as fh:
@@ -399,13 +409,13 @@ def https_state(root):
     if want != current:
         if want is None:
             os.unlink(conf)
-            notes.append("HTTPS off — reload nginx")
+            notes.append("HTTPS off — recreate the nginx container")
         else:
             tmp = conf + ".tmp"
             with open(tmp, "w") as fh:
                 fh.write(want)
             os.rename(tmp, conf)
-            notes.append("HTTPS on — reload nginx")
+            notes.append("HTTPS on — recreate the nginx container")
     return notes
 
 
@@ -627,7 +637,7 @@ def apply(bundle, root, dry_run=False, verify=False):
 
         if not dry_run:
             for rel in manifest:
-                if rel.startswith("nginx/"):
+                if _nginx_root_config(rel):
                     current = rel
                     target = os.path.join(root, rel)
                     if os.path.exists(target):
@@ -731,14 +741,18 @@ def verify_tree(root, manifest):
             missing.append(rel)
             continue
         h = hashlib.sha256()
-        if rel.startswith("nginx/"):
+        if _nginx_root_config(rel):
             # These files are tiny generated configs — reading the whole
             # thing to reverse one substitution is fine; nothing else here
             # gets that treatment, so the streaming read below still bounds
             # memory for every real payload file.
             with open(path, "rb") as fh:
                 data = fh.read()
-            h.update(data.replace(root_bytes, placeholder_bytes))
+            h.update(data)
+            if h.hexdigest() != want:
+                # Older bundles embedded the host root; current configs use
+                # the fixed container path and already equal the recorded bytes.
+                h = hashlib.sha256(data.replace(root_bytes, placeholder_bytes))
         else:
             with open(path, "rb") as fh:
                 while True:
@@ -775,7 +789,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.tls:
         notes = https_state(args.root) if os.path.isdir(args.root) else []
-        for line in notes or ["no TLS files in %s/.mmw/tls/" % args.root]:
+        if not notes:
+            if os.path.isfile(os.path.join(args.root, ".mmw", "tls", HTTPS_CONF)):
+                notes = ["HTTPS already enabled — TLS unchanged"]
+            else:
+                notes = ["no TLS changes in %s/.mmw/tls/" % args.root]
+        for line in notes:
             sys.stdout.write("%s\n" % line)
         return 0
     if args.status:

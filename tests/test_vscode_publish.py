@@ -77,7 +77,10 @@ def test_nginx_serves_static_hosts_and_proxies_the_rest(tmp_path, up, docker):  
     assert "server_name ~^[^.]+\\.gallerycdn\\.vsassets\\.io$;" in conf
     assert "location = /_apis/public/gallery/extensionquery {" in conf
     upd = conf.split("server_name update.code.visualstudio.com;")[1].split("server {")[0]
-    assert "proxy_pass http://127.0.0.1:8765;" in upd
+    assert "proxy_pass http://gallery:8080;" in upd
+    compose = (root / "nginx/compose.yaml").read_text()
+    assert "  gallery:" in compose and "network_mode:" not in compose
+    assert '"/path/to/lab/vscode-gallery:/data:ro"' in compose
     assert "server_name vscode.download.prss.microsoft.com;" in conf
 
 

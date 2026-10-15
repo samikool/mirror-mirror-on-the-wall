@@ -65,7 +65,7 @@ def _ca(root):
 
 
 class Stack:
-    def __init__(self, scratch, root, ca, tls=None):
+    def __init__(self, scratch, root, ca):
         self.scratch, self.root = scratch, root
         self.state = scratch/('client-'+root.name)
         self.state.mkdir()
@@ -96,10 +96,6 @@ class Stack:
         nginx_volumes = [{'type': 'bind', 'source': str(root), 'target': '/srv/mmw', 'read_only': True},
                          {'type': 'bind', 'source': str(self.nginx_conf), 'target': '/etc/nginx/nginx.conf',
                           'read_only': True}]
-        if tls:
-            nginx_volumes.extend({'type': 'bind', 'source': str(path),
-                                  'target': '/etc/mmw/tls/' + name, 'read_only': True}
-                                 for path, name in zip(tls, ('mirror.crt', 'mirror.key')))
         health = {'interval': '1s', 'timeout': '5s', 'retries': 30, 'start_period': '1s'}
         self.override.write_text(f'''services:
   gallery:
@@ -238,7 +234,7 @@ def test_stock_client_live_publish_and_applied_bundle(tmp_path, monkeypatch):
     published = publish_network(net, cfg, mirror_dir)
     assert not published.errors and not published.warnings, (published.errors, published.warnings)
     assert (net.root/'vscode-gallery'/image.TAR_NAME).is_file()
-    with Stack(scratch, net.root, ca, tls=certs.servable_paths(net, cfg)) as stack:
+    with Stack(scratch, net.root, ca) as stack:
         expected = _expected(fake, net.root, scratch)
         assert len(expected['updates']['server-linux-x64']['stable']['builds']) == 3
         assert len(expected['updates']['linux-x64']['stable']['builds']) == 1

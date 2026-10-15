@@ -1,6 +1,7 @@
 {
   "bundled": {
     "UPGRADE.md": "3dd78484a5f66ebc0f92bb2d88986dd5e79cbf2ea911b0f3de64019c34b9da15",
+    "apply.py": "a347c9543be07902de1a20576808acf7f3c3236d4dc201a2a7eaa682a7a01bb8",
     "archive.ubuntu.com/ubuntu/dists/jammy/InRelease": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
     "archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages.gz": "955e2af9c538a4ec47557459cd60a7d7423e3c0b4e718b803d8c899f5de283d3",
     "archive.ubuntu.com/ubuntu/dists/noble/InRelease": "dbe65b3483a9d7bf8ba14af6c9015b6ce0cf9525580ce76aed6ca9027f711161",
@@ -13,12 +14,13 @@
     "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/Packages.gz": "b9ab32e23e3b9b817a11a243274ad9e443199ebfe274f1a4c9cfacbdc6ddd90d",
     "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-12_12.0_amd64.deb": "a880213eaa902146fec6d89a147f64ea977eeb11211c217eb39539b10f8b9dc3",
     "keys/ubuntu/ubuntu-archive-keyring.asc": "b2611765b77692e0621e92be65f9dccb01c61af93857dc002d656731358a12fb",
-    "nginx/README.md": "6ebd05824c08075186dad1a57e9cd59d440a4db6b7be49e710b4f4a3ebe25028",
+    "nginx/README.md": "f1f8e2356743bc82dd665436e798e2f089bd936600c774e776752d34c650cd06",
     "nginx/compose.yaml": "84ea5ba6ac84002c25fdae2ec7a4c9f02390849c235cb1fb532563cc4804cdb8",
     "nginx/mirror.conf": "5cad0ea8b7519fc44975fffe09ab0be8800d386f73109667eff419444fa662ef"
   },
   "published": {
     "UPGRADE.md": "6ea688162dd724ded13dd5ec82fcedb6aa2591c2cd567c6f55114adb16b63394",
+    "apply.py": "a347c9543be07902de1a20576808acf7f3c3236d4dc201a2a7eaa682a7a01bb8",
     "archive.ubuntu.com/ubuntu/dists/jammy/InRelease": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
     "archive.ubuntu.com/ubuntu/dists/jammy/by-hash/SHA256/416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
     "archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages.gz": "955e2af9c538a4ec47557459cd60a7d7423e3c0b4e718b803d8c899f5de283d3",
@@ -37,7 +39,7 @@
     "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/by-hash/SHA256/d4626e51223117b30f820c4da42f79b981000e0fbbe83a761b5eb86a0247bed0": "d4626e51223117b30f820c4da42f79b981000e0fbbe83a761b5eb86a0247bed0",
     "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-12_12.0_amd64.deb": "a880213eaa902146fec6d89a147f64ea977eeb11211c217eb39539b10f8b9dc3",
     "keys/ubuntu/ubuntu-archive-keyring.asc": "b2611765b77692e0621e92be65f9dccb01c61af93857dc002d656731358a12fb",
-    "nginx/README.md": "6ebd05824c08075186dad1a57e9cd59d440a4db6b7be49e710b4f4a3ebe25028",
+    "nginx/README.md": "f1f8e2356743bc82dd665436e798e2f089bd936600c774e776752d34c650cd06",
     "nginx/compose.yaml": "84ea5ba6ac84002c25fdae2ec7a4c9f02390849c235cb1fb532563cc4804cdb8",
     "nginx/mirror.conf": "5cad0ea8b7519fc44975fffe09ab0be8800d386f73109667eff419444fa662ef"
   }

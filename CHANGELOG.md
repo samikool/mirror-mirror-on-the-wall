@@ -6,6 +6,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Published trees and bundles carry the same deployable files, including
+  top-level apply/signing scripts and portable private TLS assets. Publish
+  snapshots remain manual; bundling current content still snapshots it
+  automatically.
+
 ### Added
 
 - Nginx-enabled networks include the official `nginx:latest` amd64 Docker

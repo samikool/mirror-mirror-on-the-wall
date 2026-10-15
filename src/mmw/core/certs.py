@@ -96,7 +96,8 @@ def generate_key_and_csr(hostnames: list[str], out_dir: Path) -> tuple[Path, Pat
 
     An existing mirror.key is NEVER overwritten — regenerating the key would
     invalidate any certificate the CA already signed.  Hostname changes only
-    require a fresh CSR, which is always rewritten from the current key.
+    require a fresh CSR. Reuse an unchanged valid request so publish and
+    bundle carry identical bytes even with an existing ECDSA key.
 
     Returns (key_path, cnf_path, csr_path).  Key is written 0600; others world-readable.
     """
@@ -129,13 +130,26 @@ def generate_key_and_csr(hostnames: list[str], out_dir: Path) -> tuple[Path, Pat
     cnf_path = write_cnf(hostnames, out_dir)
 
     san_list = [x509.DNSName(h) for h in hostnames]
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0])])
+    csr_path = out_dir / "mirror.csr"
+    if csr_path.exists():
+        try:
+            existing = x509.load_pem_x509_csr(csr_path.read_bytes())
+            san = existing.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+            encoding = (serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+            if (existing.is_signature_valid and existing.subject == subject
+                    and len(existing.extensions) == 1 and not san.critical
+                    and san.value == x509.SubjectAlternativeName(san_list)
+                    and existing.public_key().public_bytes(*encoding) == key.public_key().public_bytes(*encoding)):
+                return key_path, cnf_path, csr_path
+        except (ValueError, x509.ExtensionNotFound):
+            pass  # malformed/stale request: replace it using the current key
     csr = (
         x509.CertificateSigningRequestBuilder()
-        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0])]))
+        .subject_name(subject)
         .add_extension(x509.SubjectAlternativeName(san_list), critical=False)
         .sign(key, hashes.SHA256())
     )
-    csr_path = out_dir / "mirror.csr"
     csr_path.write_bytes(csr.public_bytes(serialization.Encoding.PEM))
 
     return key_path, cnf_path, csr_path
@@ -153,7 +167,6 @@ def write_instructions(
     # certs are network-scoped, but a network with no publish root yet (bundle-
     # only, applied elsewhere) has no root to name here — see
     # write_upgrade_md's identical guard in publisher/dist_upgrade.py.
-    root_desc = f"`{network.root}`" if network.root else "the directory this publish tree is extracted to"
 
     content = f"""\
 # TLS Certificate — {network.name}
@@ -168,13 +181,14 @@ Generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
 
 | File | Purpose |
 |------|---------|
-| `{key_path.name}` | Private key — never served; travels only inside bundles (see **Bundled networks**) |
+| `{key_path.name}` | Private key — deployment copies use private `.mmw/tls/` (see **Portable deployments**) |
 | `{cnf_path.name}` | OpenSSL config — edit this to adjust hostnames or key size |
 | `{csr_path.name}` | Certificate signing request — send this to your CA |
 | `mirror.crt` | Signed certificate — put here after signing |
 
-These files live outside the published tree ({root_desc}) on purpose —
-never move the private key anywhere a web server can reach.
+These are the source files. Publish and bundle copy deployment assets into
+private `.mmw/tls/` under the destination root, with key mode 0600 and
+directory mode 0700. Generated web roots never serve that directory.
 
 ## Sign it
 
@@ -201,9 +215,9 @@ openssl x509 -req -in mirror.csr -CA ca.crt -CAkey ca.key -CAcreateserial \\
 covers the network's hostnames, no longer matches `mirror.key`, or is about to
 expire.
 
-## Bundled networks
+## Portable deployments
 
-Every bundle of a `certs = true` network carries `{key_path.name}`, `{csr_path.name}`
+Both publish and bundle outputs for a `certs = true` network carry `{key_path.name}`, `{csr_path.name}`
 and `{cnf_path.name}` to `{{root}}/.mmw/tls/` on the far side (no generated server
 block serves it), with `sign.py`. If your CA lives on the airgapped network,
 sign there — any number of mirrors at once:
@@ -213,7 +227,7 @@ python3 sign.py --ca ca.crt --ca-key ca.key /srv/www/lab /srv/www/oak
 ```
 
 Each certificate lands beside its request; `python3 apply.py --tls --root DIR`
-then turns HTTPS on in the generated nginx config (reload nginx). `--out DIR`
+then turns HTTPS on in the generated nginx config (recreate the container). `--out DIR`
 also collects `NAME.crt` + `NAME.key` for Nginx Proxy Manager. This puts the
 private key on your transfer media; a network whose media must not hold it
 keeps `certs` off.
@@ -394,7 +408,7 @@ def check_cert(out_dir: Path, hostnames: list[str]) -> list[str]:
 
 
 def bundle_tls_files(network: NetworkConfig, cfg: Config) -> dict[str, bytes]:
-    """What a certs network's bundle carries to `{root}/.mmw/tls/`: the key,
+    """What both deployment paths carry to `{root}/.mmw/tls/`: the key,
     the signing request and its OpenSSL config (refreshed for the current
     hostnames first), the far side's signing script, and the certificate
     when one was signed on this side. **Blocking** (a first key is RSA-4096)."""

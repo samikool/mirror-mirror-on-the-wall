@@ -124,13 +124,12 @@ def test_no_docker_warns_and_still_writes_setup(two_mirrors):
     assert (net.root / "nginx/compose.yaml").is_file()
 
 
-def test_live_tls_mounts_external_cert_paths_without_copying_keys():
-    tls = ("/private/certs/oak/mirror.crt", "/private/certs/oak/mirror.key")
-    files = nginx.deployment_files("oak", tls=tls)
+def test_tls_uses_the_portable_tree_without_external_certificate_mounts():
+    files = nginx.deployment_files("oak")
     compose = files["nginx/compose.yaml"].decode()
-    assert '"/path/to/oak-certs/mirror.crt:/etc/mmw/tls/mirror.crt:ro"' in compose
-    assert '"/path/to/oak-certs/mirror.key:/etc/mmw/tls/mirror.key:ro"' in compose
-    assert "mirror.key" in files["nginx/README.md"].decode()
+    assert "-certs/" not in compose
+    assert '"/path/to/oak:/srv/mmw:ro"' in compose
+    assert ".mmw/tls" in files["nginx/README.md"].decode()
 
 
 @pytest.mark.parametrize("with_gallery", [False, True])

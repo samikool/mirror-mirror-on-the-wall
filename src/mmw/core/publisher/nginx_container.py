@@ -13,6 +13,7 @@ PLATFORM = "linux/amd64"
 TAR_NAME = "nginx-latest-linux-amd64.tar"
 CACHE = "nginx-image"
 CONTAINER_ROOT = "/srv/mmw"
+TLS_INCLUDE = f"{CONTAINER_ROOT}/.mmw/tls/https*.conf"
 
 
 def nginx_image(cache: Path, *, progress=None, stop_event=None) -> ImageResult:
@@ -44,8 +45,7 @@ def publish_image(mirror_dir, sink, result, *, progress=None, stop_event=None) -
     return {rel}
 
 
-def deployment_files(name: str, *, tls: tuple[str, str] | None = None,
-                     with_gallery: bool = False) -> dict[str, bytes]:
+def deployment_files(name: str, *, with_gallery: bool = False) -> dict[str, bytes]:
     """Fixed container paths, with explicit host-side source placeholders."""
     source = f"/path/to/{name}"
     slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-_") or "network"
@@ -54,10 +54,6 @@ def deployment_files(name: str, *, tls: tuple[str, str] | None = None,
         return f"      - {json.dumps(f'{host}:{target}:ro')}\n"
 
     mounts = mount(source, CONTAINER_ROOT) + mount(f"{source}/nginx", "/etc/nginx/conf.d")
-    if tls:
-        mounts += mount(f"{source}-certs/{Path(tls[0]).name}", "/etc/mmw/tls/mirror.crt")
-        mounts += mount(f"{source}-certs/{Path(tls[1]).name}", "/etc/mmw/tls/mirror.key")
-
     depends = ""
     gallery = ""
     gallery_setup = ""
@@ -98,11 +94,6 @@ services:
     restart: unless-stopped
 {depends}    volumes:
 {mounts}{gallery}"""
-    tls_note = ""
-    if tls:
-        tls_note = ("\nFor this signed live publish, replace the certificate mount sources with:\n\n"
-                    f"- `{tls[0]}`\n- `{tls[1]}`\n"
-                    "The key stays outside the published repository and is mounted read-only.\n")
     readme = f"""\
 # Serve network {name} with nginx
 
@@ -114,7 +105,8 @@ Replace the host-side `/path/to/{name}` placeholders in the bind mounts
 with the actual network folder; leave container paths unchanged.
 Keep your edited deployment copy outside the published folder so later
 publishes do not overwrite it and bundle manifest verification still passes.
-{tls_note}
+Published trees can be copied directly to a drive. They include `apply.py`,
+plus `sign.py` and private `.mmw/tls/` assets when TLS is enabled.
 For a bundle, run `apply.py` first. Then, from this directory on the Linux
 serving host:
 
@@ -127,7 +119,7 @@ docker compose -f /path/to/{name}-compose.yaml run --rm nginx nginx -t
 docker compose -f /path/to/{name}-compose.yaml up -d --force-recreate
 ```
 
-The repository and `nginx/` directory mounts are read-only. Bundled TLS
+The repository and `nginx/` directory mounts are read-only. TLS in both publish and bundle deployments
 lives under the network folder's `.mmw/tls`: `apply.py` enables HTTPS once
 the signed certificate fits its key. After signing on the far side, run
 `apply.py --tls --root /actual/path/to/{name}`, then recreate the container.

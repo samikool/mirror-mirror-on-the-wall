@@ -57,7 +57,7 @@ NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw", "vs
 # manifest payload — so they ride every bundle, delta or full, and sit near
 # the front of the archive rather than in the tail a cut-short copy loses.
 TLS_DIR = ".mmw/tls"
-NON_BASE_FILES = frozenset({"UPGRADE.md", ".mmw-state", "apply.py"})
+NON_BASE_FILES = frozenset({"UPGRADE.md", ".mmw-state", "apply.py", "sign.py"})
 
 # Where TreeSink stages content before renaming it onto a live-served path.
 # Never inside a `mirror_base`, so nginx can never serve it — the same
@@ -219,7 +219,7 @@ class TreeSink:
         # caller, not something this sink should silently write out. See
         # nginx.py's own docstring: "An unsubstituted placeholder reaching
         # disk on either side is a bug."
-        if ROOT_PLACEHOLDER.encode() in data:
+        if rel.startswith("nginx/") and rel.endswith(".conf") and ROOT_PLACEHOLDER.encode() in data:
             raise ValueError(
                 f"{rel}: unsubstituted {ROOT_PLACEHOLDER} would have been "
                 "written to a live-served destination"

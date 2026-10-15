@@ -256,6 +256,8 @@ def bundle_network(
         for rel, data in _far_nginx(dest.settings, network.certs).items():
             sink.write(rel, data)
             dest_paths.add(rel)
+        from mmw.core.publisher.deployment import write_scripts
+        dest_paths |= write_scripts(sink, network.certs, existing=dest_paths)
 
         if network.prune:
             if start is not None:

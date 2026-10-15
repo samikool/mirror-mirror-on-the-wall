@@ -231,17 +231,16 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
 
 
 def deployment_nginx_files(mirrors, *, network_name: str,
-                           tls=None, tls_include=None, **kwargs) -> dict[str, bytes]:
+                           tls_include=None, **kwargs) -> dict[str, bytes]:
     """The generated config always serves the fixed container mount."""
     from mmw.core.publisher.nginx_container import CONTAINER_ROOT, deployment_files
-    container_tls = ("/etc/mmw/tls/mirror.crt", "/etc/mmw/tls/mirror.key") if tls else None
     container_include = f"{CONTAINER_ROOT}/.mmw/tls/https*.conf" if tls_include else None
     with_gallery = any(site.proxy for site in kwargs.get("sites", ()))
     if with_gallery:
         kwargs.update(proxy_host="gallery", port=8080)
-    files = nginx_files(mirrors, CONTAINER_ROOT, tls=container_tls,
+    files = nginx_files(mirrors, CONTAINER_ROOT,
                         tls_include=container_include, **kwargs)
-    files.update(deployment_files(network_name, tls=tls, with_gallery=with_gallery))
+    files.update(deployment_files(network_name, with_gallery=with_gallery))
     return files
 
 
@@ -273,5 +272,5 @@ def recorded_nginx_files(settings: str, root: str, *,
         return nginx_files(mirrors, root, tls=tls, tls_include=tls_include, extra_hosts=extra,
                            sites=sites, port=port)
     return deployment_nginx_files(mirrors, network_name=rec_net.get("name", "network"),
-                                  tls=tls, tls_include=tls_include, extra_hosts=extra,
+                                  tls_include=tls_include, extra_hosts=extra,
                                   sites=sites, port=port)

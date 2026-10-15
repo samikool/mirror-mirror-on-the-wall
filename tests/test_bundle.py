@@ -500,11 +500,12 @@ def test_publish_serves_https_once_signed(seeded, tmp_path):
     root = tmp_path / "published"
     publish_network(config.NetworkConfig(name="lab", root=root, certs=True), cfg, mirror_dir)
     conf = (root / "nginx" / "mirror.conf").read_text()
-    assert "listen 443 ssl;" in conf
-    assert "ssl_certificate /etc/mmw/tls/mirror.crt;" in conf
-    assert "ssl_certificate_key /etc/mmw/tls/mirror.key;" in conf
-    # The key is referenced where it lives — never copied into the served tree.
-    assert not any(p.name == "mirror.key" for p in root.rglob("*"))
+    assert "include /srv/mmw/.mmw/tls/https*.conf;" in conf
+    https = (root / ".mmw/tls/https.conf").read_text()
+    assert "listen 443 ssl;" in https
+    assert "ssl_certificate /srv/mmw/.mmw/tls/mirror.crt;" in https
+    assert (root / ".mmw/tls/mirror.key").is_file()
+    assert (root / "sign.py").is_file()
 
 
 def test_publish_without_a_signed_cert_stays_http(seeded, tmp_path):

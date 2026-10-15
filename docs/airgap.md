@@ -145,6 +145,11 @@ have already been removed.
 
 ## 4. Serve it
 
+A directly copied publish tree has the same deployment files and setup as an
+applied bundle; there is no apply step for files already copied into place.
+Publishing snapshots remain manual; bundling current content snapshots it
+automatically.
+
 Every nginx-enabled network includes `nginx:latest` for Linux amd64, a Compose
 file, the generated `mirror.conf`, and a guide in `nginx/README.md`. The config
 always uses `/srv/mmw` inside the container, regardless of the host folder.
@@ -306,10 +311,13 @@ certificate they trust. No server-side trick can fake a public certificate;
 this works when every client trusts **your** CA, which on an airgapped network
 lives on the airgapped side. Nothing has to come back across.
 
-With `certs = true` on the network, every bundle carries the mirror's private
-key, its certificate signing request (every hostname the network serves) and
-`sign.py`. `apply.py` installs them in `{root}/.mmw/tls/` (key 0600, directory
-0700 — no server block serves it) and, until there is a certificate, says:
+With `certs = true`, both published trees and bundles carry the private key,
+certificate signing request, OpenSSL config and signing tools. Publish installs
+them directly; `apply.py` installs a bundle's copies in the same
+`{root}/.mmw/tls/` layout (key 0600, directory 0700; outside every web root).
+Both include top-level `apply.py` and `sign.py`, so a published tree copied
+to a drive can be signed and deployed without the original mirror pool.
+Until there is a signed certificate, TLS setup reports:
 
 ```
 HTTPS waits for a signed certificate: python3 sign.py --ca CA.crt --ca-key CA.key /srv/www/lab

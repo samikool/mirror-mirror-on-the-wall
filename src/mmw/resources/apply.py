@@ -3,7 +3,9 @@
 
 Shipped inside every bundle and written beside it (`.mmw/apply.py` in the
 tar, and a plain copy next to the bundle on our side so a first transfer has
-something to run at all). This is the ONLY piece of mmw that runs on the far
+something to run at all). Also included as top-level apply.py in published
+trees and bundle payloads, so directly copied trees carry the same tools.
+This is the ONLY piece of mmw that runs on the far
 side of the airgap: no mmw install, often no pip, sometimes Python 3.6
 (RHEL 8). Every other component in this feature fails loudly on our side of
 the wire; this one fails on someone else's, in a facility no one here can
@@ -787,7 +789,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.tls:
         notes = https_state(args.root) if os.path.isdir(args.root) else []
-        for line in notes or ["no TLS files in %s/.mmw/tls/" % args.root]:
+        if not notes:
+            if os.path.isfile(os.path.join(args.root, ".mmw", "tls", HTTPS_CONF)):
+                notes = ["HTTPS already enabled — TLS unchanged"]
+            else:
+                notes = ["no TLS changes in %s/.mmw/tls/" % args.root]
+        for line in notes:
             sys.stdout.write("%s\n" % line)
         return 0
     if args.status:

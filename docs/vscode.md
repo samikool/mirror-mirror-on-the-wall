@@ -216,8 +216,8 @@ The network folder mounts at `/srv/mmw` inside nginx. Both containers use a
 shared bridge network, and nginx proxies to `gallery:8080`; no gallery host
 port is published. Do not start `vscode-gallery/compose.yaml` as well.
 Host mappings default to `80:80` and `443:443`; edit the left side for other
-host ports and configure clients accordingly. See `nginx/README.md` for TLS
-source mounts on a signed live publish.
+host ports and configure clients accordingly. Both copied publishes and applied bundles carry TLS assets in private
+`.mmw/tls/`; see `nginx/README.md` for signing and setup.
 
 ### 5. Check it
 

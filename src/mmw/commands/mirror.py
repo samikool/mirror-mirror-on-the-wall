@@ -126,8 +126,8 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
                 f"={counts.pooled} from pool  "
                 f"✗{counts.failed} failed"
             )
-            if summary.metadata_ok and not summary.stopped:
-                typer.echo(f"  Pool reference commit: {summary.reconcile_seconds:.2f}s")
+            if summary.timings:
+                typer.echo(f"  Timings: {summary.timing_summary()}")
             if summary.metadata_missing:
                 typer.echo(f"  note: {summary.metadata_missing} index-listed metadata file(s) absent upstream (404)")
             if summary.metadata_resnapshotted and summary.metadata_ok:

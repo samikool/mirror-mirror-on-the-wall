@@ -106,6 +106,10 @@ class MirrorSummary:
     pool_write_errors: list[str] = field(default_factory=list)
     items: "ItemCounts | None" = None  # logical counts; file accounting above stays authoritative
     reconcile_seconds: float = 0.0
+    timings: dict[str, float] = field(default_factory=dict)
+
+    def timing_summary(self) -> str:
+        return " · ".join(f"{phase} {seconds:.2f}s" for phase, seconds in self.timings.items())
 
     @property
     def ok(self) -> bool:
@@ -457,6 +461,82 @@ def _download_sync(
         raise
 
 
+def lookup_packages(
+    packages: list[PackageInfo], pool: Pool, mirror_name: str,
+) -> tuple[set[str], dict[str, str], dict[tuple[str, str], str]]:
+    """Batch membership checks, falling back to old refs only where needed.
+
+    URL identities survive interrupted syncs and take precedence over legacy
+    path memory. Once those identities cover a unit, loading and checking its
+    entire previous ref map (metadata included) is redundant.
+    """
+    pooled = pool.batch_contains([p.checksum for p in packages if p.checksum_known and p.checksum])
+    unknown = [p for p in packages if not p.checksum_known]
+    sources = pool.download_checksums([(p.url, p.checksum_type) for p in unknown]) if unknown else {}
+    fallback_paths = {p.repo_path for p in unknown if (p.url, p.checksum_type.lower()) not in sources}
+    legacy = {}
+    if fallback_paths:
+        refs = {path: cs for path, cs in pool.ref_map(mirror_name).items() if path in fallback_paths}
+        have = pool.batch_contains(list(refs.values()))
+        legacy = {path: cs for path, cs in refs.items() if cs in have}
+    return pooled, legacy, sources
+
+
+async def _verify_metadata_batch(files, pooled, executor, stop_event, max_connections):
+    """Skip cached entries without executor jobs; bound network work and hash
+    pre-fetched metadata in bounded chunks instead of one future per JSON.
+    Large prefetched APT indexes keep their parallel hash checks."""
+    results: list[FetchResult | BaseException] = [(Fetch.ALREADY_DONE, None, None)] * len(files)
+    work = collections.deque()
+    inline, inline_bytes = [], 0
+    for index, mf in enumerate(files):
+        if mf.expected_sha256 not in pooled:
+            if mf.content is None:
+                work.append([(index, mf)])
+            else:
+                if inline and (len(inline) >= 1000 or inline_bytes + len(mf.content) > (8 << 20)):
+                    work.append(inline)
+                    inline, inline_bytes = [], 0
+                inline.append((index, mf))
+                inline_bytes += len(mf.content)
+    if inline:
+        work.append(inline)
+
+    def check(index, mf):
+        try:
+            results[index] = _fetch_or_skip(mf, pooled, stop_event)
+        except Exception as error:
+            results[index] = error
+
+    def check_group(group):
+        for index, mf in group:
+            check(index, mf)
+
+    loop = asyncio.get_running_loop()
+    async def worker():
+        while work:
+            group = work.popleft()
+            await loop.run_in_executor(executor, check_group, group)
+
+    await asyncio.gather(*[worker() for _ in range(min(max(1, max_connections), len(work)))])
+    return results
+
+
+def _store_verified_metadata(files, results, pool, stop_event, phase_callback):
+    """Keep small sequential HDD writes together, off the event loop."""
+    seen = set()
+    for index, (mf, result) in enumerate(zip(files, results)):
+        if stop_event is not None and stop_event.is_set():
+            return False
+        outcome, content, _reason = result
+        if outcome is Fetch.OK and content is not None and mf.expected_sha256 not in seen:
+            pool.add(content, mf.expected_sha256, "sha256", _meta_filename(mf.repo_path), len(content))
+            seen.add(mf.expected_sha256)
+        if phase_callback and (index + 1) % 1000 == 0:
+            phase_callback(f"Storing verified metadata: {index + 1:,}/{len(files):,} files...")
+    return True
+
+
 async def download_mirror(
     packages: list[PackageInfo],
     metadata: list[MetadataFile],
@@ -495,6 +575,9 @@ async def download_mirror(
         if file_progress:
             file_progress(package, result)
 
+    def record_time(phase, started):
+        summary.timings[phase] = summary.timings.get(phase, 0.0) + time.perf_counter() - started
+
     _owns_executor = executor is None
     if _owns_executor:
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_connections)
@@ -521,20 +604,11 @@ async def download_mirror(
         # ── Phase 1: classify — batch SQL, no per-package I/O ─────────────────
         if phase_callback:
             phase_callback(f"Checking pool for {len(packages):,} files...")
-        known_checksums = [p.checksum for p in packages if p.checksum_known and p.checksum]
-        pooled_set: set[str] = await loop.run_in_executor(executor, pool.batch_contains, known_checksums)
-
-        # Providers with no upstream checksums: previous refs map paths to the
-        # checksums computed when those paths were last downloaded.
-        legacy_known: dict[str, str] = {}
-        source_known: dict[tuple[str, str], str] = {}
-        if any(not p.checksum_known for p in packages):
-            refmap = await loop.run_in_executor(executor, pool.ref_map, mirror_name)
-            have = await loop.run_in_executor(executor, pool.batch_contains, list(refmap.values()))
-            legacy_known = {path: cs for path, cs in refmap.items() if cs in have}
-            source_known = await loop.run_in_executor(
-                executor, pool.download_checksums,
-                [(p.url, p.checksum_type) for p in packages if not p.checksum_known])
+        started = time.perf_counter()
+        pooled_set, legacy_known, source_known = await loop.run_in_executor(
+            executor, lookup_packages, packages, pool, mirror_name)
+        record_time("pool lookup", started)
+        started = time.perf_counter()
 
         to_download: list[PackageInfo] = []
         emitted = 0
@@ -577,6 +651,7 @@ async def download_mirror(
             else:
                 to_download.append(pkg)
 
+        record_time("package classification", started)
         # ── Phase 2: package downloads → pool ─────────────────────────────────
         if phase_callback and not (stop_event and stop_event.is_set()):
             phase_callback(f"Downloading {len(to_download):,} files...")
@@ -828,14 +903,17 @@ async def download_mirror(
             # only if absent. One batched lookup, off the event loop, instead of
             # a locked point lookup per file on every worker thread.
             wanted = [mf.expected_sha256 for mf in verified_files if mf.expected_sha256]
+            started = time.perf_counter()
             already_pooled = await loop.run_in_executor(
                 executor, pool.batch_contains, wanted
             ) if wanted else set()
-            fetch_results: list[FetchResult | BaseException] = list(await asyncio.gather(
-                *[loop.run_in_executor(executor, _fetch_or_skip, mf, already_pooled, stop_event)
-                  for mf in verified_files],
-                return_exceptions=True,
-            ))
+            record_time("metadata lookup", started)
+            if phase_callback:
+                phase_callback(f"Verifying metadata: {len(verified_files):,} files...")
+            started = time.perf_counter()
+            fetch_results = await _verify_metadata_batch(
+                verified_files, already_pooled, executor, stop_event, max_connections)
+            record_time("metadata verification", started)
 
             failed_paths = [
                 f"{mf.repo_path} ({type(r).__name__ if isinstance(r, BaseException) else r[2]})"
@@ -857,21 +935,26 @@ async def download_mirror(
                     + ("…" if len(failed_paths) > 3 else "")
                 )
             else:
+                if phase_callback:
+                    phase_callback(f"Storing verified metadata: {len(verified_files):,} files...")
+                started = time.perf_counter()
                 # Pool freshly fetched verified blobs; ALREADY_DONE blobs are
                 # referenced as-is. NOT_FOUND files get no entry.
+                stored = await loop.run_in_executor(
+                    executor, _store_verified_metadata, verified_files, fetch_results,
+                    pool, stop_event, phase_callback)
+                record_time("metadata writes", started)
+                if not stored:
+                    summary.stopped = True
+                    summary.metadata_ok = False
+                    summary.metadata_errors.append("sync stopped — index left unchanged")
+                    break
                 for mf, r in zip(verified_files, fetch_results):
-                    outcome, content, _reason = r  # type: ignore[misc]
-                    if outcome is Fetch.OK and content is not None:
-                        await loop.run_in_executor(
-                            executor,
-                            functools.partial(
-                                pool.add, content, mf.expected_sha256, "sha256",
-                                _meta_filename(mf.repo_path), len(content),
-                            ),
-                        )
+                    outcome, _content, _reason = r
                     if outcome in (Fetch.OK, Fetch.ALREADY_DONE):
                         meta_entries.append((mf.expected_sha256, mf.repo_path, KIND_META))
 
+                started = time.perf_counter()
                 # Other files (Release.gpg, .asc, dist-upgrader, …) in parallel.
                 # A failure here is reported but doesn't abort the index — same
                 # availability the upstream offers without that file.
@@ -898,6 +981,7 @@ async def download_mirror(
                         summary.metadata_errors.append(err)
                     elif checksum:
                         meta_entries.append((checksum, mf.repo_path, KIND_RELEASE))
+                record_time("other metadata", started)
 
             if summary.metadata_ok or refetch_metadata is None or _attempt == 1:
                 break
@@ -926,6 +1010,9 @@ async def download_mirror(
                 )
                 break
 
+        if stop_event is not None and stop_event.is_set() and not dry_run:
+            summary.stopped = True
+            summary.metadata_ok = False
         # ── Phase 4: reconcile — the atomic commit ────────────────────────────
         if not dry_run and summary.metadata_ok and not summary.stopped:
             reconcile_started = time.perf_counter()
@@ -951,6 +1038,7 @@ async def download_mirror(
                     executor, pool.reconcile_refs, mirror_name, entries, source
                 )
             summary.reconcile_seconds = time.perf_counter() - reconcile_started
+            summary.timings["reference commit"] = summary.reconcile_seconds
             if phase_callback:
                 phase_callback(f"Pool references committed in {summary.reconcile_seconds:.2f}s")
 

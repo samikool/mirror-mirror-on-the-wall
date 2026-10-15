@@ -959,8 +959,8 @@ class SyncView(Vertical):
         if summary.key_errors and card:
             for f in summary.key_errors:
                 card._log_history.append(f"  [$mmw-warn]⚠ GPG key: {escape(f)}[/]")
-        if card and summary.metadata_ok and not summary.stopped:
-            card._log_pending.append(f"  [dim]· pool reference commit: {summary.reconcile_seconds:.2f}s[/]")
+        if card and summary.timings:
+            card._log_pending.append(f"  [dim]· {summary.timing_summary()}[/]")
 
         elapsed = time.monotonic() - start
         self.post_message(MirrorFinished(

@@ -831,6 +831,9 @@ class Pool:
     def batch_contains(self, checksums: list[str]) -> set[str]:
         if not checksums:
             return set()
+        # Shared blobs occur repeatedly in refs. Visit each checksum once, in
+        # index order across chunks, to avoid revisiting random HDD pages.
+        checksums = sorted(set(checksums))
         # Rows queued for the writer count as present: the blob is on disk, only
         # its row is in flight. Missing this re-downloads what we already have.
         found: set[str] = (self._writer.pending() & set(checksums)

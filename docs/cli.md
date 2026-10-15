@@ -181,8 +181,10 @@ Check the pool holds every blob its mirrors' refs want (read-only unless --repai
 
 Results include phase timings. VS Code verification separates bulk pool lookup,
 metadata reads, and asset checks; all providers report reference checks and,
-when requested, physical blob checks. Sync reports the duration of its final
-pool reference commit separately from verification.
+when requested, physical blob checks. Sync separately reports package pool
+lookup and classification, metadata lookup, verification and writes, and its
+final pool reference commit. These sync stages are independent of the
+pre-publish completeness verifier.
 
 | Option | Default | Description |
 |--------|---------|-------------|

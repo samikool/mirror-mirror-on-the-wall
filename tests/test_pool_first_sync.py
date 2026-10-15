@@ -66,6 +66,8 @@ def test_pooled_packages_classified_and_reconciled(pool, mirror_dir):
     assert phases[-2] == "Committing pool references..."
     assert phases[-1] == f"Pool references committed in {summary.reconcile_seconds:.2f}s"
     assert summary.reconcile_seconds >= 0
+    assert {"pool lookup", "package classification", "metadata lookup", "metadata verification",
+            "metadata writes", "other metadata", "reference commit"} == set(summary.timings)
     # refs reconciled: pkg + release entries
     rows = pool.mirror_files(["m1"])
     by_kind = {kind: path for path, _, _, kind, _ in rows}

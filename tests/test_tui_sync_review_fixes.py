@@ -2,9 +2,9 @@
 says so; a new sync waits for a stopped one to drain."""
 import asyncio
 import threading
-from types import SimpleNamespace
 
 from mmw.core import config
+from mmw.core.downloader import MirrorSummary
 from mmw.tui import sync as sync_mod
 from mmw.tui.app import MmwApp
 from mmw.tui.sync import SyncView
@@ -23,8 +23,7 @@ async def _fake_sync_mirror(mirror, *, stop_event, events=None, **_):
         events.started(10)
     while not stop_event.is_set():
         await asyncio.sleep(0.02)
-    return SimpleNamespace(key_errors=[], downloaded=0, pooled=0, failed=0, metadata_ok=True,
-                           metadata_errors=[], metadata_resnapshotted=False, stopped=True)
+    return MirrorSummary(mirror=mirror.name, stopped=True)
 
 
 def _cfg(tmp_path):

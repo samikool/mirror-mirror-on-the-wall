@@ -28,8 +28,8 @@ def read_input(files: "list[Path] | Path | None", url: str | None) -> str:
     next record's first. mmw controls this join, so it cannot go wrong.
     """
     if url:
-        import httpx
-        with httpx.Client(timeout=15, follow_redirects=True) as client:
+        from mmw.core.http import retrying_client
+        with retrying_client(timeout=15, follow_redirects=True) as client:
             r = client.get(url)
             r.raise_for_status()
             return r.text

@@ -229,7 +229,7 @@ async def sync_mirror(
     packages, metadata = await loop.run_in_executor(
         executor,
         lambda: fetch_all_threaded(provider, mirror, status_callback=events.phase,
-                                   history=history),
+                                   history=history, stop_event=stop_event),
     )
 
     def item_finished(event: ItemResult) -> None:
@@ -252,8 +252,8 @@ async def sync_mirror(
         from went stale during a long package phase. A provider that carries
         state forward needs its history here too, or the refetch drops it."""
         if provider.carries_history:
-            return fetch_all_threaded(provider, mirror, history=history)[1]
-        return fetch_metadata_threaded(provider, mirror)
+            return fetch_all_threaded(provider, mirror, history=history, stop_event=stop_event)[1]
+        return fetch_metadata_threaded(provider, mirror, stop_event=stop_event)
 
     # The pool is the authority on what exists; remember what this mirror is so
     # publish can reconstruct it offline without re-resolving architectures.

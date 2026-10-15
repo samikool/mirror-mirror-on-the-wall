@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 import httpx
 
+from mmw.core.http import request_scope, retrying_client
+
 from mmw.core.pool import (
     KIND_META,
     KIND_PKG,
@@ -124,7 +126,7 @@ _thread_local = threading.local()
 
 def _thread_client() -> httpx.Client:
     if not hasattr(_thread_local, "client"):
-        _thread_local.client = httpx.Client(follow_redirects=True, timeout=60)
+        _thread_local.client = retrying_client(follow_redirects=True, timeout=60)
     return _thread_local.client
 
 
@@ -133,16 +135,18 @@ def fetch_packages_threaded(provider, mirror_config, status_callback=None) -> li
     return provider.fetch_packages(mirror_config, _thread_client(), status_callback=status_callback)
 
 
-def fetch_metadata_threaded(provider, mirror_config) -> list[MetadataFile]:
+def fetch_metadata_threaded(provider, mirror_config, stop_event=None) -> list[MetadataFile]:
     """Submit to an executor — calls provider.fetch_metadata with the thread-local client."""
-    return provider.fetch_metadata(mirror_config, _thread_client())
+    with request_scope(stop_event):
+        return provider.fetch_metadata(mirror_config, _thread_client())
 
 
 def fetch_all_threaded(provider, mirror_config, status_callback=None,
-                       history=None) -> tuple[list[PackageInfo], list[MetadataFile]]:
+                       history=None, stop_event=None) -> tuple[list[PackageInfo], list[MetadataFile]]:
     """Submit to an executor — calls provider.fetch_all with the thread-local client."""
-    return provider.fetch_all(mirror_config, _thread_client(), status_callback=status_callback,
-                              history=history)
+    with request_scope(stop_event):
+        return provider.fetch_all(mirror_config, _thread_client(), status_callback=status_callback,
+                                  history=history)
 
 
 _BY_HASH_RETRIES = 5
@@ -167,6 +171,11 @@ _PROGRESS_YIELD = 2_000
 
 
 def _fetch_metadata_content(mf: MetadataFile, stop_event=None) -> FetchResult:
+    with request_scope(stop_event):
+        return _fetch_metadata_content_scoped(mf, stop_event)
+
+
+def _fetch_metadata_content_scoped(mf: MetadataFile, stop_event=None) -> FetchResult:
     """Fetch and verify a metadata file's bytes. Does not touch the pool."""
     if stop_event is not None and stop_event.is_set():
         return Fetch.FAILED, None, "stopped"
@@ -408,7 +417,7 @@ def _download_sync(
     bytes_written = offset
     headers = {"Range": f"bytes={offset}-"} if offset else None
     try:
-        with client.stream("GET", pkg.url, headers=headers) as resp:
+        with request_scope(stop_event), client.stream("GET", pkg.url, headers=headers) as resp:
             if resp.status_code in (403, 404, 410):
                 raise PermanentFetchError(f"http {resp.status_code}")
             if offset and resp.status_code != 206:

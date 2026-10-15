@@ -8,7 +8,9 @@ is asked for, so a suite or architecture appearing upstream simply shows up.
 import re
 from dataclasses import dataclass, field
 
-import httpx
+import httpx  # noqa: F401 — retained for callers/tests injecting HTTP clients
+
+from mmw.core.http import retrying_client
 
 from mmw.core.config import KNOWN_ARCHES
 
@@ -43,7 +45,7 @@ def detect_repository(url: str) -> DetectResult:
     base = url.rstrip("/")
     last_error = ""
     try:
-        with httpx.Client(timeout=8, follow_redirects=True) as client:
+        with retrying_client(timeout=8, follow_redirects=True) as client:
             # Flat repository: a release file — or, unsigned, just the index —
             # at the root, no dists/ tree. InRelease alone used to be checked,
             # so a flat repository with only `Release`, or an unsigned one
@@ -168,7 +170,7 @@ def release_dimensions(url: str, suite: str) -> tuple[list[str], list[str]]:
     base = url.rstrip("/")
     for name in ("InRelease", "Release"):
         try:
-            with httpx.Client(timeout=10, follow_redirects=True) as client:
+            with retrying_client(timeout=10, follow_redirects=True) as client:
                 r = client.get(f"{base}/dists/{suite}/{name}")
                 if r.status_code != 200:
                     continue
@@ -193,7 +195,7 @@ def list_repositories(host_url: str) -> list[str]:
 
 def _list_dirs(url: str) -> list[str]:
     try:
-        with httpx.Client(timeout=10, follow_redirects=True) as client:
+        with retrying_client(timeout=10, follow_redirects=True) as client:
             r = client.get(url)
             if r.status_code != 200:
                 return []

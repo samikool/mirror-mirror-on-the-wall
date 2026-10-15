@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from mmw.core.http import retrying_client
+
 from mmw.core.config import ExtensionSelection
 from mmw.core.history import UnitHistory
 from mmw.core.pool import KIND_PKG, KIND_RELEASE
@@ -25,7 +27,7 @@ from mmw.providers.vscode.platforms import KINDS, QUALITIES, TARGET_PLATFORMS, b
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(follow_redirects=True, timeout=60)
+    return retrying_client(follow_redirects=True, timeout=60)
 
 
 MALICIOUS_URL = "https://main.vscode-cdn.net/extensions/marketplace.json"

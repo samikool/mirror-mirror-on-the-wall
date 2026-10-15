@@ -220,9 +220,9 @@ class KeyPage(Page):
 
     @work(thread=True, exit_on_error=False)
     def _fetch_worker(self, url: str) -> None:
-        import httpx
+        from mmw.core.http import retrying_client
         try:
-            with httpx.Client() as client:
+            with retrying_client() as client:
                 armour = keys.fetch_key(url, client)
         except Exception as e:
             self.app.call_from_thread(self._on_fetch_failed, e)

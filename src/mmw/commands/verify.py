@@ -95,6 +95,9 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, deep: bool = Fals
                 eprint(f"      … and {len(r.corrupt) - 5:,} more")
             ok = False
 
+        if r.timings:
+            print(f"    {r.timing_summary()}")
+
     complete_count = sum(1 for r in results if r.complete)
     print(f"\n{complete_count}/{len(results)} mirror(s) complete.")
 

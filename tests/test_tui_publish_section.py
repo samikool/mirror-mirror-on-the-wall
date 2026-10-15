@@ -225,13 +225,10 @@ def test_a_failure_while_browsing_elsewhere_is_toasted(two_mirrors, monkeypatch)
 
 def test_incomplete_mirrors_are_toasted_and_escaped(two_mirrors, monkeypatch):  # noqa: F811
     """A verify error carrying `[/…` used to crash the 60 Hz tick (MarkupError)."""
-    from types import SimpleNamespace
-
     import mmw.core.verify as verify
     cfg, net, mirror_dir = two_mirrors
-    monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p: SimpleNamespace(
-        mirror_name=m.name, error="cannot read [/srv/x] index", complete=False,
-        missing_count=0, total=0))
+    monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p: verify.VerifyResult(
+        m.name, m.provider, error="cannot read [/srv/x] index"))
 
     async def check(app, pilot):
         await press_publish(app, pilot)
@@ -243,16 +240,13 @@ def test_incomplete_mirrors_are_toasted_and_escaped(two_mirrors, monkeypatch):  
 
 
 def test_a_dry_run_waiting_for_you_is_toasted_when_you_are_elsewhere(two_mirrors, monkeypatch):  # noqa: F811
-    from types import SimpleNamespace
-
     import mmw.core.verify as verify
     cfg, net, mirror_dir = two_mirrors
     gate = threading.Event()
 
     def held_verify(m, d, p):
         gate.wait(5)
-        return SimpleNamespace(mirror_name=m.name, error=None, complete=True,
-                               missing_count=0, total=1)
+        return verify.VerifyResult(m.name, m.provider, total=1, present=1)
     monkeypatch.setattr(verify, "verify_mirror", held_verify)
 
     async def check(app, pilot):
@@ -293,8 +287,6 @@ def test_finished_with_errors_never_reads_as_success(two_mirrors, monkeypatch): 
 
 
 def test_stop_while_preparing_stops_the_remaining_checks(two_mirrors, monkeypatch):  # noqa: F811
-    from types import SimpleNamespace
-
     import mmw.core.verify as verify
     cfg, net, mirror_dir = two_mirrors
     seen, gate = [], threading.Event()
@@ -302,8 +294,7 @@ def test_stop_while_preparing_stops_the_remaining_checks(two_mirrors, monkeypatc
     def slow_verify(m, d, p):
         seen.append(m.name)
         gate.wait(5)
-        return SimpleNamespace(mirror_name=m.name, error=None, complete=True,
-                               missing_count=0, total=1)
+        return verify.VerifyResult(m.name, m.provider, total=1, present=1)
     monkeypatch.setattr(verify, "verify_mirror", slow_verify)
     import mmw.tui.publish_flows as flows_mod
     monkeypatch.setattr(flows_mod, "_PREPARE_WORKERS", 1)        # one at a time

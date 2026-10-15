@@ -55,12 +55,17 @@ def test_pooled_packages_classified_and_reconciled(pool, mirror_dir):
     pkg = _pkg("a.deb", content)
 
     events = []
+    phases = []
     summary = _sync(pool, mirror_dir, [pkg],
                     [MetadataFile(url="u", repo_path="InRelease", content=b"rel", is_release=True)],
+                    phase_callback=phases.append,
                     progress=lambda n, r: events.append((n, r.status)))
 
     assert summary.pooled == 1 and summary.ok
     assert events[0] == ("a.deb", Status.POOLED)
+    assert phases[-2] == "Committing pool references..."
+    assert phases[-1] == f"Pool references committed in {summary.reconcile_seconds:.2f}s"
+    assert summary.reconcile_seconds >= 0
     # refs reconciled: pkg + release entries
     rows = pool.mirror_files(["m1"])
     by_kind = {kind: path for path, _, _, kind, _ in rows}

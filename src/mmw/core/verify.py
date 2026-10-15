@@ -24,6 +24,7 @@ have quietly turned every publish pre-flight into a full pool scan.
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 
 from mmw.core.config import MirrorConfig
 from mmw.core.pool import Pool
@@ -50,6 +51,10 @@ class VerifyResult:
     # --repair`) drops so the next sync downloads them again.
     corrupt_checksums: list[str] = field(default_factory=list)
     checked_blobs: int = 0
+    timings: dict[str, float] = field(default_factory=dict)
+
+    def timing_summary(self) -> str:
+        return " · ".join(f"{phase} {seconds:.2f}s" for phase, seconds in self.timings.items())
 
     def describe(self) -> str:
         """What is wrong with an incomplete mirror, in one line — shared by
@@ -93,11 +98,18 @@ def verify_mirror(
         return VerifyResult(
             mirror.name, mirror.provider, error=f"unknown provider {mirror.provider!r}"
         )
+    started = perf_counter()
     result = provider.verify_witness(mirror, pool) or VerifyResult(mirror.name, mirror.provider)
+    if not result.timings:
+        result.timings["witness"] = perf_counter() - started
 
+    started = perf_counter()
     _check_refs(pool, mirror.name, result)
+    result.timings["refs"] = perf_counter() - started
     if deep or rehash:
+        started = perf_counter()
         _check_blobs(pool, mirror.name, result, rehash=rehash)
+        result.timings["blobs"] = perf_counter() - started
     return result
 
 

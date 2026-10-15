@@ -179,6 +179,11 @@ Sync configured mirrors. Use --quiet for cron jobs.
 
 Check the pool holds every blob its mirrors' refs want (read-only unless --repair).
 
+Results include phase timings. VS Code verification separates bulk pool lookup,
+metadata reads, and asset checks; all providers report reference checks and,
+when requested, physical blob checks. Sync reports the duration of its final
+pool reference commit separately from verification.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--network`, `-n` |  | Verify only this network's mirrors |

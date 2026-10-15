@@ -160,3 +160,49 @@ def test_verify_witness_checks_every_named_asset(tmp_path):
     with Pool(tmp_path, read_only=True) as pool:
         r = get_provider("vscode").verify_witness(unit, pool)
     assert (r.total, r.present, r.missing_count) == (2, 1, 1)
+
+
+@pytest.mark.parametrize("asset_count", [1, 1000])
+def test_verify_witness_batches_lookups_and_detects_missing_package_rows(tmp_path, asset_count):
+    from mmw.core.pool import KIND_META, KIND_PKG, Pool
+    _, unit = _unit("extensions")
+    paths = [f"p.gallerycdn.vsassets.io/x/{i}" for i in range(asset_count)]
+    meta = json.dumps({"versions": [{"files": [
+        {"source": f"https://{p}"} for p in paths]}]}).encode()
+    meta_cs = hashlib.sha256(meta).hexdigest()
+    asset_cs = hashlib.sha256(b"asset").hexdigest()
+    with Pool(tmp_path) as pool:
+        pool.add(meta, meta_cs, "sha256", "e.json", len(meta))
+        pool.add(b"asset", asset_cs, "sha256", "asset", 5)
+        pool.reconcile_refs(unit.name, [
+            (meta_cs, ".vscode-meta/extensions/linux-x64/p.e.json", KIND_META),
+            *[(asset_cs, p, KIND_PKG) for p in paths[:-1]],
+            ("f" * 64, paths[-1], KIND_PKG),
+        ])
+    with Pool(tmp_path, read_only=True) as pool:
+        queries = []
+        with pool._read() as conn:
+            conn.set_trace_callback(queries.append)
+        r = get_provider("vscode").verify_witness(unit, pool)
+    assert (r.total, r.present, r.missing_count) == (asset_count, asset_count - 1, 1)
+    assert len([q for q in queries if q.lstrip().upper().startswith("SELECT")]) == 2
+    assert set(r.timings) == {"lookup", "metadata", "assets"}
+
+
+@pytest.mark.parametrize("damage", ["missing-row", "missing-file", "invalid-json"])
+def test_verify_witness_rejects_unreadable_metadata(tmp_path, damage):
+    from mmw.core.pool import KIND_META, Pool
+    _, unit = _unit("extensions")
+    body = b"invalid" if damage == "invalid-json" else b'{"versions": []}'
+    cs = hashlib.sha256(body).hexdigest()
+    rel = ".vscode-meta/extensions/linux-x64/p.e.json"
+    with Pool(tmp_path) as pool:
+        if damage != "missing-row":
+            path = pool.add(body, cs, "sha256", "e.json", len(body))
+            if damage == "missing-file":
+                path.unlink()
+        pool.reconcile_refs(unit.name, [(cs, rel, KIND_META)])
+    with Pool(tmp_path, read_only=True) as pool:
+        r = get_provider("vscode").verify_witness(unit, pool)
+    assert not r.complete
+    assert r.error == f"unreadable {rel}"

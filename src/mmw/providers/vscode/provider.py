@@ -9,6 +9,8 @@ import hashlib
 import json
 import posixpath
 import threading
+from pathlib import Path
+from time import perf_counter
 from urllib.parse import urlsplit
 
 import httpx
@@ -514,14 +516,20 @@ class VscodeProvider(BaseProvider):
         names — an independent second opinion on the refs."""
         from mmw.core.verify import VerifyResult
         result = VerifyResult(unit.name, unit.provider)
-        history = UnitHistory(pool, unit.name)
-        held = set(history.paths(""))
+        started = perf_counter()
+        # Keep desired metadata separate from available blobs: an absent package
+        # row must not make its metadata disappear from the witness check.
+        refs = pool.ref_map(unit.name)
+        held = {rel: path for rel, path, *_ in pool.mirror_files([unit.name])}
+        result.timings["lookup"] = perf_counter() - started
+        started = perf_counter()
         expected: set[str] = set()
-        for path in history.paths(".vscode-meta/"):
+        for path in sorted(p for p in refs if p.startswith(".vscode-meta/")):
             try:
-                data = json.loads(history.read(path) or b"null")
-            except ValueError:
+                data = json.loads(Path(held[path]).read_bytes())
+            except (KeyError, OSError, ValueError):
                 result.error = f"unreadable {path}"
+                result.timings["metadata"] = perf_counter() - started
                 return result
             if not isinstance(data, dict):
                 continue
@@ -531,10 +539,12 @@ class VscodeProvider(BaseProvider):
             else:
                 urls = [data.get("url", "")]
             expected |= {rel for rel in map(asset_repo_path, urls) if rel}
+        result.timings["metadata"] = perf_counter() - started
+        started = perf_counter()
         result.total = len(expected)
-        result.present = sum(1 for rel in expected
-                             if rel in held and pool.resolve(unit.name, rel) is not None)
+        result.present = len(expected.intersection(held))
         result.missing_count = result.total - result.present
+        result.timings["assets"] = perf_counter() - started
         return result
 
     def fetch_packages(self, mirror_config, client, status_callback=None):

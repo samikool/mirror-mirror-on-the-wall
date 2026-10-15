@@ -105,6 +105,7 @@ class MirrorSummary:
     # shipped a short tree, and the sync exited 0.
     pool_write_errors: list[str] = field(default_factory=list)
     items: "ItemCounts | None" = None  # logical counts; file accounting above stays authoritative
+    reconcile_seconds: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -927,6 +928,9 @@ async def download_mirror(
 
         # ── Phase 4: reconcile — the atomic commit ────────────────────────────
         if not dry_run and summary.metadata_ok and not summary.stopped:
+            reconcile_started = time.perf_counter()
+            if phase_callback:
+                phase_callback("Committing pool references...")
             entries = pkg_entries + meta_entries
             # Prefer the pool's writer thread: this is a single ~2.3 s
             # transaction, and running it on an executor thread parks one of the
@@ -946,6 +950,9 @@ async def download_mirror(
                 await loop.run_in_executor(
                     executor, pool.reconcile_refs, mirror_name, entries, source
                 )
+            summary.reconcile_seconds = time.perf_counter() - reconcile_started
+            if phase_callback:
+                phase_callback(f"Pool references committed in {summary.reconcile_seconds:.2f}s")
 
     finally:
         if _owns_executor:

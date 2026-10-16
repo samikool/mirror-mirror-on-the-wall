@@ -1,6 +1,6 @@
 # Incremental Reference Reconciliation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for native execution or superpowers:subagent-driven-development if the user selects delegation. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for native execution or superpowers:subagent-driven-development if the user selects delegation. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Reduce end-of-sync database writes by retaining unchanged mirror references while preserving an atomic, exact transition to the new desired state.
 
@@ -62,7 +62,7 @@ Expected benefit is greatest for unchanged and small-update syncs. First syncs s
 
 **Interfaces:** Consumes the existing `Pool` connection, `_lock`, `flush_writes()`, and `(checksum, path, kind)` input. Produces the same `reconcile_refs(...)->None` behavior, with zero reference mutations for unchanged input.
 
-- [ ] **Step 1: Add the failing unchanged-sync regression.** Use inline writes so unrelated queued package inserts cannot affect the mutation count:
+- [x] **Step 1: Add the failing unchanged-sync regression.** Use inline writes so unrelated queued package inserts cannot affect the mutation count:
 
 ```python
 from mmw.core.pool import KIND_META, KIND_PKG, Pool
@@ -78,9 +78,9 @@ def test_unchanged_reconcile_does_not_rewrite_refs(tmp_path):
         assert pool.ref_map("unit") == {path: cs for cs, path, _ in entries}
 ```
 
-- [ ] **Step 2: Run the new test.** `.venv/bin/pytest -q tests/test_reference_reconciliation.py`. Expect failure because the old code deletes and reinserts both references.
+- [x] **Step 2: Run the new test.** `.venv/bin/pytest -q tests/test_reference_reconciliation.py`. Expect failure because the old code deletes and reinserts both references.
 
-- [ ] **Step 3: Implement the in-memory difference.** Normalize incoming entries with `desired.setdefault((checksum, path), (kind, source))`. Do not silently discard missing-package references. Inside `_lock`, begin the transaction before reading:
+- [x] **Step 3: Implement the in-memory difference.** Normalize incoming entries with `desired.setdefault((checksum, path), (kind, source))`. Do not silently discard missing-package references. Inside `_lock`, begin the transaction before reading:
 
 ```python
 conn.execute("BEGIN IMMEDIATE")
@@ -118,7 +118,7 @@ conn.executemany(
 
 Retain blob-writer draining before the transaction. Commit on success and explicitly roll back/re-raise on failure. Normalize the map once per reconcile; release temporary maps when the call ends. Do not add a schema index or enable foreign-key enforcement as part of this change.
 
-- [ ] **Step 4: Expand the regression matrix.** Parameterize inline/deferred pools. Seed missing checksums directly as desired references, as existing tests do. Query full `(checksum, path, kind, source)` rows for assertions instead of using `ref_map()` where multiple checksums share a path. Required cases and exact expectations:
+- [x] **Step 4: Expand the regression matrix.** Parameterize inline/deferred pools. Seed missing checksums directly as desired references, as existing tests do. Query full `(checksum, path, kind, source)` rows for assertions instead of using `ref_map()` where multiple checksums share a path. Required cases and exact expectations:
 
 | Case | Expected result |
 |---|---|
@@ -135,8 +135,8 @@ Retain blob-writer draining before the transaction. Commit on success and explic
 
 For mutation-count assertions in deferred mode, call `pool.flush_writes()` before taking the baseline. Use `conn.total_changes` deltas, not elapsed-time assertions.
 
-- [ ] **Step 5: Run** `.venv/bin/pytest -q tests/test_reference_reconciliation.py tests/test_pool_v2.py tests/test_sync_phase_performance.py` with normal localhost/asyncio access. Expect all tests to pass; investigate any changed existing semantics before committing.
-- [ ] **Step 6: Commit** `perf(pool): reconcile only changed mirror references` with the pool change and its regression tests.
+- [x] **Step 5: Run** `.venv/bin/pytest -q tests/test_reference_reconciliation.py tests/test_pool_v2.py tests/test_sync_phase_performance.py` with normal localhost/asyncio access. Expect all tests to pass; investigate any changed existing semantics before committing.
+- [x] **Step 6: Commit** `perf(pool): reconcile only changed mirror references` with the pool change and its regression tests.
 
 ### Task 2: Prove atomic failure and writer ordering
 
@@ -144,7 +144,7 @@ For mutation-count assertions in deferred mode, call `pool.flush_writes()` befor
 
 **Interfaces:** Consumes Task 1's unchanged public method and existing `submit_reconcile(..., done)` callback. Produces evidence that no reader sees a partial update and no callback reports success before commit.
 
-- [ ] **Step 1: Add a failure-injection test.** Seed an old mirror with a row that will be removed; make insertion of its replacement abort with a connection-local trigger:
+- [x] **Step 1: Add a failure-injection test.** Seed an old mirror with a row that will be removed; make insertion of its replacement abort with a connection-local trigger:
 
 ```sql
 CREATE TEMP TRIGGER reject_new_ref BEFORE INSERT ON main.refs
@@ -156,10 +156,10 @@ END;
 
 Call reconcile with the replacement. Assert an exception, the complete old row set, `not pool._conn.in_transaction`, and success on a subsequent reconcile after dropping the trigger. This catches the dangerous failure after deletion but before insertion.
 
-- [ ] **Step 2: Add a deterministic concurrent-reader test.** Register a SQLite function on the writer connection that signals a `threading.Event` and waits on another event, with a five-second timeout. Invoke it through a temporary trigger during a changed reconcile. While the transaction is paused, read through a separate connection and assert the exact old row set; release the writer and assert the exact new set. Use `try/finally` to release the event even if an assertion fails. Reuse the existing concurrent reconcile test as additional coverage.
-- [ ] **Step 3: Add a deferred-writer ordering test.** Queue `pool.add()` calls, then `submit_reconcile()`. Wait for its `done(error)` callback with a bounded event wait. Inside/after completion, open a separate read-only connection and assert both package rows and the complete desired ref set are visible. Repeat with the failure trigger: callback receives an error and old refs remain intact. Test `defer_writes=False` through the direct method as well.
-- [ ] **Step 4: Run** `.venv/bin/pytest -q tests/test_reference_reconciliation.py tests/test_pool_v2.py tests/test_sync_safety.py tests/test_interrupted_sync_resume.py tests/test_pool_first_sync.py tests/test_sync_engine.py`. Expect atomic rollback, missing-ref detection, stop behavior, and resume behavior to remain correct.
-- [ ] **Step 5: Commit** `test(pool): cover incremental reconcile atomicity and writer ordering` with any necessary rollback fix.
+- [x] **Step 2: Add a deterministic concurrent-reader test.** Register a SQLite function on the writer connection that signals a `threading.Event` and waits on another event, with a five-second timeout. Invoke it through a temporary trigger during a changed reconcile. While the transaction is paused, read through a separate connection and assert the exact old row set; release the writer and assert the exact new set. Use `try/finally` to release the event even if an assertion fails. Reuse the existing concurrent reconcile test as additional coverage.
+- [x] **Step 3: Add a deferred-writer ordering test.** Queue `pool.add()` calls, then `submit_reconcile()`. Wait for its `done(error)` callback with a bounded event wait. Inside/after completion, open a separate read-only connection and assert both package rows and the complete desired ref set are visible. Repeat with the failure trigger: callback receives an error and old refs remain intact. Test `defer_writes=False` through the direct method as well.
+- [x] **Step 4: Run** `.venv/bin/pytest -q tests/test_reference_reconciliation.py tests/test_pool_v2.py tests/test_sync_safety.py tests/test_interrupted_sync_resume.py tests/test_pool_first_sync.py tests/test_sync_engine.py`. Expect atomic rollback, missing-ref detection, stop behavior, and resume behavior to remain correct.
+- [x] **Step 5: Commit** `test(pool): cover incremental reconcile atomicity and writer ordering` with any necessary rollback fix.
 
 ### Task 3: Benchmark representative changes and document the limits
 
@@ -167,7 +167,7 @@ Call reconcile with the replacement. Assert an exception, the complete old row s
 
 **Interfaces:** Consumes the unchanged `Pool.reconcile_refs()` API. Produces a standalone benchmark with `--rows`, `--repeats`, and optional `--scratch-parent` arguments; it owns a `TemporaryDirectory` under the selected parent, never opens an existing pool, and prints machine-readable JSON.
 
-- [ ] **Step 1: Implement both benchmark paths in the tool.** The baseline function must run the previous DELETE-all/INSERT-all transaction against a temporary pool using the same indexes and durability settings. The candidate calls the actual `Pool.reconcile_refs()`. Use `Pool(..., defer_writes=False)` for direct transaction measurements, restore the same initial state outside each timed trial, and close each pool after collecting results. Use synthetic checksum/path rows without allocating binary payloads; missing desired packages are a supported pool state.
+- [x] **Step 1: Implement both benchmark paths in the tool.** The baseline function must run the previous DELETE-all/INSERT-all transaction against a temporary pool using the same indexes and durability settings. The candidate calls the actual `Pool.reconcile_refs()`. Use `Pool(..., defer_writes=False)` for direct transaction measurements, restore the same initial state outside each timed trial, and close each pool after collecting results. Use synthetic checksum/path rows without allocating binary payloads; missing desired packages are a supported pool state.
 
 ```python
 def full_rewrite(pool, mirror_name, entries, source):
@@ -194,11 +194,11 @@ def replacement_target(initial, fraction):
 ```
 
 Seed each trial through `full_rewrite`, then checkpoint/truncate the WAL outside the timer so setup writes do not inflate the measured WAL size. For first-sync trials seed no references. Preserve the existing synchronous/WAL settings for both variants.
-- [ ] **Step 2: Add workload generation with exact final-state verification.** For N initial rows generate: unchanged; 1% replacements; 10% replacements; full replacement; empty target; first sync; kind-only change; source-only change. A replacement removes one old composite key and adds one new key, keeping row count constant. Record elapsed time, persistent row mutation count via `total_changes`, allocated WAL bytes before the final checkpoint, row count, and peak process RSS where the platform supports it. Label WAL file size as an allocation measurement, not an exact physical-write counter. Assert baseline and candidate final rows are equal for every trial. Emit medians over at least three trials; do not enforce unstable timing assertions in pytest.
-- [ ] **Step 3: Run** `.venv/bin/python docs/tools/benchmark-reference-reconciliation.py --rows 100000 --repeats 3`, then repeat with `--rows 500000`. If a disposable directory on the HDD is available, repeat with `--scratch-parent` pointing there; identify warm-cache and HDD results separately. Never pass the live mirror root as a database path.
-- [ ] **Step 4: Measure the queued path separately.** Run the existing sync benchmark or a temporary synthetic sync with queued blob writes and record its existing `reference commit` duration. Explain that this includes queue/drain time, whereas the direct transaction benchmark isolates reconciliation. Investigate any material full-replacement or first-sync regression before shipping. Review peak memory at 500,000 rows before considering larger inputs; no universal speedup promise.
-- [ ] **Step 5: Document** that unchanged refs are retained; completion still waits for successful transaction commit; initial/full-replacement syncs do substantial work; and existing stage timings include deferred-writer waiting. Preserve publish/bundle parity and snapshot semantics in all examples.
-- [ ] **Step 6: Run final verification:**
+- [x] **Step 2: Add workload generation with exact final-state verification.** For N initial rows generate: unchanged; 1% replacements; 10% replacements; full replacement; empty target; first sync; kind-only change; source-only change. A replacement removes one old composite key and adds one new key, keeping row count constant. Record elapsed time, persistent row mutation count via `total_changes`, allocated WAL bytes before the final checkpoint, row count, and peak process RSS where the platform supports it. Label WAL file size as an allocation measurement, not an exact physical-write counter. Assert baseline and candidate final rows are equal for every trial. Emit medians over at least three trials; do not enforce unstable timing assertions in pytest.
+- [x] **Step 3: Run** `.venv/bin/python docs/tools/benchmark-reference-reconciliation.py --rows 100000 --repeats 3`, then repeat with `--rows 500000`. If a disposable directory on the HDD is available, repeat with `--scratch-parent` pointing there; identify warm-cache and HDD results separately. Never pass the live mirror root as a database path.
+- [x] **Step 4: Measure the queued path separately.** Run the existing sync benchmark or a temporary synthetic sync with queued blob writes and record its existing `reference commit` duration. Explain that this includes queue/drain time, whereas the direct transaction benchmark isolates reconciliation. Investigate any material full-replacement or first-sync regression before shipping. Review peak memory at 500,000 rows before considering larger inputs; no universal speedup promise.
+- [x] **Step 5: Document** that unchanged refs are retained; completion still waits for successful transaction commit; initial/full-replacement syncs do substantial work; and existing stage timings include deferred-writer waiting. Preserve publish/bundle parity and snapshot semantics in all examples.
+- [x] **Step 6: Run final verification:**
 
 ```bash
 env -u NO_COLOR .venv/bin/pytest -q -n 4 --dist worksteal
@@ -208,7 +208,7 @@ git diff --check
 
 The suite needs normal localhost networking and asyncio worker wakeups; use the established test execution permissions. Existing deployment-parity and snapshot replay tests must pass. Do not refresh golden outputs simply to hide unrelated failures.
 
-- [ ] **Step 7: Commit** `docs(perf): benchmark and explain incremental reference commits`. Report workload size, warm-cache/HDD conditions, before/after medians, write counts, memory, and any remaining queue bottleneck. Follow the user's chosen implementation workflow for branch review and publication.
+- [x] **Step 7: Commit** `docs(perf): benchmark and explain incremental reference commits`. Report workload size, warm-cache/HDD conditions, before/after medians, write counts, memory, and any remaining queue bottleneck. Follow the user's chosen implementation workflow for branch review and publication.
 
 ## Acceptance criteria
 

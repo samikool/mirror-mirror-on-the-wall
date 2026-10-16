@@ -1,5 +1,6 @@
 import fcntl
 import hashlib
+import heapq
 import json
 import os
 import queue
@@ -10,6 +11,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 
 
@@ -831,19 +833,23 @@ class Pool:
     def batch_contains(self, checksums: list[str]) -> set[str]:
         if not checksums:
             return set()
-        # Shared blobs occur repeatedly in refs. Visit each checksum once, in
-        # index order across chunks, to avoid revisiting random HDD pages.
-        checksums = sorted(set(checksums))
+        # A single C-level sort of 200k checksums holds the GIL long enough to
+        # freeze the UI even on a worker thread. Sort small runs and merge in
+        # Python, retaining global index locality with regular GIL handoffs.
+        unique = set(checksums)
         # Rows queued for the writer count as present: the blob is on disk, only
         # its row is in flight. Missing this re-downloads what we already have.
-        found: set[str] = (self._writer.pending() & set(checksums)
+        found: set[str] = (self._writer.pending() & unique
                            if self._writer is not None else set())
+        checksums = list(unique)
+        del unique
+        ordered = heapq.merge(*(sorted(checksums[i:i + _CHUNK]) for i in range(0, len(checksums), _CHUNK)))
         # Lock per chunk, not around the whole scan: a 100k-checksum verify is
         # 100+ queries, and holding the single shared connection for all of them
         # stalled every other pool caller (measured ~150 ms) — sync workers,
         # publish and verify all queue on this one mutex.
         for i in range(0, len(checksums), _CHUNK):
-            chunk = checksums[i : i + _CHUNK]
+            chunk = list(islice(ordered, _CHUNK))
             placeholders = ",".join("?" * len(chunk))
             with self._read() as _c:
                 rows = _c.execute(

@@ -68,6 +68,13 @@ def test_checksum_batches_deduplicate_shared_blobs(tmp_path):
         assert len([q for q in queries if q.startswith("SELECT")]) == 1
 
 
+def test_checksum_merge_keeps_all_entries_across_partial_runs(tmp_path):
+    with Pool(tmp_path, defer_writes=False) as pool:
+        checksums = [_add(pool, str(i).encode(), f"{i}.asset") for i in range(1003)]
+        requested = list(reversed(checksums)) + checksums[::7] + ["f" * 64]
+        assert pool.batch_contains(requested) == set(checksums)
+
+
 class _RecordingExecutor(ThreadPoolExecutor):
     def __init__(self):
         super().__init__(max_workers=4)

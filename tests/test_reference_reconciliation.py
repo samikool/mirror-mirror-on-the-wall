@@ -1,4 +1,9 @@
 """Incremental reference updates preserve desired state and avoid unchanged writes."""
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import sqlite3
+import threading
+
 import pytest
 
 from mmw.core.pool import KIND_META, KIND_PKG, Pool
@@ -65,3 +70,81 @@ def test_empty_target_removes_only_this_mirror(pool):
     assert pool._conn.total_changes - before == 1
     assert rows(pool) == set()
     assert rows(pool, "other") == {("a" * 64, "a", KIND_PKG, "other-repo")}
+
+
+def reject_replacement(pool):
+    pool._conn.executescript("""
+        CREATE TEMP TRIGGER reject_new_ref BEFORE INSERT ON main.refs
+        WHEN NEW.repo_path = 'new.deb'
+        BEGIN SELECT RAISE(ABORT, 'injected reconcile failure'); END;
+    """)
+
+
+def test_failed_reconcile_rolls_back_and_connection_recovers(pool):
+    pool.reconcile_refs("unit", [("a" * 64, "old.deb", KIND_PKG)], "old")
+    reject_replacement(pool)
+    with pytest.raises(sqlite3.IntegrityError, match="injected reconcile failure"):
+        pool.reconcile_refs("unit", [("b" * 64, "new.deb", KIND_PKG)], "new")
+    assert rows(pool) == {("a" * 64, "old.deb", KIND_PKG, "old")}
+    assert not pool._conn.in_transaction
+    pool._conn.execute("DROP TRIGGER reject_new_ref")
+    pool.reconcile_refs("unit", [("b" * 64, "new.deb", KIND_PKG)], "new")
+    assert rows(pool) == {("b" * 64, "new.deb", KIND_PKG, "new")}
+
+
+def test_reader_sees_old_state_until_entire_transaction_commits(pool):
+    pool.reconcile_refs("unit", [("a" * 64, "old.deb", KIND_PKG)], "old")
+    paused, release = threading.Event(), threading.Event()
+    def pause():
+        paused.set()
+        assert release.wait(5), "reader never released the paused transaction"
+        return 0
+    pool._conn.create_function("pause_reconcile", 0, pause)
+    pool._conn.executescript("""
+        CREATE TEMP TRIGGER pause_new_ref BEFORE INSERT ON main.refs
+        BEGIN SELECT pause_reconcile(); END;
+    """)
+    with ThreadPoolExecutor(1) as executor:
+        pending = executor.submit(pool.reconcile_refs, "unit", [("b" * 64, "new.deb", KIND_PKG)], "new")
+        try:
+            assert paused.wait(5), "writer did not reach the paused mutation"
+            assert rows(pool) == {("a" * 64, "old.deb", KIND_PKG, "old")}
+            assert not pending.done()
+        finally:
+            release.set()
+        pending.result(timeout=5)
+    assert rows(pool) == {("b" * 64, "new.deb", KIND_PKG, "new")}
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_deferred_completion_follows_blob_writes_and_atomic_commit(tmp_path, fail):
+    with Pool(tmp_path, defer_writes=True) as pool:
+        pool.reconcile_refs("unit", [("a" * 64, "old.deb", KIND_PKG)], "old")
+        if fail:
+            reject_replacement(pool)
+        completed = threading.Event()
+        observations = []
+        digest = hashlib.sha256(b"download").hexdigest()
+        def done(error):
+            try:
+                observations.append((error, rows(pool), pool.batch_contains([digest])))
+            finally:
+                completed.set()
+        # Hold the writer lock while queuing so this genuinely tests pending
+        # blobs rather than racing a tiny add that might already have committed.
+        with pool._lock:
+            pool.add(b"download", digest, "sha256", "new.deb", 8)
+            assert pool.submit_reconcile("unit", [(digest, "new.deb", KIND_PKG)], "new", done)
+            assert not completed.is_set()
+        assert completed.wait(5)
+        assert len(observations) == 1
+        error, visible_refs, visible_blobs = observations[0]
+        assert visible_blobs == {digest}
+        assert not pool._conn.in_transaction
+        if fail:
+            assert isinstance(error, sqlite3.IntegrityError)
+            assert visible_refs == {("a" * 64, "old.deb", KIND_PKG, "old")}
+            assert any("injected reconcile failure" in e for e in pool.take_write_errors())
+        else:
+            assert error is None
+            assert visible_refs == {(digest, "new.deb", KIND_PKG, "new")}

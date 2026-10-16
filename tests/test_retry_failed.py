@@ -113,9 +113,9 @@ def test_repair_rejects_concurrently_changed_metadata(incomplete, tmp_path, monk
         new_cs = hashlib.sha256(b"new witness").hexdigest()
         path = next(p for p in pool.ref_map(unit.name) if p.startswith(".vscode-meta/"))
 
-        def changed(name, entries, source, witness):
+        def changed(name, entries, source, witness, *recovered):
             pool.reconcile_refs(name, [(new_cs, path, KIND_META)], source)
-            return real(name, entries, source, witness)
+            return real(name, entries, source, witness, *recovered)
 
         monkeypatch.setattr(pool, "repair_refs", changed)
         with pytest.raises(RuntimeError, match="metadata changed"):
@@ -157,6 +157,8 @@ def test_cli_dry_run_and_real_retry(incomplete, tmp_path):
 def test_unreadable_saved_metadata_aborts_before_any_network(incomplete, tmp_path):
     _, unit, _, _, upstream = incomplete
     with Pool(tmp_path) as pool:
+        pool._conn.execute("DELETE FROM retry_state WHERE mirror_name = ?", (unit.name,))
+        pool._conn.commit()  # simulate a mirror from before the journal existed
         path = next(p for p in pool.ref_map(unit.name) if p.startswith(".vscode-meta/"))
         pool.resolve(unit.name, path).write_bytes(b"not json")
         with pytest.raises(RuntimeError, match="cannot repair from"):

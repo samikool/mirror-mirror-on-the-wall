@@ -451,9 +451,12 @@ def test_every_pool_write_takes_the_write_lock_and_every_read_does_not(tmp_path)
             for s in ast.walk(stmt)
             if isinstance(s, ast.Constant) and isinstance(s.value, str)
         ).upper()
-        if not any(k in sql for k in ("SELECT", "INSERT", "DELETE", "UPDATE")):
+        if not any(k in sql for k in ("SELECT", "INSERT", "DELETE", "UPDATE", "BEGIN IMMEDIATE")):
             continue
-        mutates = any(k in sql for k in ("INSERT", "DELETE", "UPDATE"))
+        # An explicit write transaction may validate a snapshot with SELECT
+        # and delegate its inserts to a connection-level helper. It still
+        # owns the write lock, including that validation.
+        mutates = any(k in sql for k in ("INSERT", "DELETE", "UPDATE", "BEGIN IMMEDIATE"))
         uses_write_lock = "'_lock'" in dumped and "_read" not in dumped
         if mutates:
             assert uses_write_lock, f"Pool.{fn.name} writes without the write lock"

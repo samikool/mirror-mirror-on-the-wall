@@ -507,7 +507,7 @@ class StatsFooter(Static):
             f"[bold]{_fmt_size(fetch_size)}[/] estimated"
         )
 
-    def refresh_stats(self, stats: dict, cards: list[MirrorCard], items: list[ItemCounts] | None = None):
+    def refresh_stats(self, stats: dict | None, cards: list[MirrorCard], items: list[ItemCounts] | None = None):
         """Render the footer from an already-fetched snapshot.
 
         **This must never query the pool.** `pool.stats()` is a full table scan
@@ -521,9 +521,10 @@ class StatsFooter(Static):
                             + (f" ({c.failed:,} failed)" if c.failed else "") + "  [dim]│[/]  "
                             for c in items or [])
 
+        pool_text = (f"[bold]Pool[/]  {stats['packages']:,} files  "
+                     f"stored {_fmt_size(stats['total_size'])}  [dim]│[/]  ") if stats is not None else ""
         self.update(
-            item_text + f"[bold]Pool[/]  {stats['packages']:,} files  "
-            f"stored {_fmt_size(stats['total_size'])}  [dim]│[/]  "
+            item_text + pool_text +
             f"[bold]Transferred[/]  {_fmt_size(total_bytes)}  "
             f"@ {_fmt_speed(speed)}  [dim]│[/]  "
             f"[bold]Mirrors[/]  {sum(1 for c in cards if c._done)}/{len(cards)} done"
@@ -770,7 +771,7 @@ class SyncView(Vertical):
         # Outside the try below: if scheduling the scan ever raises, the footer
         # must still render. Sharing one try meant a failure here silently froze
         # every number on screen with no error anywhere.
-        if self._pool and not self._dry_run:
+        if self._pool and not self._dry_run and not self._retry_failed:
             try:
                 self._maybe_refresh_pool_stats(now)
             except Exception:
@@ -787,7 +788,8 @@ class SyncView(Vertical):
                     self._item_label()
                 )
             elif self._pool:
-                footer.refresh_stats(self._pool_stats, cards, self._items.snapshot())
+                footer.refresh_stats(None if self._retry_failed else self._pool_stats,
+                                     cards, self._items.snapshot())
         except Exception:
             pass
 
@@ -849,7 +851,7 @@ class SyncView(Vertical):
         but only after one last pool scan has reached the footer: its totals
         are the run's final word, and the 5 s scan cadence can leave them
         stale by a whole interval."""
-        if self._pool is None or self._dry_run:
+        if self._pool is None or self._dry_run or self._retry_failed:
             self._render_footer()
             self._end_ticker()
             return

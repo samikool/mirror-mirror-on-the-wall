@@ -511,12 +511,18 @@ class VscodeProvider(BaseProvider):
                                            build))
         return packages, metadata
 
-    def repair_packages(self, unit, pool):
+    def repair_packages(self, unit, pool, *, status_callback=None, stop_event=None):
         """Missing assets from saved metadata; never resolve the marketplace.
 
         Unknown-checksum failures have no package ref yet, so reading only
         missing_for() cannot recover them. The saved JSON is the desired set.
         """
+        saved = pool.retry_plan(unit.name)
+        if saved is not None:
+            token, failures = saved
+            return [PackageInfo(**f["package"]) for f in failures], token
+        if status_callback:
+            status_callback("Older mirror: discovering missing files once to initialize its retry list...")
         refs = pool.ref_map(unit.name)
         witness = {p: cs for p, cs in refs.items() if p.startswith(".vscode-meta/")}
         if not witness:
@@ -524,6 +530,8 @@ class VscodeProvider(BaseProvider):
         held = {rel: path for rel, path, *_ in pool.mirror_files([unit.name])}
         packages = {}
         for path in sorted(witness):
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("retry discovery stopped")
             try:
                 data = json.loads(Path(held[path]).read_bytes())
                 if not isinstance(data, dict):

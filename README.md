@@ -277,9 +277,14 @@ every pool file and `--rehash` re-hashes it — slow, so never implicit — and
 again. A bundle refuses to write while the pool holds a damaged file.
 
 For a VS Code mirror with a few missing assets, use
-`mmw retry-failed --network lab` to download only the gaps in its saved
-metadata. This headless command skips marketplace discovery and leaves the
-existing metadata and other files intact. Omit `--network` to repair all
+`mmw retry-failed --network lab` to retry its persisted list of failed
+downloads. Sync saves only failures, and recovery deletes each entry when
+its file is recovered and referenced successfully. Subsequent retries read
+only that small list, without scanning every file reference or metadata JSON.
+An older mirror without a failure list needs one local discovery scan to
+initialize it; a dry run reports gaps but does not save the initial list.
+Recovery skips marketplace discovery and leaves existing metadata and other
+files intact. Omit `--network` to repair all
 previously synced VS Code units; add `--dry-run` to count gaps without fetching.
 It uses the normal download retries and server backoffs. A first sync must
 have saved usable metadata; an interrupted sync that saved none still needs

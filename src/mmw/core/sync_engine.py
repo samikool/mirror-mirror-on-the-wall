@@ -9,7 +9,7 @@ import asyncio
 import concurrent.futures
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from mmw.core.config import MirrorConfig
@@ -162,11 +162,23 @@ async def retry_failed_mirror(
     if mirror.provider != "vscode":
         raise ValueError("retry-failed currently supports VS Code mirrors only")
     events = events or SyncEvents()
+    if stop_event is not None and stop_event.is_set():
+        return MirrorSummary(mirror=mirror.name, stopped=True, metadata_ok=False)
     if events.phase:
-        events.phase("Finding missing files in saved VS Code metadata...")
+        events.phase("Loading saved failed downloads...")
     provider = get_provider(mirror.provider)
-    packages, witness = await asyncio.get_running_loop().run_in_executor(
-        executor, provider.repair_packages, mirror, pool)
+    try:
+        packages, witness = await asyncio.get_running_loop().run_in_executor(
+            executor, lambda: provider.repair_packages(
+                mirror, pool, status_callback=events.phase, stop_event=stop_event))
+    except InterruptedError:
+        return MirrorSummary(mirror=mirror.name, stopped=True, metadata_ok=False)
+    if isinstance(witness, dict) and not dry_run and not (stop_event and stop_event.is_set()):
+        if events.phase:
+            events.phase("Saving retry list after one-time discovery for this older mirror...")
+        failures = [{"package": asdict(p), "error": "missing from saved metadata"} for p in packages]
+        witness = await asyncio.get_running_loop().run_in_executor(
+            executor, pool.seed_retry_plan, mirror.name, failures, mirror.source, witness)
     def completed(event):
         if items_session is not None:
             items_session.complete(mirror.name, event)
@@ -314,6 +326,7 @@ async def sync_mirror(
         file_progress=tracker.complete,
         downloads=downloads,
         finish_callback=events.download_finished,
+        track_failures=mirror.provider == "vscode",
     )
     summary.items = tracker.counts
 

@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import islice
@@ -88,6 +89,20 @@ CREATE TABLE IF NOT EXISTS download_sources (
     checksum      TEXT NOT NULL,
     PRIMARY KEY (url, checksum_type)
 );
+
+-- Small recovery journal, replaced atomically with each committed VS Code
+-- snapshot. An empty journal is distinct from an older, unindexed mirror.
+CREATE TABLE IF NOT EXISTS retry_state (
+    mirror_name TEXT PRIMARY KEY,
+    generation TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS retry_failures (
+    mirror_name TEXT NOT NULL,
+    repo_path TEXT NOT NULL,
+    request TEXT NOT NULL,
+    PRIMARY KEY (mirror_name, repo_path)
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS refs (
     checksum     TEXT NOT NULL,
@@ -650,6 +665,19 @@ def _current_dims(raw: str | None, arch: str | None, suite: str | None,
     return {k: legacy.get(k, v) for k, v in dims.items()}
 
 
+def _replace_retry_plan(conn, mirror_name, failures, source):
+    """Caller owns the pool write lock and transaction, as for blob batches."""
+    conn.execute("DELETE FROM retry_failures WHERE mirror_name = ?", (mirror_name,))
+    conn.execute("DELETE FROM retry_state WHERE mirror_name = ?", (mirror_name,))
+    if failures is None:
+        return None
+    token = uuid.uuid4().hex
+    conn.execute("INSERT INTO retry_state VALUES (?, ?, ?)", (mirror_name, token, source))
+    conn.executemany("INSERT INTO retry_failures VALUES (?, ?, ?)",
+                     [(mirror_name, f["package"]["repo_path"], json.dumps(f)) for f in failures])
+    return token
+
+
 class Pool:
     def __init__(self, mirror_dir: Path, read_only: bool = False,
                  defer_writes: bool | None = None,
@@ -764,6 +792,7 @@ class Pool:
         # checked once here, not per query on a connection a writer may hold.
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
         self._has_download_sources = self._has_table("download_sources")
+        self._has_retry_state = self._has_table("retry_state")
 
     @property
     def _tmp_dir(self) -> Path:
@@ -975,7 +1004,7 @@ class Pool:
         return errs
 
     def submit_reconcile(self, mirror_name: str, entries: list[tuple[str, str, str]],
-                         source: str, done) -> bool:
+                         source: str, done, retry_failures=None) -> bool:
         """Queue a reconcile onto the writer thread. False if there is no writer.
 
         `reconcile_refs` is one ~2.3 s transaction on a 65k-ref mirror, and it
@@ -989,7 +1018,7 @@ class Pool:
         if self._writer is None:
             return False
         self._writer.submit_task(
-            lambda: self.reconcile_refs(mirror_name, entries, source), done)
+            lambda: self.reconcile_refs(mirror_name, entries, source, retry_failures), done)
         return True
 
     def reconcile_refs(
@@ -997,6 +1026,7 @@ class Pool:
         mirror_name: str,
         entries: list[tuple[str, str, str]],
         source: str = "",
+        retry_failures: list[dict] | None = None,
     ) -> None:
         """Make a mirror's refs exactly `entries`, writing only the difference.
 
@@ -1051,13 +1081,59 @@ class Pool:
                     "VALUES (?, ?, ?, ?, ?)",
                     [(cs, mirror_name, path, kind, source) for cs, path, kind in insert_entries],
                 )
+                _replace_retry_plan(self._conn, mirror_name, retry_failures, source)
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
                 raise
 
+    def retry_plan(self, mirror_name: str):
+        """Read only this mirror's failures, including an indexed empty result."""
+        if not self._has_retry_state:
+            return None
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT s.generation, f.request FROM retry_state s "
+                "LEFT JOIN retry_failures f ON f.mirror_name = s.mirror_name "
+                "WHERE s.mirror_name = ? ORDER BY f.repo_path", (mirror_name,),
+            ).fetchall()
+        return (rows[0][0], [json.loads(r[1]) for r in rows if r[1] is not None]) if rows else None
+
+    def _check_retry_witness(self, mirror_name, expected_metadata):
+        if isinstance(expected_metadata, str):
+            row = self._conn.execute(
+                "SELECT generation FROM retry_state WHERE mirror_name = ?", (mirror_name,)).fetchone()
+            matches = row is not None and row[0] == expected_metadata
+        else:
+            current = self._conn.execute(
+                "SELECT repo_path, checksum FROM refs WHERE mirror_name = ? "
+                "AND repo_path LIKE '.vscode-meta/%' ORDER BY repo_path, checksum",
+                (mirror_name,),
+            ).fetchall()
+            matches = current == sorted(expected_metadata.items())
+        if not matches:
+            raise RuntimeError("mirror metadata changed during repair; retry the repair")
+
+    def seed_retry_plan(self, mirror_name: str, failures: list[dict], source: str,
+                        expected_metadata: dict[str, str]) -> str:
+        """One-time backfill for existing mirrors, without requiring a resync."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._check_retry_witness(mirror_name, expected_metadata)
+                if self._conn.execute("SELECT 1 FROM retry_state WHERE mirror_name = ?",
+                                      (mirror_name,)).fetchone():
+                    raise RuntimeError("retry list changed during discovery; retry the repair")
+                token = _replace_retry_plan(self._conn, mirror_name, failures, source)
+                self._conn.commit()
+                return token
+            except BaseException:
+                self._conn.rollback()
+                raise
+
     def repair_refs(self, mirror_name: str, entries: list[tuple[str, str, str]],
-                    source: str, expected_metadata: dict[str, str]) -> None:
+                    source: str, expected_metadata: dict[str, str] | str,
+                    recovered_paths: list[str] | None = None) -> None:
         """Add recovered VS Code assets without replacing the desired snapshot.
 
         Refuse stale repairs if another sync changed the metadata while the
@@ -1067,13 +1143,7 @@ class Pool:
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                current = self._conn.execute(
-                    "SELECT repo_path, checksum FROM refs WHERE mirror_name = ? "
-                    "AND repo_path LIKE '.vscode-meta/%' ORDER BY repo_path, checksum",
-                    (mirror_name,),
-                ).fetchall()
-                if current != sorted(expected_metadata.items()):
-                    raise RuntimeError("mirror metadata changed during repair; retry the repair")
+                self._check_retry_witness(mirror_name, expected_metadata)
                 if any(kind != KIND_PKG for _, _, kind in entries):
                     raise ValueError("repair may only add package references")
                 self._conn.executemany(
@@ -1081,6 +1151,9 @@ class Pool:
                     "VALUES (?, ?, ?, ?, ?)",
                     [(cs, mirror_name, path, kind, source) for cs, path, kind in entries],
                 )
+                self._conn.executemany(
+                    "DELETE FROM retry_failures WHERE mirror_name = ? AND repo_path = ?",
+                    [(mirror_name, path) for path in recovered_paths or ()])
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
@@ -1630,6 +1703,13 @@ class Pool:
                 mph = ",".join("?" * len(chunk))
                 self._conn.execute(f"DELETE FROM refs WHERE mirror_name IN ({mph})", chunk)
                 self._conn.execute(f"DELETE FROM mirrors WHERE name IN ({mph})", chunk)
+            self._conn.execute(
+                "DELETE FROM retry_failures WHERE mirror_name IN (SELECT s.mirror_name "
+                "FROM retry_state s WHERE NOT EXISTS "
+                "(SELECT 1 FROM refs r WHERE r.mirror_name = s.mirror_name))")
+            self._conn.execute(
+                "DELETE FROM retry_state WHERE NOT EXISTS "
+                "(SELECT 1 FROM refs r WHERE r.mirror_name = retry_state.mirror_name)")
             orphans = self._conn.execute(self._orphans_sql()).fetchall()
             self._conn.commit()
 
@@ -1691,6 +1771,11 @@ class Pool:
             with self._lock:
                 for i in range(0, len(rows), _CHUNK):
                     chunk = [r[0] for r in rows[i:i + _CHUNK]]
+                    affected = self._conn.execute(
+                        f"SELECT DISTINCT mirror_name FROM refs WHERE checksum IN "
+                        f"({','.join('?' * len(chunk))})", chunk).fetchall()
+                    self._conn.executemany("DELETE FROM retry_failures WHERE mirror_name = ?", affected)
+                    self._conn.executemany("DELETE FROM retry_state WHERE mirror_name = ?", affected)
                     self._conn.execute(
                         f"DELETE FROM packages WHERE checksum IN ({','.join('?' * len(chunk))})",
                         chunk)

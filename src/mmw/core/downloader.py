@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -463,6 +463,7 @@ def _download_sync(
 
 def lookup_packages(
     packages: list[PackageInfo], pool: Pool, mirror_name: str,
+    *, allow_legacy: bool = True,
 ) -> tuple[set[str], dict[str, str], dict[tuple[str, str], str]]:
     """Batch membership checks, falling back to old refs only where needed.
 
@@ -475,7 +476,7 @@ def lookup_packages(
     sources = pool.download_checksums([(p.url, p.checksum_type) for p in unknown]) if unknown else {}
     fallback_paths = {p.repo_path for p in unknown if (p.url, p.checksum_type.lower()) not in sources}
     legacy = {}
-    if fallback_paths:
+    if fallback_paths and allow_legacy:
         refs = {path: cs for path, cs in pool.ref_map(mirror_name).items() if path in fallback_paths}
         have = pool.batch_contains(list(refs.values()))
         legacy = {path: cs for path, cs in refs.items() if cs in have}
@@ -556,7 +557,8 @@ async def download_mirror(
     file_progress: Callable[[PackageInfo, DownloadResult], None] | None = None,
     downloads: "DownloadCoordinator | None" = None,
     finish_callback: Callable[[], None] | None = None,
-    repair_metadata: dict[str, str] | None = None,
+    repair_metadata: dict[str, str] | str | None = None,
+    track_failures: bool = False,
 ) -> MirrorSummary:
     """Sync one mirror into the pool: blobs + a desired-state refs snapshot.
 
@@ -575,7 +577,17 @@ async def download_mirror(
         from mmw.core.download_coordinator import DownloadCoordinator
         downloads = DownloadCoordinator()
 
+    failures: dict[str, dict] = {}
+    recovered_paths: set[str] = set()
+
     def _progress(package: PackageInfo, result: DownloadResult) -> None:
+        if track_failures:
+            if result.status == Status.FAILED:
+                failures[package.repo_path] = {"package": asdict(package), "error": result.error}
+            else:
+                failures.pop(package.repo_path, None)
+        if repair_metadata is not None and result.status != Status.FAILED:
+            recovered_paths.add(package.repo_path)
         if progress:
             progress(package.name, result)
         if file_progress:
@@ -612,7 +624,8 @@ async def download_mirror(
             phase_callback(f"Checking pool for {len(packages):,} files...")
         started = time.perf_counter()
         pooled_set, legacy_known, source_known = await loop.run_in_executor(
-            executor, lookup_packages, packages, pool, mirror_name)
+            executor, functools.partial(lookup_packages, packages, pool, mirror_name,
+                                        allow_legacy=repair_metadata is None))
         record_time("pool lookup", started)
         started = time.perf_counter()
 
@@ -1039,13 +1052,16 @@ async def download_mirror(
 
             if repair_metadata is not None:
                 await loop.run_in_executor(
-                    executor, pool.repair_refs, mirror_name, pkg_entries, source, repair_metadata
+                    executor, pool.repair_refs, mirror_name, pkg_entries, source, repair_metadata,
+                    list(recovered_paths),
                 )
-            elif pool.submit_reconcile(mirror_name, entries, source, _done):
+            elif pool.submit_reconcile(mirror_name, entries, source, _done,
+                                       list(failures.values()) if track_failures else None):
                 await fut
             else:
                 await loop.run_in_executor(
-                    executor, pool.reconcile_refs, mirror_name, entries, source
+                    executor, pool.reconcile_refs, mirror_name, entries, source,
+                    list(failures.values()) if track_failures else None,
                 )
             summary.reconcile_seconds = time.perf_counter() - reconcile_started
             summary.timings["reference commit"] = summary.reconcile_seconds

@@ -109,7 +109,7 @@ class RepositoriesPage(Page):
         Binding("p", "prune", "Prune pool", show=False),
         Binding("ctrl+w", "wipe", "Wipe pool", show=False),
         Binding("s", "sync", "Sync"),
-        Binding("r", "retry_failed", "Retry missing"),
+        Binding("r", "retry_failed", "Retry missing", show=False),
     ]
 
     def __init__(self):

@@ -291,6 +291,10 @@ The Sync page also has **Retry missing** for the previous session's selection.
 To publish or bundle despite missing files, the existing headless
 `--allow-incomplete` option reports the gaps and proceeds. Those files will
 remain unavailable to clients until repaired.
+In the TUI, an incomplete publish or bundle shows the missing-file report
+and a **Publish anyway** or **Bundle anyway** button. Proceeding keeps a
+warning in the transfer log and completion status. This applies to current
+content; snapshot integrity checks still apply when replaying a snapshot.
 
 Every headless command exits non-zero on failure, so cron is the intended
 frontend:

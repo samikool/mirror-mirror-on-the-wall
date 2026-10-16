@@ -5,6 +5,8 @@ The Sync section's twin: this page is the Publish mode's root and is never
 popped, so the TransferView it mounts lives as long as the app does. One
 transfer at a time; a finished one's panel stays until the next starts.
 """
+from dataclasses import replace
+
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -32,6 +34,7 @@ class PublishSection(Page):
         super().__init__()
         self.view: TransferView | None = None
         self._flows: PublishFlows | None = None
+        self._last_request = None
 
     def compose_body(self) -> ComposeResult:
         yield Static(_IDLE, id="publish-idle", markup=False)
@@ -39,11 +42,13 @@ class PublishSection(Page):
     def compose_actions(self) -> ComposeResult:
         yield Button("Discard", id="btn-transfer-discard", compact=True)
         yield Button("Publish now", id="btn-transfer-go", variant="primary", compact=True)
+        yield Button("Publish anyway", id="btn-transfer-force", variant="warning", compact=True)
         yield Button("Stop", id="btn-transfer-stop", variant="warning", compact=True,
                      disabled=True)
 
     def on_mount(self) -> None:
         self._decision_buttons(False)
+        self.query_one("#btn-transfer-force", Button).display = False
 
     def _decision_buttons(self, show: bool) -> None:
         for bid in ("#btn-transfer-discard", "#btn-transfer-go"):
@@ -54,6 +59,8 @@ class PublishSection(Page):
         """Mount a new transfer and run its flow. The caller refused a second."""
         if self.view is not None:
             await self.view.remove()          # the finished one's panel
+        self._last_request = (verb, net, choice)
+        self.query_one("#btn-transfer-force", Button).display = False
         self.view = TransferView(VERBS[verb], net.name)
         self.query_one("#publish-idle").display = False
         await self.query_one("#page-body").mount(self.view)
@@ -106,6 +113,9 @@ class PublishSection(Page):
         view = event.view
         self._decision_buttons(False)
         self.query_one("#btn-transfer-stop", Button).disabled = True
+        force = self.query_one("#btn-transfer-force", Button)
+        force.display = view.incomplete
+        force.label = "Bundle anyway" if view.kind is BUNDLE else "Publish anyway"
         self.refresh_bindings()
         kind = {"information": "ok", "error": "error"}.get(view.severity, "info")
         self.set_status(view.summary(), kind)
@@ -115,6 +125,20 @@ class PublishSection(Page):
                     timeout=10 if view.severity == "information" else 20)
         self.app.transfers_finished += 1
         self.app.transfer_finished_signal.publish(None)
+
+    @on(Button.Pressed, "#btn-transfer-force")
+    async def _force_pressed(self) -> None:
+        if self.view is None or not self.view.incomplete or self._last_request is None:
+            return
+        # One deliberate click after reviewing the failed completeness check.
+        # Hide immediately so repeated input cannot launch two transfers.
+        self.view.incomplete = False
+        self.query_one("#btn-transfer-force", Button).display = False
+        verb, net, choice = self._last_request
+        verb = "bundle" if verb == "bundle" else "publish"
+        choice = choice or (BundleChoice() if verb == "bundle" else PublishChoice())
+        choice = replace(choice, allow_incomplete=True)
+        await self.app.start_transfer(verb, net, choice=choice)
 
     @on(Button.Pressed, "#btn-transfer-stop")
     def _stop_pressed(self) -> None:

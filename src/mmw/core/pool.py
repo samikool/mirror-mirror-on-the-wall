@@ -1,5 +1,6 @@
 import fcntl
 import hashlib
+import heapq
 import json
 import os
 import queue
@@ -10,6 +11,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 
 
@@ -831,16 +833,23 @@ class Pool:
     def batch_contains(self, checksums: list[str]) -> set[str]:
         if not checksums:
             return set()
+        # A single C-level sort of 200k checksums holds the GIL long enough to
+        # freeze the UI even on a worker thread. Sort small runs and merge in
+        # Python, retaining global index locality with regular GIL handoffs.
+        unique = set(checksums)
         # Rows queued for the writer count as present: the blob is on disk, only
         # its row is in flight. Missing this re-downloads what we already have.
-        found: set[str] = (self._writer.pending() & set(checksums)
+        found: set[str] = (self._writer.pending() & unique
                            if self._writer is not None else set())
+        checksums = list(unique)
+        del unique
+        ordered = heapq.merge(*(sorted(checksums[i:i + _CHUNK]) for i in range(0, len(checksums), _CHUNK)))
         # Lock per chunk, not around the whole scan: a 100k-checksum verify is
         # 100+ queries, and holding the single shared connection for all of them
         # stalled every other pool caller (measured ~150 ms) — sync workers,
         # publish and verify all queue on this one mutex.
         for i in range(0, len(checksums), _CHUNK):
-            chunk = checksums[i : i + _CHUNK]
+            chunk = list(islice(ordered, _CHUNK))
             placeholders = ",".join("?" * len(chunk))
             with self._read() as _c:
                 rows = _c.execute(
@@ -989,7 +998,7 @@ class Pool:
         entries: list[tuple[str, str, str]],
         source: str = "",
     ) -> None:
-        """Replace a mirror's refs with exactly `entries` — the desired state.
+        """Make a mirror's refs exactly `entries`, writing only the difference.
 
         entries: (checksum, repo_path, kind). One transaction: concurrent WAL
         readers (publish, verify) see the old set or the new set, never a mix.
@@ -1000,16 +1009,52 @@ class Pool:
         # publish time, so every queued row must be committed first.
         self.flush_writes()
         with self._lock:
-            self._conn.execute("DELETE FROM refs WHERE mirror_name = ?", (mirror_name,))
-            self._conn.executemany(
-                "INSERT OR IGNORE INTO refs (checksum, mirror_name, repo_path, kind, source) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [
-                    (checksum, mirror_name, repo_path, kind, source)
-                    for checksum, repo_path, kind in entries
-                ],
-            )
-            self._conn.commit()
+            try:
+                # Read and mutate the same snapshot, also excluding another
+                # process's writer between the comparison and the commit.
+                self._conn.execute("BEGIN IMMEDIATE")
+                insert_entries = entries
+                if not entries:
+                    self._conn.execute("DELETE FROM refs WHERE mirror_name = ?", (mirror_name,))
+                else:
+                    old = {(cs, path): (kind, old_source)
+                           for cs, path, kind, old_source in self._conn.execute(
+                               "SELECT checksum, repo_path, kind, source FROM refs WHERE mirror_name = ?",
+                               (mirror_name,))}
+                    if old:
+                        desired = {}
+                        for checksum, repo_path, kind in entries:
+                            # INSERT OR IGNORE historically kept the first duplicate key.
+                            desired.setdefault((checksum, repo_path), (kind, source))
+                        removed = old.keys() - desired.keys()
+                        if len(removed) == len(old):
+                            # No retained rows: one delete is cheaper than N
+                            # point deletes and still touches only removed refs.
+                            self._conn.execute("DELETE FROM refs WHERE mirror_name = ?", (mirror_name,))
+                        else:
+                            added = desired.keys() - old.keys()
+                            changed = [key for key, value in old.items()
+                                       if key in desired and value != desired[key]]
+                            self._conn.executemany(
+                                "DELETE FROM refs WHERE checksum = ? AND mirror_name = ? AND repo_path = ?",
+                                ((cs, mirror_name, path) for cs, path in sorted(removed)),
+                            )
+                            self._conn.executemany(
+                                "UPDATE refs SET kind = ?, source = ? "
+                                "WHERE checksum = ? AND mirror_name = ? AND repo_path = ?",
+                                ((desired[key][0], desired[key][1], key[0], mirror_name, key[1])
+                                 for key in sorted(changed)),
+                            )
+                            insert_entries = [(cs, path, desired[(cs, path)][0]) for cs, path in sorted(added)]
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO refs (checksum, mirror_name, repo_path, kind, source) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [(cs, mirror_name, path, kind, source) for cs, path, kind in insert_entries],
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def has_index_refs(self, mirror_name: str) -> bool:
         """Does this mirror currently have any index or release refs?

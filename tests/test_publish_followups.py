@@ -27,9 +27,8 @@ def test_a_finished_sync_stops_ticking_after_a_final_pool_scan(tmp_path, monkeyp
                                  source_url=SRC, arch="amd64", suite="bookworm", component="main")
 
     async def quick(mirror, *, stop_event, events=None, **_):
-        return SimpleNamespace(key_errors=[], downloaded=0, pooled=0, failed=0,
-                               metadata_ok=True, metadata_errors=[],
-                               metadata_resnapshotted=False, stopped=False)
+        from mmw.core.downloader import MirrorSummary
+        return MirrorSummary(mirror=mirror.name)
     monkeypatch.setattr(sync_mod, "sync_mirror", quick)
     scans = []
     real_stats = Pool.stats

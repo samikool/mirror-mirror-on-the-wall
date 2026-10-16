@@ -121,6 +121,8 @@ class PublishFlows:
                         detail, ok = f"complete · {vr.total:,} files", True
                     else:
                         detail, ok = vr.describe(), False
+                    if vr.timings:
+                        detail += f" · {vr.timing_summary()}"
                     view.mirror_done(n, m.name, detail, ok)
 
                 verify_results = await _run_per_mirror(

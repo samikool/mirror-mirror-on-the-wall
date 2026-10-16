@@ -1,10 +1,10 @@
 """Sync inside MmwApp: start from Repositories, browse while it runs, quit asks."""
 import asyncio
-from types import SimpleNamespace
 
 from textual.widgets import ListView
 
 from mmw.core import config
+from mmw.core.downloader import MirrorSummary
 from mmw.tui import repositories as R
 from mmw.tui import sync as sync_mod
 from mmw.tui.app import MmwApp
@@ -25,8 +25,7 @@ async def _fake_sync_mirror(mirror, *, stop_event, events=None, **_):
         events.started(10)
     while not stop_event.is_set():
         await asyncio.sleep(0.02)
-    return SimpleNamespace(key_errors=[], downloaded=0, pooled=0, failed=0, metadata_ok=True,
-                           metadata_errors=[], metadata_resnapshotted=False, stopped=True)
+    return MirrorSummary(mirror=mirror.name, stopped=True)
 
 
 async def _settle(pilot, n=6):

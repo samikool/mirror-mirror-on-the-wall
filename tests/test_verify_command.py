@@ -43,6 +43,14 @@ def test_verify_all_complete_exits_0(cfg_dir, monkeypatch, capsys):
     assert "2/2 mirror(s) complete" in out
 
 
+def test_verify_reports_phase_timings(cfg_dir, monkeypatch, capsys):
+    monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg())
+    result = VerifyResult("vscode", "vscode", timings={"lookup": 0.125, "metadata": 2.5, "refs": 0.01})
+    monkeypatch.setattr(verify_cmd, "_verify_all", lambda *a, **k: [result])
+    assert verify_cmd.run(cfg_dir) == 0
+    assert "lookup 0.12s · metadata 2.50s · refs 0.01s" in capsys.readouterr().out
+
+
 def test_verify_missing_blobs_exits_1_and_reports_count(cfg_dir, monkeypatch, capsys):
     monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg())
     results = [

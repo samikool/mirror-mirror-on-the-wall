@@ -22,6 +22,7 @@ from mmw.core.downloader import (
     fetch_all_threaded,
     fetch_metadata_threaded,
     fetch_packages_threaded,
+    lookup_packages,
 )
 from mmw.core import upstream
 from mmw.core.keys import KeySyncResult, sync_custom_key, write_key
@@ -162,16 +163,7 @@ async def classify_mirror(
     def _classify() -> DryRunStats:
         # The one classification, shared by the sync TUI's dry run and
         # `mmw dry-run` (which used to carry its own copy).
-        known = [p.checksum for p in packages if p.checksum]
-        pooled = pool.batch_contains(known)
-        # A package with no upstream checksum is "had" when the unit's last
-        # sync recorded its path — the same rule `download_mirror` applies.
-        refmap = pool.ref_map(mirror.name) if any(not p.checksum for p in packages) else {}
-        if refmap:
-            available = pool.batch_contains(list(refmap.values()))
-            refmap = {path: checksum for path, checksum in refmap.items() if checksum in available}
-        unknown_sources = [(p.url, p.checksum_type) for p in packages if not p.checksum_known]
-        sources = pool.download_checksums(unknown_sources) if unknown_sources else {}
+        pooled, refmap, sources = lookup_packages(packages, pool, mirror.name)
         missing = [p for p in packages
                    if not (p.checksum and p.checksum in pooled)
                    and not (not p.checksum and (p.repo_path in refmap or

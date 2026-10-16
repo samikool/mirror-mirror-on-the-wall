@@ -1002,36 +1002,48 @@ class Pool:
         # Refs are the desired state and are joined against `packages` at
         # publish time, so every queued row must be committed first.
         self.flush_writes()
-        desired = {}
-        for checksum, repo_path, kind in entries:
-            # INSERT OR IGNORE historically kept the first duplicate key.
-            desired.setdefault((checksum, repo_path), (kind, source))
         with self._lock:
             try:
                 # Read and mutate the same snapshot, also excluding another
                 # process's writer between the comparison and the commit.
                 self._conn.execute("BEGIN IMMEDIATE")
-                old = {(cs, path): (kind, old_source)
-                       for cs, path, kind, old_source in self._conn.execute(
-                           "SELECT checksum, repo_path, kind, source FROM refs WHERE mirror_name = ?",
-                           (mirror_name,))}
-                removed = old.keys() - desired.keys()
-                added = desired.keys() - old.keys()
-                changed = [key for key in old.keys() & desired.keys() if old[key] != desired[key]]
+                insert_entries = entries
+                if not entries:
+                    self._conn.execute("DELETE FROM refs WHERE mirror_name = ?", (mirror_name,))
+                else:
+                    old = {(cs, path): (kind, old_source)
+                           for cs, path, kind, old_source in self._conn.execute(
+                               "SELECT checksum, repo_path, kind, source FROM refs WHERE mirror_name = ?",
+                               (mirror_name,))}
+                    if old:
+                        desired = {}
+                        for checksum, repo_path, kind in entries:
+                            # INSERT OR IGNORE historically kept the first duplicate key.
+                            desired.setdefault((checksum, repo_path), (kind, source))
+                        removed = old.keys() - desired.keys()
+                        if len(removed) == len(old):
+                            # No retained rows: one delete is cheaper than N
+                            # point deletes and still touches only removed refs.
+                            self._conn.execute("DELETE FROM refs WHERE mirror_name = ?", (mirror_name,))
+                        else:
+                            added = desired.keys() - old.keys()
+                            changed = [key for key, value in old.items()
+                                       if key in desired and value != desired[key]]
+                            self._conn.executemany(
+                                "DELETE FROM refs WHERE checksum = ? AND mirror_name = ? AND repo_path = ?",
+                                ((cs, mirror_name, path) for cs, path in sorted(removed)),
+                            )
+                            self._conn.executemany(
+                                "UPDATE refs SET kind = ?, source = ? "
+                                "WHERE checksum = ? AND mirror_name = ? AND repo_path = ?",
+                                ((desired[key][0], desired[key][1], key[0], mirror_name, key[1])
+                                 for key in sorted(changed)),
+                            )
+                            insert_entries = [(cs, path, desired[(cs, path)][0]) for cs, path in sorted(added)]
                 self._conn.executemany(
-                    "DELETE FROM refs WHERE checksum = ? AND mirror_name = ? AND repo_path = ?",
-                    ((cs, mirror_name, path) for cs, path in sorted(removed)),
-                )
-                self._conn.executemany(
-                    "UPDATE refs SET kind = ?, source = ? "
-                    "WHERE checksum = ? AND mirror_name = ? AND repo_path = ?",
-                    ((desired[key][0], desired[key][1], key[0], mirror_name, key[1])
-                     for key in sorted(changed)),
-                )
-                self._conn.executemany(
-                    "INSERT INTO refs (checksum, mirror_name, repo_path, kind, source) VALUES (?, ?, ?, ?, ?)",
-                    ((cs, mirror_name, path, desired[(cs, path)][0], desired[(cs, path)][1])
-                     for cs, path in sorted(added)),
+                    "INSERT OR IGNORE INTO refs (checksum, mirror_name, repo_path, kind, source) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [(cs, mirror_name, path, kind, source) for cs, path, kind in insert_entries],
                 )
                 self._conn.commit()
             except BaseException:

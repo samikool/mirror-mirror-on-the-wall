@@ -72,6 +72,17 @@ def test_empty_target_removes_only_this_mirror(pool):
     assert rows(pool, "other") == {("a" * 64, "a", KIND_PKG, "other-repo")}
 
 
+@pytest.mark.parametrize("target", [[], [("c" * 64, "c", KIND_PKG), ("d" * 64, "d", KIND_PKG)]])
+def test_removing_all_old_rows_uses_one_delete(pool, target):
+    pool.reconcile_refs("unit", [("a" * 64, "a", KIND_PKG), ("b" * 64, "b", KIND_PKG)])
+    statements = []
+    pool._conn.set_trace_callback(statements.append)
+    pool.reconcile_refs("unit", target)
+    pool._conn.set_trace_callback(None)
+    assert len([s for s in statements if s.startswith("DELETE FROM refs")]) == 1
+    assert rows(pool) == {(cs, path, kind, "") for cs, path, kind in target}
+
+
 def reject_replacement(pool):
     pool._conn.executescript("""
         CREATE TEMP TRIGGER reject_new_ref BEFORE INSERT ON main.refs

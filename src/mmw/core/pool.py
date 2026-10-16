@@ -992,7 +992,7 @@ class Pool:
         entries: list[tuple[str, str, str]],
         source: str = "",
     ) -> None:
-        """Replace a mirror's refs with exactly `entries` — the desired state.
+        """Make a mirror's refs exactly `entries`, writing only the difference.
 
         entries: (checksum, repo_path, kind). One transaction: concurrent WAL
         readers (publish, verify) see the old set or the new set, never a mix.
@@ -1002,17 +1002,41 @@ class Pool:
         # Refs are the desired state and are joined against `packages` at
         # publish time, so every queued row must be committed first.
         self.flush_writes()
+        desired = {}
+        for checksum, repo_path, kind in entries:
+            # INSERT OR IGNORE historically kept the first duplicate key.
+            desired.setdefault((checksum, repo_path), (kind, source))
         with self._lock:
-            self._conn.execute("DELETE FROM refs WHERE mirror_name = ?", (mirror_name,))
-            self._conn.executemany(
-                "INSERT OR IGNORE INTO refs (checksum, mirror_name, repo_path, kind, source) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [
-                    (checksum, mirror_name, repo_path, kind, source)
-                    for checksum, repo_path, kind in entries
-                ],
-            )
-            self._conn.commit()
+            try:
+                # Read and mutate the same snapshot, also excluding another
+                # process's writer between the comparison and the commit.
+                self._conn.execute("BEGIN IMMEDIATE")
+                old = {(cs, path): (kind, old_source)
+                       for cs, path, kind, old_source in self._conn.execute(
+                           "SELECT checksum, repo_path, kind, source FROM refs WHERE mirror_name = ?",
+                           (mirror_name,))}
+                removed = old.keys() - desired.keys()
+                added = desired.keys() - old.keys()
+                changed = [key for key in old.keys() & desired.keys() if old[key] != desired[key]]
+                self._conn.executemany(
+                    "DELETE FROM refs WHERE checksum = ? AND mirror_name = ? AND repo_path = ?",
+                    ((cs, mirror_name, path) for cs, path in sorted(removed)),
+                )
+                self._conn.executemany(
+                    "UPDATE refs SET kind = ?, source = ? "
+                    "WHERE checksum = ? AND mirror_name = ? AND repo_path = ?",
+                    ((desired[key][0], desired[key][1], key[0], mirror_name, key[1])
+                     for key in sorted(changed)),
+                )
+                self._conn.executemany(
+                    "INSERT INTO refs (checksum, mirror_name, repo_path, kind, source) VALUES (?, ?, ?, ?, ?)",
+                    ((cs, mirror_name, path, desired[(cs, path)][0], desired[(cs, path)][1])
+                     for cs, path in sorted(added)),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def has_index_refs(self, mirror_name: str) -> bool:
         """Does this mirror currently have any index or release refs?

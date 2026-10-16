@@ -556,13 +556,19 @@ async def download_mirror(
     file_progress: Callable[[PackageInfo, DownloadResult], None] | None = None,
     downloads: "DownloadCoordinator | None" = None,
     finish_callback: Callable[[], None] | None = None,
+    repair_metadata: dict[str, str] | None = None,
 ) -> MirrorSummary:
     """Sync one mirror into the pool: blobs + a desired-state refs snapshot.
 
     No trees are written. Refs are reconciled (one atomic transaction) only
     when the metadata phase commits cleanly and the sync wasn't stopped —
     otherwise the previous consistent snapshot stays in force.
+
+    With repair_metadata, only add recovered package refs against that saved
+    VS Code witness. Existing refs and metadata remain untouched.
     """
+    if repair_metadata is not None and metadata:
+        raise ValueError("a repair cannot replace metadata")
     summary = MirrorSummary(mirror=mirror_name, total=len(packages))
     loop = asyncio.get_running_loop()
     if downloads is None:
@@ -828,7 +834,7 @@ async def download_mirror(
                 summary.stopped = True
                 summary.metadata_ok = False
                 summary.metadata_errors.append("sync stopped — index left unchanged")
-        elif not dry_run and not metadata and pool.has_index_refs(mirror_name):
+        elif repair_metadata is None and not dry_run and not metadata and pool.has_index_refs(mirror_name):
             # Phase 4 reconciles `pkg_entries + meta_entries` as the mirror's
             # complete desired state, and `reconcile_refs` DELETEs the old set
             # first — so committing an empty metadata half erases every index
@@ -1031,7 +1037,11 @@ async def download_mirror(
                     lambda: None if _fut.done() else (
                         _fut.set_exception(error) if error else _fut.set_result(None)))
 
-            if pool.submit_reconcile(mirror_name, entries, source, _done):
+            if repair_metadata is not None:
+                await loop.run_in_executor(
+                    executor, pool.repair_refs, mirror_name, pkg_entries, source, repair_metadata
+                )
+            elif pool.submit_reconcile(mirror_name, entries, source, _done):
                 await fut
             else:
                 await loop.run_in_executor(

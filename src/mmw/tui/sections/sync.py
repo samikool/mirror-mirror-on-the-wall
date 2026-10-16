@@ -55,22 +55,24 @@ class SyncSection(Page):
         self.refresh_bindings()
 
     def compose_actions(self) -> ComposeResult:
+        yield Button("Retry missing", id="btn-sync-retry", compact=True)
         yield Button("Stop", id="btn-sync-stop", variant="warning", compact=True,
                      disabled=True)
 
     async def start(self, cfg: config.Config, mirrors: list[config.MirrorConfig], *,
-                    dry_run: bool = False, resolution_gen: int | None = None) -> None:
+                    dry_run: bool = False, resolution_gen: int | None = None,
+                    retry_failed: bool = False) -> None:
         """Mount a new session. The caller has already refused a second one."""
         if self.view is not None:
             await self.view.remove()          # a finished session's cards
         if resolution_gen is not None and resolution_gen != self.app._resolve_gen:
             return
-        self.view = SyncView(cfg, mirrors, dry_run)
+        self.view = SyncView(cfg, mirrors, dry_run, retry_failed=retry_failed)
         self.query_one("#sync-idle").display = False
         await self.query_one("#page-body").mount(self.view)
         self.query_one("#btn-sync-stop", Button).disabled = False
         self.refresh_bindings()                 # x Stop, while it runs
-        what = "Dry run of" if dry_run else "Syncing"
+        what = "Retrying missing files in" if retry_failed else "Dry run of" if dry_run else "Syncing"
         self.set_status(f"{what} {len(mirrors)} mirror{'s' if len(mirrors) != 1 else ''}…")
         self.view.query_one("#cards").focus()
 
@@ -88,6 +90,13 @@ class SyncSection(Page):
     @on(Button.Pressed, "#btn-sync-stop")
     def _stop_pressed(self) -> None:
         self._ask_stop()
+
+    @on(Button.Pressed, "#btn-sync-retry")
+    def _retry_pressed(self) -> None:
+        # A new session also works after reopening the app; no failed-run
+        # state or marketplace catalog needs to survive in memory.
+        selection = [m.name for m in self.view._mirrors] if self.view else ([], [])
+        self.start_flow(lambda: self.app.start_sync(selection, retry_failed=True))
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if action == "stop":

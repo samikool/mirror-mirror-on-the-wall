@@ -1056,6 +1056,36 @@ class Pool:
                 self._conn.rollback()
                 raise
 
+    def repair_refs(self, mirror_name: str, entries: list[tuple[str, str, str]],
+                    source: str, expected_metadata: dict[str, str]) -> None:
+        """Add recovered VS Code assets without replacing the desired snapshot.
+
+        Refuse stale repairs if another sync changed the metadata while the
+        downloads ran. The check and additions share one write transaction.
+        """
+        self.flush_writes()
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                current = self._conn.execute(
+                    "SELECT repo_path, checksum FROM refs WHERE mirror_name = ? "
+                    "AND repo_path LIKE '.vscode-meta/%' ORDER BY repo_path, checksum",
+                    (mirror_name,),
+                ).fetchall()
+                if current != sorted(expected_metadata.items()):
+                    raise RuntimeError("mirror metadata changed during repair; retry the repair")
+                if any(kind != KIND_PKG for _, _, kind in entries):
+                    raise ValueError("repair may only add package references")
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO refs (checksum, mirror_name, repo_path, kind, source) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [(cs, mirror_name, path, kind, source) for cs, path, kind in entries],
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+
     def has_index_refs(self, mirror_name: str) -> bool:
         """Does this mirror currently have any index or release refs?
 

@@ -276,6 +276,22 @@ every pool file and `--rehash` re-hashes it — slow, so never implicit — and
 `--repair` drops any that are damaged so the next `mmw sync` downloads them
 again. A bundle refuses to write while the pool holds a damaged file.
 
+For a VS Code mirror with a few missing assets, use
+`mmw retry-failed --network lab` to download only the gaps in its saved
+metadata. This headless command skips marketplace discovery and leaves the
+existing metadata and other files intact. Omit `--network` to repair all
+previously synced VS Code units; add `--dry-run` to count gaps without fetching.
+It uses the normal download retries and server backoffs. A first sync must
+have saved usable metadata; an interrupted sync that saved none still needs
+a normal sync. Persistent upstream failures return a nonzero exit code.
+In the TUI, tick the VS Code sources in Sources and choose **Retry missing**
+(or press **r**). With nothing ticked, it retries all saved VS Code units.
+The Sync page also has **Retry missing** for the previous session's selection.
+
+To publish or bundle despite missing files, the existing headless
+`--allow-incomplete` option reports the gaps and proceeds. Those files will
+remain unavailable to clients until repaired.
+
 Every headless command exits non-zero on failure, so cron is the intended
 frontend:
 

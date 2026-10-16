@@ -23,7 +23,7 @@ from mmw.core.downloader import Status
 from mmw.core.pool import Pool
 from mmw.core.item_progress import ItemCounts, ItemInventory, ItemProgressSession
 from mmw.core.download_coordinator import DownloadCoordinator
-from mmw.core.sync_engine import KeySyncCoordinator, SyncEvents, classify_mirror, sync_mirror
+from mmw.core.sync_engine import KeySyncCoordinator, SyncEvents, classify_mirror, sync_mirror, retry_failed_mirror
 from mmw.tui.ui.widgets import ThemedLog
 
 
@@ -548,7 +548,7 @@ class SyncView(Vertical):
             super().__init__()
 
     def __init__(self, cfg: config.Config, mirrors: list[config.MirrorConfig] | None = None,
-                 dry_run: bool = False):
+                 dry_run: bool = False, *, retry_failed: bool = False):
         super().__init__(id="sync-view")
         self._cfg = cfg
         self._mirrors = sorted(mirrors if mirrors is not None else cfg.mirrors,
@@ -569,6 +569,7 @@ class SyncView(Vertical):
         self._pool_stats_inflight: bool = False
         self._sem: asyncio.Semaphore | None = None
         self._dry_run = dry_run
+        self._retry_failed = retry_failed
         self._items = ItemProgressSession(self._mirrors)
         self._downloads = DownloadCoordinator()
         self._complete_shown = False
@@ -939,18 +940,20 @@ class SyncView(Vertical):
         )
 
         try:
-            summary = await sync_mirror(
+            runner = retry_failed_mirror if self._retry_failed else sync_mirror
+            extra = {} if self._retry_failed else {
+                "mirror_dir": self._cfg.settings.mirror_dir, "keys": self._keys_coord}
+            summary = await runner(
                 mirror,
                 pool=self._pool,
-                mirror_dir=self._cfg.settings.mirror_dir,
                 max_connections=self._cfg.settings.max_connections,
                 executor=self._executor,
                 events=events,
                 sem=self._sem,
                 stop_event=self._stop_event,
-                keys=self._keys_coord,
                 items_session=self._items,
                 downloads=self._downloads,
+                **extra,
             )
         except Exception as e:
             self.post_message(MirrorError(mirror.name, str(e) or type(e).__name__))

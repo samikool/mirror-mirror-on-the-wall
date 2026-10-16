@@ -150,6 +150,51 @@ class KeySyncCoordinator:
         return failures
 
 
+async def retry_failed_mirror(
+    mirror: MirrorConfig, *, pool: Pool, max_connections: int,
+    executor: concurrent.futures.Executor, events: SyncEvents | None = None,
+    stop_event: threading.Event | None = None, dry_run: bool = False,
+    sem: asyncio.Semaphore | None = None,
+    items_session: ItemProgressSession | None = None,
+    downloads: DownloadCoordinator | None = None,
+) -> MirrorSummary:
+    """Repair saved VS Code assets without fetching a new upstream index."""
+    if mirror.provider != "vscode":
+        raise ValueError("retry-failed currently supports VS Code mirrors only")
+    events = events or SyncEvents()
+    if events.phase:
+        events.phase("Finding missing files in saved VS Code metadata...")
+    provider = get_provider(mirror.provider)
+    packages, witness = await asyncio.get_running_loop().run_in_executor(
+        executor, provider.repair_packages, mirror, pool)
+    def completed(event):
+        if items_session is not None:
+            items_session.complete(mirror.name, event)
+        if events.item_progress:
+            events.item_progress(event)
+
+    from mmw.providers.base import ProgressUnit
+    unit = ProgressUnit("files", provider.progress_unit(mirror).scope)
+    tracker = await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: ItemTracker(mirror, packages, unit, completed))
+    if items_session is not None:
+        await items_session.register_async(mirror.name, tracker.inventory)
+    if events.items_started:
+        events.items_started(tracker.inventory)
+    elif events.started:
+        events.started(len(packages))
+    summary = await download_mirror(
+        packages=packages, metadata=[], pool=pool, mirror_name=mirror.name,
+        source=mirror.source, max_connections=max_connections, executor=executor,
+        stop_event=stop_event, dry_run=dry_run, repair_metadata=witness,
+        progress=events.progress, phase_callback=events.phase, chunk_callback=events.chunk,
+        start_callback=events.download_started, finish_callback=events.download_finished,
+        sem=sem, downloads=downloads, file_progress=tracker.complete,
+    )
+    summary.items = tracker.counts
+    return summary
+
+
 async def classify_mirror(
     mirror: MirrorConfig,
     pool: Pool,

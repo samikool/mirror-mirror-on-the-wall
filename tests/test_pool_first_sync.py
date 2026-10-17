@@ -63,8 +63,8 @@ def test_pooled_packages_classified_and_reconciled(pool, mirror_dir):
 
     assert summary.pooled == 1 and summary.ok
     assert events[0] == ("a.deb", Status.POOLED)
-    assert phases[-2] == "Committing pool references..."
-    assert phases[-1] == f"Pool references committed in {summary.reconcile_seconds:.2f}s"
+    assert phases[-2] == "Saving pool references to the database..."
+    assert phases[-1] == f"Pool references saved in {summary.reconcile_seconds:.2f}s"
     assert summary.reconcile_seconds >= 0
     assert {"pool lookup", "package classification", "metadata lookup", "metadata verification",
             "metadata writes", "other metadata", "reference commit"} == set(summary.timings)

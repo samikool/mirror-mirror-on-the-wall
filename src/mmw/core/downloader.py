@@ -1036,7 +1036,7 @@ async def download_mirror(
         if not dry_run and summary.metadata_ok and not summary.stopped:
             reconcile_started = time.perf_counter()
             if phase_callback:
-                phase_callback("Committing pool references...")
+                phase_callback("Saving pool references to the database...")
             entries = pkg_entries + meta_entries
             # Prefer the pool's writer thread: this is a single ~2.3 s
             # transaction, and running it on an executor thread parks one of the
@@ -1066,7 +1066,7 @@ async def download_mirror(
             summary.reconcile_seconds = time.perf_counter() - reconcile_started
             summary.timings["reference commit"] = summary.reconcile_seconds
             if phase_callback:
-                phase_callback(f"Pool references committed in {summary.reconcile_seconds:.2f}s")
+                phase_callback(f"Pool references saved in {summary.reconcile_seconds:.2f}s")
 
     finally:
         if _owns_executor:

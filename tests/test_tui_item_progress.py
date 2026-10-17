@@ -91,3 +91,34 @@ def test_waiting_unit_is_not_marked_stalled_from_its_previous_transfer(tmp_path,
     card._last_chunk_time = 2
     card._refresh_stats(100)
     assert 'ETA --:--' in rendered[-1]
+
+
+def test_a_step_after_the_packages_keeps_its_status_line_alive(monkeypatch):
+    """The database save follows the last package: its text must replace the
+    last package line and keep spinning, not sit there looking frozen."""
+    from types import SimpleNamespace
+    from mmw.tui import sync as tsync
+    card = tsync.MirrorCard(config.MirrorConfig(name='one', provider='apt',
+                                                source_url='https://example.test/apt'))
+    lines = []
+    pkg_line = SimpleNamespace(update=lines.append)
+    other = SimpleNamespace(update=lambda text: None, advance=lambda n: None)
+    monkeypatch.setattr(card, 'query_one',
+                        lambda selector, *args, **kwargs: pkg_line if selector == "#pkg" else other)
+    card._start, card._total = 1.0, 2
+    card._pending_downloaded, card._pending_pkg = 2, "last.deb"
+    card.flush()
+    assert lines[-1] == "  → last.deb"
+    clock = [100.0]
+    monkeypatch.setattr(tsync.time, "monotonic", lambda: clock[0])
+    card.set_status("Saving pool references to the database...")
+    card.flush()
+    first = lines[-1]
+    clock[0] += 5
+    card.flush()
+    assert "Saving pool references to the database..." in lines[-1] and "· 5s" in lines[-1]
+    assert lines[-1] != first                       # the spinner moved
+    card._pending_downloaded, card._pending_pkg = 1, "next.deb"
+    card.flush()
+    card.flush()
+    assert lines[-1] == "  → next.deb"              # a package line ends the step's turn

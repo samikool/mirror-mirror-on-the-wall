@@ -65,7 +65,10 @@ def _ca(root):
 
 
 class Stack:
-    def __init__(self, scratch, root, ca):
+    """The network's own nginx/compose.yaml — its host paths filled in, as the
+    deployment instructions say — plus a test-only override: an internal
+    network, no host ports, and a client container."""
+    def __init__(self, scratch, root, ca, network):
         self.scratch, self.root = scratch, root
         self.state = scratch/('client-'+root.name)
         self.state.mkdir()
@@ -73,9 +76,8 @@ class Stack:
         self.log = scratch/('docker-'+root.name+'.log')
         self.expected = scratch/'checks'
         self.expected.mkdir(exist_ok=True)
-        self.nginx_conf = scratch/('nginx-'+root.name+'.conf')
-        self.nginx_conf.write_text('events {}\nhttp {\n access_log /dev/stdout;\n error_log /dev/stderr info;\n'
-                                  ' include /srv/mmw/nginx/mirror.conf;\n}\n')
+        self.deployed = scratch/('compose-deploy-'+root.name+'.yaml')
+        self.deployed.write_text((root/'nginx/compose.yaml').read_text().replace(f'/path/to/{network}', str(root)))
         self.override = scratch/('compose-'+root.name+'.yaml')
         client_image = os.environ.get('MMW_VSCODE_CLIENT_IMAGE', 'mmw-vscode-client:local')
         nginx_image = os.environ.get('MMW_VSCODE_NGINX_IMAGE', 'nginx:latest')
@@ -93,31 +95,23 @@ class Stack:
                    'mmw-fixture.gallerycdn.vsassets.io', 'mmw-fixture.gallery.vsassets.io',
                    'github.gallerycdn.vsassets.io', 'github.gallery.vsassets.io',
                    'archive.ubuntu.com', 'uncovered.fixture.invalid']
-        nginx_volumes = [{'type': 'bind', 'source': str(root), 'target': '/srv/mmw', 'read_only': True},
-                         {'type': 'bind', 'source': str(self.nginx_conf), 'target': '/etc/nginx/nginx.conf',
-                          'read_only': True}]
         health = {'interval': '1s', 'timeout': '5s', 'retries': 30, 'start_period': '1s'}
         self.override.write_text(f'''services:
   gallery:
     init: true
-    ports: !reset []
-    pull_policy: never
     restart: "no"
-    networks:
-      isolated:
-        aliases: {json.dumps(aliases)}
+    networks: [isolated]
     healthcheck:
       interval: 1s
       timeout: 5s
       retries: 30
   nginx:
     image: {json.dumps(nginx_image)}
-    pull_policy: never
-    network_mode: service:gallery
-    depends_on:
-      gallery:
-        condition: service_healthy
-    volumes: {json.dumps(nginx_volumes)}
+    ports: !reset []
+    restart: "no"
+    networks:
+      isolated:
+        aliases: {json.dumps(aliases)}
     healthcheck: {json.dumps(dict(health, test=['CMD', 'nginx', '-t']))}
   client:
     init: true
@@ -142,7 +136,7 @@ networks:
   isolated:
     internal: true
 ''')
-        self.command = ['docker', 'compose', '-p', self.project, '-f', root/'vscode-gallery/compose.yaml',
+        self.command = ['docker', 'compose', '-p', self.project, '-f', self.deployed,
                         '-f', self.override]
 
     def compose(self, *args, timeout=120):
@@ -227,14 +221,14 @@ def test_stock_client_live_publish_and_applied_bundle(tmp_path, monkeypatch):
     with Pool(mirror_dir, read_only=True) as pool:
         assert all(verify_mirror(u, mirror_dir, pool).complete for u in units)
     net = config.NetworkConfig(name='e2e-'+uuid.uuid4().hex[:12], root=scratch/'published',
-                               certs=True, gallery_port=8080, bundle_dir=scratch/'bundles')
+                               certs=True, bundle_dir=scratch/'bundles')
     ca, key = _ca(scratch)
     _, _, csr = certs.generate_key_and_csr(certs.collect_hostnames(net, cfg), certs.cert_dir(net, cfg))
     certs.sign_csr(csr, ca, key)
     published = publish_network(net, cfg, mirror_dir)
     assert not published.errors and not published.warnings, (published.errors, published.warnings)
     assert (net.root/'vscode-gallery'/image.TAR_NAME).is_file()
-    with Stack(scratch, net.root, ca) as stack:
+    with Stack(scratch, net.root, ca, net.name) as stack:
         expected = _expected(fake, net.root, scratch)
         assert len(expected['updates']['server-linux-x64']['stable']['builds']) == 3
         assert len(expected['updates']['linux-x64']['stable']['builds']) == 1
@@ -263,7 +257,7 @@ def test_stock_client_live_publish_and_applied_bundle(tmp_path, monkeypatch):
     for file in (net.root/'vscode-gallery').iterdir():
         assert (far/'vscode-gallery'/file.name).read_bytes() == file.read_bytes(), file.name
     _run(['docker', 'load', '-i', far/'vscode-gallery'/image.TAR_NAME], scratch/'image-load.log')
-    with Stack(scratch, far, ca) as stack:
+    with Stack(scratch, far, ca, net.name) as stack:
         _expected(fake, far, scratch)
         stack.probe()
         stack.install(SIGNED_EXTENSION, '6.3.5')

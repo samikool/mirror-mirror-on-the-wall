@@ -120,7 +120,7 @@ def _dns_name(server_name: str) -> str:
     return "*." + m.group(1).replace("\\.", ".") if m else server_name
 
 
-def split_for_nginx(units, port: int) -> tuple[list, list]:
+def split_for_nginx(units) -> tuple[list, list]:
     """(units served by a static block per `mirror_base`, provider `Site`s)."""
     from mmw.providers import all_providers, get_provider
     static = [u for u in units if get_provider(u.provider).site_per_base]
@@ -128,7 +128,7 @@ def split_for_nginx(units, port: int) -> tuple[list, list]:
     for provider in all_providers():
         mine = [u for u in units if u.provider == provider.name]
         if mine:
-            sites.extend(provider.nginx_sites(mine, port))
+            sites.extend(provider.nginx_sites(mine))
     return static, sites
 
 
@@ -237,7 +237,8 @@ def deployment_nginx_files(mirrors, *, network_name: str,
     container_include = f"{CONTAINER_ROOT}/.mmw/tls/https*.conf" if tls_include else None
     with_gallery = any(site.proxy for site in kwargs.get("sites", ()))
     if with_gallery:
-        kwargs.update(proxy_host="gallery", port=8080)
+        from mmw.core.publisher.nginx_container import GALLERY_HOST, GALLERY_PORT
+        kwargs.update(proxy_host=GALLERY_HOST, port=GALLERY_PORT)
     files = nginx_files(mirrors, CONTAINER_ROOT,
                         tls_include=container_include, **kwargs)
     files.update(deployment_files(network_name, with_gallery=with_gallery))
@@ -260,8 +261,7 @@ def recorded_nginx_files(settings: str, root: str, *,
     if not rec_net.get("nginx", True):
         return {}
     mirrors = [MirrorConfig.model_validate(m) for m in recorded.get("mirrors", [])]
-    port = rec_net.get("gallery_port", 8765)
-    mirrors, sites = split_for_nginx(mirrors, port)
+    mirrors, sites = split_for_nginx(mirrors)
     extra = list(recorded.get("upstream_hosts", []))
     if "extra_hosts" in recorded:
         extra += [h for h in recorded["extra_hosts"] if h not in extra]
@@ -269,8 +269,8 @@ def recorded_nginx_files(settings: str, root: str, *,
         # Recorded before providers named their extra hosts.
         extra.append(CHANGELOGS_HOST)
     if legacy:
+        # Those bundles proxied a standalone gallery on its host port.
         return nginx_files(mirrors, root, tls=tls, tls_include=tls_include, extra_hosts=extra,
-                           sites=sites, port=port)
+                           sites=sites, port=rec_net.get("gallery_port", 8765))
     return deployment_nginx_files(mirrors, network_name=rec_net.get("name", "network"),
-                                  tls_include=tls_include, extra_hosts=extra,
-                                  sites=sites, port=port)
+                                  tls_include=tls_include, extra_hosts=extra, sites=sites)

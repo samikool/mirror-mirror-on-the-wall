@@ -42,7 +42,7 @@ def test_payloads_land_at_microsofts_hosts(tmp_path, up, docker):  # noqa: F811
 
 
 def test_generated_gallery_files(tmp_path, up, docker):  # noqa: F811
-    root, _, _ = _published(tmp_path, up, docker, gallery_port=9100)
+    root, _, _ = _published(tmp_path, up, docker)
     g = root / "vscode-gallery"
     catalog = json.loads((g / "catalog.json").read_text())
     ids = {f"{e['publisher']['publisherName']}.{e['extensionName']}".lower() for e in catalog}
@@ -52,23 +52,18 @@ def test_generated_gallery_files(tmp_path, up, docker):  # noqa: F811
     updates = json.loads((g / "updates.json").read_text())
     assert updates["server-linux-x64"]["stable"]["latest"] in updates["server-linux-x64"]["stable"]["builds"]
     assert (g / "gallery.py").read_bytes().startswith(b"#!/usr/bin/env python3")
-    compose = (g / "compose.yaml").read_text()
-    assert "127.0.0.1:9100:8080" in compose and "python:3.13-slim" in compose
-    # only the gallery's own directory — not the tree with .mmw/tls/ in it
-    assert '".:/data:ro"' in compose and "..:" not in compose
-    # every network's file sits in a `vscode-gallery/` dir: without a name
-    # compose would call them all one project and replace one with the other
-    assert "\nname: mmw-gallery-lab\n" in compose
+    # the gallery is a service of nginx/compose.yaml, not a stack of its own
+    assert not (g / "compose.yaml").exists()
     assert (g / image.TAR_NAME).exists()
     md = (g / "VSCODE.md").read_text()
-    assert "*.gallerycdn.vsassets.io" in md and "docker load" in md
+    assert "*.gallerycdn.vsassets.io" in md and "nginx/README.md" in md
 
 
-def test_compose_project_names_are_per_network():
-    from mmw.providers.vscode.publish import compose_yaml
-    names = {compose_yaml(8765, "img", n).decode().split("\nname: ", 1)[1].split("\n")[0]
-             for n in ("lab", "Lab.Site 2", "_x")}
-    assert names == {"mmw-gallery-lab", "mmw-gallery-lab-site-2", "mmw-gallery-x"}
+def test_vscode_md_without_nginx_says_nothing_starts_the_gallery(tmp_path, up, docker):  # noqa: F811
+    root, _, _ = _published(tmp_path, up, docker, nginx=False)
+    md = (root / "vscode-gallery/VSCODE.md").read_text()
+    assert not (root / "nginx").exists()
+    assert "`nginx = false`" in md and "nothing here starts the gallery" in md
 
 
 def test_nginx_serves_static_hosts_and_proxies_the_rest(tmp_path, up, docker):  # noqa: F811

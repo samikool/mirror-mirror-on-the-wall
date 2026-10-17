@@ -333,8 +333,6 @@ class VscodeProvider(BaseProvider):
             f"{d}/catalog.json": json.dumps(catalogue, sort_keys=True).encode(),
             f"{d}/updates.json": json.dumps(updates, sort_keys=True).encode(),
             f"{d}/gallery.py": gallery_script_bytes(),
-            f"{d}/compose.yaml": vpub.compose_yaml(ctx.network.gallery_port, gallery_image.IMAGE,
-                                                  ctx.network.name),
             f"{d}/VSCODE.md": vpub.vscode_md(ctx.network, gallery_image.TAR_NAME, updates, catalogue=catalogue),
         }
         for rel, data in files.items():
@@ -364,7 +362,7 @@ class VscodeProvider(BaseProvider):
         if ctx.prune:
             reconcile_extra_prefix(ctx.sink, d, written)
 
-    def nginx_sites(self, units, port):
+    def nginx_sites(self, units):
         return [
             Site(r"~^[^.]+\.gallerycdn\.vsassets\.io$", root="$host"),
             *[Site(h, root=h) for h in vpub.STATIC_HOSTS],

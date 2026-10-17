@@ -741,7 +741,7 @@ class NetworkSelect(_StrictModel):
         return True
 
 
-_LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress"})
+_LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port"})
 
 
 class NetworkConfig(_StrictModel):
@@ -759,11 +759,7 @@ class NetworkConfig(_StrictModel):
     prune: bool = True        # remove destination files no longer in source
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
     certs: bool = False       # TLS key/CSR; serve HTTPS wherever it lands — bundles carry cert + key
-    nginx: bool = True        # generate conf.d-style nginx site files
-    # Where this network's VS Code gallery container listens on 127.0.0.1;
-    # the generated nginx proxies to it. Two networks served from one host
-    # need different ports.
-    gallery_port: int = Field(default=8765, ge=1, le=65535)
+    nginx: bool = True        # ship the nginx image, nginx/compose.yaml and mirror.conf
 
     @model_validator(mode="before")
     @classmethod
@@ -775,7 +771,10 @@ class NetworkConfig(_StrictModel):
           and key. It is folded into `certs` now — a certs network is HTTPS
           wherever it lands.
         - `bundle_compress` zstd-compressed the bundle. Bundles are plain
-          tars now: the payload is packages, already compressed."""
+          tars now: the payload is packages, already compressed.
+        - `gallery_port` was the host port of a standalone VS Code gallery
+          container. The gallery runs in the nginx Compose stack now, where
+          nginx reaches it at `gallery:8080`."""
         if isinstance(data, dict) and _LEGACY_NETWORK_KEYS.intersection(data):
             data = {k: v for k, v in data.items() if k not in _LEGACY_NETWORK_KEYS}
         return data
@@ -1225,7 +1224,6 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
                 if n.select else {}
             ),
             **({"nginx": False} if not n.nginx else {}),
-            **({"gallery_port": n.gallery_port} if n.gallery_port != 8765 else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
         }

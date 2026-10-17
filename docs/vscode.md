@@ -146,6 +146,7 @@ Point these names at the mirror:
 
 - `marketplace.visualstudio.com`
 - `update.code.visualstudio.com`
+- `code.visualstudio.com`
 - `vscode.download.prss.microsoft.com`
 - `main.vscode-cdn.net`
 - `*.gallerycdn.vsassets.io`
@@ -159,6 +160,7 @@ dnsmasq (`/etc/dnsmasq.d/vscode.conf`) — each line also covers subdomains:
 ```
 address=/marketplace.visualstudio.com/MIRROR_IP
 address=/update.code.visualstudio.com/MIRROR_IP
+address=/code.visualstudio.com/MIRROR_IP
 address=/vscode.download.prss.microsoft.com/MIRROR_IP
 address=/main.vscode-cdn.net/MIRROR_IP
 address=/gallerycdn.vsassets.io/MIRROR_IP
@@ -171,7 +173,7 @@ the two wildcard zones.
 ### 2. TLS
 
 VS Code talks HTTPS only, so the network needs `certs = true`. The
-certificate mmw generates covers all six names, wildcards included:
+certificate mmw generates covers all seven names, wildcards included:
 `mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs it here, or
 `sign.py` signs it on the far side (see [Airgapped operation](airgap.md#https)).
 Install the CA on every client: Windows — Local Machine → Trusted Root
@@ -225,6 +227,23 @@ curl -I https://update.code.visualstudio.com/api/update/linux-x64/stable/0000000
 answers `200` (an update is available) or `204` (up to date) — not a
 certificate error, not `502`. Then search in VS Code's Extensions view and
 install something.
+
+## Updating VS Code
+
+The update check (`update.code.visualstudio.com`) answers from the mirror on
+every platform; what happens next depends on the platform:
+
+- **Windows and macOS** download and install the update themselves, from the
+  mirror — when the source mirrors those platforms (`win32-x64`,
+  `darwin-arm64`, …).
+- **Linux** never installs an update itself: **Download Update** opens
+  `https://code.visualstudio.com`. The mirror serves that page — every
+  mirrored build's newest version, linked to its file. Microsoft's direct
+  links (`https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64`,
+  `https://update.code.visualstudio.com/latest/linux-deb-x64/stable`) redirect
+  to the mirrored file too.
+- **apt / dnf** machines can take updates with everything else: mirror
+  `https://packages.microsoft.com/repos/code` like any other repository.
 
 ## Remote-SSH
 

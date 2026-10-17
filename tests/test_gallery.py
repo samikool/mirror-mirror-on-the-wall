@@ -213,3 +213,26 @@ def test_the_workbench_preflight_for_a_search_is_allowed(served):
                     headers={"Origin": "vscode-file://vscode-app"})
     assert answer.status_code == 200
     assert answer.headers["access-control-allow-origin"] == "*"
+
+
+def test_latest_and_sha_download_links_redirect_to_the_newest_build(served):
+    # Microsoft's direct-download links, which scripts and bookmarks use.
+    c, _ = served
+    for path in ("/latest/server-linux-x64/stable",
+                 "/sha/download?build=stable&os=server-linux-x64"):
+        r = c.get(path)
+        assert r.status_code == 302, path
+        assert r.headers["location"].endswith(f"/{'b' * 40}/server-linux-x64.tar.gz")
+    assert c.get("/latest/darwin/stable").status_code == 404
+    assert c.get("/sha/download?build=stable&os=darwin").status_code == 404
+    assert c.get("/sha/download").status_code == 404
+
+
+def test_the_download_page_links_every_identity_s_newest_build(served):
+    # Linux's "Download Update" opens https://code.visualstudio.com.
+    c, _ = served
+    for path in ("/", "/Download", "/download"):
+        r = c.get(path, headers={"Host": "code.visualstudio.com"})
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+        assert f"/{'b' * 40}/server-linux-x64.tar.gz" in r.text
+        assert f"/{'a' * 40}/" not in r.text          # only the newest build

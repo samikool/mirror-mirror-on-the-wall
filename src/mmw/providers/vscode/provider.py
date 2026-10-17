@@ -369,13 +369,14 @@ class VscodeProvider(BaseProvider):
             Site(r"~^[^.]+\.gallerycdn\.vsassets\.io$", root="$host"),
             *[Site(h, root=h) for h in vpub.STATIC_HOSTS],
             Site("update.code.visualstudio.com", proxy=("/",)),
+            Site("code.visualstudio.com", proxy=("/",)),
             Site("marketplace.visualstudio.com",
                  proxy=("/_apis/public/gallery/extensionquery",), exact=True),
             Site(r"~^[^.]+\.gallery\.vsassets\.io$", proxy=("/",)),
         ]
 
     def cert_names(self, network, units) -> list[str]:
-        """The six names — only for a network that publishes VS Code units."""
+        """Every VS Code name — only for a network that publishes VS Code units."""
         return list(vpub.HOSTS) if units else []
 
     # ── presentation ────────────────────────────────────────────────────────

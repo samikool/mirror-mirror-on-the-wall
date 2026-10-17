@@ -160,3 +160,15 @@ def test_generated_guide_lists_actual_publishers_for_sites_without_wildcard_dns(
     assert 'MIRROR_IP mmw-fixture.gallery.vsassets.io mmw-fixture.gallerycdn.vsassets.io' in guide
     assert 'Regenerate these entries when the selection gains a publisher' in guide
     assert 'NODE_EXTRA_CA_CERTS' in guide
+
+
+def test_code_visualstudio_com_goes_to_the_gallery_and_its_certificate(tmp_path, up, docker):  # noqa: F811
+    from mmw.core.certs import collect_hostnames
+    root, _, cfg = _published(tmp_path, up, docker)
+    conf = (root / "nginx/mirror.conf").read_text()
+    block = conf.split("server_name code.visualstudio.com;")[1].split("server {")[0]
+    assert "location / {" in block and "proxy_pass http://gallery:8080;" in block
+    assert "code.visualstudio.com" in collect_hostnames(config.NetworkConfig(name="lab"), cfg)
+    md = (root / "vscode-gallery/VSCODE.md").read_text()
+    assert "- `code.visualstudio.com`" in md
+    assert "also add the five exact hostnames above" in md

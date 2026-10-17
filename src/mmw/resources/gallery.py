@@ -175,59 +175,43 @@ def newest(updates: dict, identity: str, quality: str):
     return (entry.get("builds") or {}).get(entry.get("latest", ""))
 
 
-def _page(title: str, body: str) -> bytes:
-    return (f"<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{html.escape(title)}"
-            f"</title></head>\n<body>\n<h1>{html.escape(title)}</h1>\n{body}</body></html>\n"
-            ).encode()
+def listing(title: str, entries) -> bytes:
+    """A bare page in the style of nginx's autoindex: each (name, url) one
+    line, the name a link to the file, A–Z."""
+    lines = "".join(f'<a href="{html.escape(url)}">{html.escape(name)}</a>\n'
+                    for name, url in sorted(entries, key=lambda e: e[0].lower()))
+    t = html.escape(title)
+    return (f"<html>\n<head><title>{t}</title></head>\n<body>\n<h1>{t}</h1><hr><pre>\n"
+            f"{lines}</pre><hr></body>\n</html>\n").encode()
 
 
 def download_page(updates: dict) -> bytes:
-    """Every identity's newest build per quality, linked to its mirrored file."""
-    rows = []
-    for identity in sorted(updates):
-        for quality in sorted(updates[identity]):
-            b = newest(updates, identity, quality)
-            if not b:
-                continue
-            url = b.get("url", "")
-            rows.append(
-                f"<tr><td>{html.escape(identity)}</td><td>{html.escape(quality)}</td>"
-                f"<td>{html.escape(str(b.get('productVersion') or b.get('name') or ''))}</td>"
-                f"<td><a href=\"{html.escape(url)}\">{html.escape(url.rsplit('/', 1)[-1])}</a></td>"
-                f"<td><code>{html.escape(str(b.get('sha256hash', '')))}</code></td></tr>\n")
-    if not rows:
-        return _page("VS Code downloads", "<p>This mirror holds no VS Code builds.</p>\n")
-    return _page("VS Code downloads",
-                 "<table>\n<tr><th>Build</th><th>Quality</th><th>Version</th><th>File</th>"
-                 "<th>SHA-256</th></tr>\n" + "".join(rows) + "</table>\n")
+    """Every identity's newest build per quality, by file name."""
+    entries = []
+    for identity in updates:
+        for quality in updates[identity]:
+            url = (newest(updates, identity, quality) or {}).get("url")
+            if url:
+                entries.append((url.rsplit("/", 1)[-1], url))
+    return listing("VS Code downloads", entries)
 
 
 def extension_list(extensions: list) -> bytes:
-    """One plain page: every extension, most installed first, its newest
-    version's VSIX (one link per platform build) on the mirror."""
-    rows = []
-    for e in sorted(extensions, key=lambda e: -_stat(e, "install")):
+    """Every extension's newest version, one line per platform build
+    (`publisher.name@linux-x64`; a universal build is the bare name)."""
+    entries = []
+    for e in extensions:
         versions = e.get("versions") or []
-        latest = versions[0].get("version", "") if versions else ""
-        links = []
+        latest = versions[0].get("version") if versions else None
         for v in versions:
             if v.get("version") != latest:
                 continue
+            platform = v.get("targetPlatform")
+            name = ident(e) + (f"@{platform}" if platform not in (None, "", "universal") else "")
             for f in v.get("files", []):
                 if f.get("assetType") == VSIX:
-                    label = v.get("targetPlatform") or "VSIX"
-                    links.append(f"<a href=\"{html.escape(f.get('source', ''))}\">"
-                                 f"{html.escape(label)}</a>")
-        rows.append(
-            f"<tr><td>{html.escape(str(e.get('displayName') or e.get('extensionName')))}</td>"
-            f"<td>{html.escape(ident(e))}</td><td>{html.escape(latest)}</td>"
-            f"<td>{' '.join(links)}</td>"
-            f"<td>{html.escape(str(e.get('shortDescription') or ''))}</td></tr>\n")
-    return _page("VS Code extensions",
-                 f"<p>{len(rows):,} extensions. Install them from VS Code's Extensions view; "
-                 f"these links are the files it downloads.</p>\n"
-                 "<table>\n<tr><th>Name</th><th>Identifier</th><th>Version</th><th>Download</th>"
-                 "<th>Description</th></tr>\n" + "".join(rows) + "</table>\n")
+                    entries.append((name, f.get("source", "")))
+    return listing("VS Code extensions", entries)
 
 
 def _asset(extensions: list, want: str, version: str, asset_type: str, platform: str):
@@ -367,9 +351,21 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404)
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # A client that hangs up mid-answer — VS Code cancelling a search as
+        # the next keystroke sends another, a browser leaving the long list —
+        # is routine, not a fault worth a traceback.
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            log(f"{client_address[0]} hung up before the answer was sent")
+            return
+        super().handle_error(request, client_address)
+
+
 def make_server(store: Store, bind: str, port: int) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((bind, port), Handler)
-    server.daemon_threads = True
+    server = Server((bind, port), Handler)
     server.store = store
     return server
 

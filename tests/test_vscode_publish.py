@@ -79,6 +79,11 @@ def test_nginx_serves_static_hosts_and_proxies_the_rest(tmp_path, up, docker):  
     assert "  gallery:" in compose and "network_mode:" not in compose
     assert '"/path/to/lab/vscode-gallery:/data:ro"' in compose
     assert "server_name vscode.download.prss.microsoft.com;" in conf
+    # Every static VS Code host answers the workbench's cross-origin fetches.
+    for name in (r"~^[^.]+\.gallerycdn\.vsassets\.io$", "vscode.download.prss.microsoft.com",
+                 "main.vscode-cdn.net"):
+        block = conf.split(f"server_name {name};")[1].split("server {")[0]
+        assert "Access-Control-Allow-Origin" in block, name
 
 
 def test_certificate_names_include_the_wildcards(tmp_path, up, docker):  # noqa: F811
@@ -174,3 +179,12 @@ def test_code_visualstudio_com_goes_to_the_gallery_and_its_certificate(tmp_path,
     md = (root / "vscode-gallery/VSCODE.md").read_text()
     assert "- `code.visualstudio.com`" in md
     assert "also add the five exact hostnames above" in md
+
+
+def test_the_workbench_alerts_are_published(tmp_path, up, docker):  # noqa: F811
+    src = _vs(kinds=["desktop"], platforms=["linux-x64"], qualities=["stable"])
+    mirror_dir = tmp_path / "m"
+    _sync(mirror_dir, src)
+    cfg = config.Config(settings=config.Settings(mirror_dir=mirror_dir), sources=[src])
+    publish_network(config.NetworkConfig(name="lab", root=tmp_path / "pub"), cfg, mirror_dir)
+    assert (tmp_path / "pub/main.vscode-cdn.net/core/stable.json").is_file()

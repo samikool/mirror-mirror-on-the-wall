@@ -1107,8 +1107,8 @@ class Pool:
         else:
             current = self._conn.execute(
                 "SELECT repo_path, checksum FROM refs WHERE mirror_name = ? "
-                "AND repo_path LIKE '.vscode-meta/%' ORDER BY repo_path, checksum",
-                (mirror_name,),
+                "AND kind = ? ORDER BY repo_path, checksum",
+                (mirror_name, KIND_META),
             ).fetchall()
             matches = current == sorted(expected_metadata.items())
         if not matches:
@@ -1336,6 +1336,16 @@ class Pool:
                 (mirror_name,),
             ).fetchall()
         return rows
+
+    def meta_refs(self, mirror_name: str) -> dict[str, str]:
+        """repo_path → checksum for a mirror's `meta` refs: the saved metadata a
+        retry is checked against (`seed_retry_plan`, `repair_refs`)."""
+        with self._read() as _c:
+            rows = _c.execute(
+                "SELECT repo_path, checksum FROM refs WHERE mirror_name = ? AND kind = ?",
+                (mirror_name, KIND_META),
+            ).fetchall()
+        return dict(rows)
 
     def ref_map(self, mirror_name: str) -> dict[str, str]:
         """repo_path → checksum for every ref of a mirror (desired state).

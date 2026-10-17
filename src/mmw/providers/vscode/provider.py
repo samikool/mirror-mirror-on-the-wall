@@ -87,6 +87,7 @@ class VscodeProvider(BaseProvider):
     )
     publishes = True
     carries_history = True
+    retries_failures = True
     site_per_base = False
     fields = (
         SourceField("name", "Name", "text"),
@@ -524,7 +525,7 @@ class VscodeProvider(BaseProvider):
         if status_callback:
             status_callback("Older mirror: discovering missing files once to initialize its retry list...")
         refs = pool.ref_map(unit.name)
-        witness = {p: cs for p, cs in refs.items() if p.startswith(".vscode-meta/")}
+        witness = pool.meta_refs(unit.name)
         if not witness:
             raise RuntimeError("no saved VS Code metadata; run a normal sync first")
         held = {rel: path for rel, path, *_ in pool.mirror_files([unit.name])}

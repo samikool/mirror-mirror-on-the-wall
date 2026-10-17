@@ -10,6 +10,7 @@ from mmw.commands.mirror import _make_progress
 from mmw.core.pool import Pool
 from mmw.core.resolve import network_mirrors, pooled_mirrors
 from mmw.core.sync_engine import SyncEvents, retry_failed_mirror
+from mmw.providers import get_provider
 
 
 async def _retry(cfg, network: str | None, dry_run: bool) -> int:
@@ -22,7 +23,7 @@ async def _retry(cfg, network: str | None, dry_run: bool) -> int:
         mirrors = network_mirrors(net, cfg, mirror_dir)
     else:
         mirrors = pooled_mirrors(cfg, mirror_dir)
-    mirrors = [m for m in mirrors if m.provider == "vscode"]
+    mirrors = [m for m in mirrors if get_provider(m.provider).retries_failures]
     if not mirrors:
         eprint("No previously synced VS Code mirrors selected. Run a normal sync first.")
         return 1

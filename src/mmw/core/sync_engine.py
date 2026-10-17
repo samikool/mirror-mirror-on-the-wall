@@ -158,15 +158,15 @@ async def retry_failed_mirror(
     items_session: ItemProgressSession | None = None,
     downloads: DownloadCoordinator | None = None,
 ) -> MirrorSummary:
-    """Repair saved VS Code assets without fetching a new upstream index."""
-    if mirror.provider != "vscode":
-        raise ValueError("retry-failed currently supports VS Code mirrors only")
+    """Retry a unit's saved failed downloads without fetching a new upstream index."""
+    provider = get_provider(mirror.provider)
+    if not provider.retries_failures:
+        raise ValueError(f"{mirror.provider} mirrors do not support retry-failed")
     events = events or SyncEvents()
     if stop_event is not None and stop_event.is_set():
         return MirrorSummary(mirror=mirror.name, stopped=True, metadata_ok=False)
     if events.phase:
         events.phase("Loading saved failed downloads...")
-    provider = get_provider(mirror.provider)
     try:
         packages, witness = await asyncio.get_running_loop().run_in_executor(
             executor, lambda: provider.repair_packages(
@@ -326,7 +326,7 @@ async def sync_mirror(
         file_progress=tracker.complete,
         downloads=downloads,
         finish_callback=events.download_finished,
-        track_failures=mirror.provider == "vscode",
+        track_failures=provider.retries_failures,
     )
     summary.items = tracker.counts
 

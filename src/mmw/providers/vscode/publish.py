@@ -2,6 +2,7 @@
 gallery's data (catalog, update index), its script, and the DNS / TLS guide —
 all under `vscode-gallery/` in the network root. The gallery container itself
 is a service in the network's `nginx/compose.yaml`."""
+import gzip
 import hashlib
 import json
 import re
@@ -42,8 +43,7 @@ def _extension_meta(pool, units) -> list[tuple[str, str, str, str]]:
         if unit.dims.get("kind") != "extensions":
             continue
         held = sorted((rel, path, checksum) for rel, path, _, _, checksum
-                      in pool.mirror_files([unit.name])
-                      if rel.startswith(".vscode-meta/extensions/"))
+                      in pool.mirror_files([unit.name], prefix=".vscode-meta/extensions/"))
         rows += [(unit.name, rel, path, checksum) for rel, path, checksum in held]
     return rows
 
@@ -81,6 +81,33 @@ def catalog(pool, units) -> list[dict]:
 # extensions otherwise reads every JSON again on each publish.
 _CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 CATALOGS_KEPT = 2           # networks selecting different extensions alternate
+DESCRIPTIONS = "descriptions.gz"    # checksum → that metadata JSON's bytes
+
+
+def _load_descriptions(path: Path) -> dict[str, bytes]:
+    """The remembered bodies. A body is keyed by its own checksum, so a stale
+    one cannot exist; anything unreadable is simply read from the pool again."""
+    found: dict[str, bytes] = {}
+    try:
+        with gzip.open(path, "rb") as f:
+            while header := f.readline():
+                checksum, size = header.split()
+                body = f.read(int(size))
+                if len(body) != int(size):
+                    break                   # truncated: keep what was whole
+                found[checksum.decode()] = body
+    except (OSError, ValueError, EOFError):
+        pass
+    return found
+
+
+def _save_descriptions(path: Path, bodies: dict[str, bytes]) -> None:
+    tmp = path.with_suffix(".tmp")
+    with gzip.open(tmp, "wb", compresslevel=1) as f:
+        for checksum, body in bodies.items():
+            f.write(b"%s %d\n" % (checksum.encode(), len(body)))
+            f.write(body)
+    tmp.replace(path)
 
 
 def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
@@ -103,12 +130,26 @@ def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
             return data_path.read_bytes(), hosts_path.read_text().split()
         except OSError:
             pass
+    # A sync that updates one extension changes the key above, so the bodies
+    # are remembered too, by checksum: only the descriptions not seen by an
+    # earlier publish are read from the pool.
+    known = {} if full else _load_descriptions(cache_dir / DESCRIPTIONS)
+    unread = [path for _, _, path, checksum in rows if checksum not in known]
     if say:
-        say(f"reading {len(rows):,} extension descriptions…")
-    catalogue = _catalog_from(rows, read_all(path for _, _, path, _ in rows))
+        say(f"reading {len(unread):,} of {len(rows):,} extension descriptions…")
+    bodies = read_all(unread)
+    by_checksum = {}
+    for _, _, path, checksum in rows:
+        body = known.get(checksum, bodies.get(path))
+        if isinstance(body, bytes):
+            by_checksum[checksum] = body
+    catalogue = _catalog_from(rows, {path: by_checksum.get(checksum)
+                                     for _, _, path, checksum in rows})
     data, hosts = json.dumps(catalogue, sort_keys=True).encode(), publisher_hosts(catalogue)
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
+        if unread or len(by_checksum) != len(known):
+            _save_descriptions(cache_dir / DESCRIPTIONS, by_checksum)
         for path, body in ((data_path, data), (hosts_path, "\n".join(hosts).encode())):
             tmp = path.with_suffix(path.suffix + ".tmp")
             tmp.write_bytes(body)
@@ -172,15 +213,20 @@ not running)."""
 
 def publisher_hosts(catalogue) -> list[str]:
     """Every per-publisher gallery host the catalogue's files are served from."""
-    hosts = set()
+    # A URL's host is fixed by what comes before its third "/", and a
+    # catalogue's million URLs share a few hundred thousand of those: each is
+    # parsed once.
+    origins = set()
     for extension in catalogue:
         for version in extension.get('versions', []):
             urls = [version.get('assetUri', ''), version.get('fallbackAssetUri', ''),
                     *(file.get('source', '') for file in version.get('files', []))]
-            for url in urls:
-                host = urlsplit(url).hostname or ''
-                if re.fullmatch(r'[a-z0-9-]+\.(?:gallerycdn|gallery)\.vsassets\.io', host):
-                    hosts.add(host)
+            origins.update('/'.join(url.split('/', 3)[:3]) for url in urls)
+    hosts = set()
+    for origin in origins:
+        host = urlsplit(origin).hostname or ''
+        if re.fullmatch(r'[a-z0-9-]+\.(?:gallerycdn|gallery)\.vsassets\.io', host):
+            hosts.add(host)
     return sorted(hosts)
 
 

@@ -371,7 +371,7 @@ class VscodeProvider(BaseProvider):
             Site("update.code.visualstudio.com", proxy=("/",)),
             Site("code.visualstudio.com", proxy=("/",)),
             Site("marketplace.visualstudio.com",
-                 proxy=("/_apis/public/gallery/extensionquery",), exact=True),
+                 proxy=("/", "/_apis/public/gallery/extensionquery"), exact=True),
             Site(r"~^[^.]+\.gallery\.vsassets\.io$", proxy=("/",)),
         ]
 

@@ -71,6 +71,8 @@ def test_nginx_serves_static_hosts_and_proxies_the_rest(tmp_path, up, docker):  
     conf = (root / "nginx/mirror.conf").read_text()
     assert "server_name ~^[^.]+\\.gallerycdn\\.vsassets\\.io$;" in conf
     assert "location = /_apis/public/gallery/extensionquery {" in conf
+    market = conf.split("server_name marketplace.visualstudio.com;")[1].split("server {")[0]
+    assert "location = / {" in market               # the extension list
     upd = conf.split("server_name update.code.visualstudio.com;")[1].split("server {")[0]
     assert "proxy_pass http://gallery:8080;" in upd
     compose = (root / "nginx/compose.yaml").read_text()

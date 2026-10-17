@@ -51,6 +51,31 @@ def test_extensions_unit(up):
     assert release.repo_path == "main.vscode-cdn.net/extensions/marketplace.json"
 
 
+def test_install_counts_moving_rewrite_one_file_not_every_description(up):
+    """Statistics move daily for any extension with activity; in each
+    description they changed ~9 in 10 of 120k JSONs every sync."""
+    from mmw.providers.vscode import publish as vpub
+    src, unit = _unit("extensions")
+    vs = get_provider("vscode")
+    vs.resolve(src)
+    meta = vs.fetch_all(unit, up.client())[1]
+    descs = {m.repo_path: m.expected_sha256 for m in meta
+             if m.repo_path.startswith(".vscode-meta/extensions/")}
+    (stats,) = [m for m in meta if m.repo_path.startswith(vpub.STATISTICS)]
+    assert stats.repo_path == ".vscode-meta/statistics/linux-x64.json"
+    assert descs and not any("statistics" in json.loads(m.content) for m in meta
+                             if m.repo_path in descs)
+    counts = json.loads(stats.content)
+    assert counts and all(isinstance(v, list) for v in counts.values())
+    for ext in vs.catalog[unit.source].values():         # a day's installs
+        for stat in ext.get("statistics", []):
+            stat["value"] += 1
+    again = vs.fetch_all(unit, up.client())[1]
+    assert {m.repo_path: m.expected_sha256 for m in again if m.repo_path in descs} == descs
+    (moved,) = [m for m in again if m.repo_path.startswith(vpub.STATISTICS)]
+    assert moved.expected_sha256 != stats.expected_sha256
+
+
 def test_fetching_an_unresolved_extensions_unit_says_so(up):
     _, unit = _unit("extensions")
     get_provider("vscode").catalog.pop(unit.source, None)
@@ -350,3 +375,24 @@ def test_publisher_hosts_match_parsing_every_url():
     expected = sorted({h for u in urls if re.fullmatch(pattern, h := urlsplit(u).hostname or "")})
     assert vpub.publisher_hosts(catalogue) == expected
     assert "p.gallery.vsassets.io" in expected and "q.gallerycdn.vsassets.io" in expected
+
+
+def test_the_catalog_takes_statistics_from_their_own_file(tmp_path):
+    from mmw.core.pool import KIND_META, Pool
+    from mmw.providers.vscode import publish as vpub
+    _, unit = _unit("extensions")
+    stats = {"p.e0": [{"statisticName": "install", "value": 42.0}]}
+    with Pool(tmp_path) as pool:
+        rows = _metas(pool, unit, 2)
+        body = json.dumps(stats).encode()
+        pool.add(body, hashlib.sha256(body).hexdigest(), "sha256", "linux-x64.json", len(body))
+        rows.append((hashlib.sha256(body).hexdigest(), ".vscode-meta/statistics/linux-x64.json",
+                     KIND_META))
+        pool.reconcile_refs(unit.name, rows)
+    with Pool(tmp_path, read_only=True) as pool:
+        built = {e["extensionName"]: e for e in vpub.catalog(pool, [unit])}
+        assert built["e0"]["statistics"] == stats["p.e0"]
+        assert "statistics" not in built["e1"]        # none recorded: none invented
+        cached = json.loads(vpub.catalog_files(pool, [unit], tmp_path / "cache")[0])
+        assert [e.get("statistics") for e in cached] == [e.get("statistics") for e in built.values()]
+        assert get_provider("vscode").verify_witness(unit, pool).complete

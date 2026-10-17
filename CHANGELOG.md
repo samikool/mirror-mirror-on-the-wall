@@ -6,6 +6,56 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1]
+
+VS Code mirrors behave like the real Marketplace in more places, and a publish
+after a sync is minutes faster. Upgrading from 1.1.0: the first VS Code sync
+rewrites every extension description once (their install counts move into
+one file per unit, see Fixed), and republishing afterwards updates nginx and
+the gallery — restart the network's Compose stack to load them.
+
+### Changed
+
+- A publish or bundle that finds incomplete mirrors asks in a popup, once
+  every mirror is checked: it lists them all, incomplete first with what each
+  is missing, and offers **Publish anyway** / **Bundle anyway** or **Cancel**.
+  It replaces the button under the report.
+- Verifying mirrors before a publish or bundle shows what a long check is
+  doing (listing references, reading new descriptions, checking files), so a
+  VS Code mirror's minute-long check no longer looks stuck at "1 of 4".
+- After a sync's last package, each mirror's card says it is saving to the
+  pool database, with a spinner and how long it has taken, instead of a
+  static "Committing pool references..." that looked frozen.
+
+### Fixed
+
+- A VS Code sync rewrote most extension descriptions every time, because each
+  carried its install counts, ratings and trending scores, which move daily
+  for any extension with activity. Those now live in one statistics file per
+  unit (`.vscode-meta/statistics/`), and descriptions change only when the
+  extension does — far fewer pool writes per sync and far fewer re-reads at
+  publish. The gallery still sorts and shows install counts as before.
+- A VS Code publish after a sync rebuilt the gallery catalog from scratch —
+  every description re-read, and every file in the mirror listed to find
+  them. On a 120k-extension mirror the catalog step went from about 5 minutes
+  to 18 seconds after a sync, and from about a minute to 3 seconds when
+  nothing changed. Descriptions are remembered in
+  `{mirror_dir}/vscode-meta-cache/descriptions.gz`.
+- VS Code's check for a newer version of each installed extension
+  (`marketplace.visualstudio.com/_apis/public/gallery/vscode/{publisher}/{name}/latest`)
+  is answered by the gallery. It used to fail twice per extension ("Failed to
+  fetch") before VS Code fell back to a search.
+- The stable desktop build also mirrors the workbench's chat registry,
+  profile templates and MCP server list from `main.vscode-cdn.net`, which
+  were logged as 404s at startup.
+- A VS Code publish's progress ran past 100 % (e.g. 937,588 of 895,934): the
+  total counted distinct file contents, while publish places one file per
+  path, and VS Code serves the same bytes at many paths.
+- Clicking a notification just as it timed out crashed the TUI, stopping any
+  sync or publish running in it.
+- Pool listings (publish, bundle, snapshot publish) build each blob's path as
+  a plain string: about 8 s less per million files.
+
 ## [1.1.0]
 
 VS Code mirrors, and a pool that stays fast at a million files. Upgrading

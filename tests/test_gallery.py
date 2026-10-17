@@ -195,3 +195,21 @@ def test_a_negative_content_length_is_400_not_a_hang(served):
 def test_healthz_fails_when_the_data_files_are_missing(tmp_path):
     store = gallery.Store(str(tmp_path))
     assert store.healthy is False
+
+
+def test_the_workbench_preflight_for_a_search_is_allowed(served):
+    # VS Code's workbench queries from its own origin, so the browser engine
+    # asks first; a 501 here leaves the Extensions view empty.
+    c, _ = served
+    r = c.options("/_apis/public/gallery/extensionquery", headers={
+        "Origin": "vscode-file://vscode-app",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type,x-market-client-id"})
+    assert r.status_code == 204
+    assert r.headers["access-control-allow-origin"] == "*"
+    assert "POST" in r.headers["access-control-allow-methods"]
+    assert r.headers["access-control-allow-headers"] == "content-type,x-market-client-id"
+    answer = c.post("/_apis/public/gallery/extensionquery", json=_q(),
+                    headers={"Origin": "vscode-file://vscode-app"})
+    assert answer.status_code == 200
+    assert answer.headers["access-control-allow-origin"] == "*"

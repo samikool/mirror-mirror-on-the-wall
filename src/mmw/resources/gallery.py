@@ -5,6 +5,7 @@ Run by the stock python image (docker compose, see compose.yaml beside it);
 nginx proxies to it the paths a static tree cannot answer:
 
   POST /_apis/public/gallery/extensionquery          extension search
+  OPTIONS (any path)                                 the workbench's CORS preflight
   GET  /api/update/{identity}/{quality}/{commit}     "is there a newer VS Code?"
   GET  /commit:{sha}/{identity}/{quality}            Remote-SSH server download
   GET  /_apis/public/gallery/publisher/…/assetbyname/{type}   fallback asset URL
@@ -186,6 +187,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, body: bytes = b"", ctype="application/json", headers=None):
         self.send_response(status)
+        # The workbench calls from its own origin (vscode-file://), as it does
+        # Microsoft's marketplace; nothing here is per-user, so any origin.
+        self.send_header("Access-Control-Allow-Origin", "*")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         if body:
@@ -217,6 +221,13 @@ class Handler(BaseHTTPRequestHandler):
             log(f"bad query ({e})")
             return self._send(400)
         self._json(200, answer)
+
+    def do_OPTIONS(self):
+        self._send(204, headers={
+            "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+            "Access-Control-Allow-Headers":
+                self.headers.get("Access-Control-Request-Headers") or "content-type",
+            "Access-Control-Max-Age": "86400"})
 
     def do_HEAD(self):
         self.do_GET()                       # `_send` leaves the body out

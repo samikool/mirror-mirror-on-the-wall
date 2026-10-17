@@ -5,8 +5,14 @@ Run by the stock python image (docker compose, see compose.yaml beside it);
 nginx proxies to it the paths a static tree cannot answer:
 
   POST /_apis/public/gallery/extensionquery          extension search
+  OPTIONS (any path)                                 the workbench's CORS preflight
   GET  /api/update/{identity}/{quality}/{commit}     "is there a newer VS Code?"
   GET  /commit:{sha}/{identity}/{quality}            Remote-SSH server download
+  GET  /latest/{identity}/{quality}                  newest build (a direct link)
+  GET  /sha/download?build={quality}&os={identity}   the same, code.visualstudio.com's form
+  GET  /  /Download  on code.visualstudio.com         download page: every newest build —
+                                                     where Linux's "Download Update" goes
+  GET  /  on marketplace.visualstudio.com            every extension, linked to its VSIX
   GET  /_apis/public/gallery/publisher/…/assetbyname/{type}   fallback asset URL
   GET  /healthz
 
@@ -19,6 +25,8 @@ Stdlib only. Reads {data}/catalog.json and {data}/updates.json, re-reading a
 file when its mtime changes (a new publish or bundle replaces them).
 """
 import argparse
+import gzip
+import html
 import json
 import os
 import re
@@ -36,6 +44,11 @@ ORDER_ASC, ORDER_DESC = 1, 2
 QUERY_PATH = "/_apis/public/gallery/extensionquery"
 _UPDATE = re.compile(r"^/api/update/([^/]+)/([^/]+)/([0-9a-fA-F]+)$")
 _COMMIT = re.compile(r"^/commit:([0-9a-fA-F]{40})/([^/]+)/([^/]+)$")
+_LATEST = re.compile(r"^/latest/([^/]+)/([^/]+)$")
+DOWNLOAD_HOST = "code.visualstudio.com"
+DOWNLOAD_PAGES = ("/", "/Download", "/download")
+LIST_HOST = "marketplace.visualstudio.com"
+VSIX = "Microsoft.VisualStudio.Services.VSIXPackage"
 _ASSET = re.compile(r"^/_apis/public/gallery/publisher/([^/]+)/extension/([^/]+)/"
                     r"([^/]+)/assetbyname/([^/]+)$")
 
@@ -156,6 +169,67 @@ def query(extensions: list, body: dict) -> dict:
         {"metadataType": "ResultCount", "metadataItems": [{"name": "TotalCount", "count": total}]}]}]}
 
 
+def newest(updates: dict, identity: str, quality: str):
+    """The newest build of `identity` in `quality`, or None."""
+    entry = updates.get(identity, {}).get(quality) or {}
+    return (entry.get("builds") or {}).get(entry.get("latest", ""))
+
+
+def _page(title: str, body: str) -> bytes:
+    return (f"<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{html.escape(title)}"
+            f"</title></head>\n<body>\n<h1>{html.escape(title)}</h1>\n{body}</body></html>\n"
+            ).encode()
+
+
+def download_page(updates: dict) -> bytes:
+    """Every identity's newest build per quality, linked to its mirrored file."""
+    rows = []
+    for identity in sorted(updates):
+        for quality in sorted(updates[identity]):
+            b = newest(updates, identity, quality)
+            if not b:
+                continue
+            url = b.get("url", "")
+            rows.append(
+                f"<tr><td>{html.escape(identity)}</td><td>{html.escape(quality)}</td>"
+                f"<td>{html.escape(str(b.get('productVersion') or b.get('name') or ''))}</td>"
+                f"<td><a href=\"{html.escape(url)}\">{html.escape(url.rsplit('/', 1)[-1])}</a></td>"
+                f"<td><code>{html.escape(str(b.get('sha256hash', '')))}</code></td></tr>\n")
+    if not rows:
+        return _page("VS Code downloads", "<p>This mirror holds no VS Code builds.</p>\n")
+    return _page("VS Code downloads",
+                 "<table>\n<tr><th>Build</th><th>Quality</th><th>Version</th><th>File</th>"
+                 "<th>SHA-256</th></tr>\n" + "".join(rows) + "</table>\n")
+
+
+def extension_list(extensions: list) -> bytes:
+    """One plain page: every extension, most installed first, its newest
+    version's VSIX (one link per platform build) on the mirror."""
+    rows = []
+    for e in sorted(extensions, key=lambda e: -_stat(e, "install")):
+        versions = e.get("versions") or []
+        latest = versions[0].get("version", "") if versions else ""
+        links = []
+        for v in versions:
+            if v.get("version") != latest:
+                continue
+            for f in v.get("files", []):
+                if f.get("assetType") == VSIX:
+                    label = v.get("targetPlatform") or "VSIX"
+                    links.append(f"<a href=\"{html.escape(f.get('source', ''))}\">"
+                                 f"{html.escape(label)}</a>")
+        rows.append(
+            f"<tr><td>{html.escape(str(e.get('displayName') or e.get('extensionName')))}</td>"
+            f"<td>{html.escape(ident(e))}</td><td>{html.escape(latest)}</td>"
+            f"<td>{' '.join(links)}</td>"
+            f"<td>{html.escape(str(e.get('shortDescription') or ''))}</td></tr>\n")
+    return _page("VS Code extensions",
+                 f"<p>{len(rows):,} extensions. Install them from VS Code's Extensions view; "
+                 f"these links are the files it downloads.</p>\n"
+                 "<table>\n<tr><th>Name</th><th>Identifier</th><th>Version</th><th>Download</th>"
+                 "<th>Description</th></tr>\n" + "".join(rows) + "</table>\n")
+
+
 def _asset(extensions: list, want: str, version: str, asset_type: str, platform: str):
     """The file `asset_type` of `want`@`version` for `platform`: that
     platform's build, else a universal one. With no platform asked for, a
@@ -186,6 +260,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, body: bytes = b"", ctype="application/json", headers=None):
         self.send_response(status)
+        # The workbench calls from its own origin (vscode-file://), as it does
+        # Microsoft's marketplace; nothing here is per-user, so any origin.
+        self.send_header("Access-Control-Allow-Origin", "*")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         if body:
@@ -218,6 +295,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400)
         self._json(200, answer)
 
+    def _extension_list(self):
+        # Built once per catalog (120k extensions is tens of MB of HTML) and
+        # kept gzipped too: nginx does not compress what it proxies.
+        exts = self.store.extensions
+        cached = getattr(self.server, "front_page", None)
+        if cached is None or cached[0] is not exts:
+            page = extension_list(exts)
+            cached = self.server.front_page = (exts, page, gzip.compress(page, 6))
+        ctype = "text/html; charset=utf-8"
+        if "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            return self._send(200, cached[2], ctype,
+                              {"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        self._send(200, cached[1], ctype, {"Vary": "Accept-Encoding"})
+
+    def do_OPTIONS(self):
+        self._send(204, headers={
+            "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+            "Access-Control-Allow-Headers":
+                self.headers.get("Access-Control-Request-Headers") or "content-type",
+            "Access-Control-Max-Age": "86400"})
+
     def do_HEAD(self):
         self.do_GET()                       # `_send` leaves the body out
 
@@ -235,6 +333,22 @@ class Handler(BaseHTTPRequestHandler):
             if m.group(3).lower() == entry["latest"].lower():
                 return self._send(204)
             return self._json(200, entry["builds"][entry["latest"]])
+        host = (self.headers.get("Host") or "").split(":")[0].lower()
+        if host == LIST_HOST and path == "/":
+            return self._extension_list()
+        if host == DOWNLOAD_HOST and path in DOWNLOAD_PAGES:
+            return self._send(200, download_page(self.store.updates), "text/html; charset=utf-8")
+        m = _LATEST.match(path)
+        if m or path == "/sha/download":
+            if m:
+                identity, quality = m.group(1), m.group(2)
+            else:
+                q = parse_qs(url.query)
+                identity, quality = (q.get("os") or [""])[0], (q.get("build") or ["stable"])[0]
+            b = newest(self.store.updates, identity, quality)
+            if not b:
+                return self._send(404)
+            return self._send(302, headers={"Location": b["url"]})
         m = _COMMIT.match(path)
         if m:
             entry = self.store.updates.get(m.group(2), {}).get(m.group(3)) or {}

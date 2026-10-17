@@ -8,9 +8,14 @@ from urllib.parse import urlsplit
 
 GALLERY_DIR = "vscode-gallery"
 STATIC_HOSTS = ("vscode.download.prss.microsoft.com", "main.vscode-cdn.net")
-PROXIED_HOSTS = ("marketplace.visualstudio.com", "update.code.visualstudio.com")
+# code.visualstudio.com: Linux's "Download Update" opens it, and its
+# /sha/download links are how scripts fetch a build.
+PROXIED_HOSTS = ("marketplace.visualstudio.com", "update.code.visualstudio.com",
+                 "code.visualstudio.com")
 WILDCARDS = ("*.gallerycdn.vsassets.io", "*.gallery.vsassets.io")
 HOSTS = (*PROXIED_HOSTS, *STATIC_HOSTS, *WILDCARDS)
+EXACT_HOSTS = tuple(h for h in HOSTS if not h.startswith("*."))
+_NUMBERS = dict(enumerate(("no", "one", "two", "three", "four", "five", "six", "seven")))
 
 
 def _read_json(pool, unit_name: str, rel: str):
@@ -115,7 +120,8 @@ def _publisher_dns(catalogue) -> str:
     lines = ['MIRROR_IP ' + ' '.join(names) for names in publishers.values()]
     return '\n'.join([
         'For a site without wildcard DNS, these hosts-file entries cover the',
-        'publishers in this network (also add the four exact hostnames above):',
+        'publishers in this network (also add the '
+        f'{_NUMBERS[len(EXACT_HOSTS)]} exact hostnames above):',
         '', '```', *lines, '```', '',
         'Regenerate these entries when the selection gains a publisher.', ''])
 
@@ -143,7 +149,7 @@ the catalog and the gallery notices without a restart.
 
 
 def vscode_md(network, tar_name: str, updates: dict, *, catalogue=()) -> bytes:
-    exact = [h for h in HOSTS if not h.startswith("*.")]
+    exact = EXACT_HOSTS
     return f"""\
 # VS Code on network `{network.name}`
 

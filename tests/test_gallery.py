@@ -195,3 +195,69 @@ def test_a_negative_content_length_is_400_not_a_hang(served):
 def test_healthz_fails_when_the_data_files_are_missing(tmp_path):
     store = gallery.Store(str(tmp_path))
     assert store.healthy is False
+
+
+def test_the_workbench_preflight_for_a_search_is_allowed(served):
+    # VS Code's workbench queries from its own origin, so the browser engine
+    # asks first; a 501 here leaves the Extensions view empty.
+    c, _ = served
+    r = c.options("/_apis/public/gallery/extensionquery", headers={
+        "Origin": "vscode-file://vscode-app",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type,x-market-client-id"})
+    assert r.status_code == 204
+    assert r.headers["access-control-allow-origin"] == "*"
+    assert "POST" in r.headers["access-control-allow-methods"]
+    assert r.headers["access-control-allow-headers"] == "content-type,x-market-client-id"
+    answer = c.post("/_apis/public/gallery/extensionquery", json=_q(),
+                    headers={"Origin": "vscode-file://vscode-app"})
+    assert answer.status_code == 200
+    assert answer.headers["access-control-allow-origin"] == "*"
+
+
+def test_latest_and_sha_download_links_redirect_to_the_newest_build(served):
+    # Microsoft's direct-download links, which scripts and bookmarks use.
+    c, _ = served
+    for path in ("/latest/server-linux-x64/stable",
+                 "/sha/download?build=stable&os=server-linux-x64"):
+        r = c.get(path)
+        assert r.status_code == 302, path
+        assert r.headers["location"].endswith(f"/{'b' * 40}/server-linux-x64.tar.gz")
+    assert c.get("/latest/darwin/stable").status_code == 404
+    assert c.get("/sha/download?build=stable&os=darwin").status_code == 404
+    assert c.get("/sha/download").status_code == 404
+
+
+def test_the_download_page_links_every_identity_s_newest_build(served):
+    # Linux's "Download Update" opens https://code.visualstudio.com.
+    c, _ = served
+    for path in ("/", "/Download", "/download"):
+        r = c.get(path, headers={"Host": "code.visualstudio.com"})
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+        assert f"/{'b' * 40}/server-linux-x64.tar.gz" in r.text
+        assert f"/{'a' * 40}/" not in r.text          # only the newest build
+
+
+def test_the_marketplace_front_page_lists_every_extension(served):
+    c, _ = served
+    r = c.get("/", headers={"Host": "marketplace.visualstudio.com"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    assert "3 extensions" in r.text
+    # Most installed first, each linked to its VSIX on the mirror.
+    assert r.text.index("ms-python.python") < r.text.index("redhat.vscode-yaml") \
+        < r.text.index("golang.go")
+    assert 'href="https://golang.gallerycdn.vsassets.io/x/go/1.0.0/VSIX"' in r.text
+    assert "Rich Go language support" in r.text
+
+
+def test_the_front_page_is_gzipped_when_asked_and_follows_the_catalog(served):
+    c, data = served
+    raw = c.get("/", headers={"Host": "marketplace.visualstudio.com",
+                              "Accept-Encoding": "gzip"})
+    assert raw.headers["content-encoding"] == "gzip"
+    assert "golang.go" in raw.text                 # httpx inflates it
+    time.sleep(0.02)
+    (data / "catalog.json").write_text(json.dumps([_ext("new", "thing", short="<b>x</b>")]))
+    page = c.get("/", headers={"Host": "marketplace.visualstudio.com"}).text
+    assert "new.thing" in page and "golang.go" not in page
+    assert "&lt;b&gt;x&lt;/b&gt;" in page          # descriptions are escaped

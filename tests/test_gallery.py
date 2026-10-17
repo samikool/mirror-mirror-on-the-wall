@@ -236,18 +236,31 @@ def test_the_download_page_links_every_identity_s_newest_build(served):
         assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
         assert f"/{'b' * 40}/server-linux-x64.tar.gz" in r.text
         assert f"/{'a' * 40}/" not in r.text          # only the newest build
+        # A bare listing, as nginx's autoindex: each file name a link to it.
+        assert '>server-linux-x64.tar.gz</a>' in r.text and "<table" not in r.text
 
 
 def test_the_marketplace_front_page_lists_every_extension(served):
     c, _ = served
     r = c.get("/", headers={"Host": "marketplace.visualstudio.com"})
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
-    assert "3 extensions" in r.text
-    # Most installed first, each linked to its VSIX on the mirror.
-    assert r.text.index("ms-python.python") < r.text.index("redhat.vscode-yaml") \
-        < r.text.index("golang.go")
-    assert 'href="https://golang.gallerycdn.vsassets.io/x/go/1.0.0/VSIX"' in r.text
-    assert "Rich Go language support" in r.text
+    # A bare listing, as nginx's autoindex: A–Z, each name a link to its VSIX.
+    assert r.text.index(">golang.go<") < r.text.index(">ms-python.python<") \
+        < r.text.index(">redhat.vscode-yaml<")
+    assert '<a href="https://golang.gallerycdn.vsassets.io/x/go/1.0.0/VSIX">golang.go</a>' in r.text
+    assert "<table" not in r.text and "Rich Go language support" not in r.text
+
+
+def test_a_platform_build_is_its_own_line(served):
+    c, data = served
+    builds = [{"version": "2.0.0", "targetPlatform": p, "files": [
+        {"assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+         "source": f"https://ms-python.gallerycdn.vsassets.io/py/2.0.0/{p}/VSIX"}]}
+        for p in ("linux-x64", "win32-x64")]
+    time.sleep(0.02)
+    (data / "catalog.json").write_text(json.dumps([_ext("ms-python", "python", versions=builds)]))
+    page = c.get("/", headers={"Host": "marketplace.visualstudio.com"}).text
+    assert ">ms-python.python@linux-x64</a>" in page and ">ms-python.python@win32-x64</a>" in page
 
 
 def test_the_front_page_is_gzipped_when_asked_and_follows_the_catalog(served):
@@ -257,10 +270,9 @@ def test_the_front_page_is_gzipped_when_asked_and_follows_the_catalog(served):
     assert raw.headers["content-encoding"] == "gzip"
     assert "golang.go" in raw.text                 # httpx inflates it
     time.sleep(0.02)
-    (data / "catalog.json").write_text(json.dumps([_ext("new", "thing", short="<b>x</b>")]))
+    (data / "catalog.json").write_text(json.dumps([_ext("new", "<b>")]))
     page = c.get("/", headers={"Host": "marketplace.visualstudio.com"}).text
-    assert "new.thing" in page and "golang.go" not in page
-    assert "&lt;b&gt;x&lt;/b&gt;" in page          # descriptions are escaped
+    assert "new.&lt;b&gt;" in page and "golang.go" not in page      # names are escaped
 
 
 def test_a_client_hanging_up_is_one_log_line_not_a_traceback(tmp_path, capsys):

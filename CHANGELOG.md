@@ -6,6 +6,93 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0]
+
+VS Code mirrors, and a pool that stays fast at a million files. Upgrading
+from 1.0: the first writable open of the pool builds new indexes once, and
+the first publish of each network does one full pass before repeat
+publishes become incremental. A `[[networks.select]]` key that is not a
+dimension of its source's provider is now a load error (see Fixed).
+
+### Added
+
+- VS Code sources: `[[sources]] provider = "vscode"` mirrors Microsoft
+  Marketplace extensions (top N, listed ids, or all — with dependencies),
+  desktop builds and VS Code Server/CLI builds (latest + 2 previous commits).
+  `mmw add vscode`, `mmw dry-run` and `mmw verify` know them; Sources and
+  first-run setup in the TUI can add and edit them. Guide: `docs/vscode.md`.
+- VS Code networks publish and bundle a working offline Marketplace for stock
+  VS Code: payloads at Microsoft's own hostnames, a gallery service in the
+  network's nginx Compose stack, nginx for seven hostnames (two wildcards),
+  wildcard-capable certificates, and a `VSCODE.md` guide per network.
+  Extension search, install and update work offline; so does Linux's
+  **Download Update** (`code.visualstudio.com` and Microsoft's direct
+  download links redirect to the mirrored builds), and VS Code's startup
+  alerts are mirrored with the stable desktop build.
+  `https://marketplace.visualstudio.com/` and `code.visualstudio.com` list
+  what the mirror holds.
+- `mmw retry-failed [--network N] [--dry-run]` retries only a VS Code
+  mirror's saved list of failed downloads, without Marketplace discovery
+  (TUI: **Retry missing** on Sources and Sync).
+- Nginx-enabled networks include the official `nginx:latest` amd64 Docker
+  image, an offline Compose setup, and network-specific instructions in
+  publish outputs and bundles. Container paths are fixed at `/srv/mmw`;
+  image exports are cached and frozen in snapshots.
+- `make-ca.py` ships beside `sign.py`: it makes the site CA once and prints
+  how to trust it on each kind of client.
+- `settings.database` places the pool database (default: where it has always
+  been, `{mirror_dir}/.pool/mmw.db`). Move it from Settings → **Move…** or
+  `mmw move-database PATH` — e.g. onto a fast disk while the pool stays on a
+  big slow one. mmw refuses to start over an existing pool whose configured
+  database is missing, rather than starting an empty one.
+- `mmw publish --full` rechecks every published file (the same word as
+  `mmw bundle --full`); `mmw publish --take-snapshot` snapshots the network
+  first. Both are toggles on the TUI's publish page, off by default.
+- The TUI offers **Publish anyway** / **Bundle anyway** after the
+  missing-file report, like the headless `--allow-incomplete`.
+
+### Changed
+
+- Repeat publishes touch only what changed: each published tree keeps a
+  record (`.mmw/manifest.jsonl`, the bundle manifest's own format; `apply.py`
+  writes it into applied trees too) and trusts it — no per-file checks, no
+  tree walk to prune. The first publish after upgrading does one full pass.
+- Pool listings read through covering indexes in checksum order: on a
+  spinning disk a 1M-file listing no longer does a random read per file.
+  The first writable open after upgrading builds the indexes once.
+- Sync, publish, bundle and verify first read the pool database into the page
+  cache when it fits in available memory (up to 90 %; reclaimable cache only).
+- Repeat syncs write only the pool references that changed, and metadata work
+  is batched — much less database I/O on large mirrors.
+- Published trees and bundles carry the same deployable files, including
+  top-level apply/signing scripts and portable private TLS assets. Publish
+  snapshots remain manual; bundling current content still snapshots it
+  automatically.
+- Sync progress counts logical items (packages, extensions, builds) rather
+  than individual files.
+- The Repositories section is now called **Sources**, and Add starts by
+  asking what you are adding (APT repository, VS Code, or detect from a URL /
+  pasted config). Same key (`1`), same behaviour once past that first step.
+- The transfer log writes at most 50 per-file lines per refresh (the counters
+  keep the totals), and the transfer panel says what each step after a
+  publish's files is doing.
+
+### Fixed
+
+- Parallel mirror units share downloads of the same file, and a restarted
+  sync reuses files an interrupted one already completed.
+- Initial index fetches are retried, and backoff after a server error is
+  shared by every request to that server.
+- An apt suite that lists a component with no indexes (a skeleton
+  component) no longer fails the sync.
+- `mmw -c DIR add …` now reads and writes `DIR/mmw.toml`; it used the working
+  directory regardless of `-c`.
+- A `[[networks.select]]` key that is not a dimension of that source's
+  provider (e.g. `components = ["main"]` on an apt-flat repository) is now a
+  load error. It used to load and silently publish nothing from that
+  repository. Empty lists (`suites = []`) are still accepted.
+- Quitting the TUI right after opening a page no longer crashes on exit.
+
 ## [1.0.0]
 
 The first stable release. Upgrading from 0.10: if you synced in the TUI,

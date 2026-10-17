@@ -26,7 +26,7 @@ def collect_hostnames(network: NetworkConfig, cfg: Config) -> list[str]:
     """Return sorted unique hostnames the network serves: the host of every
     unit whose provider serves a static block per `mirror_base`, plus every
     provider's certificate names (changelogs.ubuntu.com for a dist-upgrade
-    network; VS Code's six, two of them wildcards)."""
+    network; VS Code's seven, two of them wildcards)."""
     selected_mirrors = network_mirrors(network, cfg, cfg.settings.mirror_dir)
     mirror_map = {m.name: m for m in selected_mirrors}
     selected = list(mirror_map)

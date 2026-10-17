@@ -117,7 +117,7 @@ Under the network `root`:
 | `vscode-gallery/gallery.py`, `compose.yaml` | The gallery service and how to run it |
 | `vscode-gallery/python-3.13-slim-linux-amd64.tar` | The container image, for a far side with no registry |
 | `vscode-gallery/VSCODE.md` | This network's far-side steps, with its own port |
-| `nginx/mirror.conf` | Server blocks for every hostname, VS Code's six included |
+| `nginx/mirror.conf` | Server blocks for every hostname, VS Code's seven included |
 
 `mmw bundle` carries the same tree. A delta bundle carries only what changed —
 the image tar travels again only when the image itself changed — and

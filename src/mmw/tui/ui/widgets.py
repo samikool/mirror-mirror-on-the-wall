@@ -108,7 +108,11 @@ class ThemedLog(RichLog):
         return super().write(content, *args, **kwargs)
 
     def _resolve(self, text: str) -> str:
-        variables = self.app.get_css_variables()
+        # Once per theme, not per line: a busy transfer writes thousands.
+        if getattr(self, "_vars_theme", None) != self.app.theme:
+            self._vars = self.app.get_css_variables()
+            self._vars_theme = self.app.theme
+        variables = self._vars
 
         def tag(m: re.Match) -> str:
             inner = _VARIABLE.sub(lambda v: variables.get(v.group(1), v.group(0)), m.group(1))

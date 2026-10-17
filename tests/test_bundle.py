@@ -78,7 +78,9 @@ def test_bundle_matches_publish_exactly(seeded, tmp_path):
     applied = tmp_path / "applied"
     _extract(result.out_path, applied)
 
-    published = _tree(pub_root)
+    # `.mmw/` holds each side's own control files — the bundle's members and
+    # the publish's record (compared by row in test_deployment_parity).
+    published = {k: v for k, v in _tree(pub_root).items() if not k.startswith(".mmw/")}
     bundled = {k: v for k, v in _tree(applied).items() if not k.startswith(".mmw/")}
 
     # nginx/ conf embeds the literal serving root, which a live publish knows
@@ -415,7 +417,7 @@ def test_bundle_matches_publish_across_two_rounds(seeded, tmp_path):
         check=True,
     )
 
-    published = _tree(pub_root)
+    published = {k: v for k, v in _tree(pub_root).items() if not k.startswith(".mmw")}
     applied = {k: v for k, v in _tree(dest).items() if not k.startswith(".mmw")}
 
     # nginx/ is already substituted in place by apply.py on both sides, but

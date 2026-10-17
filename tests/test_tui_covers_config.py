@@ -19,6 +19,7 @@ EDITORS = {
     ("Settings", "mirror_dir"): ("sections/settings.py", "settings-mirror-dir"),
     ("Settings", "max_connections"): ("sections/settings.py", "settings-max-connections"),
     ("Settings", "theme"): ("sections/settings.py", "settings-theme"),
+    ("Settings", "database"): ("sections/settings.py", "settings-database"),
 
     ("SourceConfig", "url"): ("source_screens.py", "edit-source-url"),
     ("SourceConfig", "provider"): ("source_screens.py", "edit-source-provider"),

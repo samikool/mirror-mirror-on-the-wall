@@ -47,6 +47,26 @@ class TransferKind:
 # A bundle group has no destination-scan file count to bound a per-mirror bar
 # against ahead of time, so it shows a running "N considered" count instead.
 PUBLISH = TransferKind("Publishing", "Published", "linked", True, "pub")
+
+# Per-file lines (linked, pruned) written per refresh. A 1M-file publish
+# queued one per file — far more than anyone reads, and the log's rendering
+# cost; the counters carry the totals. Other lines are never capped.
+_LOG_LINES_PER_TICK = 50
+_FILE_LINE_PREFIXES = ("  [$mmw-ok]→[/] ", "  [$mmw-error]✂[/] ")
+
+
+def _cap_file_lines(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    files = 0
+    for line in lines:
+        if line.startswith(_FILE_LINE_PREFIXES):
+            files += 1
+            if files > _LOG_LINES_PER_TICK:
+                continue
+        out.append(line)
+    if files > _LOG_LINES_PER_TICK:
+        out.append(f"  [dim]… {files - _LOG_LINES_PER_TICK:,} more[/]")
+    return out
 BUNDLE = TransferKind("Bundling", "Bundled", "sent", False, "bun")
 
 
@@ -420,7 +440,11 @@ class TransferView(Vertical):
         parts = dst.split("/")
         short = "/".join(parts[-4:]) if len(parts) >= 4 else dst
         with self._lock:
-            if status.startswith("nginx-image:"):
+            if status.startswith("db-warm:"):
+                message = status.split(":", 1)[1]
+                self._phase = message if message.endswith("…") else ""
+                self._log_pending.append(f"  [dim]# {escape(message)}[/]")
+            elif status.startswith("nginx-image:"):
                 from mmw.core.publisher.nginx_container import IMAGE
                 phase = status.split(":", 1)[1]
                 self._phase = "" if phase == "done" else f"Nginx image · {IMAGE} · {phase}"
@@ -543,7 +567,7 @@ class TransferView(Vertical):
             pruned = self._pruned
             mirror_linked = self._mirror_linked
             mirror_skipped = self._mirror_skipped
-            pending = self._log_pending[:]
+            pending = _cap_file_lines(self._log_pending)
             self._log_pending.clear()
             mirror_change = self._pending_mirror_change
             self._pending_mirror_change = None

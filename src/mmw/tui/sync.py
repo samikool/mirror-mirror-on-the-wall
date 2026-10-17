@@ -639,6 +639,10 @@ class SyncView(Vertical):
 
         def _open() -> Pool:
             mirror_dir.mkdir(parents=True, exist_ok=True)
+            from mmw.core.db_warm import warm_for_job
+            warmed = warm_for_job(mirror_dir)
+            if warmed.status in ("warmed", "too-big"):
+                self.app.call_from_thread(self.notify, warmed.message, timeout=6)
             return Pool(mirror_dir)
 
         try:

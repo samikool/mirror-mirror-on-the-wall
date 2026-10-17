@@ -132,11 +132,17 @@ class MmwApp(ThemedApp):
             return
         await asyncio.to_thread(config.save, candidate, self.cfg_dir)
         self.cfg = candidate
+        from mmw.core.pool import register_database
+        register_database(candidate.settings.mirror_dir, candidate.settings.database)
 
     async def _write_settings(self, **changes: object) -> None:
         """Caller holds `_save_lock`."""
-        await self._write_config(lambda c: c.model_copy(
-            update={"settings": c.settings.model_copy(update=changes)}))
+        def change(c: config.Config) -> config.Config:
+            settings = c.settings
+            if "mirror_dir" in changes and "database" not in changes:
+                settings = settings.with_mirror_dir(changes.pop("mirror_dir"))
+            return c.model_copy(update={"settings": settings.model_copy(update=changes)})
+        await self._write_config(change)
 
     async def action_section(self, mode: str) -> None:
         if self.cfg is None:

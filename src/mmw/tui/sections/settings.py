@@ -5,15 +5,17 @@ command palette's theme switcher (the app persists every theme change). The
 pool directory and download count apply on Save, because a half-typed path
 must never reach mmw.toml.
 """
+import asyncio
 from pathlib import Path
 
 from textual import on
+from textual.markup import escape
 from textual.app import ComposeResult
-from textual.widgets import Input, Select
+from textual.widgets import Input, Label, Select
 
 from mmw.tui.theme import ordered_theme_names
 from mmw.tui.ui.dialog import ConfirmDialog
-from mmw.tui.ui.form import ChoiceField, Form, PathField, TextField
+from mmw.tui.ui.form import ActionField, ChoiceField, Form, PathField, TextField
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
@@ -30,6 +32,12 @@ class SettingsPage(Page):
                 required=True, browse_title="Choose the pool directory",
                 hint="Where the pool, keys and certs live. Changing it moves nothing — "
                      "move the directory yourself, or the next sync starts an empty pool.",
+            ),
+            ActionField(
+                "Database", str(s.database), "Move…", id="settings-database",
+                summary_id="settings-database-path",
+                hint="The pool's index. On a fast disk, publish and verify stop waiting on "
+                     "the pool disk. Move… copies it there; edited by hand, move it yourself.",
             ),
             TextField(
                 "Parallel downloads", str(s.max_connections),
@@ -86,8 +94,49 @@ class SettingsPage(Page):
         except Exception as e:  # noqa: BLE001 — reported on the page
             self.set_status(f"Not saved: {e}", "error")
             return
+        self.query_one("#settings-database-path", Label).update(
+            escape(str(self.app.cfg.settings.database)))
         self.set_status("Saved." + (f" Pool directory is now {mirror_dir} — nothing was moved."
                                     if moved else ""), "ok")
+
+    @on(Button.Pressed, "#settings-database")
+    def _move_pressed(self) -> None:
+        self.start_flow(self._move_flow)
+
+    async def _move_flow(self) -> None:
+        from mmw.tui.path_pick import PathPickPage
+        db = Path(self.app.cfg.settings.database)
+        picked = await self.app.push_screen_wait(PathPickPage(
+            "Move the database", "Choose the directory to keep the pool database in",
+            start=str(db.parent), dirs_only=True))
+        if picked is None:
+            return
+        dest = Path(picked) / db.name
+        if not await self.app.push_screen_wait(ConfirmDialog(
+                "Move the database",
+                f"Copy the pool database to [b]{escape(str(dest))}[/b] and use it from "
+                "there? The old file is removed once the copy is checked.", "Move")):
+            return
+        await self._move_to(dest)
+
+    async def _move_to(self, dest: Path) -> None:
+        from mmw.core.database_move import DatabaseMoveError, move_database
+
+        def progress(done: int, total: int) -> None:
+            pct = done * 100 // total if total else 100
+            self.app.call_from_thread(self.set_status, f"Copying the database… {pct}%")
+        self.set_status("Moving the database…")
+        try:
+            await asyncio.to_thread(move_database, self.app.cfg_dir, self.app.cfg, dest,
+                                    progress=progress)
+        except DatabaseMoveError as e:
+            self.set_status(f"Database not moved: {e}", "error")
+            return
+        # mmw.toml already says so; adopt it through the one config writer.
+        await self.app.save_config(lambda c: c.model_copy(update={
+            "settings": c.settings.model_copy(update={"database": dest})}))
+        self.query_one("#settings-database-path", Label).update(escape(str(dest)))
+        self.set_status(f"Database moved to {dest}.", "ok")
 
     @on(Button.Pressed, "#btn-settings-reinit")
     def _reinit(self) -> None:

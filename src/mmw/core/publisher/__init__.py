@@ -10,7 +10,7 @@ Public API:
 from pathlib import Path
 
 from mmw.core.config import Config, NetworkConfig
-from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
+from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool, holds_shared_pool_lock
 
 from mmw.core.publisher.bundle import bundle_network, bundle_output_path
 from mmw.core.publisher.dist_upgrade import (
@@ -68,6 +68,7 @@ __all__ = [
 ]
 
 
+@holds_shared_pool_lock
 def publish_network(
     network: NetworkConfig,
     cfg: Config,
@@ -75,8 +76,13 @@ def publish_network(
     progress=None,
     stop_event=None,
     mirror_start_callback=None,
+    *,
+    full: bool = False,
 ) -> NetworkPublishResult:
     """Materialize all of a network's mirrors from the pool DB.
+
+    Trusts the tree's record of its last publish (`_open_record`) unless
+    `full`, which rechecks every file and rewrites the record.
 
     Mirrors are processed in groups sharing a mirror_base (apt component
     mirrors of one source URL publish as a unit); each group's destination is
@@ -94,8 +100,10 @@ def publish_network(
         return result
 
     _check_destination(network.root, mirror_dir)
+    warm_for_publish(mirror_dir, progress, stop_event)
     from mmw.core.publisher.deployment import prepare_tree
-    sink = TreeSink(network.root, progress=progress, stop_event=stop_event)
+    sink = TreeSink(network.root, progress=progress, stop_event=stop_event,
+                    prev=_open_record(network.root, network.name), full=full)
     try:
         with Pool(mirror_dir, read_only=True) as pool:
             walk_network(network, cfg, mirror_dir, sink, pool, result,
@@ -109,9 +117,44 @@ def publish_network(
     finally:
         sink.close()
     if not (stop_event and stop_event.is_set()):
+        _write_record(network.root, network.name, sink, result, full, network.prune)
         _record_published(mirror_dir, network.root, network.name, "live")
 
     return result
+
+
+def warm_for_publish(mirror_dir: Path, progress=None, stop_event=None) -> None:
+    """Warm the pool database (`db_warm`), reported through the sink progress
+    contract as a `db-warm:<message>` status."""
+    from mmw.core import db_warm
+    db_warm.warm_for_job(
+        mirror_dir, stop_event=stop_event,
+        say=(lambda message: progress("", f"db-warm:{message}")) if progress else None)
+
+
+def _open_record(root: Path, network: str) -> "dict[str, str] | None":
+    """The tree's record, removed before anything is written: a publish that
+    stops or fails partway must leave no record (the next one checks the
+    tree), never one claiming files a half-done prune already removed."""
+    from mmw.core.publisher.manifest import RECORD_PATH, read_record
+    prev = read_record(root, network)
+    (Path(root) / RECORD_PATH).unlink(missing_ok=True)
+    return prev
+
+
+def _write_record(root: Path, network: str, sink, result, full: bool,
+                  prune: bool = True) -> None:
+    """Record what this publish laid out — only when it finished cleanly, and
+    only when it pruned: without pruning, files dropped upstream stay in the
+    tree but not in the record, and a later pruning publish trusting it would
+    never remove them. That publish walks the tree instead."""
+    from mmw.core.publisher.manifest import (
+        RECORD_PATH, ManifestHeader, now_stamp, write_manifest,
+    )
+    if result.errors or sink.errors or not prune:
+        return
+    write_manifest(Path(root) / RECORD_PATH, ManifestHeader(network, now_stamp(), None, full),
+                   sorted(sink.manifest_rows))
 
 
 def _check_destination(root: Path, mirror_dir: Path) -> None:
@@ -163,6 +206,7 @@ def _snapshot_kind(rel: str) -> str:
     return KIND_PKG
 
 
+@holds_shared_pool_lock
 def publish_snapshot(
     network: NetworkConfig,
     cfg: Config,
@@ -173,6 +217,7 @@ def publish_snapshot(
     progress=None,
     stop_event=None,
     mirror_start_callback=None,
+    full: bool = False,
 ) -> NetworkPublishResult:
     """Lay snapshot `ref` (stamp, label or id) out at `root` (default: the
     network's root) exactly as it was — old packages come back, newer ones
@@ -190,6 +235,7 @@ def publish_snapshot(
     if root is None:
         raise ValueError(f"network '{network.name}' has no publish root — pass a directory")
     _check_destination(root, mirror_dir)
+    warm_for_publish(mirror_dir, progress, stop_event)
     with Pool(mirror_dir, read_only=True) as pool:
         snap = find_snapshot(pool, network.name, ref)
         if not snap.complete:
@@ -207,7 +253,8 @@ def publish_snapshot(
         live: dict[str, set[str]] = {b: set() for b in bases}
         deferred: dict[str, list] = {KIND_META: [], KIND_RELEASE: []}
 
-        sink = TreeSink(root, progress=progress, stop_event=stop_event)
+        sink = TreeSink(root, progress=progress, stop_event=stop_event,
+                        prev=_open_record(root, network.name), full=full)
         try:
             def place(row, base):
                 rel, checksum, pool_path, size = row
@@ -287,6 +334,7 @@ def publish_snapshot(
     if other.total_files or other.errors:
         result.mirrors.append(other)
     if not (stop_event and stop_event.is_set()):
+        _write_record(root, network.name, sink, result, full, network.prune)
         _record_published(mirror_dir, root, network.name, snap.stamp)
     return result
 

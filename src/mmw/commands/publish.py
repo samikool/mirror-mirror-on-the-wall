@@ -19,19 +19,22 @@ from mmw.commands.common import eprint, interruptible, load_config_or_none, pref
 # silently defeating the patch.
 from mmw.core.format import fmt_size
 from mmw.core.publisher import dry_run_network, publish_network, publish_snapshot
+from mmw.core.snapshots import take_snapshot as make_snapshot
 from mmw.commands.certs import generate_for
 
 
 @interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = False,
         allow_incomplete: bool = False, snapshot: str | None = None,
-        root: Path | None = None) -> int:
+        root: Path | None = None, full: bool = False, take_snapshot: bool = False) -> int:
     """Publish one or all configured networks. Returns a process exit code.
 
     `snapshot`: publish that snapshot (stamp, label or id) instead of the
     live state ("live" is the live state). `root`: into this directory
     instead of the network's root — its nginx config points there, with the
-    same hostnames, so it needs its own address."""
+    same hostnames, so it needs its own address. `full`: ignore the tree's
+    record and recheck every file. `take_snapshot`: snapshot the network
+    first — publish never does on its own."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
@@ -42,6 +45,12 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         return 1
     if snapshot and dry_run:
         eprint("--dry-run estimates the live state only — drop --snapshot.")
+        return 1
+    if take_snapshot and snapshot:
+        eprint("--take-snapshot: nothing to snapshot — you are publishing an existing snapshot.")
+        return 1
+    if take_snapshot and dry_run:
+        eprint("--take-snapshot writes a snapshot; --dry-run writes nothing — drop one.")
         return 1
 
     networks = cfg.networks
@@ -95,11 +104,14 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         try:
             if snapshot:
                 result = publish_snapshot(net, cfg, cfg.settings.mirror_dir, snapshot,
-                                          root=net.root)
+                                          root=net.root, full=full)
             elif dry_run:
                 result = dry_run_network(net, cfg, cfg.settings.mirror_dir)
             else:
-                result = publish_network(net, cfg, cfg.settings.mirror_dir)
+                if take_snapshot:
+                    taken = make_snapshot(net, cfg, cfg.settings.mirror_dir)
+                    print(f"  snapshot {taken.stamp} taken")
+                result = publish_network(net, cfg, cfg.settings.mirror_dir, full=full)
         except Exception as e:
             # Caught here, not left to propagate: an uncaught exception used
             # to abort the whole invocation, so a network that broke halfway

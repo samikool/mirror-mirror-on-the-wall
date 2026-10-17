@@ -658,6 +658,27 @@ class Settings(_StrictModel):
     # forever, and a `ThreadPoolExecutor(0)` that refused to start.
     max_connections: int = Field(default=os.cpu_count() or 10, ge=1)
     theme: str = DEFAULT_THEME
+    # The pool database file. Default: where it has always been, inside the
+    # pool. A fast disk here keeps listings off a slow pool disk; `.pool/tmp`
+    # and `.pool/packages` stay with the pool. Hand-edited: move the file
+    # (and its -wal/-shm) yourself — mmw only opens it here.
+    database: Path | None = None
+
+    @model_validator(mode="after")
+    def _database_defaults_to_the_pool(self):
+        if self.database is None:
+            from mmw.core.pool import default_database
+            self.database = default_database(self.mirror_dir)
+        return self
+
+    def with_mirror_dir(self, mirror_dir: Path) -> "Settings":
+        """A new pool directory; a database at the old default follows it,
+        one placed elsewhere stays."""
+        from mmw.core.pool import default_database
+        database = self.database
+        if database == default_database(self.mirror_dir):
+            database = default_database(mirror_dir)
+        return self.model_copy(update={"mirror_dir": mirror_dir, "database": database})
 
 
 class NetworkSelect(_StrictModel):
@@ -1097,7 +1118,10 @@ def load(directory: Path = Path(".")) -> Config:
         raise FileNotFoundError(f"No config found at {path}. Run `mmw init` first.")
     with open(path, "rb") as f:
         data = tomllib.load(f)
-    return Config.model_validate(data)
+    cfg = Config.model_validate(data)
+    from mmw.core.pool import register_database
+    register_database(cfg.settings.mirror_dir, cfg.settings.database)
+    return cfg
 
 
 def delete(directory: Path = Path(".")) -> None:
@@ -1178,7 +1202,8 @@ def rename_network_state(mirror_dir: Path, old: str, new: str) -> list[str]:
     reported. Returns one line per thing it could not do.
     """
     problems: list[str] = []
-    if (mirror_dir / ".pool" / "mmw.db").exists():
+    from mmw.core.pool import database_path
+    if database_path(mirror_dir).exists():
         from mmw.core.pool import Pool
         try:
             with Pool(mirror_dir) as pool:
@@ -1235,6 +1260,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
     data = {
         "settings": {
             "mirror_dir": str(cfg.settings.mirror_dir),
+            "database": str(cfg.settings.database),
             "max_connections": cfg.settings.max_connections,
             # Omitted at the default, like the network flags above: a
             # hand-edited file should only say what was actually chosen.

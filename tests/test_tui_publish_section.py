@@ -150,7 +150,7 @@ def slow_publish(monkeypatch):
     import mmw.core.publisher as publisher
     release = threading.Event()
 
-    def slow(net, cfg, mirror_dir, record, stop_event, notify_mirror_start):
+    def slow(net, cfg, mirror_dir, record, stop_event, notify_mirror_start, **_kw):
         while not (release.is_set() or stop_event.is_set()):
             stop_event.wait(0.02)
         from mmw.core.publisher import NetworkPublishResult

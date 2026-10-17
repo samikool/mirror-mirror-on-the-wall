@@ -108,7 +108,7 @@ def test_a_mixed_network_leaves_apt_byte_identical(tmp_path, up, docker):  # noq
     publish_network(config.NetworkConfig(name="lab", root=mixed), mixed_cfg, mirror_dir)
     for f in only_apt.rglob("*"):
         rel = f.relative_to(only_apt)
-        if f.is_file() and rel.parts[0] != "nginx":
+        if f.is_file() and rel.parts[0] not in ("nginx", ".mmw"):
             assert (mixed / rel).read_bytes() == f.read_bytes(), rel
     apt_conf = (only_apt / "nginx/mirror.conf").read_text().replace(str(only_apt), "R")
     mixed_conf = (mixed / "nginx/mirror.conf").read_text().replace(str(mixed), "R")

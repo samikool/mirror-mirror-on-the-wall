@@ -119,6 +119,8 @@ def preflight_ok(verb: str, net, cfg, mirror_dir: Path, allow_incomplete: bool,
     refusing to even estimate would withhold the very report that tells the
     operator what to sync. It still prints every problem it found.
     """
+    from mmw.core.db_warm import warm_for_job
+    warm_for_job(mirror_dir, say=lambda message: print(f"  {message}"))
     try:
         problems = incomplete_mirrors(net, cfg, mirror_dir)
     except Exception as e:

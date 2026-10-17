@@ -150,3 +150,28 @@ def delta(prev: dict[str, str], cur: dict[str, str]) -> tuple[set[str], set[str]
     send = {rel for rel, cs in cur.items() if prev.get(rel) != cs}
     dele = {rel for rel in prev if rel not in cur}
     return send, dele
+
+
+# What a destination was last given: a publish writes it into its tree, and
+# apply.py into the tree a bundle lands in — the bundle manifest's own name.
+RECORD_PATH = ".mmw/manifest.jsonl"
+
+
+def unchanged(prev: dict[str, str] | None, rel: str, checksum: str, full: bool) -> bool:
+    """Whether a destination already holds `rel` at `checksum` — the one rule
+    both sinks decide "skip" by. An empty checksum is never trusted."""
+    return not full and bool(checksum) and prev is not None and prev.get(rel) == checksum
+
+
+def read_record(root: Path, network: str) -> dict[str, str] | None:
+    """The tree's record, or None: absent, unreadable, or another network's
+    (a reused root must not be trusted on a stranger's word)."""
+    path = Path(root) / RECORD_PATH
+    try:
+        header, rows = iter_manifest(path)
+        if header.network != network:
+            rows.close()
+            return None
+        return dict(rows)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None

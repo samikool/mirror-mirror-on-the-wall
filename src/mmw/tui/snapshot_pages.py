@@ -21,7 +21,7 @@ from mmw.core.pool import Pool, SnapshotInfo
 from mmw.core.snapshots import SnapshotStatus
 from mmw.tui.publish_flows import BundleChoice, PublishChoice
 from mmw.tui.ui.dialog import ConfirmDialog
-from mmw.tui.ui.form import ChoiceField, Form, PathField, TextField
+from mmw.tui.ui.form import ChoiceField, Form, PathField, TextField, ToggleField
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
@@ -66,6 +66,12 @@ class PublishPickPage(Page):
                              "serve it on its own address."),
             PathField("Directory", "", id="pick-root", browse_title="Publish into",
                       hint="Created if missing."),
+            ToggleField("Recheck every file", False, id="publish-full",
+                        hint="Ignore the record of the last publish (--full) — slow; for a "
+                             "tree edited by hand."),
+            ToggleField("Snapshot first", False, id="publish-take-snapshot",
+                        hint="Take a snapshot of the network before publishing "
+                             "(--take-snapshot). Publish never takes one on its own."),
             id="pick-form")
         serving = self._status.serving
         if serving is not None:
@@ -100,7 +106,13 @@ class PublishPickPage(Page):
                 return
             root = Path(values["pick-root"]).expanduser()
         target = values["pick-target"]
-        self.dismiss(PublishChoice(snapshot=None if target == "live" else target, root=root))
+        if values["publish-take-snapshot"] and target != "live":
+            self.set_status("Snapshot first: nothing to snapshot — you are publishing an "
+                            "existing snapshot.", "error")
+            return
+        self.dismiss(PublishChoice(snapshot=None if target == "live" else target, root=root,
+                                   full=values["publish-full"],
+                                   take_snapshot=values["publish-take-snapshot"]))
 
 
 class BundlePickPage(Page):

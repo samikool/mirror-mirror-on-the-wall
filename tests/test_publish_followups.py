@@ -112,7 +112,7 @@ def test_networks_detail_refreshes_when_a_transfer_ends_while_shown(two_mirrors,
     cfg, net, mirror_dir = two_mirrors
     release = threading.Event()
 
-    def held(net, cfg, md, record, stop_event, cb):
+    def held(net, cfg, md, record, stop_event, cb, **_kw):
         release.wait(60)          # released by the test; the cap only stops a hang
         return publisher.NetworkPublishResult(network_name=net.name)
     monkeypatch.setattr(publisher, "publish_network", held)
@@ -144,7 +144,7 @@ def test_x_asks_to_stop_and_the_button_is_disabled_once_confirmed(two_mirrors, m
     cfg, net, mirror_dir = two_mirrors
     release = threading.Event()
 
-    def held(net, cfg, md, record, stop_event, cb):
+    def held(net, cfg, md, record, stop_event, cb, **_kw):
         while not (release.is_set() or stop_event.is_set()):
             stop_event.wait(0.02)
         return publisher.NetworkPublishResult(network_name=net.name)

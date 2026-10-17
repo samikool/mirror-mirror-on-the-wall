@@ -196,3 +196,24 @@ def test_pool_directory_can_be_browsed(tmp_path):
         await _settle(pilot)
         assert app.screen.query_one("#settings-mirror-dir", Input).value == str(tmp_path / "pools" / "big")
     _run(tmp_path, check)
+
+
+def test_move_copies_the_database_and_shows_the_new_path(tmp_path):
+    import hashlib
+
+    from mmw.core.pool import Pool
+    md = tmp_path / "pool"
+    with Pool(md, defer_writes=False) as pool:
+        pool.add(b"x", hashlib.sha256(b"x").hexdigest(), "sha256", "x.deb", 1)
+    cfg = config.Config(settings=config.Settings(mirror_dir=md))
+    config.save(cfg, tmp_path)
+    dest = tmp_path / "fast" / "mmw.db"
+
+    async def check(app, pilot):
+        await app.screen._move_to(dest)
+        await settle(pilot)
+        assert app.cfg.settings.database == dest
+        assert str(dest) in str(app.screen.query_one("#settings-database-path").render())
+        assert dest.exists() and not (md / ".pool" / "mmw.db").exists()
+    _run(tmp_path, check, cfg)
+    assert config.load(tmp_path).settings.database == dest

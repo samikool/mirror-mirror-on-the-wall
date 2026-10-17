@@ -59,6 +59,8 @@ class PublishChoice:
     snapshot: str | None = None
     root: Path | None = None
     allow_incomplete: bool = False
+    full: bool = False              # ignore the tree's record; recheck every file
+    take_snapshot: bool = False     # snapshot the network first (live publishes only)
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,11 @@ class PublishFlows:
         def stopped() -> bool:
             return stop is not None and stop.is_set()
 
+        from mmw.core.db_warm import warm_for_job
+        record = getattr(view, "record", None)
+        await asyncio.to_thread(lambda: warm_for_job(
+            mirror_dir, stop_event=stop,
+            say=(lambda message: record("", f"db-warm:{message}")) if record else None))
         pool = await asyncio.to_thread(lambda: Pool(mirror_dir, read_only=True))
         with pool:
             # ── Phase 1: verify ───────────────────────────────────────
@@ -235,8 +242,8 @@ class PublishFlows:
         if choice.snapshot is not None:
             # A snapshot's files are checked by publish_snapshot itself: the
             # verify below is about the live state's refs.
-            await self._guarded(view, "Publish",
-                                lambda: self._execute_snapshot_publish(net, choice.snapshot, view))
+            await self._guarded(view, "Publish", lambda: self._execute_snapshot_publish(
+                net, choice.snapshot, view, full=choice.full))
             return
 
         async def flow():
@@ -251,7 +258,11 @@ class PublishFlows:
                 self._allow_incomplete(view)
             if self._ends_early(verify_results, view):
                 return
-            await self._execute_publish(net, per_mirror, view)
+            if choice.take_snapshot:
+                from mmw.core.snapshots import take_snapshot
+                taken = await asyncio.to_thread(take_snapshot, net, self.cfg(), mirror_dir)
+                view.write(f"  [dim]# snapshot {escape(taken.stamp)} taken[/]")
+            await self._execute_publish(net, per_mirror, view, full=choice.full)
         await self._guarded(view, "Publish", flow)
 
     async def dry_run(self, net: "config.NetworkConfig", view) -> None:
@@ -320,15 +331,14 @@ class PublishFlows:
             view.mark_done(None)
 
     async def _execute_publish(self, net: "config.NetworkConfig", per_mirror: dict[str, int],
-                               view) -> None:
-        from mmw.core.publisher import publish_network
+                               view, *, full: bool = False) -> None:
+        from mmw.core import publisher
 
         view.begin(sum(per_mirror.values()), per_mirror)
         try:
-            result = await asyncio.to_thread(
-                publish_network, net, self.cfg(), self.cfg().settings.mirror_dir,
-                view.record, view.stop_event, view.notify_mirror_start,
-            )
+            result = await asyncio.to_thread(lambda: publisher.publish_network(
+                net, self.cfg(), self.cfg().settings.mirror_dir,
+                view.record, view.stop_event, view.notify_mirror_start, full=full))
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return
@@ -353,7 +363,7 @@ class PublishFlows:
             view.write(f"  [dim]#   {escape(str(path))}[/]")
 
     async def _execute_snapshot_publish(self, net: "config.NetworkConfig", stamp: str,
-                                        view) -> None:
+                                        view, *, full: bool = False) -> None:
         from mmw.core.pool import Pool
         from mmw.core.publisher import publish_snapshot
 
@@ -366,7 +376,7 @@ class PublishFlows:
                 lambda: publish_snapshot(
                     net, self.cfg(), self.cfg().settings.mirror_dir, stamp,
                     progress=view.record, stop_event=view.stop_event,
-                    mirror_start_callback=view.notify_mirror_start))
+                    mirror_start_callback=view.notify_mirror_start, full=full))
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return

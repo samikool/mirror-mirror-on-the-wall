@@ -404,7 +404,8 @@ def walk_network(
             # Each provider counts its own groups; carry the count across so a
             # mixed network's progress runs on (apt 1–3/3, then VS Code 4/7…).
             ctx.mirror_start_callback = (
-                lambda off: lambda name, i, n: mirror_start_callback(name, off + i, off + n)
+                lambda off: lambda name, i, n, **kw: mirror_start_callback(
+                    name, off + i, off + n, **kw)
             )(started)
         group_results, bases = provider.publish(ctx, mine)
         started += len(group_results)

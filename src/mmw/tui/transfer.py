@@ -423,9 +423,12 @@ class TransferView(Vertical):
             self._transfer_done = True
             self._note = note
 
-    def notify_mirror_start(self, name: str, index: int, total_mirrors: int) -> None:
-        """Called from the transfer thread when a new mirror/group begins."""
-        file_count = self._per_mirror_counts.get(name, 0)
+    def notify_mirror_start(self, name: str, index: int, total_mirrors: int,
+                            count: int | None = None) -> None:
+        """Called from the transfer thread when a new mirror/group begins.
+        `count`: its file count, from a publisher whose groups are not the
+        mirrors the pre-publish counts are keyed by (VS Code's hosts)."""
+        file_count = self._per_mirror_counts.get(name, 0) if count is None else count
         with self._lock:
             self._pending_mirror_change = (name, index, total_mirrors, file_count)
             self._mirror_linked = 0
@@ -785,6 +788,12 @@ class TransferView(Vertical):
                    f"  [b $mmw-ok]✓ {self.VERB_PAST}[/]  {name}"),
         }[outcome]
         self.query_one(f"#{p}-title-bar", Static).update(title)
+        # A bar that never learned its total animates on its own, ticker or
+        # not: a finished panel must not look like it is still working.
+        for bar in self.query(ProgressBar):
+            if bar.total is None:
+                bar.total = 1
+                bar.progress = 1 if outcome == "ok" else 0
         if outcome == "error":
             self.query_one(f"#{p}-log", ThemedLog).write(
                 f"  [$mmw-error]✗ {escape(self._error_msg)}[/]")

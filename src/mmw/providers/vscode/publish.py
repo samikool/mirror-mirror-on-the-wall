@@ -48,7 +48,30 @@ def _extension_meta(pool, units) -> list[tuple[str, str, str, str]]:
     return rows
 
 
-def _catalog_from(rows, bodies) -> list[dict]:
+STATISTICS = ".vscode-meta/statistics/"     # + {platform}.json: {id: statistics}
+
+
+def _statistics_rows(pool, units) -> list[tuple[str, str, str, str]]:
+    """(unit, rel, pool path, checksum) of every extension unit's statistics
+    file. Installs and ratings move daily; kept out of the descriptions, they
+    no longer make a sync rewrite most of 120k JSONs."""
+    return [(unit.name, rel, path, checksum) for unit in units
+            if unit.dims.get("kind") == "extensions"
+            for rel, path, _, _, checksum in pool.mirror_files([unit.name], prefix=STATISTICS)]
+
+
+def _read_statistics(rows) -> dict:
+    """{id: statistics} from those files, merged."""
+    merged: dict = {}
+    for _, _, path, _ in rows:
+        try:
+            merged.update(json.loads(Path(path).read_bytes()))
+        except (OSError, ValueError):
+            continue                # a description's own statistics stand in
+    return merged
+
+
+def _catalog_from(rows, bodies, statistics=None) -> list[dict]:
     merged: dict[str, dict] = {}
     for _, _, path, _ in rows:
         try:
@@ -63,8 +86,10 @@ def _catalog_from(rows, bodies) -> list[dict]:
         for v in obj.get("versions", []):
             if (v.get("version"), v.get("targetPlatform")) not in seen:
                 cur["versions"].append(v)
-    for obj in merged.values():
+    for key, obj in merged.items():
         obj["versions"].sort(key=_version_key, reverse=True)
+        if statistics and key in statistics:
+            obj["statistics"] = statistics[key]
     return [merged[k] for k in sorted(merged)]
 
 
@@ -73,7 +98,8 @@ def catalog(pool, units) -> list[dict]:
     selected platform's, newest first, each (version, platform) once."""
     from mmw.core.bulk_read import read_all
     rows = _extension_meta(pool, units)
-    return _catalog_from(rows, read_all(path for _, _, path, _ in rows))
+    return _catalog_from(rows, read_all(path for _, _, path, _ in rows),
+                         _read_statistics(_statistics_rows(pool, units)))
 
 
 # A catalog is a function of its metadata's checksums and of this file's code,
@@ -118,8 +144,9 @@ def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
     if say:
         say("checking the extension catalog…")
     rows = _extension_meta(pool, units)
+    stats_rows = _statistics_rows(pool, units)
     digest = hashlib.sha256(_CODE.encode())
-    for unit_name, rel, _, checksum in rows:
+    for unit_name, rel, _, checksum in rows + stats_rows:
         digest.update(f"{unit_name}\0{rel}\0{checksum}\n".encode())
     key = digest.hexdigest()[:32]
     data_path, hosts_path = cache_dir / f"catalog-{key}.json", cache_dir / f"catalog-{key}.hosts"
@@ -144,7 +171,8 @@ def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
         if isinstance(body, bytes):
             by_checksum[checksum] = body
     catalogue = _catalog_from(rows, {path: by_checksum.get(checksum)
-                                     for _, _, path, checksum in rows})
+                                     for _, _, path, checksum in rows},
+                              _read_statistics(stats_rows))
     data, hosts = json.dumps(catalogue, sort_keys=True).encode(), publisher_hosts(catalogue)
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)

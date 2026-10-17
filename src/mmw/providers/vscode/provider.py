@@ -491,6 +491,7 @@ class VscodeProvider(BaseProvider):
         packages: list[PackageInfo] = []
         metadata: list[MetadataFile] = []
         refused: list[str] = []
+        statistics: dict = {}
         for ident in sorted(catalog):
             versions = self._unit_versions(catalog[ident], unit, prerelease)
             if not versions:
@@ -509,8 +510,14 @@ class VscodeProvider(BaseProvider):
                         item_id=ident))
             stored = copy.deepcopy(ext)
             stored["versions"] = versions
+            # One file for every extension's stats (see vpub.STATISTICS): in
+            # the description they changed it, and its checksum, every sync.
+            if "statistics" in stored:
+                statistics[ident] = stored.pop("statistics")
             metadata.append(_json_meta(
                 f".vscode-meta/extensions/{platform or 'universal'}/{ident}.json", stored))
+        metadata.append(_json_meta(
+            f"{vpub.STATISTICS}{platform or 'universal'}.json", statistics))
         if refused and say:
             say(f"refused {len(refused)} asset URL(s) that cannot be mirrored at their own path")
         if platform is None:
@@ -628,7 +635,9 @@ class VscodeProvider(BaseProvider):
         result.timings["lookup"] = perf_counter() - started
         started = perf_counter()
         expected: set[str] = set()
-        metas = sorted(p for p in refs if p.startswith(".vscode-meta/"))
+        # The statistics file names no files: nothing to read it for.
+        metas = sorted(p for p in refs if p.startswith(".vscode-meta/")
+                       and not p.startswith(vpub.STATISTICS))
         # What a JSON names is fixed by its checksum: only metadata not seen
         # by an earlier check is read (a mirror's 120k JSONs, otherwise, on
         # every publish). Each named file is still checked against the pool.

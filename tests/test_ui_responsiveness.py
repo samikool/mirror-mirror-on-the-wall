@@ -71,12 +71,13 @@ def test_classify_never_stalls_the_event_loop(tmp_path, seed_pool):
             ex.shutdown(wait=False)
         return max(gaps) if gaps else 0.0
 
-    # Best of three: a loaded CI box can add scheduling noise to any one run,
-    # but a real regression is slow in every run. Measured on this code the
+    # Best of five: a loaded box (the parallel suite, CI) can add scheduling
+    # noise to any one run — three still failed now and then under `-n auto`
+    # — but a real regression is slow in every run. Measured on this code the
     # worst gap is 58-70 ms; with the yield in the wrong branch it was 150-246 ms.
     # The residual is GIL contention from batch_contains in the executor, not
     # the classify loop itself.
-    worst = min(asyncio.run(scenario()) for _ in range(3))
+    worst = min(asyncio.run(scenario()) for _ in range(5))
     pool.close()
     assert worst < 0.12, f"event loop stalled {worst * 1000:.0f} ms during classify"
 

@@ -6,20 +6,6 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-
-- Published trees and bundles carry the same deployable files, including
-  top-level apply/signing scripts and portable private TLS assets. Publish
-  snapshots remain manual; bundling current content still snapshots it
-  automatically.
-
-### Added
-
-- Nginx-enabled networks include the official `nginx:latest` amd64 Docker
-  image, an offline Compose setup, and network-specific instructions in
-  publish outputs and bundles. Container paths are fixed at `/srv/mmw`;
-  image exports are cached and frozen in snapshots.
-
 ## [1.0.0]
 
 The first stable release. Upgrading from 0.10: if you synced in the TUI,

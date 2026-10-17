@@ -90,6 +90,28 @@ _STATIC_BODY = """
     }}
 """
 
+# `add_header` inside `if` replaces the location's, so the preflight answer
+# carries its own copy of the origin header.
+_CORS_STATIC_BODY = """
+    root {root}/{dir};
+    autoindex on;
+    autoindex_exact_size off;
+    sendfile on;
+    tcp_nopush on;
+
+    location / {{
+        if ($request_method = OPTIONS) {{
+            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "$http_access_control_request_headers" always;
+            add_header Access-Control-Max-Age 86400 always;
+            return 204;
+        }}
+        add_header Access-Control-Allow-Origin "*" always;
+        try_files $uri $uri/ =404;
+    }}
+"""
+
 _PROXY_BODY = """
     location {eq}{path} {{
         proxy_pass http://{proxy_host}:{port};
@@ -102,7 +124,7 @@ _PROXY_BODY = """
 def _render_site(site, root: str, tls_block: str, port: int, proxy_host: str) -> str:
     body = ""
     if site.root is not None:
-        body += _STATIC_BODY.format(root=root, dir=site.root)
+        body += (_CORS_STATIC_BODY if site.cors else _STATIC_BODY).format(root=root, dir=site.root)
     for path in site.proxy:
         body += _PROXY_BODY.format(eq="= " if site.exact else "", path=path, port=port, proxy_host=proxy_host)
     if site.root is None and "/" not in site.proxy:

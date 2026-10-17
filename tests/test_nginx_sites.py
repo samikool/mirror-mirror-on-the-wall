@@ -56,3 +56,15 @@ def test_the_dns_list_in_the_header_names_wildcards_not_regexes():
     assert "#   *.gallerycdn.vsassets.io\n" in header
     assert "#   update.code.visualstudio.com\n" in header
     assert "~^" not in header
+
+
+def test_a_cors_site_answers_the_preflight_and_marks_every_answer():
+    # VS Code's workbench fetches extension files cross-origin and preflights
+    # them; a static block's 405 fails the install.
+    text = _conf(sites=[Site(r"~^[^.]+\.gallerycdn\.vsassets\.io$", root="$host", cors=True),
+                        Site("a.example", root="a.example")])
+    cdn = text.split(r"server_name ~^[^.]+\.gallerycdn\.vsassets\.io$;")[1].split("\n}\n")[0]
+    assert "if ($request_method = OPTIONS) {" in cdn and "return 204;" in cdn
+    assert cdn.count('add_header Access-Control-Allow-Origin "*" always;') == 2
+    plain = text.split("server_name a.example;")[1].split("\n}\n")[0]
+    assert "Access-Control" not in plain

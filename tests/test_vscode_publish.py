@@ -79,6 +79,11 @@ def test_nginx_serves_static_hosts_and_proxies_the_rest(tmp_path, up, docker):  
     assert "  gallery:" in compose and "network_mode:" not in compose
     assert '"/path/to/lab/vscode-gallery:/data:ro"' in compose
     assert "server_name vscode.download.prss.microsoft.com;" in conf
+    # Every static VS Code host answers the workbench's cross-origin fetches.
+    for name in (r"~^[^.]+\.gallerycdn\.vsassets\.io$", "vscode.download.prss.microsoft.com",
+                 "main.vscode-cdn.net"):
+        block = conf.split(f"server_name {name};")[1].split("server {")[0]
+        assert "Access-Control-Allow-Origin" in block, name
 
 
 def test_certificate_names_include_the_wildcards(tmp_path, up, docker):  # noqa: F811

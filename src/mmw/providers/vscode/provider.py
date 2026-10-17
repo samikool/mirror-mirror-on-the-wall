@@ -366,8 +366,8 @@ class VscodeProvider(BaseProvider):
 
     def nginx_sites(self, units):
         return [
-            Site(r"~^[^.]+\.gallerycdn\.vsassets\.io$", root="$host"),
-            *[Site(h, root=h) for h in vpub.STATIC_HOSTS],
+            Site(r"~^[^.]+\.gallerycdn\.vsassets\.io$", root="$host", cors=True),
+            *[Site(h, root=h, cors=True) for h in vpub.STATIC_HOSTS],
             Site("update.code.visualstudio.com", proxy=("/",)),
             Site("code.visualstudio.com", proxy=("/",)),
             Site("marketplace.visualstudio.com",

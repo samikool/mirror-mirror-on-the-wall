@@ -101,11 +101,14 @@ class Site:
     """One nginx server block a provider needs beyond a static block per
     `mirror_base`. `server_name` is exact or `~regex`; `root` a directory under
     the publish root (`$host` allowed) served statically; `proxy` locations go
-    to the network's gallery (`/` = everything); `exact` = `location = …`."""
+    to the network's gallery (`/` = everything); `exact` = `location = …`;
+    `cors` = the static files are fetched cross-origin (VS Code's workbench),
+    so preflights are answered and every answer allows any origin."""
     server_name: str
     root: str | None = None
     proxy: tuple = ()
     exact: bool = False
+    cors: bool = False
 
 
 @dataclass

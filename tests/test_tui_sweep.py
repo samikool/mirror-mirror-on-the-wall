@@ -39,6 +39,8 @@ import asyncio
 import tempfile
 from pathlib import Path
 
+from waiting import settle
+
 from textual.app import ComposeResult
 
 from mmw.core import config
@@ -144,14 +146,19 @@ def _sweep(app_factory, label, size) -> list[str]:
         app = app_factory()
         async with app.run_test(size=size) as pilot:
             # Settle on a stable tree rather than a fixed pause count — see
-            # test_tui_geometry._settle for why.
+            # test_tui_geometry._settle for why. Background work first (a
+            # screen still filling in from a thread is not "stable" just
+            # because two frames matched), then several identical frames:
+            # under a loaded parallel run two came too soon, and the sweep
+            # reported a half-laid-out screen as clipped.
+            await settle(pilot)
             previous, stable = None, 0
-            for _ in range(40):
-                await pilot.pause()
+            for _ in range(200):
+                await pilot.pause(0.02)
                 current = [(w.size, w.virtual_size) for w in app.screen.query("*")]
                 stable = stable + 1 if current == previous else 0
                 previous = current
-                if stable >= 2:
+                if stable >= 5:
                     break
             for w in app.screen.query("*"):
                 complaint = _inspect(w)

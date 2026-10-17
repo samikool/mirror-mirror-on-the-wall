@@ -1,6 +1,6 @@
 """The rebuilt Networks section."""
 import asyncio
-from waiting import settle
+from waiting import settle, until
 
 from textual.widgets import Button, Input, ListView, SelectionList
 
@@ -109,15 +109,18 @@ def test_edit_rename_moves_state_and_the_list_follows(tmp_path, monkeypatch):
         lst.index = _names(app).index("lab")
         await _settle(pilot)
         await pilot.press("e")
-        await _settle(pilot, 8)          # not _done: the edit flow waits on this page
+        # Wait for the outcomes, not for quiet: the page push and the list
+        # refresh are UI messages `settle` cannot see, and under a loaded
+        # parallel run they can land after it returns.
+        await until(pilot, lambda: isinstance(app.screen, EditNetworkPage)
+                    and app.screen.query("#btn-save"))
         page = app.screen
-        assert isinstance(page, EditNetworkPage)
         page.query_one("#inp-net-name", Input).value = "lab2"
         page.query_one("#btn-save", Button).press()
-        await _done(app, pilot)
+        await until(pilot, lambda: moved == [("lab", "lab2")])
+        await until(pilot, lambda: not isinstance(app.screen, EditNetworkPage)
+                    and "lab2" in _names(app))
         assert sorted(n.name for n in config.load(tmp_path).networks) == ["dgx", "lab2"]
-        assert moved == [("lab", "lab2")]
-        assert "lab2" in _names(app)
     _run(tmp_path, check, monkeypatch=monkeypatch)
 
 

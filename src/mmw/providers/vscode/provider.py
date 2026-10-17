@@ -34,8 +34,13 @@ def _client() -> httpx.Client:
 
 
 MALICIOUS_URL = "https://main.vscode-cdn.net/extensions/marketplace.json"
-# The workbench's startup alerts. Upstream has one for stable only (insider 404s).
-ALERTS_URL = "https://main.vscode-cdn.net/core/stable.json"
+# What the stable workbench fetches from its CDN at startup: the alerts
+# (upstream has them for stable only; insider 404s), the chat participant
+# registry, profile templates and the MCP server list. Each 404 offline is a
+# logged warning; each is a few KB.
+WORKBENCH_URLS = tuple(f"https://main.vscode-cdn.net/{p}" for p in (
+    "core/stable.json", "extensions/chat.json", "core/profile-templates.json",
+    "mcp/servers.json"))
 IMAGE_CACHE = "vscode-gallery-image"      # under mirror_dir: the saved python image
 
 
@@ -413,7 +418,9 @@ class VscodeProvider(BaseProvider):
             Site("update.code.visualstudio.com", proxy=("/",)),
             Site("code.visualstudio.com", proxy=("/",)),
             Site("marketplace.visualstudio.com",
-                 proxy=("/", "/_apis/public/gallery/extensionquery"), exact=True),
+                 proxy=("/", "/_apis/public/gallery/extensionquery"), exact=True,
+                 # An installed extension's "is there a newer one?" check.
+                 proxy_prefixes=("/_apis/public/gallery/vscode/",)),
             Site(r"~^[^.]+\.gallery\.vsassets\.io$", proxy=("/",)),
         ]
 
@@ -554,8 +561,8 @@ class VscodeProvider(BaseProvider):
                 metadata.append(_json_meta(updates.meta_path(ident, quality, build["version"]),
                                            build))
         if kind == "desktop" and quality == "stable":
-            metadata.append(MetadataFile(url=ALERTS_URL, repo_path=asset_repo_path(ALERTS_URL),
-                                         is_release=True))
+            metadata.extend(MetadataFile(url=url, repo_path=asset_repo_path(url),
+                                         is_release=True) for url in WORKBENCH_URLS)
         return packages, metadata
 
     def repair_packages(self, unit, pool, *, status_callback=None, stop_event=None):

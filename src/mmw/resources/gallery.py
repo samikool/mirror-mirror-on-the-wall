@@ -14,6 +14,8 @@ nginx proxies to it the paths a static tree cannot answer:
                                                      where Linux's "Download Update" goes
   GET  /  on marketplace.visualstudio.com            every extension, linked to its VSIX
   GET  /_apis/public/gallery/publisher/…/assetbyname/{type}   fallback asset URL
+  GET  /_apis/public/gallery/vscode/{publisher}/{name}/latest  an installed
+                                                     extension's update check
   GET  /healthz
 
 Everything else — VSIX, installers, server builds — is a static file nginx
@@ -45,6 +47,7 @@ QUERY_PATH = "/_apis/public/gallery/extensionquery"
 _UPDATE = re.compile(r"^/api/update/([^/]+)/([^/]+)/([0-9a-fA-F]+)$")
 _COMMIT = re.compile(r"^/commit:([0-9a-fA-F]{40})/([^/]+)/([^/]+)$")
 _LATEST = re.compile(r"^/latest/([^/]+)/([^/]+)$")
+_EXTENSION_LATEST = re.compile(r"^/_apis/public/gallery/vscode/([^/]+)/([^/]+)/latest$")
 DOWNLOAD_HOST = "code.visualstudio.com"
 DOWNLOAD_PAGES = ("/", "/Download", "/download")
 LIST_HOST = "marketplace.visualstudio.com"
@@ -77,6 +80,7 @@ class Store:
     def __init__(self, data_dir: str):
         self.dir = data_dir
         self.extensions: list = []
+        self.by_id: dict = {}           # "publisher.name" → its catalog entry
         self.updates: dict = {}
         self.healthy = False
         self._mtimes: dict = {}
@@ -109,6 +113,7 @@ class Store:
                     continue
                 if name == "catalog.json":
                     self.extensions = data
+                    self.by_id = {ident(e): e for e in data}
                 else:
                     self.updates = data
                 self._mtimes[name] = m
@@ -340,6 +345,14 @@ class Handler(BaseHTTPRequestHandler):
             if not build:
                 return self._send(404)
             return self._send(302, headers={"Location": build["url"]})
+        m = _EXTENSION_LATEST.match(path)
+        if m:
+            # Microsoft's answer is the extension's raw gallery object, the
+            # same one a query returns; the workbench picks a compatible
+            # version from its `versions`. Unknown: 404, which it reads as
+            # "not in this gallery" rather than as a failure.
+            entry = self.store.by_id.get(f"{m.group(1)}.{m.group(2)}".lower())
+            return self._json(200, entry) if entry else self._send(404)
         m = _ASSET.match(path)
         if m:
             platform = (parse_qs(url.query).get("targetPlatform") or [""])[0]

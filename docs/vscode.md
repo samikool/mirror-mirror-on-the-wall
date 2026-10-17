@@ -112,7 +112,7 @@ Under the network `root`:
 |------|------|
 | `{publisher}.gallerycdn.vsassets.io/…` | Extension packages and assets, at their upstream paths |
 | `vscode.download.prss.microsoft.com/…` | Desktop and server builds |
-| `main.vscode-cdn.net/…` | The Marketplace's extension-control file |
+| `main.vscode-cdn.net/…` | The Marketplace's extension-control file, and (with the stable desktop build) the files the workbench fetches at startup: alerts, chat registry, profile templates, MCP server list |
 | `vscode-gallery/catalog.json`, `updates.json` | What the gallery answers from — regenerated every publish |
 | `vscode-gallery/gallery.py`, `compose.yaml` | The gallery service and how to run it |
 | `vscode-gallery/python-3.13-slim-linux-amd64.tar` | The container image, for a far side with no registry |

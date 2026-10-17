@@ -243,12 +243,14 @@ def test_witness_and_catalog_read_the_metadata_with_reads_in_flight(tmp_path, mo
         assert len(vpub.catalog(pool, [unit])) == 8 and peak[0] > 1
 
 
-def test_the_stable_desktop_build_carries_the_workbench_alerts(up):
-    # VS Code fetches https://main.vscode-cdn.net/core/stable.json at startup.
+def test_the_stable_desktop_build_carries_the_workbench_cdn_files(up):
+    # VS Code fetches these from https://main.vscode-cdn.net at startup.
     vs = get_provider("vscode")
     _, desktop = _unit("desktop", quality="stable")
     meta = vs.fetch_all(desktop, up.client())[1]
-    assert [m.repo_path for m in meta if m.is_release] == ["main.vscode-cdn.net/core/stable.json"]
+    assert [m.repo_path for m in meta if m.is_release] == [
+        "main.vscode-cdn.net/core/stable.json", "main.vscode-cdn.net/extensions/chat.json",
+        "main.vscode-cdn.net/core/profile-templates.json", "main.vscode-cdn.net/mcp/servers.json"]
     _, server = _unit("server", quality="stable")
     assert not [m for m in vs.fetch_all(server, up.client())[1] if m.is_release]
 

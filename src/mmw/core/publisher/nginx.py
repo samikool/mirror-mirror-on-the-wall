@@ -127,6 +127,8 @@ def _render_site(site, root: str, tls_block: str, port: int, proxy_host: str) ->
         body += (_CORS_STATIC_BODY if site.cors else _STATIC_BODY).format(root=root, dir=site.root)
     for path in site.proxy:
         body += _PROXY_BODY.format(eq="= " if site.exact else "", path=path, port=port, proxy_host=proxy_host)
+    for path in site.proxy_prefixes:
+        body += _PROXY_BODY.format(eq="", path=path, port=port, proxy_host=proxy_host)
     if site.root is None and "/" not in site.proxy:
         body += "\n    location / {\n        return 404;\n    }\n"
     return _SITE_BLOCK.format(tls=tls_block, server_name=site.server_name, body=body)
@@ -257,7 +259,7 @@ def deployment_nginx_files(mirrors, *, network_name: str,
     """The generated config always serves the fixed container mount."""
     from mmw.core.publisher.nginx_container import CONTAINER_ROOT, deployment_files
     container_include = f"{CONTAINER_ROOT}/.mmw/tls/https*.conf" if tls_include else None
-    with_gallery = any(site.proxy for site in kwargs.get("sites", ()))
+    with_gallery = any(site.proxy or site.proxy_prefixes for site in kwargs.get("sites", ()))
     if with_gallery:
         from mmw.core.publisher.nginx_container import GALLERY_HOST, GALLERY_PORT
         kwargs.update(proxy_host=GALLERY_HOST, port=GALLERY_PORT)

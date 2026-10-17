@@ -1948,8 +1948,26 @@ class Pool:
             conn.close()
 
     def group_unique_count(self, mirror_names: list[str]) -> int:
-        """Count unique packages referenced by any of the given mirrors."""
-        return self.unique_stats(mirror_names)[0]
+        """How many package files a publish of these mirrors places: one per
+        path the pool holds a blob for. Not one per checksum — VS Code serves
+        the same bytes at many paths (an icon across versions), and counting
+        checksums ran a publish's progress to 105 %."""
+        if not mirror_names:
+            return 0
+        placeholders = ",".join("?" * len(mirror_names))
+        # Distinct paths, counted within each checksum: one COUNT(DISTINCT)
+        # over a million paths sorts them all (6-22 s on a 1M-file VS Code
+        # mirror); per checksum the groups are tiny and come in index order
+        # (~2 s). Exact all the same — a path shared by two mirrors (apt's
+        # `Architecture: all`) holds one checksum, so it is in one group — two
+        # only across an upstream republish mid-sync, a file or two over.
+        row = self._read_only(
+            f"SELECT COALESCE(SUM(n), 0) FROM (SELECT COUNT(DISTINCT r.repo_path) n "
+            f"FROM refs r WHERE r.mirror_name IN ({placeholders}) {self._kind_filter}"
+            f"AND EXISTS (SELECT 1 FROM packages p WHERE p.checksum = r.checksum) "
+            f"GROUP BY r.checksum)",
+            tuple(mirror_names))
+        return row[0] if row else 0
 
     def unique_stats(self, mirror_names: list[str]) -> tuple[int, int]:
         """(package_count, total_bytes) of the packages any of the given

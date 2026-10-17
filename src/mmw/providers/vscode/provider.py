@@ -5,6 +5,7 @@ catalog once per sync (top N ∪ ids ∪ all, plus dependencies and pack
 members); each extensions unit's `fetch_all` reads it (Task 6).
 """
 import copy
+import gzip
 import hashlib
 import json
 import posixpath
@@ -36,6 +37,41 @@ MALICIOUS_URL = "https://main.vscode-cdn.net/extensions/marketplace.json"
 # The workbench's startup alerts. Upstream has one for stable only (insider 404s).
 ALERTS_URL = "https://main.vscode-cdn.net/core/stable.json"
 IMAGE_CACHE = "vscode-gallery-image"      # under mirror_dir: the saved python image
+
+
+# The witness memo is a function of this file's code as well as of checksums.
+_WITNESS_CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _named_assets(path: str, data) -> list[str]:
+    """The published files one metadata JSON names."""
+    if not isinstance(data, dict):
+        return []
+    if path.startswith(".vscode-meta/extensions/"):
+        urls = [f.get("source", "") for v in data.get("versions", [])
+                for f in v.get("files", [])]
+    else:
+        urls = [data.get("url", "")]
+    return sorted({rel for rel in map(asset_repo_path, urls) if rel})
+
+
+def _load_witness_memo(path: Path) -> dict[str, list[str]]:
+    try:
+        saved = json.loads(gzip.decompress(path.read_bytes()))
+    except (OSError, ValueError, EOFError):
+        return {}
+    return saved.get("named", {}) if saved.get("code") == _WITNESS_CODE else {}
+
+
+def _save_witness_memo(path: Path, named: dict[str, list[str]]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(gzip.compress(json.dumps(
+            {"code": _WITNESS_CODE, "named": named}).encode(), 1))
+        tmp.replace(path)
+    except OSError:
+        pass                    # an optimisation; the check stands without it
 
 
 def asset_repo_path(url: str) -> str | None:
@@ -331,14 +367,18 @@ class VscodeProvider(BaseProvider):
                 ctx.sink.drop_if_empty(vpub.GALLERY_DIR)
             return
         d = vpub.GALLERY_DIR
+        say = (lambda message: ctx.progress(d, f"gallery:{message}")) if ctx.progress else None
         updates = vpub.updates(ctx.pool, units)
-        catalogue = vpub.catalog(ctx.pool, units)
+        catalog_json, hosts = vpub.catalog_files(
+            ctx.pool, units, ctx.mirror_dir / vpub.META_CACHE, full=ctx.full, say=say)
         files = {
-            f"{d}/catalog.json": json.dumps(catalogue, sort_keys=True).encode(),
+            f"{d}/catalog.json": catalog_json,
             f"{d}/updates.json": json.dumps(updates, sort_keys=True).encode(),
             f"{d}/gallery.py": gallery_script_bytes(),
-            f"{d}/VSCODE.md": vpub.vscode_md(ctx.network, gallery_image.TAR_NAME, updates, catalogue=catalogue),
+            f"{d}/VSCODE.md": vpub.vscode_md(ctx.network, gallery_image.TAR_NAME, updates, hosts=hosts),
         }
+        if say:
+            say("done")
         for rel, data in files.items():
             ctx.sink.write(rel, data)
         written = set(files)
@@ -580,25 +620,34 @@ class VscodeProvider(BaseProvider):
         started = perf_counter()
         expected: set[str] = set()
         metas = sorted(p for p in refs if p.startswith(".vscode-meta/"))
-        bodies = read_all(held[p] for p in metas if p in held)
+        # What a JSON names is fixed by its checksum: only metadata not seen
+        # by an earlier check is read (a mirror's 120k JSONs, otherwise, on
+        # every publish). Each named file is still checked against the pool.
+        memo_path = pool.pool_dir.parent / vpub.META_CACHE / f"witness-{unit.name}.json.gz"
+        memo = _load_witness_memo(memo_path)
+        bodies = read_all(held[p] for p in metas if p in held and refs[p] not in memo)
+        named_by: dict[str, list[str]] = {}
         for path in metas:
-            try:
-                body = bodies[held[path]]
-                if isinstance(body, OSError):
-                    raise body
-                data = json.loads(body)
-            except (KeyError, OSError, ValueError):
+            checksum = refs[path]
+            if path not in held:
                 result.error = f"unreadable {path}"
                 result.timings["metadata"] = perf_counter() - started
                 return result
-            if not isinstance(data, dict):
-                continue
-            if path.startswith(".vscode-meta/extensions/"):
-                urls = [f.get("source", "") for v in data.get("versions", [])
-                        for f in v.get("files", [])]
-            else:
-                urls = [data.get("url", "")]
-            expected |= {rel for rel in map(asset_repo_path, urls) if rel}
+            if checksum not in memo:
+                try:
+                    body = bodies[held[path]]
+                    if isinstance(body, OSError):
+                        raise body
+                    data = json.loads(body)
+                except (KeyError, OSError, ValueError):
+                    result.error = f"unreadable {path}"
+                    result.timings["metadata"] = perf_counter() - started
+                    return result
+                memo[checksum] = _named_assets(path, data)
+            named_by[checksum] = memo[checksum]
+            expected.update(memo[checksum])
+        if bodies or len(named_by) != len(memo):
+            _save_witness_memo(memo_path, named_by)
         result.timings["metadata"] = perf_counter() - started
         started = perf_counter()
         result.total = len(expected)

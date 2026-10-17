@@ -251,3 +251,72 @@ def test_the_stable_desktop_build_carries_the_workbench_alerts(up):
     assert [m.repo_path for m in meta if m.is_release] == ["main.vscode-cdn.net/core/stable.json"]
     _, server = _unit("server", quality="stable")
     assert not [m for m in vs.fetch_all(server, up.client())[1] if m.is_release]
+
+
+def _metas(pool, unit, n, start=0):
+    from mmw.core.pool import KIND_META, KIND_PKG
+    rows = []
+    for i in range(start, n):
+        asset = f"p.gallerycdn.vsassets.io/x/e{i}/VSIX".encode()
+        body = json.dumps({"publisher": {"publisherName": "p"}, "extensionName": f"e{i}",
+                           "versions": [{"version": "1", "files": [
+                               {"assetType": "VSIX", "source": "https://" + asset.decode()}]}]}).encode()
+        for b, name in ((body, f"e{i}.json"), (asset, f"e{i}.vsix")):
+            pool.add(b, hashlib.sha256(b).hexdigest(), "sha256", name, len(b))
+        rows += [(hashlib.sha256(body).hexdigest(), f".vscode-meta/extensions/linux-x64/p.e{i}.json", KIND_META),
+                 (hashlib.sha256(asset).hexdigest(), asset.decode(), KIND_PKG)]
+    return rows
+
+
+@pytest.fixture
+def reads(monkeypatch):
+    from mmw.core import bulk_read
+    seen, real = [], bulk_read._read_bytes
+    monkeypatch.setattr(bulk_read, "_read_bytes", lambda p: (seen.append(p), real(p))[1])
+    return seen
+
+
+def test_the_witness_reads_only_metadata_it_has_not_seen(tmp_path, reads):
+    # Its findings are a function of the metadata's checksums, kept beside
+    # the pool: an unchanged mirror reads none of its 120k JSONs again.
+    from mmw.core.pool import Pool
+    _, unit = _unit("extensions")
+    with Pool(tmp_path) as pool:
+        pool.reconcile_refs(unit.name, _metas(pool, unit, 8))
+    vs = get_provider("vscode")
+    with Pool(tmp_path, read_only=True) as pool:
+        first = vs.verify_witness(unit, pool)
+        assert (first.total, first.present, len(reads)) == (8, 8, 8)
+        reads.clear()
+        again = vs.verify_witness(unit, pool)
+        assert (again.total, again.present, reads) == (8, 8, [])
+    with Pool(tmp_path) as pool:
+        rows = _metas(pool, unit, 8) + _metas(pool, unit, 9, start=8)
+        pool.reconcile_refs(unit.name, rows[:-1])        # e8's VSIX is not pooled
+    with Pool(tmp_path, read_only=True) as pool:
+        reads.clear()
+        grown = vs.verify_witness(unit, pool)
+        assert (grown.total, grown.present, grown.missing_count, len(reads)) == (9, 8, 1, 1)
+
+
+def test_the_catalog_is_rebuilt_only_when_its_metadata_changed(tmp_path, reads):
+    from mmw.core.pool import Pool
+    from mmw.providers.vscode import publish as vpub
+    _, unit = _unit("extensions")
+    cache = tmp_path / "cache"
+    with Pool(tmp_path) as pool:
+        pool.reconcile_refs(unit.name, _metas(pool, unit, 4))
+    with Pool(tmp_path, read_only=True) as pool:
+        built, hosts = vpub.catalog_files(pool, [unit], cache)
+        assert len(reads) == 4 and hosts == ["p.gallerycdn.vsassets.io"]
+        assert built == json.dumps(vpub.catalog(pool, [unit]), sort_keys=True).encode()
+        reads.clear()
+        assert vpub.catalog_files(pool, [unit], cache) == (built, hosts) and reads == []
+        assert vpub.catalog_files(pool, [unit], cache, full=True) == (built, hosts)
+        assert len(reads) == 4                       # --full rebuilds
+    with Pool(tmp_path) as pool:
+        pool.reconcile_refs(unit.name, _metas(pool, unit, 5))
+    with Pool(tmp_path, read_only=True) as pool:
+        reads.clear()
+        rebuilt, _ = vpub.catalog_files(pool, [unit], cache)
+        assert len(json.loads(rebuilt)) == 5 and len(reads) == 5

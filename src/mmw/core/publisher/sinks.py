@@ -208,6 +208,11 @@ class TreeSink:
         self._bh_dirs: set[str] = set()      # by-hash dirs this run placed into
 
     @property
+    def full(self) -> bool:
+        """`--full`: providers recheck what they would otherwise reuse."""
+        return self._full
+
+    @property
     def manifest_rows(self) -> list[tuple[str, str]]:
         """(path, checksum) of everything this run placed — the new record."""
         return list(self._rows.items())
@@ -534,6 +539,7 @@ class BundleSink:
         # set in `finalize_group` is computed from it exactly as usual. `full`
         # only bypasses `prev` for the SEND decision in link()/write() below.
         self._full = full
+        self.full = full                     # providers recheck what they would reuse
 
         self.manifest_rows: list[tuple[str, str]] = []
         # The header actually written into the tar, complete with

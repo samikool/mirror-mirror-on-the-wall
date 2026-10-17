@@ -2,11 +2,14 @@
 gallery's data (catalog, update index), its script, and the DNS / TLS guide —
 all under `vscode-gallery/` in the network root. The gallery container itself
 is a service in the network's `nginx/compose.yaml`."""
+import hashlib
 import json
 import re
+from pathlib import Path
 from urllib.parse import urlsplit
 
 GALLERY_DIR = "vscode-gallery"
+META_CACHE = "vscode-meta-cache"     # under mirror_dir: what is derived from the metadata
 STATIC_HOSTS = ("vscode.download.prss.microsoft.com", "main.vscode-cdn.net")
 # code.visualstudio.com: Linux's "Download Update" opens it, and its
 # /sha/download links are how scripts fetch a build.
@@ -31,33 +34,92 @@ def _version_key(v: dict):
     return tuple(int(p) for p in parts)
 
 
+def _extension_meta(pool, units) -> list[tuple[str, str, str, str]]:
+    """(unit, rel, pool path, checksum) of every extension metadata JSON, in
+    catalog order."""
+    rows = []
+    for unit in units:
+        if unit.dims.get("kind") != "extensions":
+            continue
+        held = sorted((rel, path, checksum) for rel, path, _, _, checksum
+                      in pool.mirror_files([unit.name])
+                      if rel.startswith(".vscode-meta/extensions/"))
+        rows += [(unit.name, rel, path, checksum) for rel, path, checksum in held]
+    return rows
+
+
+def _catalog_from(rows, bodies) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for _, _, path, _ in rows:
+        try:
+            obj = json.loads(bodies[path])
+        except (TypeError, ValueError):     # an OSError in place of bytes, or bad JSON
+            continue
+        if not obj:
+            continue
+        key = f"{obj['publisher']['publisherName']}.{obj['extensionName']}".lower()
+        cur = merged.setdefault(key, {**obj, "versions": []})
+        seen = {(v.get("version"), v.get("targetPlatform")) for v in cur["versions"]}
+        for v in obj.get("versions", []):
+            if (v.get("version"), v.get("targetPlatform")) not in seen:
+                cur["versions"].append(v)
+    for obj in merged.values():
+        obj["versions"].sort(key=_version_key, reverse=True)
+    return [merged[k] for k in sorted(merged)]
+
+
 def catalog(pool, units) -> list[dict]:
     """One gallery object per extension: the universal unit's builds plus every
     selected platform's, newest first, each (version, platform) once."""
     from mmw.core.bulk_read import read_all
-    merged: dict[str, dict] = {}
-    for unit in units:
-        if unit.dims.get("kind") != "extensions":
-            continue
-        held = {rel: path for rel, path, *_ in pool.mirror_files([unit.name])
-                if rel.startswith(".vscode-meta/extensions/")}
-        bodies = read_all(held.values())
-        for rel in sorted(held):
-            try:
-                obj = json.loads(bodies[held[rel]])
-            except (TypeError, ValueError):     # an OSError in place of bytes, or bad JSON
-                continue
-            if not obj:
-                continue
-            key = f"{obj['publisher']['publisherName']}.{obj['extensionName']}".lower()
-            cur = merged.setdefault(key, {**obj, "versions": []})
-            seen = {(v.get("version"), v.get("targetPlatform")) for v in cur["versions"]}
-            for v in obj.get("versions", []):
-                if (v.get("version"), v.get("targetPlatform")) not in seen:
-                    cur["versions"].append(v)
-    for obj in merged.values():
-        obj["versions"].sort(key=_version_key, reverse=True)
-    return [merged[k] for k in sorted(merged)]
+    rows = _extension_meta(pool, units)
+    return _catalog_from(rows, read_all(path for _, _, path, _ in rows))
+
+
+# A catalog is a function of its metadata's checksums and of this file's code,
+# so one built before is reused while neither changed — a mirror of 120k
+# extensions otherwise reads every JSON again on each publish.
+_CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+CATALOGS_KEPT = 2           # networks selecting different extensions alternate
+
+
+def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
+                  say=None) -> tuple[bytes, list[str]]:
+    """catalog.json's bytes and the publisher hosts it names — rebuilt only
+    when the metadata changed (or `full`), else the copy in `cache_dir`."""
+    from mmw.core.bulk_read import read_all
+    rows = _extension_meta(pool, units)
+    digest = hashlib.sha256(_CODE.encode())
+    for unit_name, rel, _, checksum in rows:
+        digest.update(f"{unit_name}\0{rel}\0{checksum}\n".encode())
+    key = digest.hexdigest()[:32]
+    data_path, hosts_path = cache_dir / f"catalog-{key}.json", cache_dir / f"catalog-{key}.hosts"
+    if not full:
+        try:
+            data, hosts = data_path.read_bytes(), hosts_path.read_text().split()
+            if say:
+                say(f"extension catalog unchanged ({len(rows):,} descriptions) — reused")
+            return data, hosts
+        except OSError:
+            pass
+    if say:
+        say(f"reading {len(rows):,} extension descriptions…")
+    catalogue = _catalog_from(rows, read_all(path for _, _, path, _ in rows))
+    data, hosts = json.dumps(catalogue, sort_keys=True).encode(), publisher_hosts(catalogue)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for path, body in ((data_path, data), (hosts_path, "\n".join(hosts).encode())):
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_bytes(body)
+            tmp.replace(path)
+        kept = sorted(cache_dir.glob("catalog-*.json"), key=lambda p: p.stat().st_mtime,
+                      reverse=True)
+        for old in kept[CATALOGS_KEPT:]:
+            old.unlink(missing_ok=True)
+            old.with_suffix(".hosts").unlink(missing_ok=True)
+    except OSError:
+        pass                    # the cache is an optimisation; the catalog stands
+    return data, hosts
 
 
 def updates(pool, units) -> dict:
@@ -107,7 +169,8 @@ prints `200` — not `000` (DNS or certificate), not `502` (the container is
 not running)."""
 
 
-def _publisher_dns(catalogue) -> str:
+def publisher_hosts(catalogue) -> list[str]:
+    """Every per-publisher gallery host the catalogue's files are served from."""
     hosts = set()
     for extension in catalogue:
         for version in extension.get('versions', []):
@@ -117,6 +180,10 @@ def _publisher_dns(catalogue) -> str:
                 host = urlsplit(url).hostname or ''
                 if re.fullmatch(r'[a-z0-9-]+\.(?:gallerycdn|gallery)\.vsassets\.io', host):
                     hosts.add(host)
+    return sorted(hosts)
+
+
+def _publisher_dns(hosts) -> str:
     if not hosts:
         return ''
     publishers = {}
@@ -153,7 +220,9 @@ the catalog and the gallery notices without a restart.
 """
 
 
-def vscode_md(network, tar_name: str, updates: dict, *, catalogue=()) -> bytes:
+def vscode_md(network, tar_name: str, updates: dict, *, catalogue=(), hosts=None) -> bytes:
+    """`hosts`: the catalogue's publisher hosts, when already known."""
+    hosts = publisher_hosts(catalogue) if hosts is None else hosts
     exact = EXACT_HOSTS
     return f"""\
 # VS Code on network `{network.name}`
@@ -176,7 +245,7 @@ dnsmasq (`/etc/dnsmasq.d/vscode.conf`) — each line also covers subdomains:
 BIND: one zone per name above (`*` records for the two wildcard zones), each
 with `@` and `*` pointing at the mirror.
 
-{_publisher_dns(catalogue)}
+{_publisher_dns(hosts)}
 ## 2. TLS
 
 VS Code only talks HTTPS. Sign a certificate covering every name above

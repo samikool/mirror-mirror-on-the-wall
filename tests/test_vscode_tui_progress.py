@@ -227,3 +227,14 @@ def test_partial_sync_keeps_extension_resolution_failure_visible(tmp_path, monke
             section.begin_resolution()
             assert not section.resolution_errors
     asyncio.run(scenario())
+
+
+def test_the_gallery_step_says_what_it_is_doing():
+    # Building the catalog read for minutes with nothing on screen.
+    from mmw.tui.transfer import TransferView, PUBLISH
+    view = TransferView(PUBLISH, 'test')
+    view.record('vscode-gallery', 'gallery:reading 120,610 extension descriptions…')
+    assert view._phase == 'Gallery · reading 120,610 extension descriptions…'
+    assert view._linked == 0 and any('120,610' in line for line in view._log_pending)
+    view.record('vscode-gallery', 'gallery:done')
+    assert view._phase == ''

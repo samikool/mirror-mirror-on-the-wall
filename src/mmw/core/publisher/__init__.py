@@ -394,7 +394,8 @@ def walk_network(
                          sink=sink, result=result, units=published_mirrors, prune=prune,
                          progress=progress, stop_event=stop_event,
                          keep_extra=frozenset(upstream_paths),
-                         mirror_start_callback=mirror_start_callback)
+                         mirror_start_callback=mirror_start_callback,
+                         full=getattr(sink, "full", False))
     all_bases: set[str] = set()
     started = 0                         # groups numbered by earlier providers
     for provider in all_providers():

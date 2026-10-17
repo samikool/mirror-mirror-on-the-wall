@@ -122,3 +122,17 @@ def test_listings_name_each_blob_exactly_as_blob_path_does(seeded):
         by_checksum = dict(pool._conn.execute("SELECT checksum, filename FROM packages"))
         assert [path for _, path, _, _, _ in rows] == [
             str(pool.blob_path(cs, by_checksum[cs])) for *_, cs in rows]
+
+
+def test_the_publish_count_is_one_per_path_the_pool_can_place(tmp_path):
+    md = tmp_path / "mirror"
+    with Pool(md, defer_writes=False) as pool:
+        icon = _add(pool, b"same icon", "icon.png")
+        pool.reconcile_refs("m", [
+            (icon, "p.gallerycdn.vsassets.io/x/1.0/icon.png", KIND_PKG),
+            (icon, "p.gallerycdn.vsassets.io/x/2.0/icon.png", KIND_PKG),   # same bytes
+            ("f" * 64, "p.gallerycdn.vsassets.io/x/2.0/VSIX", KIND_PKG),   # not held
+            (_add(pool, b"{}", "x.json"), ".vscode-meta/extensions/universal/p.x.json", KIND_META),
+        ])
+        assert pool.group_unique_count(["m"]) == 2
+        assert len(pool.mirror_files(["m"], kinds=(KIND_PKG,))) == 2   # what publish places

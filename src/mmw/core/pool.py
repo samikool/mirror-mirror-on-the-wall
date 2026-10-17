@@ -1250,14 +1250,19 @@ class Pool:
         goes stale when the pool directory moves."""
         return self._packages_dir / checksum[:2] / f"{checksum}-{filename}"
 
-    def _mirror_files_sql(self, mirror_names: list[str],
-                          kinds: tuple[str, ...] | None) -> tuple[str, list]:
+    def _mirror_files_sql(self, mirror_names: list[str], kinds: tuple[str, ...] | None,
+                          prefix: str = "") -> tuple[str, list]:
         m_ph = ",".join("?" * len(mirror_names))
         kind_sql = ""
         params: list = list(mirror_names)
         if kinds:
             kind_sql = f" AND r.kind IN ({','.join('?' * len(kinds))})"
             params.extend(kinds)
+        if prefix:
+            # A range, not LIKE: exact bytes, no escaping, and sqlite filters
+            # it on the index entry before the join to packages.
+            kind_sql += " AND r.repo_path >= ? AND r.repo_path < ?"
+            params.extend((prefix, prefix + "\U0010ffff"))
         return (f"SELECT DISTINCT r.repo_path, p.filename, p.size, r.kind, r.checksum "
                 f"FROM refs r JOIN packages p{self._packages_by} ON p.checksum = r.checksum "
                 f"WHERE r.mirror_name IN ({m_ph}){kind_sql} "
@@ -1267,9 +1272,11 @@ class Pool:
         self,
         mirror_names: list[str],
         kinds: tuple[str, ...] | None = None,
+        prefix: str = "",
     ) -> list[tuple[str, str, int, str, str]]:
         """(repo_path, pool_path, size, kind, checksum) for everything the
-        mirrors want AND we have.
+        mirrors want AND we have — only repo_paths starting with `prefix`,
+        when given.
 
         Deduplicated across mirrors (component mirrors share suite-level files)
         and ordered by repo_path so consumers get directory locality.
@@ -1279,7 +1286,7 @@ class Pool:
         if not mirror_names:
             return []
         with self._read() as _c:
-            rows = _c.execute(*self._mirror_files_sql(mirror_names, kinds)).fetchall()
+            rows = _c.execute(*self._mirror_files_sql(mirror_names, kinds, prefix)).fetchall()
         blob = self.blob_path
         return [(rel, str(blob(cs, fn)), size, kind, cs) for rel, fn, size, kind, cs in rows]
 

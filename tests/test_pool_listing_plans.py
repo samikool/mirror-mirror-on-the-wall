@@ -47,6 +47,18 @@ def test_mirror_files_reads_only_covering_indexes(seeded):
     assert "COVERING INDEX idx_packages_cover" in plan
 
 
+def test_a_prefix_lists_only_its_paths_and_stays_on_covering_indexes(seeded):
+    with Pool(seeded) as pool:
+        everything = pool.mirror_files(["m"])
+        assert pool.mirror_files(["m"], prefix="pool/main/f1") == [
+            row for row in everything if row[0].startswith("pool/main/f1")]
+        assert pool.mirror_files(["m"], prefix="pool/") == everything
+        assert pool.mirror_files(["m"], prefix="nowhere/") == []
+        plan = _plan(pool, *pool._mirror_files_sql(["m"], None, "pool/main/f1"))
+    assert "COVERING INDEX idx_refs_cover" in plan
+    assert "COVERING INDEX idx_packages_cover" in plan
+
+
 def test_missing_for_reads_only_covering_indexes(seeded):
     with Pool(seeded) as pool:
         plan = _plan(pool, *pool._missing_for_sql("m"))

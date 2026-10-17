@@ -319,4 +319,29 @@ def test_the_catalog_is_rebuilt_only_when_its_metadata_changed(tmp_path, reads):
     with Pool(tmp_path, read_only=True) as pool:
         reads.clear()
         rebuilt, _ = vpub.catalog_files(pool, [unit], cache)
-        assert len(json.loads(rebuilt)) == 5 and len(reads) == 5
+        # Only the new description is read; the other four are remembered.
+        assert len(json.loads(rebuilt)) == 5 and len(reads) == 1
+        assert rebuilt == json.dumps(vpub.catalog(pool, [unit]), sort_keys=True).encode()
+    (cache / vpub.DESCRIPTIONS).write_bytes(b"not gzip")
+    for stale in cache.glob("catalog-*"):
+        stale.unlink()
+    with Pool(tmp_path, read_only=True) as pool:
+        reads.clear()
+        assert vpub.catalog_files(pool, [unit], cache)[0] == rebuilt
+        assert len(reads) == 5                       # a damaged memo is just re-read
+
+
+def test_publisher_hosts_match_parsing_every_url():
+    import re
+    from urllib.parse import urlsplit
+    from mmw.providers.vscode import publish as vpub
+    urls = ["https://p.gallerycdn.vsassets.io/x/VSIX", "https://P.Gallery.vsassets.io/a",
+            "https://u@q.gallerycdn.vsassets.io:443/x", "https://r.gallery.vsassets.io?x=/y",
+            "http://s.gallerycdn.vsassets.io", "//t.gallery.vsassets.io/p", "",
+            "https:v.gallerycdn.vsassets.io/x", "https://evil.com/p.gallerycdn.vsassets.io/",
+            "https://a.b.gallerycdn.vsassets.io/x", "https://w.gallerycdn.vsassets.io#f/x"]
+    catalogue = [{"versions": [{"assetUri": u, "files": [{"source": u}]} for u in urls]}]
+    pattern = r"[a-z0-9-]+\.(?:gallerycdn|gallery)\.vsassets\.io"
+    expected = sorted({h for u in urls if re.fullmatch(pattern, h := urlsplit(u).hostname or "")})
+    assert vpub.publisher_hosts(catalogue) == expected
+    assert "p.gallery.vsassets.io" in expected and "q.gallerycdn.vsassets.io" in expected

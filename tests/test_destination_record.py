@@ -114,15 +114,46 @@ def test_a_dropped_file_is_pruned_from_the_record_without_a_walk(seeded, tmp_pat
     assert counted["walk"] == 0
 
 
-def test_a_stopped_publish_leaves_no_record(seeded, tmp_path):
+def test_a_publish_stopped_midway_leaves_no_record(seeded, tmp_path):
     import threading
     mirror_dir, cfg = seeded
     net = _net(tmp_path)
     publish_network(net, cfg, mirror_dir)
     stop = threading.Event()
-    stop.set()
-    publish_network(net, cfg, mirror_dir, stop_event=stop)
+
+    def progress(rel, status):
+        if status in ("linked", "skipped"):
+            stop.set()
+    publish_network(net, cfg, mirror_dir, progress=progress, stop_event=stop, full=True)
+    assert stop.is_set()
     assert not (net.root / RECORD_PATH).exists()
+
+
+def test_a_stop_before_anything_is_written_keeps_the_record(seeded, tmp_path):
+    import threading
+    mirror_dir, cfg = seeded
+    net = _net(tmp_path)
+    publish_network(net, cfg, mirror_dir)
+    before = _record(net.root)
+    stop = threading.Event()
+    stop.set()                                    # e.g. pressed while warming
+    publish_network(net, cfg, mirror_dir, stop_event=stop)
+    assert _record(net.root) == before
+
+
+def test_a_database_that_will_not_open_keeps_the_record(seeded, tmp_path):
+    from mmw.core.pool import PoolDatabaseMissing, register_database
+    mirror_dir, cfg = seeded
+    net = _net(tmp_path)
+    publish_network(net, cfg, mirror_dir)
+    before = _record(net.root)
+    register_database(mirror_dir, tmp_path / "nowhere" / "mmw.db")
+    try:
+        with pytest.raises(PoolDatabaseMissing):
+            publish_network(net, cfg, mirror_dir)
+    finally:
+        register_database(mirror_dir, mirror_dir / ".pool" / "mmw.db")
+    assert _record(net.root) == before
 
 
 def test_a_publish_with_errors_leaves_no_record(seeded, tmp_path, monkeypatch):
@@ -132,8 +163,12 @@ def test_a_publish_with_errors_leaves_no_record(seeded, tmp_path, monkeypatch):
     def fail(src, dst, tmp_dir=None):
         raise OSError("disk full")
     monkeypatch.setattr(links, "hardlink_or_copy", fail)
-    assert publish_network(net, cfg, mirror_dir).errors
+    result = publish_network(net, cfg, mirror_dir)
+    assert result.errors
     assert not (net.root / RECORD_PATH).exists()
+    # Said, not silent: a unit that always fails would otherwise make every
+    # publish a full check with no hint why.
+    assert any("record" in w and "every file" in w for w in result.warnings)
 
 
 def test_another_networks_record_is_ignored(seeded, tmp_path, counted):
@@ -228,3 +263,60 @@ def test_turning_prune_on_cleans_what_a_non_pruning_publish_left(seeded, tmp_pat
     assert extra.exists()                          # prune off: left in place
     publish_network(_net(tmp_path), cfg, mirror_dir)
     assert not extra.exists()
+
+
+def test_a_stale_file_that_cannot_be_removed_stays_in_the_record(tmp_path):
+    """Pruned from the record, it would be invisible to every later trusted
+    publish and served forever; kept, the next publish tries again."""
+    from mmw.core.publisher.sinks import TreeSink
+    root = tmp_path / "t"
+    locked = root / "base/locked"
+    locked.mkdir(parents=True)
+    (locked / "stale.deb").write_bytes(b"old")
+    locked.chmod(0o500)
+    try:
+        sink = TreeSink(root, prev={"base/locked/stale.deb": "c1"})
+        sink.finalize_group("base", set(), set(), set())
+        assert ("base/locked/stale.deb", "c1") in sink.manifest_rows
+    finally:
+        locked.chmod(0o700)
+    sink = TreeSink(root, prev={"base/locked/stale.deb": "c1"})
+    sink.finalize_group("base", set(), set(), set())
+    assert not (locked / "stale.deb").exists()
+    assert ("base/locked/stale.deb", "c1") not in sink.manifest_rows
+
+
+def test_an_interrupted_apply_leaves_no_record(seeded, tmp_path):
+    import subprocess
+    import sys
+
+    from mmw.core.publisher.bundle import bundle_network
+    mirror_dir, cfg = seeded
+    net = NetworkConfig(name="lab", bundle_dir=tmp_path / "out", nginx=False)
+    first = bundle_network(net, cfg, mirror_dir)
+    far = tmp_path / "far"
+    apply = str(tmp_path / "out" / "apply.py")
+    subprocess.run([sys.executable, apply, str(first.out_path), "--root", str(far)], check=True)
+    assert (far / RECORD_PATH).exists()
+    _set_refs(mirror_dir, extra=[("pool/main/h/hello/hello_1.0_amd64.deb", b"x" * 200_000)])
+    second = bundle_network(net, cfg, mirror_dir)
+    data = second.out_path.read_bytes()
+    second.out_path.write_bytes(data[: len(data) // 2])          # cut mid-payload
+    run = subprocess.run([sys.executable, apply, str(second.out_path), "--root", str(far)],
+                         capture_output=True, text=True)
+    assert run.returncode != 0
+    assert not (far / RECORD_PATH).exists()
+
+
+def test_a_corrupt_record_header_is_ignored_without_leaking_its_file(tmp_path):
+    from mmw.core.publisher.manifest import read_record
+    path = tmp_path / RECORD_PATH
+    path.parent.mkdir(parents=True)
+    path.write_text("not json\n{\"p\": \"x\", \"c\": \"y\"}\n")
+    import gc
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        assert read_record(tmp_path, "lab") is None
+        gc.collect()
+    assert not [w for w in caught if issubclass(w.category, ResourceWarning)]

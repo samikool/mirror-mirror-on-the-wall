@@ -107,3 +107,22 @@ def test_publish_and_bundle_warm_the_configured_database_once(job, monkeypatch, 
         bundle_network(net, cfg, mirror_dir, full=True)
     assert calls == [database_path(mirror_dir)]
 
+
+
+def test_a_first_sync_with_no_database_yet_says_nothing(tmp_path):
+    said = []
+    result = db_warm.warm_for_job(tmp_path / "new-pool", say=said.append)
+    assert result.status == "unavailable"
+    assert said == []
+
+
+def test_a_database_using_most_of_available_memory_is_still_warmed(disk_dir, monkeypatch):
+    """Page cache is reclaimable — warming cannot exhaust memory — so the only
+    reason to skip is a file that would not fit. A 3.1 GB database with 6 GB
+    available used to be skipped by a 50 % rule."""
+    p = _file(disk_dir, 4)
+    size = p.stat().st_size
+    monkeypatch.setattr(db_warm, "_available_bytes", lambda: int(size / 0.95))  # file = 95 %
+    assert warm_database(p).status == "too-big"
+    monkeypatch.setattr(db_warm, "_available_bytes", lambda: int(size / 0.8))   # file = 80 %
+    assert warm_database(p).status == "warmed"

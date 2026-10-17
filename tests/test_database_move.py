@@ -2,6 +2,7 @@
 import hashlib
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -138,3 +139,49 @@ def test_move_is_refused_while_a_publish_or_bundle_runs(job, seeded, tmp_path): 
 
 
 from test_bundle import seeded  # noqa: E402,F401
+
+
+def test_old_files_that_cannot_be_removed_warn_but_the_move_stands(setup, tmp_path, monkeypatch):
+    cfg_dir, cfg, md = setup
+    import mmw.core.database_move as dm
+
+    def stuck(src):
+        raise PermissionError(13, "Permission denied", str(src))
+    monkeypatch.setattr(dm, "_remove_old", stuck)
+    dest = tmp_path / "fast" / "mmw.db"
+    warnings: list[str] = []
+    new = move_database(cfg_dir, cfg, dest, warnings=warnings)
+    assert new.settings.database == dest
+    assert config.load(cfg_dir).settings.database == dest
+    assert warnings and str(md / ".pool" / "mmw.db") in warnings[0]
+
+
+def test_a_relative_destination_is_saved_absolute(setup, tmp_path, monkeypatch):
+    cfg_dir, cfg, md = setup
+    monkeypatch.chdir(tmp_path)
+    new = move_database(cfg_dir, cfg, Path("rel") / "mmw.db")
+    assert new.settings.database == tmp_path / "rel" / "mmw.db"
+    assert config.load(cfg_dir).settings.database.is_absolute()
+
+
+def test_the_new_directory_entry_is_made_durable(setup, tmp_path, monkeypatch):
+    cfg_dir, cfg, md = setup
+    import mmw.core.database_move as dm
+    synced = []
+    real = dm._fsync_dir
+    monkeypatch.setattr(dm, "_fsync_dir", lambda d: (synced.append(d), real(d)))
+    dest = tmp_path / "fast" / "mmw.db"
+    move_database(cfg_dir, cfg, dest)
+    assert dest.parent in synced
+
+
+def test_directories_made_for_a_failed_move_are_removed(setup, tmp_path, monkeypatch):
+    cfg_dir, cfg, md = setup
+    import mmw.core.database_move as dm
+
+    def broken(src, dst, progress):
+        raise OSError("disk full")
+    monkeypatch.setattr(dm, "_copy", broken)
+    with pytest.raises(DatabaseMoveError):
+        move_database(cfg_dir, cfg, tmp_path / "new1" / "new2" / "mmw.db")
+    assert not (tmp_path / "new1").exists()

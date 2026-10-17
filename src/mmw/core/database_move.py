@@ -46,6 +46,20 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Make a rename in `directory` durable (the file's own fsync is not)."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _remove_old(src: Path) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{src}{suffix}").unlink(missing_ok=True)
+
+
 def _fold_wal(db: Path) -> None:
     conn = sqlite3.connect(db)
     try:
@@ -58,11 +72,17 @@ def _fold_wal(db: Path) -> None:
 
 
 def move_database(cfg_dir: Path, cfg: config.Config, dest: Path, *,
-                  progress: Callable[[int, int], None] | None = None) -> config.Config:
-    """Move `settings.database` to `dest`; returns the saved new config."""
+                  progress: Callable[[int, int], None] | None = None,
+                  warnings: list[str] | None = None) -> config.Config:
+    """Move `settings.database` to `dest`; returns the saved new config.
+
+    Once mmw.toml points at the new file the move has happened: trouble
+    removing the old one after that is a note in `warnings`, not a failure."""
     mirror_dir = cfg.settings.mirror_dir
     src = Path(cfg.settings.database)
-    dest = Path(dest).expanduser()
+    # Absolute: a path relative to wherever the command ran means nothing
+    # to the next mmw run.
+    dest = Path(dest).expanduser().resolve()
     if not src.exists():
         raise DatabaseMoveError(f"there is no database at {src} to move")
     if dest.exists():
@@ -71,18 +91,20 @@ def move_database(cfg_dir: Path, cfg: config.Config, dest: Path, *,
     try:
         with exclusive_pool_lock(mirror_dir, "move the pool database"):
             _fold_wal(src)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            size = src.stat().st_size
-            free = shutil.disk_usage(dest.parent).free
-            if free < size:
-                raise DatabaseMoveError(f"{dest.parent} has {free:,} bytes free; "
-                                        f"the database needs {size:,}")
+            made = [p for p in (dest.parent, *dest.parent.parents) if not p.exists()]
             saved = False
             try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                size = src.stat().st_size
+                free = shutil.disk_usage(dest.parent).free
+                if free < size:
+                    raise DatabaseMoveError(f"{dest.parent} has {free:,} bytes free; "
+                                            f"the database needs {size:,}")
                 _copy(src, tmp, progress)
                 if _sha256(src) != _sha256(tmp):
                     raise DatabaseMoveError("the copy does not match the original")
                 os.replace(tmp, dest)
+                _fsync_dir(dest.parent)
                 new = cfg.model_copy(update={
                     "settings": cfg.settings.model_copy(update={"database": dest})})
                 config.save(new, cfg_dir)
@@ -91,9 +113,18 @@ def move_database(cfg_dir: Path, cfg: config.Config, dest: Path, *,
                 if not saved:
                     tmp.unlink(missing_ok=True)
                     dest.unlink(missing_ok=True)
+                    for d in made:                     # deepest first
+                        try:
+                            d.rmdir()
+                        except OSError:
+                            break
             register_database(mirror_dir, dest)
-            for suffix in ("", "-wal", "-shm"):
-                Path(f"{src}{suffix}").unlink(missing_ok=True)
+            try:
+                _remove_old(src)
+            except OSError as e:
+                if warnings is not None:
+                    warnings.append(f"the old database at {src} could not be "
+                                    f"removed ({e.strerror or e}) — delete it yourself")
             return new
     except PoolBusy:
         raise DatabaseMoveError("a sync, publish or bundle is using the pool — wait for "

@@ -217,3 +217,13 @@ def test_move_copies_the_database_and_shows_the_new_path(tmp_path):
         assert dest.exists() and not (md / ".pool" / "mmw.db").exists()
     _run(tmp_path, check, cfg)
     assert config.load(tmp_path).settings.database == dest
+
+
+def test_the_pool_directory_hint_tells_the_truth_about_the_database(tmp_path):
+    async def check(app, pilot):
+        app.screen.query_one("#settings-mirror-dir", Input).focus()
+        await _settle(pilot)
+        hint = str(app.screen.query_one("#page-hint").render())
+        assert "empty pool" not in hint
+        assert "database" in hint.lower()
+    _run(tmp_path, check)

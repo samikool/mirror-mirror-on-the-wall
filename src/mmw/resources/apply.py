@@ -508,6 +508,14 @@ def apply(bundle, root, dry_run=False, verify=False):
                             header["created"], STATE_FILE)
                     )
                     return EXIT_OUT_OF_ORDER
+                if not dry_run:
+                    # The tree is about to change: its record says what it
+                    # held before. Gone until this apply finishes, so an
+                    # interrupted one never leaves it describing a half-new tree.
+                    try:
+                        os.unlink(os.path.join(root, MANIFEST_MEMBER))
+                    except OSError:
+                        pass
                 sys.stdout.write("%s -> %s\n" % (
                     _named(want, header.get("previous_label")) if want else "(new)",
                     _named(header["created"], header.get("created_label"))))

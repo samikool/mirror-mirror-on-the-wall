@@ -3,8 +3,9 @@
 On a spinning disk the listings of a big network pay one seek per page they
 touch; one sequential pass first turns that into a single streaming read.
 Only the kernel's page cache is filled — reclaimable, so this cannot OOM the
-machine — never SQLite's cache or an in-memory copy, and only when the file
-fits comfortably in available memory. Any trouble means "skip", never a
+machine — never SQLite's cache or an in-memory copy. Skipped only when the
+file would not fit (over 90 % of MemAvailable): then its later pages would
+just evict its earlier ones. Any trouble means "skip", never a
 failed job.
 """
 import ctypes
@@ -71,7 +72,7 @@ def resident_fraction(path: Path) -> float:
 
 
 def warm_database(path: Path, *, stop_event=None, progress=None,
-                  mem_fraction: float = 0.5, resident_skip: float = 0.95) -> WarmResult:
+                  mem_fraction: float = 0.9, resident_skip: float = 0.95) -> WarmResult:
     started = time.perf_counter()
 
     def done(status, before, message):
@@ -80,7 +81,7 @@ def warm_database(path: Path, *, stop_event=None, progress=None,
     try:
         size = path.stat().st_size
     except OSError:
-        return done("unavailable", 0.0, f"no database at {path} to warm")
+        return done("unavailable", 0.0, "")      # a first sync: nothing to warm, nothing to say
     before = resident_fraction(path)
     if before >= resident_skip:
         return done("resident", before, "pool database already in memory")
@@ -112,6 +113,6 @@ def warm_for_job(mirror_dir: Path, *, say=None, stop_event=None) -> WarmResult:
     (sync, publish, bundle, verify) and report one line through `say`."""
     from mmw.core.pool import database_path
     result = warm_database(database_path(mirror_dir), stop_event=stop_event, progress=say)
-    if say:
+    if say and result.message:
         say(result.message)
     return result

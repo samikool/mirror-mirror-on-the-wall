@@ -118,7 +118,11 @@ def iter_manifest(path: Path):
     """(header, rows) with `rows` a generator of (path, checksum) — streamed,
     so a 700k-file manifest never has to be held whole."""
     text = _open_text(path)
-    header = ManifestHeader(**json.loads(text.readline()))
+    try:
+        header = ManifestHeader(**json.loads(text.readline()))
+    except BaseException:
+        text.close()              # a corrupt header must not leak the file
+        raise
 
     def rows():
         try:

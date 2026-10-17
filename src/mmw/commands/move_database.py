@@ -18,10 +18,13 @@ def run(cfg_dir: Path, dest: Path) -> int:
         if tenth != shown[0]:
             shown[0] = tenth
             typer.echo(f"  copied {done:,} of {total:,} bytes")
+    warnings: list[str] = []
     try:
-        new = move_database(cfg_dir, cfg, dest, progress=progress)
+        new = move_database(cfg_dir, cfg, dest, progress=progress, warnings=warnings)
     except DatabaseMoveError as e:
         eprint(f"Database not moved: {e}")
         return 1
     typer.echo(f"Database moved to {new.settings.database}")
+    for warning in warnings:
+        eprint(f"  warning: {warning}")
     return 0

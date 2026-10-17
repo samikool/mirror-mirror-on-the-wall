@@ -349,7 +349,13 @@ class TreeSink:
             try:
                 size = target.stat().st_size
                 target.unlink()
+            except FileNotFoundError:
+                continue                  # already gone: nothing to record
             except OSError:
+                # Still there (permissions, a busy mount): keep it in the
+                # record so the next publish tries again, rather than losing
+                # sight of it and serving it forever.
+                self._rows[rel] = self._prev[rel]
                 continue
             pruned += 1
             pruned_bytes += size

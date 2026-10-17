@@ -101,21 +101,25 @@ def publish_network(
 
     _check_destination(network.root, mirror_dir)
     warm_for_publish(mirror_dir, progress, stop_event)
+    if stop_event and stop_event.is_set():
+        return result               # stopped before anything was written
     from mmw.core.publisher.deployment import prepare_tree
-    sink = TreeSink(network.root, progress=progress, stop_event=stop_event,
-                    prev=_open_record(network.root, network.name), full=full)
-    try:
-        with Pool(mirror_dir, read_only=True) as pool:
+    # The pool opens before the record is touched: a database that will not
+    # open (moved, missing) must not cost the tree its record.
+    with Pool(mirror_dir, read_only=True) as pool:
+        sink = TreeSink(network.root, progress=progress, stop_event=stop_event,
+                        prev=_open_record(network.root, network.name), full=full)
+        try:
             walk_network(network, cfg, mirror_dir, sink, pool, result,
                          nginx_root=str(network.root), prune=network.prune,
                          progress=progress, stop_event=stop_event,
                          mirror_start_callback=mirror_start_callback)
-        if not (stop_event and stop_event.is_set()):
-            prepare_tree(network.root, network, cfg)
-            if network.prune and not network.certs:
-                (network.root / "sign.py").unlink(missing_ok=True)
-    finally:
-        sink.close()
+            if not (stop_event and stop_event.is_set()):
+                prepare_tree(network.root, network, cfg)
+                if network.prune and not network.certs:
+                    (network.root / "sign.py").unlink(missing_ok=True)
+        finally:
+            sink.close()
     if not (stop_event and stop_event.is_set()):
         _write_record(network.root, network.name, sink, result, full, network.prune)
         _record_published(mirror_dir, network.root, network.name, "live")
@@ -151,7 +155,12 @@ def _write_record(root: Path, network: str, sink, result, full: bool,
     from mmw.core.publisher.manifest import (
         RECORD_PATH, ManifestHeader, now_stamp, write_manifest,
     )
-    if result.errors or sink.errors or not prune:
+    if not prune:
+        return
+    if result.errors or sink.errors:
+        result.warnings.append(
+            "no publish record written because of the errors above — the next publish "
+            "checks every file again")
         return
     write_manifest(Path(root) / RECORD_PATH, ManifestHeader(network, now_stamp(), None, full),
                    sorted(sink.manifest_rows))
@@ -236,6 +245,8 @@ def publish_snapshot(
         raise ValueError(f"network '{network.name}' has no publish root — pass a directory")
     _check_destination(root, mirror_dir)
     warm_for_publish(mirror_dir, progress, stop_event)
+    if stop_event and stop_event.is_set():
+        return result               # stopped before anything was written
     with Pool(mirror_dir, read_only=True) as pool:
         snap = find_snapshot(pool, network.name, ref)
         if not snap.complete:

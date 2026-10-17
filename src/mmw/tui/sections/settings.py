@@ -30,8 +30,9 @@ class SettingsPage(Page):
             PathField(
                 "Pool directory", str(s.mirror_dir), id="settings-mirror-dir",
                 required=True, browse_title="Choose the pool directory",
-                hint="Where the pool, keys and certs live. Changing it moves nothing — "
-                     "move the directory yourself, or the next sync starts an empty pool.",
+                hint="Where the pool, keys and certs live. Changing it moves nothing — move "
+                     "the directory yourself. A database at its default place follows the "
+                     "directory; one moved elsewhere (Database) stays put.",
             ),
             ActionField(
                 "Database", str(s.database), "Move…", id="settings-database",
@@ -126,17 +127,22 @@ class SettingsPage(Page):
             pct = done * 100 // total if total else 100
             self.app.call_from_thread(self.set_status, f"Copying the database… {pct}%")
         self.set_status("Moving the database…")
+        warnings: list[str] = []
         try:
-            await asyncio.to_thread(move_database, self.app.cfg_dir, self.app.cfg, dest,
-                                    progress=progress)
+            new = await asyncio.to_thread(lambda: move_database(
+                self.app.cfg_dir, self.app.cfg, dest, progress=progress, warnings=warnings))
         except DatabaseMoveError as e:
             self.set_status(f"Database not moved: {e}", "error")
             return
         # mmw.toml already says so; adopt it through the one config writer.
+        dest = new.settings.database
         await self.app.save_config(lambda c: c.model_copy(update={
             "settings": c.settings.model_copy(update={"database": dest})}))
         self.query_one("#settings-database-path", Label).update(escape(str(dest)))
-        self.set_status(f"Database moved to {dest}.", "ok")
+        if warnings:
+            self.set_status(f"Database moved to {dest}, but {warnings[0]}", "error")
+        else:
+            self.set_status(f"Database moved to {dest}.", "ok")
 
     @on(Button.Pressed, "#btn-settings-reinit")
     def _reinit(self) -> None:

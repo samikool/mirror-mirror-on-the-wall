@@ -404,6 +404,15 @@ def narrow_to_selection(mirrors: list[config.MirrorConfig], errors: list[str], s
     return mirrors, None, False
 
 
+def resolve_retry_selection(cfg: config.Config, selection, *, progress=None):
+    """Resolve a recovery selection from the pool, with no upstream calls."""
+    from mmw.core.resolve import pooled_mirrors
+    mirrors = [m for m in pooled_mirrors(cfg, cfg.settings.mirror_dir) if get_provider(m.provider).retries_failures]
+    chosen, problem, _ = narrow_to_selection(mirrors, [], selection)
+    return chosen, ([problem + " Retry supports previously synced VS Code mirrors."]
+                    if problem else [])
+
+
 def resolve_selection(cfg: config.Config, selection, *, progress=None) -> tuple[list[config.MirrorConfig], list[str]]:
     """Expand "all" dimensions by listing upstream, then narrow to `selection`.
     Quiet — the notes come back as messages. **Blocking** (network).

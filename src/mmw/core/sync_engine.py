@@ -9,7 +9,7 @@ import asyncio
 import concurrent.futures
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from mmw.core.config import MirrorConfig
@@ -150,6 +150,63 @@ class KeySyncCoordinator:
         return failures
 
 
+async def retry_failed_mirror(
+    mirror: MirrorConfig, *, pool: Pool, max_connections: int,
+    executor: concurrent.futures.Executor, events: SyncEvents | None = None,
+    stop_event: threading.Event | None = None, dry_run: bool = False,
+    sem: asyncio.Semaphore | None = None,
+    items_session: ItemProgressSession | None = None,
+    downloads: DownloadCoordinator | None = None,
+) -> MirrorSummary:
+    """Retry a unit's saved failed downloads without fetching a new upstream index."""
+    provider = get_provider(mirror.provider)
+    if not provider.retries_failures:
+        raise ValueError(f"{mirror.provider} mirrors do not support retry-failed")
+    events = events or SyncEvents()
+    if stop_event is not None and stop_event.is_set():
+        return MirrorSummary(mirror=mirror.name, stopped=True, metadata_ok=False)
+    if events.phase:
+        events.phase("Loading saved failed downloads...")
+    try:
+        packages, witness = await asyncio.get_running_loop().run_in_executor(
+            executor, lambda: provider.repair_packages(
+                mirror, pool, status_callback=events.phase, stop_event=stop_event))
+    except InterruptedError:
+        return MirrorSummary(mirror=mirror.name, stopped=True, metadata_ok=False)
+    if isinstance(witness, dict) and not dry_run and not (stop_event and stop_event.is_set()):
+        if events.phase:
+            events.phase("Saving retry list after one-time discovery for this older mirror...")
+        failures = [{"package": asdict(p), "error": "missing from saved metadata"} for p in packages]
+        witness = await asyncio.get_running_loop().run_in_executor(
+            executor, pool.seed_retry_plan, mirror.name, failures, mirror.source, witness)
+    def completed(event):
+        if items_session is not None:
+            items_session.complete(mirror.name, event)
+        if events.item_progress:
+            events.item_progress(event)
+
+    from mmw.providers.base import ProgressUnit
+    unit = ProgressUnit("files", provider.progress_unit(mirror).scope)
+    tracker = await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: ItemTracker(mirror, packages, unit, completed))
+    if items_session is not None:
+        await items_session.register_async(mirror.name, tracker.inventory)
+    if events.items_started:
+        events.items_started(tracker.inventory)
+    elif events.started:
+        events.started(len(packages))
+    summary = await download_mirror(
+        packages=packages, metadata=[], pool=pool, mirror_name=mirror.name,
+        source=mirror.source, max_connections=max_connections, executor=executor,
+        stop_event=stop_event, dry_run=dry_run, repair_metadata=witness,
+        progress=events.progress, phase_callback=events.phase, chunk_callback=events.chunk,
+        start_callback=events.download_started, finish_callback=events.download_finished,
+        sem=sem, downloads=downloads, file_progress=tracker.complete,
+    )
+    summary.items = tracker.counts
+    return summary
+
+
 async def classify_mirror(
     mirror: MirrorConfig,
     pool: Pool,
@@ -269,6 +326,7 @@ async def sync_mirror(
         file_progress=tracker.complete,
         downloads=downloads,
         finish_callback=events.download_finished,
+        track_failures=provider.retries_failures,
     )
     summary.items = tracker.counts
 

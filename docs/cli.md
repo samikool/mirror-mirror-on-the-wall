@@ -192,15 +192,6 @@ waits for queued blob writes and other writer work. Sync finishes only after
 the transaction commits, so publish and bundle see a complete old or new state.
 First syncs and full replacements still require substantial database writes.
 
-For a disposable-pool comparison of the old and new algorithms, run
-`python docs/tools/benchmark-reference-reconciliation.py --rows 100000 --repeats 3`.
-Use `--scratch-parent /path/on/hdd` to select a filesystem; each trial creates
-and removes its own temporary pool. The report includes write counts, timing,
-WAL allocation, and process memory. Caches are not flushed, and timings isolate
-reference reconciliation rather than the writer queue.
-See the [recorded measurements](internals/reference-reconciliation-benchmarks.md)
-for repeat-sync gains, memory usage, and full-replacement tradeoffs.
-
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--network`, `-n` |  | Verify only this network's mirrors |

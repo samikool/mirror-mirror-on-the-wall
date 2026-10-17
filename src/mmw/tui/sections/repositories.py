@@ -97,6 +97,7 @@ class RepositoriesPage(Page):
     SCROLLS = False
     HELP = ("Edit is the only way to [i]narrow[/i] a repository — adding can only widen it.\n"
             "s syncs the ticked repositories, or all of them when none are ticked.\n"
+            "r retries missing VS Code files using saved metadata, without marketplace discovery.\n"
             "Prune drops packages no index references; wipe deletes every downloaded byte.")
     BINDINGS = [
         Binding("space", "tick", "Tick"),
@@ -108,6 +109,7 @@ class RepositoriesPage(Page):
         Binding("p", "prune", "Prune pool", show=False),
         Binding("ctrl+w", "wipe", "Wipe pool", show=False),
         Binding("s", "sync", "Sync"),
+        Binding("r", "retry_failed", "Retry missing", show=False),
     ]
 
     def __init__(self):
@@ -128,6 +130,7 @@ class RepositoriesPage(Page):
         yield Button("Add", id="btn-repo-add", compact=True)
         yield Button("Edit", id="btn-repo-edit", compact=True)
         yield Button("Remove", id="btn-repo-remove", variant="error", compact=True)
+        yield Button("Retry missing", id="btn-repo-retry", compact=True)
         yield Button("Prune pool", id="btn-prune-pool", compact=True)
         yield Button("Wipe pool", id="btn-wipe-pool", variant="warning", compact=True)
 
@@ -476,3 +479,9 @@ class RepositoriesPage(Page):
         """Sync the ticked repositories — or everything when nothing is ticked."""
         selection = self.model.sync_request()
         self._start(lambda: self.app.start_sync(selection))
+
+    @on(Button.Pressed, "#btn-repo-retry")
+    def action_retry_failed(self) -> None:
+        """Use the same selection as sync, but read the saved VS Code index."""
+        selection = self.model.sync_request()
+        self._start(lambda: self.app.start_sync(selection, retry_failed=True))

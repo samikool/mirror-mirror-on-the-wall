@@ -249,6 +249,20 @@ def cmd_sync(
         typer.echo(f"Profile written to {prof}")
 
 
+@app.command("retry-failed")
+def cmd_retry_failed(
+    network: str = typer.Option(None, "--network", "-n", help="Limit recovery to this network"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Count missing files without downloading"),
+):
+    """Retry missing VS Code files from saved metadata, without a full sync.
+
+    Runs headless. Uses the existing snapshot and HTTP retry/backoff policy;
+    does not refresh the marketplace or update metadata.
+    """
+    from mmw.commands.retry_failed import run
+    raise typer.Exit(run(_cfg_dir(), network=network, dry_run=dry_run))
+
+
 @app.command("dry-run")
 def cmd_dry_run():
     """Show what would be downloaded without fetching anything."""

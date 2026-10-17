@@ -123,6 +123,8 @@ class TransferView(Vertical):
     def __init__(self, kind: TransferKind, network_name: str):
         super().__init__(id="transfer-view")
         self.kind = kind
+        self.incomplete = False
+        self.incomplete_allowed = False
         # Names the moved code (and its tests) already use.
         self.ID_PREFIX = kind.prefix
         self.VERB_ING = kind.verb_ing
@@ -273,6 +275,8 @@ class TransferView(Vertical):
                     *(getattr(r, "warnings", None) or [])]
         if warnings:
             text += f", {len(warnings)} warning(s)"
+        if self.incomplete_allowed:
+            text += ", incomplete content allowed"
         return text
 
     def summary(self) -> str:
@@ -302,7 +306,7 @@ class TransferView(Vertical):
         outcome = self.outcome
         if outcome == "error":
             return "error"
-        if outcome == "ok" and not self.error_count and not (
+        if outcome == "ok" and not self.error_count and not self.incomplete_allowed and not (
                 getattr(self._result, "dist_upgrade_warnings", None)
                 or getattr(self._result, "warnings", None)):
             return "information"

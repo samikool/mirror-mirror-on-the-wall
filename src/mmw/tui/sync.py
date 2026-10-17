@@ -23,7 +23,7 @@ from mmw.core.downloader import Status
 from mmw.core.pool import Pool
 from mmw.core.item_progress import ItemCounts, ItemInventory, ItemProgressSession
 from mmw.core.download_coordinator import DownloadCoordinator
-from mmw.core.sync_engine import KeySyncCoordinator, SyncEvents, classify_mirror, sync_mirror
+from mmw.core.sync_engine import KeySyncCoordinator, SyncEvents, classify_mirror, sync_mirror, retry_failed_mirror
 from mmw.tui.ui.widgets import ThemedLog
 
 
@@ -507,7 +507,7 @@ class StatsFooter(Static):
             f"[bold]{_fmt_size(fetch_size)}[/] estimated"
         )
 
-    def refresh_stats(self, stats: dict, cards: list[MirrorCard], items: list[ItemCounts] | None = None):
+    def refresh_stats(self, stats: dict | None, cards: list[MirrorCard], items: list[ItemCounts] | None = None):
         """Render the footer from an already-fetched snapshot.
 
         **This must never query the pool.** `pool.stats()` is a full table scan
@@ -521,9 +521,10 @@ class StatsFooter(Static):
                             + (f" ({c.failed:,} failed)" if c.failed else "") + "  [dim]│[/]  "
                             for c in items or [])
 
+        pool_text = (f"[bold]Pool[/]  {stats['packages']:,} files  "
+                     f"stored {_fmt_size(stats['total_size'])}  [dim]│[/]  ") if stats is not None else ""
         self.update(
-            item_text + f"[bold]Pool[/]  {stats['packages']:,} files  "
-            f"stored {_fmt_size(stats['total_size'])}  [dim]│[/]  "
+            item_text + pool_text +
             f"[bold]Transferred[/]  {_fmt_size(total_bytes)}  "
             f"@ {_fmt_speed(speed)}  [dim]│[/]  "
             f"[bold]Mirrors[/]  {sum(1 for c in cards if c._done)}/{len(cards)} done"
@@ -548,7 +549,7 @@ class SyncView(Vertical):
             super().__init__()
 
     def __init__(self, cfg: config.Config, mirrors: list[config.MirrorConfig] | None = None,
-                 dry_run: bool = False):
+                 dry_run: bool = False, *, retry_failed: bool = False):
         super().__init__(id="sync-view")
         self._cfg = cfg
         self._mirrors = sorted(mirrors if mirrors is not None else cfg.mirrors,
@@ -569,6 +570,7 @@ class SyncView(Vertical):
         self._pool_stats_inflight: bool = False
         self._sem: asyncio.Semaphore | None = None
         self._dry_run = dry_run
+        self._retry_failed = retry_failed
         self._items = ItemProgressSession(self._mirrors)
         self._downloads = DownloadCoordinator()
         self._complete_shown = False
@@ -769,7 +771,7 @@ class SyncView(Vertical):
         # Outside the try below: if scheduling the scan ever raises, the footer
         # must still render. Sharing one try meant a failure here silently froze
         # every number on screen with no error anywhere.
-        if self._pool and not self._dry_run:
+        if self._pool and not self._dry_run and not self._retry_failed:
             try:
                 self._maybe_refresh_pool_stats(now)
             except Exception:
@@ -786,7 +788,8 @@ class SyncView(Vertical):
                     self._item_label()
                 )
             elif self._pool:
-                footer.refresh_stats(self._pool_stats, cards, self._items.snapshot())
+                footer.refresh_stats(None if self._retry_failed else self._pool_stats,
+                                     cards, self._items.snapshot())
         except Exception:
             pass
 
@@ -848,7 +851,7 @@ class SyncView(Vertical):
         but only after one last pool scan has reached the footer: its totals
         are the run's final word, and the 5 s scan cadence can leave them
         stale by a whole interval."""
-        if self._pool is None or self._dry_run:
+        if self._pool is None or self._dry_run or self._retry_failed:
             self._render_footer()
             self._end_ticker()
             return
@@ -939,18 +942,20 @@ class SyncView(Vertical):
         )
 
         try:
-            summary = await sync_mirror(
+            runner = retry_failed_mirror if self._retry_failed else sync_mirror
+            extra = {} if self._retry_failed else {
+                "mirror_dir": self._cfg.settings.mirror_dir, "keys": self._keys_coord}
+            summary = await runner(
                 mirror,
                 pool=self._pool,
-                mirror_dir=self._cfg.settings.mirror_dir,
                 max_connections=self._cfg.settings.max_connections,
                 executor=self._executor,
                 events=events,
                 sem=self._sem,
                 stop_event=self._stop_event,
-                keys=self._keys_coord,
                 items_session=self._items,
                 downloads=self._downloads,
+                **extra,
             )
         except Exception as e:
             self.post_message(MirrorError(mirror.name, str(e) or type(e).__name__))

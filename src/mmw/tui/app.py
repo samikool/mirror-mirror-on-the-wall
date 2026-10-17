@@ -229,11 +229,11 @@ class MmwApp(ThemedApp):
         if gen == self._resolve_gen and self._resolve_section is not None:
             self._resolve_section.resolution_progress(text)
 
-    async def start_sync(self, selection, *, dry_run=False) -> None:
+    async def start_sync(self, selection, *, dry_run=False, retry_failed=False) -> None:
         """Resolve `selection` (off the loop — it lists upstream), then run it
         in the Sync section. One session at a time; a selection that resolves
         to nothing is reported, never widened to everything."""
-        from mmw.tui.repositories import resolve_selection
+        from mmw.tui.repositories import resolve_selection, resolve_retry_selection
 
         if self._resolving:
             self.notify("Already resolving sources — see Sync.", severity="warning")
@@ -264,7 +264,8 @@ class MmwApp(ThemedApp):
             section.begin_resolution()
             from mmw.core.sync_engine import SyncEvents
             events = SyncEvents(phase=lambda text: self.call_from_thread(self._resolution_phase, gen, text))
-            mirrors, messages = await asyncio.to_thread(resolve_selection, cfg, selection, progress=events.phase)
+            resolver = resolve_retry_selection if retry_failed else resolve_selection
+            mirrors, messages = await asyncio.to_thread(resolver, cfg, selection, progress=events.phase)
             if self.cfg is None or gen != self._resolve_gen:
                 if gen == self._resolve_gen:
                     section.end_resolution("Resolution cancelled; configuration was reset.")
@@ -275,7 +276,8 @@ class MmwApp(ThemedApp):
                 section.end_resolution("No sync units resolved. " + " ".join(messages))
                 return
             section.end_resolution("\n".join(message for message in messages if message.startswith("⚠")))
-            await section.start(cfg, mirrors, dry_run=dry_run, resolution_gen=gen)
+            await section.start(cfg, mirrors, dry_run=dry_run, resolution_gen=gen,
+                                retry_failed=retry_failed)
         except Exception as exc:
             if gen == self._resolve_gen and self._resolve_section is not None:
                 self._resolve_section.end_resolution(f"Resolution failed: {exc}")

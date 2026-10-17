@@ -87,6 +87,7 @@ class VscodeProvider(BaseProvider):
     )
     publishes = True
     carries_history = True
+    retries_failures = True
     site_per_base = False
     fields = (
         SourceField("name", "Name", "text"),
@@ -510,6 +511,53 @@ class VscodeProvider(BaseProvider):
                 metadata.append(_json_meta(updates.meta_path(ident, quality, build["version"]),
                                            build))
         return packages, metadata
+
+    def repair_packages(self, unit, pool, *, status_callback=None, stop_event=None):
+        """Missing assets from saved metadata; never resolve the marketplace.
+
+        Unknown-checksum failures have no package ref yet, so reading only
+        missing_for() cannot recover them. The saved JSON is the desired set.
+        """
+        saved = pool.retry_plan(unit.name)
+        if saved is not None:
+            token, failures = saved
+            return [PackageInfo(**f["package"]) for f in failures], token
+        if status_callback:
+            status_callback("Older mirror: discovering missing files once to initialize its retry list...")
+        refs = pool.ref_map(unit.name)
+        witness = pool.meta_refs(unit.name)
+        if not witness:
+            raise RuntimeError("no saved VS Code metadata; run a normal sync first")
+        held = {rel: path for rel, path, *_ in pool.mirror_files([unit.name])}
+        packages = {}
+        for path in sorted(witness):
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("retry discovery stopped")
+            try:
+                data = json.loads(Path(held[path]).read_bytes())
+                if not isinstance(data, dict):
+                    raise ValueError("expected a JSON object")
+                if path.startswith(".vscode-meta/extensions/"):
+                    assets = [(f["source"], "", data.get("extensionName", path))
+                              for v in data["versions"] for f in v["files"]]
+                elif "url" in data:
+                    assets = [(data["url"], data["sha256hash"], path)]
+                else:
+                    continue  # malicious-extension list has no package URLs
+                for url, checksum, name in assets:
+                    rel = asset_repo_path(url)
+                    if rel is None:
+                        raise ValueError(f"unsafe asset URL: {url!r}")
+                    if rel in held:
+                        continue
+                    checksum = checksum or refs.get(rel, "")
+                    packages[rel] = PackageInfo(
+                        name=f"{name}: {rel}", url=url, checksum=checksum,
+                        checksum_type="sha256", size=0, repo_path=rel,
+                        filename=rel.rsplit("/", 1)[-1], checksum_known=bool(checksum))
+            except (KeyError, OSError, ValueError, TypeError) as exc:
+                raise RuntimeError(f"cannot repair from {path}: {exc}") from exc
+        return list(packages.values()), witness
 
     def verify_witness(self, unit, pool):
         """Re-read the unit's pooled JSON and check the pool holds every file it

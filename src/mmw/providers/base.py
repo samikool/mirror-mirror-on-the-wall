@@ -142,10 +142,20 @@ class BaseProvider(ABC):
     by_hash: bool = False   # publish index files under by-hash/SHA256/ too
     publishes: bool = True  # publish/bundle support
     carries_history: bool = False  # fetch_all reads `history`; refetches must pass it too
+    # Sync saves this provider's failed downloads, and `repair_packages`
+    # retries them against the unit's saved `meta` refs (`mmw retry-failed`).
+    retries_failures: bool = False
     fields: tuple[SourceField, ...] = ()
 
     def progress_unit(self, mirror) -> ProgressUnit:
         return ProgressUnit()
+
+    def repair_packages(self, unit, pool, *, status_callback=None, stop_event=None):
+        """`(packages, witness)` to retry without asking upstream: the saved
+        failures and their retry token, or — for a unit synced before failures
+        were saved — every missing file and the `pool.meta_refs` it came from.
+        Only for providers with `retries_failures`."""
+        raise NotImplementedError(f"{self.name} cannot retry failed downloads")
 
     def dimension(self, name: str) -> Dimension | None:
         return next((d for d in self.dimensions if d.name == name), None)

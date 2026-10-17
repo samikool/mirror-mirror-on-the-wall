@@ -58,6 +58,7 @@ class PublishChoice:
     the network's root (None) or another directory."""
     snapshot: str | None = None
     root: Path | None = None
+    allow_incomplete: bool = False
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class BundleChoice:
     from_last: bool = True
     from_ref: str | None = None
     to_ref: str = "now"
+    allow_incomplete: bool = False
 
 
 class PublishFlows:
@@ -210,6 +212,7 @@ class PublishFlows:
             return True
         bad = self._incomplete_lines([r for r in verify_results if r is not None])
         if bad:
+            view.incomplete = True
             view.finish_note(f"incomplete mirrors — nothing {view.VERB_PAST.lower()}",
                              ["  [$mmw-error]Cannot continue — incomplete mirrors:[/]",
                               *(f"[$mmw-error]{escape(line)}[/]" for line in bad)])
@@ -242,7 +245,10 @@ class PublishFlows:
             selected_mirrors = await asyncio.to_thread(self._selected_mirrors_for, net)
             mirror_dir = self.cfg().settings.mirror_dir
             verify_results, per_mirror, _ = await self._run_pre_publish(
-                net, selected_mirrors, mirror_dir, view)
+                net, selected_mirrors, mirror_dir, view,
+                include_verify=not choice.allow_incomplete)
+            if choice.allow_incomplete:
+                self._allow_incomplete(view)
             if self._ends_early(verify_results, view):
                 return
             await self._execute_publish(net, per_mirror, view)
@@ -292,11 +298,20 @@ class PublishFlows:
                 mirror_dir = self.cfg().settings.mirror_dir
                 verify_results, _, _ = await self._run_pre_publish(
                     net, selected_mirrors, mirror_dir, view, include_file_counts=False,
+                    include_verify=not choice.allow_incomplete,
                 )
+                if choice.allow_incomplete:
+                    self._allow_incomplete(view)
                 if self._ends_early(verify_results, view):
                     return
             await self._execute_bundle(net, view, choice)
         await self._guarded(view, "Bundle", flow)
+
+    @staticmethod
+    def _allow_incomplete(view) -> None:
+        view.incomplete_allowed = True
+        view.write("  [$mmw-warn]⚠ Continuing with incomplete content by request. "
+                   "Missing files will be unavailable to clients.[/]")
 
     @staticmethod
     def _stopped_early(view) -> None:

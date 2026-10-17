@@ -264,9 +264,10 @@ class BaseProvider(ABC):
 
     # ── verify / publish ─────────────────────────────────────────────────────
 
-    def verify_witness(self, unit, pool):
+    def verify_witness(self, unit, pool, say=None):
         """An independent second opinion parsed from pooled metadata →
-        `mmw.core.verify.VerifyResult`, or None when the provider has none."""
+        `mmw.core.verify.VerifyResult`, or None when the provider has none.
+        `say(text)`, when given, names each slow step as it starts."""
         return None
 
     def published_index(self, dst_root: Path, unit) -> Path | None:

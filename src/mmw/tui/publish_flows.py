@@ -134,11 +134,19 @@ class PublishFlows:
                         detail += f" · {vr.timing_summary()}"
                     view.mirror_done(n, m.name, detail, ok)
 
+                def _verify(m):
+                    # A VS Code unit is one "mirror" and most of the wait:
+                    # its steps show beside the count.
+                    say = ((lambda text: record("", f"verify:{m.name}: {text}"))
+                           if record else None)
+                    return verify_mirror(m, mirror_dir, pool, say=say)
+
                 verify_results = await _run_per_mirror(
-                    selected_mirrors,
-                    lambda m: verify_mirror(m, mirror_dir, pool),
-                    _report_verify, stop,
+                    selected_mirrors, _verify, _report_verify, stop,
                 )
+                if record:
+                    record("", "verify:")
+
                 if stopped():
                     return verify_results, file_counts, dry_result
 

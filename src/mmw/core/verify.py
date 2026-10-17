@@ -85,11 +85,13 @@ def verify_mirror(
     pool: Pool,
     deep: bool = False,
     rehash: bool = False,
+    say=None,
 ) -> VerifyResult:
     """Check that the pool can actually serve everything this mirror promises.
 
     `deep` stats every blob; `rehash` (which implies `deep`) also re-reads and
-    hashes them. Both are off by default — see the module docstring.
+    hashes them. Both are off by default — see the module docstring. `say(text)`
+    names each slow step as it starts.
     """
     from mmw.providers import get_provider
     try:
@@ -99,10 +101,12 @@ def verify_mirror(
             mirror.name, mirror.provider, error=f"unknown provider {mirror.provider!r}"
         )
     started = perf_counter()
-    result = provider.verify_witness(mirror, pool) or VerifyResult(mirror.name, mirror.provider)
+    result = provider.verify_witness(mirror, pool, say=say) or VerifyResult(mirror.name, mirror.provider)
     if not result.timings:
         result.timings["witness"] = perf_counter() - started
 
+    if say:
+        say("checking every wanted file is pooled…")
     started = perf_counter()
     _check_refs(pool, mirror.name, result)
     result.timings["refs"] = perf_counter() - started

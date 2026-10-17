@@ -8,6 +8,7 @@ except at a section's root, where there is nothing to go back to.
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual import events
 from textual.events import Resize
 from textual.screen import Screen
 from textual.widgets import Footer, Static
@@ -69,6 +70,16 @@ class Page(Screen):
             finally:
                 self._flow_busy = False
         self.run_worker(run(), group="page-flow", exit_on_error=False)
+
+    async def _on_message(self, message) -> None:
+        # Quitting right after a page is pushed: its message loop had not
+        # started, so shutdown closes its widgets one by one while its Mount
+        # and ScreenResume are still queued — and every handler that queries
+        # them would raise NoMatches and crash the exit. Textual has no public
+        # hook for messages already queued.
+        if not self.app.is_running and isinstance(message, (events.Mount, events.ScreenResume)):
+            return
+        await super()._on_message(message)
 
     def compose_body(self) -> ComposeResult:
         yield from ()

@@ -232,6 +232,18 @@ def test_the_snapshots_button_opens_the_page(two_mirrors):  # noqa: F811
     _run(cfg, mirror_dir.parent, check)
 
 
+def test_quitting_before_the_snapshots_page_mounted_never_crashes(two_mirrors):  # noqa: F811
+    """Quit with the page's Mount still queued: shutdown removes its widgets
+    first, so on_mount found no `#snap-table` and the exit crashed."""
+    from mmw.tui.snapshot_pages import SnapshotsPage
+    cfg, net, mirror_dir = two_mirrors
+
+    async def check(app, pilot):
+        app.push_screen(SnapshotsPage(net))     # and leave at once — no pause
+    for _ in range(3):
+        _run(cfg, mirror_dir.parent, check)
+
+
 def test_leaving_the_snapshots_page_open_at_exit_never_crashes(two_mirrors):  # noqa: F811
     """The network pane's stats load could land while the app shut down; the
     rebuild mounted beside children removal could no longer detach (they

@@ -217,9 +217,14 @@ class PublishFlows:
         if view.stop_event.is_set():
             self._stopped_early(view)
             return True
-        bad = self._incomplete_lines([r for r in verify_results if r is not None])
+        checked = [r for r in verify_results if r is not None]
+        bad = self._incomplete_lines(checked)
         if bad:
             view.incomplete = True
+            view.mirror_summary = sorted(
+                ((r.complete, r.mirror_name,
+                  f"complete · {r.total:,} files" if r.complete else r.error or r.describe())
+                 for r in checked), key=lambda row: row[0])
             view.finish_note(f"incomplete mirrors — nothing {view.VERB_PAST.lower()}",
                              ["  [$mmw-error]Cannot continue — incomplete mirrors:[/]",
                               *(f"[$mmw-error]{escape(line)}[/]" for line in bad)])

@@ -130,8 +130,11 @@ def test_b_asks_from_and_to_on_networks_then_bundles(two_mirrors):  # noqa: F811
 def test_incomplete_mirrors_end_it_without_publishing(two_mirrors, monkeypatch):  # noqa: F811
     import mmw.core.verify as verify
     cfg, net, mirror_dir = two_mirrors
+    names = [m.name for m in cfg.mirrors]
+    # One complete, one not: the popup lists every checked mirror, broken first.
     monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p: verify.VerifyResult(
-        m.name, m.provider, total=3, present=2, missing_count=1))
+        m.name, m.provider, total=3, present=3 if m.name == names[0] else 2,
+        missing_count=0 if m.name == names[0] else 1))
 
     async def check(app, pilot):
         await press_publish(app, pilot)
@@ -139,6 +142,14 @@ def test_incomplete_mirrors_end_it_without_publishing(two_mirrors, monkeypatch):
                      and app.screen.query(TransferView))
         view = app.screen.query_one(TransferView)
         await _finished(pilot, view)
+        await _until(pilot, lambda: isinstance(app.screen, ConfirmDialog)
+                        and bool(app.screen.query("#confirm")))  # mounted, not just pushed
+        listed = str(app.screen.query_one("#confirm-details Label").render())
+        assert listed.index(f"✗ {names[1]}") < listed.index(f"✓ {names[0]}")
+        assert "1 of 2 mirrors incomplete" in str(
+            app.screen.query_one("#confirm-message").render())
+        await pilot.press("escape")                          # cancel: publish nothing
+        await _until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
         assert view.outcome == "note" and "incomplete" in _status(app)
     _run(cfg, mirror_dir.parent, check)
     assert not net.root.exists()
@@ -189,7 +200,8 @@ def test_quit_while_publishing_asks_and_no_keeps_it(two_mirrors, slow_publish): 
         await _until(pilot, lambda: app.active_transfer is not None
                      and app.active_transfer._transferring)
         await pilot.press("q")
-        await _until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+        await _until(pilot, lambda: isinstance(app.screen, ConfirmDialog)
+                        and bool(app.screen.query("#confirm")))  # mounted, not just pushed
         await pilot.press("escape")
         await _until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
         assert app.is_running and app.active_transfer.running

@@ -9,6 +9,7 @@ from mmw.core.pool import Pool
 from mmw.core import verify
 from mmw.tui.app import MmwApp
 from mmw.tui.publish_flows import BundleChoice, PublishChoice
+from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.widgets import Button
 from test_bundle_verify_gate import _cfg_with_incomplete_mirror
 from waiting import settle, until
@@ -43,25 +44,28 @@ def test_anyway_button_continues_after_refusal_with_warning(tmp_path, monkeypatc
         app = MmwApp(cfg, tmp_path, initial_section="publish")
         async with app.run_test(size=(120, 40)) as pilot:
             await settle(pilot)
-            assert not app.screen.query_one("#btn-transfer-force", Button).display
             await app.start_transfer(verb, net, choice=choice)
             first = app.screen.view
-            await until(pilot, lambda: app.screen.query_one("#btn-transfer-force", Button).display)
+            await until(pilot, lambda: isinstance(app.screen, ConfirmDialog)
+                        and bool(app.screen.query("#confirm")))  # mounted, not just pushed
             assert first.outcome == "note" and first.incomplete
             assert not alternate.exists()
             assert not list(net.bundle_dir.glob("*.tar*"))
-            force = app.screen.query_one("#btn-transfer-force", Button)
-            assert str(force.label) == ("Publish anyway" if verb == "publish" else "Bundle anyway")
-            force.press()
+            dialog = app.screen
+            listed = str(dialog.query_one("#confirm-details Label").render())
+            assert f"✗ {unit.name}:" in listed
+            confirm = dialog.query_one("#confirm", Button)
+            assert str(confirm.label) == ("Publish anyway" if verb == "publish" else "Bundle anyway")
+            confirm.press()
             await until(pilot, lambda: app.active_transfer is not None
                         and app.active_transfer is not first)
             second = app.active_transfer
             await until(pilot, lambda: second._done_displayed)
+            assert not isinstance(app.screen, ConfirmDialog)
             assert second.outcome == "ok", second.summary()
             assert second.severity == "warning"
             assert "incomplete content allowed" in second.summary()
             assert app.screen._last_request[2].allow_incomplete
-            assert not app.screen.query_one("#btn-transfer-force", Button).display
             if verb == "publish":
                 assert app.screen._last_request[2].root == alternate
             else:
@@ -89,3 +93,26 @@ def test_anyway_button_continues_after_refusal_with_warning(tmp_path, monkeypatc
         assert _files(applied) == _files(net.root)
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
         assert len(pool.snapshots(net.name)) == (1 if verb == "bundle" else 0)
+
+
+def test_cancel_in_the_incomplete_dialog_publishes_nothing(tmp_path):
+    cfg = _cfg_with_incomplete_mirror(tmp_path)
+    net = cfg.networks[0].model_copy(update={"root": tmp_path / "pub"})
+    cfg = cfg.model_copy(update={"networks": [net]})
+
+    async def scenario():
+        app = MmwApp(cfg, tmp_path, initial_section="publish")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await settle(pilot)
+            await app.start_transfer("publish", net)
+            first = app.screen.view
+            await until(pilot, lambda: isinstance(app.screen, ConfirmDialog)
+                        and bool(app.screen.query("#confirm")))  # mounted, not just pushed
+            await pilot.press("escape")
+            await settle(pilot)
+            assert not isinstance(app.screen, ConfirmDialog)
+            assert app.active_transfer in (None, first)
+            assert first.outcome == "note"
+
+    asyncio.run(scenario())
+    assert not net.root.exists()

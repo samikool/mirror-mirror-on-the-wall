@@ -144,6 +144,9 @@ class TransferView(Vertical):
         super().__init__(id="transfer-view")
         self.kind = kind
         self.incomplete = False
+        # Every checked mirror as (ok, name, detail), incomplete first — set
+        # when the completeness check refuses.
+        self.mirror_summary: list[tuple[bool, str, str]] = []
         self.incomplete_allowed = False
         # Names the moved code (and its tests) already use.
         self.ID_PREFIX = kind.prefix

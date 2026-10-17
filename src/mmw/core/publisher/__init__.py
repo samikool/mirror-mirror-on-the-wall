@@ -122,7 +122,7 @@ def publish_network(
         finally:
             sink.close()
     if not (stop_event and stop_event.is_set()):
-        _write_record(network.root, network.name, sink, result, full, network.prune)
+        _write_record(network.root, network.name, sink, result, full, network.prune, progress)
         _record_published(mirror_dir, network.root, network.name, "live")
 
     return result
@@ -148,7 +148,7 @@ def _open_record(root: Path, network: str) -> "dict[str, str] | None":
 
 
 def _write_record(root: Path, network: str, sink, result, full: bool,
-                  prune: bool = True) -> None:
+                  prune: bool = True, progress=None) -> None:
     """Record what this publish laid out — only when it finished cleanly, and
     only when it pruned: without pruning, files dropped upstream stay in the
     tree but not in the record, and a later pruning publish trusting it would
@@ -163,6 +163,9 @@ def _write_record(root: Path, network: str, sink, result, full: bool,
             "no publish record written because of the errors above — the next publish "
             "checks every file again")
         return
+    if progress:
+        # A million-row record takes a while to sort and write: say so.
+        progress("", "step:saving the publish record…")
     write_manifest(Path(root) / RECORD_PATH, ManifestHeader(network, now_stamp(), None, full),
                    sorted(sink.manifest_rows))
 
@@ -346,7 +349,7 @@ def publish_snapshot(
     if other.total_files or other.errors:
         result.mirrors.append(other)
     if not (stop_event and stop_event.is_set()):
-        _write_record(root, network.name, sink, result, full, network.prune)
+        _write_record(root, network.name, sink, result, full, network.prune, progress)
         _record_published(mirror_dir, root, network.name, snap.stamp)
     return result
 

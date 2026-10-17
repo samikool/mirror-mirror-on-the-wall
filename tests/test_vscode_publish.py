@@ -188,3 +188,21 @@ def test_the_workbench_alerts_are_published(tmp_path, up, docker):  # noqa: F811
     cfg = config.Config(settings=config.Settings(mirror_dir=mirror_dir), sources=[src])
     publish_network(config.NetworkConfig(name="lab", root=tmp_path / "pub"), cfg, mirror_dir)
     assert (tmp_path / "pub/main.vscode-cdn.net/core/stable.json").is_file()
+
+
+def test_every_step_after_the_files_says_so_as_it_starts(tmp_path, up, docker):  # noqa: F811
+    # The panel sat at 100% for a minute with nothing on screen: the gallery
+    # spoke only once its work was done, and saving the record not at all.
+    src = _vs(kinds=["extensions"], platforms=["linux-x64"], qualities=["stable"])
+    mirror_dir = tmp_path / "m"
+    _sync(mirror_dir, src)
+    cfg = config.Config(settings=config.Settings(mirror_dir=mirror_dir), sources=[src])
+    for run in ("built", "reused"):
+        said = []
+        publish_network(config.NetworkConfig(name="lab", root=tmp_path / "pub"), cfg, mirror_dir,
+                        progress=lambda rel, status: said.append(status))
+        steps = [s for s in said if s.startswith(("gallery:", "step:"))]
+        assert steps[0] == "gallery:checking the extension catalog…", run
+        assert steps[-1] == "step:saving the publish record…", run
+        work = [s for s in steps if s.startswith("gallery:")][1]
+        assert work.endswith("…") and ("reusing" in work) == (run == "reused"), work

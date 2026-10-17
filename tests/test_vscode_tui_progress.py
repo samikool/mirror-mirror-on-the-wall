@@ -238,3 +238,11 @@ def test_the_gallery_step_says_what_it_is_doing():
     assert view._linked == 0 and any('120,610' in line for line in view._log_pending)
     view.record('vscode-gallery', 'gallery:done')
     assert view._phase == ''
+
+
+def test_a_publish_step_shows_while_it_runs():
+    from mmw.tui.transfer import TransferView, PUBLISH
+    view = TransferView(PUBLISH, 'test')
+    view.record('', 'step:saving the publish record…')
+    assert view._phase == 'saving the publish record…'
+    assert any('saving the publish record' in line for line in view._log_pending)

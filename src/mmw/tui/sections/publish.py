@@ -10,6 +10,7 @@ from dataclasses import replace
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.markup import escape
 from textual.widgets import Static
 
 from mmw.core import config
@@ -42,13 +43,11 @@ class PublishSection(Page):
     def compose_actions(self) -> ComposeResult:
         yield Button("Discard", id="btn-transfer-discard", compact=True)
         yield Button("Publish now", id="btn-transfer-go", variant="primary", compact=True)
-        yield Button("Publish anyway", id="btn-transfer-force", variant="warning", compact=True)
         yield Button("Stop", id="btn-transfer-stop", variant="warning", compact=True,
                      disabled=True)
 
     def on_mount(self) -> None:
         self._decision_buttons(False)
-        self.query_one("#btn-transfer-force", Button).display = False
 
     def _decision_buttons(self, show: bool) -> None:
         for bid in ("#btn-transfer-discard", "#btn-transfer-go"):
@@ -60,7 +59,6 @@ class PublishSection(Page):
         if self.view is not None:
             await self.view.remove()          # the finished one's panel
         self._last_request = (verb, net, choice)
-        self.query_one("#btn-transfer-force", Button).display = False
         self.view = TransferView(VERBS[verb], net.name)
         self.query_one("#publish-idle").display = False
         await self.query_one("#page-body").mount(self.view)
@@ -113,9 +111,6 @@ class PublishSection(Page):
         view = event.view
         self._decision_buttons(False)
         self.query_one("#btn-transfer-stop", Button).disabled = True
-        force = self.query_one("#btn-transfer-force", Button)
-        force.display = view.incomplete
-        force.label = "Bundle anyway" if view.kind is BUNDLE else "Publish anyway"
         self.refresh_bindings()
         kind = {"information": "ok", "error": "error"}.get(view.severity, "info")
         self.set_status(view.summary(), kind)
@@ -125,15 +120,35 @@ class PublishSection(Page):
                     timeout=10 if view.severity == "information" else 20)
         self.app.transfers_finished += 1
         self.app.transfer_finished_signal.publish(None)
+        if view.incomplete:
+            self._ask_force(view)
 
-    @on(Button.Pressed, "#btn-transfer-force")
-    async def _force_pressed(self) -> None:
-        if self.view is None or not self.view.incomplete or self._last_request is None:
-            return
-        # One deliberate click after reviewing the failed completeness check.
-        # Hide immediately so repeated input cannot launch two transfers.
-        self.view.incomplete = False
-        self.query_one("#btn-transfer-force", Button).display = False
+    def _ask_force(self, view: TransferView) -> None:
+        """The completeness check refused, having checked every mirror: list
+        them all, incomplete first, and let one deliberate Yes run it again
+        with incomplete content allowed."""
+        rows = view.mirror_summary
+        bad = sum(1 for ok, _, _ in rows if not ok)
+        details = "\n".join(
+            f"[$mmw-ok]✓[/] {escape(name)}: [dim]{escape(detail)}[/]" if ok
+            else f"[$mmw-error]✗ {escape(name)}[/]: {escape(detail)}"
+            for ok, name, detail in rows)
+        verb = "Bundle" if view.kind is BUNDLE else "Publish"
+        message = (f"{bad} of {len(rows)} mirrors incomplete. {verb} anyway? "
+                   "Missing files will be unavailable to clients.")
+
+        async def answer(yes: bool | None) -> None:
+            if yes:
+                await self._force(view)
+        self.app.push_screen(ConfirmDialog(
+            f"{view.network_name}: incomplete mirrors", message,
+            f"{verb} anyway", "Cancel", confirm_variant="warning", details=details), answer)
+
+    async def _force(self, view: TransferView) -> None:
+        if view is not self.view or not view.incomplete or self._last_request is None:
+            return                              # another transfer replaced it
+        # Cleared first so a second answer cannot launch two transfers.
+        view.incomplete = False
         verb, net, choice = self._last_request
         verb = "bundle" if verb == "bundle" else "publish"
         choice = choice or (BundleChoice() if verb == "bundle" else PublishChoice())

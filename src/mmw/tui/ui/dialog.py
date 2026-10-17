@@ -15,7 +15,7 @@ class ConfirmDialog(ModalScreen[bool]):
 
     def __init__(self, title: str, message: str, confirm_label: str = "Confirm",
                  cancel_label: str = "Cancel", confirm_variant: str = "error",
-                 cancel_variant: str = "primary"):
+                 cancel_variant: str = "primary", details: str = ""):
         super().__init__()
         self._title = title
         self._message = message
@@ -23,10 +23,14 @@ class ConfirmDialog(ModalScreen[bool]):
         self._cancel_label = cancel_label
         self._confirm_variant = confirm_variant
         self._cancel_variant = cancel_variant
+        self._details = details           # markup; scrolls when long
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-box"):
             yield Label(self._title, id="confirm-title", markup=False)
+            if self._details:
+                with VerticalScroll(id="confirm-details"):
+                    yield Label(self._details)
             yield Label(self._message, id="confirm-message")
             with Horizontal(id="confirm-bar"):
                 yield Button(self._cancel_label, variant=self._cancel_variant, id="cancel",

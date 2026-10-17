@@ -115,6 +115,8 @@ ConfirmDialog #confirm-box {
 }
 ConfirmDialog #confirm-title { width: 1fr; color: $error; text-style: bold; }
 ConfirmDialog #confirm-message { width: 1fr; margin: 1 0; }
+ConfirmDialog #confirm-details { height: auto; max-height: 16; margin-top: 1; }
+ConfirmDialog #confirm-details Label { width: 1fr; }
 ConfirmDialog #confirm-bar { height: 1; align: right middle; }
 ConfirmDialog #confirm-bar Button { margin-left: 2; }
 

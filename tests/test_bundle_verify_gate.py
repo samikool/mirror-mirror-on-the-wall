@@ -100,8 +100,13 @@ def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
             await until(pilot, lambda: app.screen.query("#btn-pick-go"))
             app.screen.query_one("#btn-pick-go", Button).press()
             await _settle(pilot)
-            # The refusal is on the Publish panel now, not a pop-up.
+            # The refusal is on the Publish panel, and a popup offers to
+            # bundle anyway: cancel it.
             from mmw.tui.transfer import TransferView
+            from mmw.tui.ui.dialog import ConfirmDialog
+            await until(pilot, lambda: isinstance(app.screen, ConfirmDialog)
+                        and bool(app.screen.query("#confirm")))  # mounted, not just pushed
+            await pilot.press("escape")
             await until(pilot, lambda: app.screen.query(TransferView)
                         and app.screen.query(TransferView).first()._done_displayed)
             # Completion and the page-status render arrive in separate UI

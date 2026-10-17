@@ -31,15 +31,6 @@ from mmw.tui.ui.wizard import Wizard
 from mmw.tui.ui.widgets import Button, JumpSelectionList
 
 
-def parse_port(text: str) -> "int | None":
-    """A TCP port typed as ASCII digits, else None. `str.isdigit()` takes
-    `²` (which `int()` then refuses) and `int()` takes non-ASCII digits."""
-    if not (text.isascii() and text.isdecimal()):
-        return None
-    port = int(text)
-    return port if 1 <= port <= 65535 else None
-
-
 @dataclass
 class _Axis:
     """One source's dimension pickers inside a network editor."""
@@ -215,11 +206,8 @@ class NetworkForm(Vertical):
                             hint="HTTPS for every mirror hostname. Bundles carry the cert and its "
                                  "private key, and wait for the cert to be signed."),
                 ToggleField("nginx config", net.nginx if net else True, id="nginx-switch",
-                            hint="One nginx/mirror.conf, a server block per host."),
-                TextField("Gallery port", str(net.gallery_port if net else 8765),
-                          id="inp-gallery-port",
-                          hint="VS Code: the gallery container's port on 127.0.0.1 "
-                               "(nginx proxies to it)."),
+                            hint="nginx (and VS Code's gallery) in Docker: image, "
+                                 "compose.yaml, mirror.conf."),
             )
 
     def on_mount(self) -> None:
@@ -237,10 +225,6 @@ class NetworkForm(Vertical):
                 self.query_one("#" + axis.block_id()).display = axis.source in self._checked_sources
             except Exception:
                 pass
-        self.query_one("#field-inp-gallery-port").display = self.has_gallery()
-
-    def has_gallery(self) -> bool:
-        return any(self._providers.get(s) == "vscode" for s in self._checked_sources)
 
     @on(SelectionList.SelectedChanged, "#repo-checklist")
     def _repo_checklist_changed(self, event: SelectionList.SelectedChanged) -> None:
@@ -323,10 +307,6 @@ class NetworkForm(Vertical):
         if problem:
             return None, problem, "repo-checklist" if not selects else "inp-net-name"
         bundle = self._value("inp-bundle-dir")
-        port = (parse_port(self._value("inp-gallery-port") or "8765") if self.has_gallery()
-                else self._network.gallery_port if self._network else 8765)
-        if port is None:
-            return None, "Gallery port must be a number from 1 to 65535.", "inp-gallery-port"
         return config.NetworkConfig.model_validate({
             **(self._network.model_dump() if self._network else {}),
             "name": self.network_name(),
@@ -337,7 +317,6 @@ class NetworkForm(Vertical):
             "dist_upgrade": self._flag("du-switch"),
             "certs": self._flag("certs-switch"),
             "nginx": self._flag("nginx-switch"),
-            "gallery_port": port,
         }), None, None
 
 

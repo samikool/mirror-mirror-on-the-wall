@@ -372,9 +372,9 @@ def test_snapshot_network_with_vscode(snap_compare):
     source = config.VscodeSource(provider='vscode', kinds=['server'], platforms=['linux-x64'])
     from mmw.providers import get_provider
     units = get_provider('vscode').expand(source)
-    net = config.NetworkConfig(name='lab', gallery_port=9876)
+    net = config.NetworkConfig(name='lab')
     async def show_options(pilot):
-        await until(pilot, lambda: pilot.app.screen.query('#inp-gallery-port'))
-        pilot.app.screen.query_one('#inp-gallery-port').focus()
+        await until(pilot, lambda: pilot.app.screen.query('#nginx-switch'))
+        pilot.app.screen.query_one('#nginx-switch').focus()
     assert snap_compare(_app(lambda: EditNetworkPage(net, [*_mirrors(), *units])),
                         terminal_size=SNAP_SIZE, run_before=show_options)

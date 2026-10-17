@@ -372,11 +372,10 @@ def walk_network(
             from mmw.providers import extra_hosts
             extra = upstream_file_hosts(upstream_paths) + extra_hosts(network, published_mirrors)
             from mmw.core.publisher.nginx import split_for_nginx
-            static, sites = split_for_nginx(published_mirrors, network.gallery_port)
+            static, sites = split_for_nginx(published_mirrors)
             for rel, data in deployment_nginx_files(static, network_name=network.name,
                                                    tls_include=TLS_INCLUDE if network.certs else None,
-                                                   extra_hosts=extra, sites=sites,
-                                                   port=network.gallery_port).items():
+                                                   extra_hosts=extra, sites=sites).items():
                 sink.write(rel, data)
                 nginx_rels.add(rel)
 

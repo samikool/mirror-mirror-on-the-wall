@@ -97,13 +97,10 @@ certs = true                   # VS Code only speaks HTTPS — see TLS below
 source    = "https://marketplace.visualstudio.com"
 kinds     = ["extensions", "server"]
 platforms = ["linux-x64"]
-
-# gallery_port = 8765          # optional standalone gallery host port
 ```
 
 One network can carry apt repositories and VS Code together: one tree, one
 bundle, one nginx file, one certificate.
-In network Add/Edit, **Gallery port** appears when VS Code is selected.
 Deselecting VS Code hides the field and preserves its saved value. Network
 details show the served hostnames, including both Marketplace wildcards.
 
@@ -214,7 +211,7 @@ docker compose -f /path/to/lab-compose.yaml up -d --force-recreate
 
 The network folder mounts at `/srv/mmw` inside nginx. Both containers use a
 shared bridge network, and nginx proxies to `gallery:8080`; no gallery host
-port is published. Do not start `vscode-gallery/compose.yaml` as well.
+port is published.
 Host mappings default to `80:80` and `443:443`; edit the left side for other
 host ports and configure clients accordingly. Both copied publishes and applied bundles carry TLS assets in private
 `.mmw/tls/`; see `nginx/README.md` for signing and setup.

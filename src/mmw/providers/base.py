@@ -308,7 +308,7 @@ class BaseProvider(ABC):
 
     site_per_base: bool = True   # nginx: one static block per unit `mirror_base`
 
-    def nginx_sites(self, units, port: int) -> list:
+    def nginx_sites(self, units) -> list:
         """Server blocks beyond the per-`mirror_base` ones (`Site`s)."""
         return []
 

@@ -355,16 +355,18 @@ def test_ordinary_network_names_still_validate():
         assert config.NetworkConfig(name=name).name == name
 
 
-def test_a_retired_bundle_compress_key_loads_and_is_dropped_on_save(tmp_path):
-    """Bundles are plain tars now; a config that still says
-    `bundle_compress = false` must keep loading, and lose the key on save."""
+@pytest.mark.parametrize("line", ["bundle_compress = false", "gallery_port = 9100"])
+def test_a_retired_network_key_loads_and_is_dropped_on_save(tmp_path, line):
+    """Bundles are plain tars now, and the VS Code gallery runs inside the
+    nginx Compose stack; a config that still says either must keep loading,
+    and lose the key on save."""
     (tmp_path / "mmw.toml").write_text(
         '[settings]\nmirror_dir = "mirror"\n\n'
-        '[[networks]]\nname = "lab"\nbundle_compress = false\n')
+        f'[[networks]]\nname = "lab"\n{line}\n')
     cfg = config.load(tmp_path)
     assert [n.name for n in cfg.networks] == ["lab"]
     config.save(cfg, tmp_path)
-    assert "bundle_compress" not in (tmp_path / "mmw.toml").read_text()
+    assert line.split()[0] not in (tmp_path / "mmw.toml").read_text()
 
 
 def test_max_connections_must_be_at_least_one():

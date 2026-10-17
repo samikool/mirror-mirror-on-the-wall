@@ -457,6 +457,11 @@ class TransferView(Vertical):
                 phase = status.split(":", 1)[1]
                 self._phase = "" if phase == "done" else f"Gallery image · {IMAGE} · {phase}"
                 self._log_pending.append(f"  [dim]Gallery image · {IMAGE} · {escape(phase)}[/]")
+            elif status.startswith("step:"):
+                message = status.split(":", 1)[1]
+                self._phase = message
+                if message:
+                    self._log_pending.append(f"  [dim]# {escape(message)}[/]")
             elif status.startswith("gallery:"):
                 message = status.split(":", 1)[1]
                 self._phase = "" if message == "done" else f"Gallery · {message}"

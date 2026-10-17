@@ -88,18 +88,19 @@ def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
     """catalog.json's bytes and the publisher hosts it names — rebuilt only
     when the metadata changed (or `full`), else the copy in `cache_dir`."""
     from mmw.core.bulk_read import read_all
+    if say:
+        say("checking the extension catalog…")
     rows = _extension_meta(pool, units)
     digest = hashlib.sha256(_CODE.encode())
     for unit_name, rel, _, checksum in rows:
         digest.update(f"{unit_name}\0{rel}\0{checksum}\n".encode())
     key = digest.hexdigest()[:32]
     data_path, hosts_path = cache_dir / f"catalog-{key}.json", cache_dir / f"catalog-{key}.hosts"
-    if not full:
+    if not full and data_path.exists() and hosts_path.exists():
+        if say:
+            say(f"extension catalog unchanged ({len(rows):,} descriptions) — reusing it…")
         try:
-            data, hosts = data_path.read_bytes(), hosts_path.read_text().split()
-            if say:
-                say(f"extension catalog unchanged ({len(rows):,} descriptions) — reused")
-            return data, hosts
+            return data_path.read_bytes(), hosts_path.read_text().split()
         except OSError:
             pass
     if say:

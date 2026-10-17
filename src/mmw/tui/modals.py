@@ -11,10 +11,11 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, ProgressBar
 
+from mmw.tui.ui.hit_test import LiveHitTest
 from mmw.tui.ui.widgets import Button
 
 
-class DeleteProgressModal(ModalScreen[None]):
+class DeleteProgressModal(LiveHitTest, ModalScreen[None]):
     BINDINGS = [Binding("escape", "noop", "", show=False)]
 
     def __init__(self, title: str, dirs: list[Path]):

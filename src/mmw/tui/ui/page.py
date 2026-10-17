@@ -13,6 +13,7 @@ from textual.events import Resize
 from textual.screen import Screen
 from textual.widgets import Footer, Static
 
+from mmw.tui.ui.hit_test import LiveHitTest
 from mmw.tui.ui.sidebar import Sidebar
 
 # Below this the sidebar becomes a one-row tab strip: at 80 columns an
@@ -22,7 +23,7 @@ NARROW_WIDTH = 100
 _STATUS_KINDS = ("info", "ok", "error")
 
 
-class Page(Screen):
+class Page(LiveHitTest, Screen):
     TITLE = ""
     HELP = ""               # notes `?` shows under the page's keys (markup)
     SCROLLS = True          # False: the body is one 1fr list/tree, which must not scroll

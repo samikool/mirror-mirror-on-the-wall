@@ -100,6 +100,8 @@ class MirrorCard(Static, can_focus=True):
         super().__init__()
         self._mirror = mirror
         self._status_text = "Classifying packages..."  # shown until the first phase message
+        self._status_live = False
+        self._status_at = 0.0
         self._total = 0
         self._item_label = "packages"
         self._logical_progress = False
@@ -161,6 +163,10 @@ class MirrorCard(Static, can_focus=True):
         # Remember it: flush()'s spinner re-renders #pkg every tick until the
         # first package event, and must show the current phase, not a stale one.
         self._status_text = status
+        # A step that starts after the packages (the database save) has no
+        # package lines to show it is alive: flush() spins over it too.
+        self._status_live = self._start is not None
+        self._status_at = time.monotonic()
         try:
             self.query_one("#pkg", Label).update(f"  [dim]{escape(status)}[/]")
         except Exception:
@@ -259,6 +265,7 @@ class MirrorCard(Static, can_focus=True):
                 self.query_one("#pbar", ProgressBar).advance(n)
                 if last_pkg:
                     self.query_one("#pkg", Label).update(f"  → {escape(last_pkg)}")
+                    self._status_live = False
             except Exception:
                 pass
 
@@ -292,9 +299,12 @@ class MirrorCard(Static, can_focus=True):
             self._downloaded + self._pooled + self._skipped + self._failed +
             self._pending_downloaded + self._pending_pooled + self._pending_skipped + self._pending_failed
         ) == 0
-        if no_progress and not self._done:
+        if (no_progress or self._status_live) and not self._done:
+            running = now - self._status_at
+            took = f" · {running:.0f}s" if self._status_live and running >= 2 else ""
             try:
-                self.query_one("#pkg", Label).update(f"  [dim]{spin} {escape(self._status_text)}[/]")
+                self.query_one("#pkg", Label).update(
+                    f"  [dim]{spin} {escape(self._status_text)}{took}[/]")
             except Exception:
                 pass
 

@@ -279,7 +279,8 @@ def bundle_network(
     write_manifest(manifest_path, sink.written_header or header, sink.manifest_rows)
     (target.parent / "apply.py").write_bytes(apply_script_bytes())
     if network.certs:
-        (target.parent / "sign.py").write_bytes(tls_files["sign.py"])
+        for script in ("sign.py", "make-ca.py"):
+            (target.parent / script).write_bytes(tls_files[script])
     result.checksum_path = _write_checksum_file(target)
     result.manifest_path = manifest_path
     result.sent = sink.sent

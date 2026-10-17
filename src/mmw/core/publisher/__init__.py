@@ -117,7 +117,8 @@ def publish_network(
             if not (stop_event and stop_event.is_set()):
                 prepare_tree(network.root, network, cfg)
                 if network.prune and not network.certs:
-                    (network.root / "sign.py").unlink(missing_ok=True)
+                    for script in ("sign.py", "make-ca.py"):
+                        (network.root / script).unlink(missing_ok=True)
         finally:
             sink.close()
     if not (stop_event and stop_event.is_set()):

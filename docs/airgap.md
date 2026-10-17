@@ -315,13 +315,23 @@ With `certs = true`, both published trees and bundles carry the private key,
 certificate signing request, OpenSSL config and signing tools. Publish installs
 them directly; `apply.py` installs a bundle's copies in the same
 `{root}/.mmw/tls/` layout (key 0600, directory 0700; outside every web root).
-Both include top-level `apply.py` and `sign.py`, so a published tree copied
+Both include top-level `apply.py`, `sign.py` and `make-ca.py`, so a published tree copied
 to a drive can be signed and deployed without the original mirror pool.
 Until there is a signed certificate, TLS setup reports:
 
 ```
 HTTPS waits for a signed certificate: python3 sign.py --ca CA.crt --ca-key CA.key /srv/www/lab
 ```
+
+No CA yet? Make one once, where it will live — `make-ca.py` sits beside
+`sign.py`, and prints how to trust `ca.crt` on each kind of client:
+
+```bash
+python3 make-ca.py --out ~/site-ca --name "Lab CA"    # --encrypt asks for a passphrase
+```
+
+It never overwrites an existing CA. Keep `ca.key` private and backed up:
+losing it means re-trusting a new CA on every client.
 
 On the airgapped side, sign every mirror at once — name mirror roots, a
 directory of them, or `.csr` files; `sign.py` sits beside each bundle (and in
@@ -359,7 +369,7 @@ If your CA is reachable from the connected side instead,
 `mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs there and the
 certificate rides every bundle too.
 
-If you do not run a CA, turn off the client checks that use HTTPS instead —
+If you would rather not run a CA at all, turn off the client checks that use HTTPS instead —
 for the release-upgrade check, `Prompt=never` in
 `/etc/update-manager/release-upgrades`.
 

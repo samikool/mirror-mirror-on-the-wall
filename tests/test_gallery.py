@@ -113,6 +113,27 @@ def test_fallback_asset_url_redirects_to_the_stored_file(served):
     assert c.get("/_apis/public/gallery/publisher/golang/extension/go/9.9.9/assetbyname/X").status_code == 404
 
 
+def test_an_installed_extensions_update_check_gets_its_gallery_object(served):
+    """VS Code asks /vscode/{publisher}/{name}/latest for every installed
+    extension; without an answer it logged "Failed to fetch" twice per
+    extension before falling back to a query."""
+    c, tmp = served
+    r = c.get("/_apis/public/gallery/vscode/ms-python/python/latest",
+              headers={"Accept": "application/json;api-version=7.2-preview"})
+    assert r.status_code == 200 and r.headers["access-control-allow-origin"] == "*"
+    body = r.json()
+    assert (body["extensionName"], body["versions"][0]["version"]) == ("python", "1.0.0")
+    assert body["versions"][0]["files"]
+    assert c.get("/_apis/public/gallery/vscode/MS-Python/Python/latest").json() == body
+    missing = c.get("/_apis/public/gallery/vscode/nobody/nothing/latest")
+    assert missing.status_code == 404 and missing.headers["access-control-allow-origin"] == "*"
+    # A new publish's catalog is what the next check sees.
+    (tmp / "catalog.json").write_text(json.dumps([_ext("nobody", "nothing")]))
+    os.utime(tmp / "catalog.json", (time.time() + 5, time.time() + 5))
+    assert c.get("/_apis/public/gallery/vscode/nobody/nothing/latest").status_code == 200
+    assert c.get("/_apis/public/gallery/vscode/ms-python/python/latest").status_code == 404
+
+
 def test_healthz_and_unknown_paths(served):
     c, _ = served
     assert c.get("/healthz").status_code == 200

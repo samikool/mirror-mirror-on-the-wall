@@ -73,6 +73,7 @@ def test_nginx_serves_static_hosts_and_proxies_the_rest(tmp_path, up, docker):  
     assert "location = /_apis/public/gallery/extensionquery {" in conf
     market = conf.split("server_name marketplace.visualstudio.com;")[1].split("server {")[0]
     assert "location = / {" in market               # the extension list
+    assert "location /_apis/public/gallery/vscode/ {" in market   # update checks
     upd = conf.split("server_name update.code.visualstudio.com;")[1].split("server {")[0]
     assert "proxy_pass http://gallery:8080;" in upd
     compose = (root / "nginx/compose.yaml").read_text()
@@ -187,7 +188,9 @@ def test_the_workbench_alerts_are_published(tmp_path, up, docker):  # noqa: F811
     _sync(mirror_dir, src)
     cfg = config.Config(settings=config.Settings(mirror_dir=mirror_dir), sources=[src])
     publish_network(config.NetworkConfig(name="lab", root=tmp_path / "pub"), cfg, mirror_dir)
-    assert (tmp_path / "pub/main.vscode-cdn.net/core/stable.json").is_file()
+    for rel in ("core/stable.json", "extensions/chat.json", "core/profile-templates.json",
+                "mcp/servers.json"):
+        assert (tmp_path / "pub/main.vscode-cdn.net" / rel).is_file(), rel
 
 
 def test_every_step_after_the_files_says_so_as_it_starts(tmp_path, up, docker):  # noqa: F811

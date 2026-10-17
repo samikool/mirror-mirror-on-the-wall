@@ -27,6 +27,13 @@ def test_an_exact_proxied_path_on_an_otherwise_empty_host():
     assert "location = /_apis/public/gallery/extensionquery {" in text
 
 
+def test_proxy_prefixes_stay_prefixes_beside_exact_paths():
+    text = _conf(sites=[Site("marketplace.visualstudio.com", proxy=("/",), exact=True,
+                             proxy_prefixes=("/_apis/public/gallery/vscode/",))])
+    assert "location = / {" in text
+    assert "location /_apis/public/gallery/vscode/ {" in text
+
+
 def test_sites_get_the_tls_block_too():
     text = _conf(sites=[Site("a.example", root="a.example")], tls=("/c.pem", "/k.pem"))
     assert text.count("listen 443 ssl;") == 1 and "ssl_certificate /c.pem;" in text

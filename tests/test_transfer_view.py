@@ -163,3 +163,33 @@ def test_themed_log_resolves_theme_variables_once_per_theme():
             log.write("[$mmw-ok]after[/]")
             assert len(calls) == 2
     asyncio.run(go())
+
+
+def _mirror_bar(view):
+    from textual.widgets import ProgressBar
+    return view.query_one(f"#{view.ID_PREFIX}-mirror-pbar", ProgressBar)
+
+
+def test_a_group_count_from_the_publisher_fills_the_mirror_bar():
+    # VS Code publishes per host, a name the pre-publish counts never saw.
+    async def check(app, view, pilot):
+        view.begin(10, {"vscode": 10})
+        view.notify_mirror_start("update.code.visualstudio.com", 1, 2, count=4)
+        view.record("update.code.visualstudio.com/a", "linked")
+        await _ticks(pilot)
+        assert _mirror_bar(view).total == 4 and _mirror_bar(view).progress == 1
+    _run(check)
+
+
+def test_a_finished_panel_leaves_no_bar_bouncing():
+    async def check(app, view, pilot):
+        from textual.widgets import ProgressBar
+        view.begin(0)                            # no totals known at all
+        view.notify_mirror_start("h", 1, 1)
+        view.record("h/a", "linked")
+        await _ticks(pilot)
+        view.mark_done(SimpleNamespace(linked=1, skipped=0, errors=[]))
+        await _ticks(pilot)
+        bars = list(view.query(ProgressBar))
+        assert bars and all(b.total is not None and b.percentage == 1 for b in bars)
+    _run(check)

@@ -136,10 +136,17 @@ def test_progress_names_every_group_and_never_restarts_its_count(tmp_path, up, d
     src = _vs(kinds=["server"], platforms=["linux-x64"], qualities=["stable"])
     _sync(mirror_dir, src)
     cfg = apt_cfg.model_copy(update={"sources": [*apt_cfg.sources, src]})
-    calls = []
+    calls, counts = [], {}
+    def started(name, i, n, count=None):
+        calls.append((name, i, n))
+        counts[name] = count
     publish_network(config.NetworkConfig(name="lab", root=tmp_path / "pub"), cfg, mirror_dir,
-                    mirror_start_callback=lambda name, i, n: calls.append((name, i, n)))
+                    mirror_start_callback=started)
     assert "vscode.download.prss.microsoft.com" in [c[0] for c in calls]
+    # Hosts are not mirrors: the pre-publish counts cannot name them, so each
+    # host says how many files it holds — what its progress bar fills to.
+    host = tmp_path / "pub/vscode.download.prss.microsoft.com"
+    assert counts[host.name] == sum(1 for f in host.rglob("*") if f.is_file())
     assert [c[1] for c in calls] == list(range(1, len(calls) + 1))
     assert calls[-1][2] == len(calls)
 

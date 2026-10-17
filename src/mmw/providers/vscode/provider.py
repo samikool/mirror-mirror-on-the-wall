@@ -299,10 +299,12 @@ class VscodeProvider(BaseProvider):
         for idx, host in enumerate(sorted(by_host)):
             if ctx.stop_event and ctx.stop_event.is_set():
                 break
-            if ctx.mirror_start_callback:
-                ctx.mirror_start_callback(host, idx + 1, len(by_host))
-            result = MirrorPublishResult(mirror_name=host)
             host_rows = by_host[host]
+            if ctx.mirror_start_callback:
+                # A host is no unit the pre-publish counts know by name, so
+                # its own count goes with it.
+                ctx.mirror_start_callback(host, idx + 1, len(by_host), count=len(host_rows))
+            result = MirrorPublishResult(mirror_name=host)
             ordered = [r for r in host_rows if r[3] != KIND_RELEASE] + \
                       [r for r in host_rows if r[3] == KIND_RELEASE]
             if not _link_rows(ordered, host, ctx.sink, result, ctx.progress, ctx.stop_event,

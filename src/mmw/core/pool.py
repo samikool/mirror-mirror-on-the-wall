@@ -13,6 +13,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import islice
+from operator import itemgetter
 from pathlib import Path
 
 
@@ -1271,10 +1272,13 @@ class Pool:
             # it on the index entry before the join to packages.
             kind_sql += " AND r.repo_path >= ? AND r.repo_path < ?"
             params.extend((prefix, prefix + "\U0010ffff"))
-        return (f"SELECT DISTINCT r.repo_path, p.filename, p.size, r.kind, r.checksum "
+        # No DISTINCT / ORDER BY: `mirror_files` does both in Python. SQLite
+        # did them with a temp B-tree over every row — 9.8 s of a 1M-file
+        # listing against 3.7 s — and an index in path order does not save
+        # it (7.8 s): with several mirrors it must still merge and dedupe.
+        return (f"SELECT r.repo_path, p.filename, p.size, r.kind, r.checksum "
                 f"FROM refs r JOIN packages p{self._packages_by} ON p.checksum = r.checksum "
-                f"WHERE r.mirror_name IN ({m_ph}){kind_sql} "
-                f"ORDER BY r.repo_path", params)
+                f"WHERE r.mirror_name IN ({m_ph}){kind_sql}", params)
 
     def mirror_files(
         self,
@@ -1295,6 +1299,10 @@ class Pool:
             return []
         with self._read() as _c:
             rows = _c.execute(*self._mirror_files_sql(mirror_names, kinds, prefix)).fetchall()
+        if len(mirror_names) > 1:
+            # One mirror's rows are already distinct (refs' primary key).
+            rows = list(dict.fromkeys(rows))
+        rows.sort(key=itemgetter(0))
         blob = self._blob_strs()
         return [(rel, blob(cs, fn), size, kind, cs) for rel, fn, size, kind, cs in rows]
 

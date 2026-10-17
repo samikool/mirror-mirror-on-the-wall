@@ -179,3 +179,12 @@ def test_code_visualstudio_com_goes_to_the_gallery_and_its_certificate(tmp_path,
     md = (root / "vscode-gallery/VSCODE.md").read_text()
     assert "- `code.visualstudio.com`" in md
     assert "also add the five exact hostnames above" in md
+
+
+def test_the_workbench_alerts_are_published(tmp_path, up, docker):  # noqa: F811
+    src = _vs(kinds=["desktop"], platforms=["linux-x64"], qualities=["stable"])
+    mirror_dir = tmp_path / "m"
+    _sync(mirror_dir, src)
+    cfg = config.Config(settings=config.Settings(mirror_dir=mirror_dir), sources=[src])
+    publish_network(config.NetworkConfig(name="lab", root=tmp_path / "pub"), cfg, mirror_dir)
+    assert (tmp_path / "pub/main.vscode-cdn.net/core/stable.json").is_file()

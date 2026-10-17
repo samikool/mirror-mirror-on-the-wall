@@ -33,6 +33,8 @@ def _client() -> httpx.Client:
 
 
 MALICIOUS_URL = "https://main.vscode-cdn.net/extensions/marketplace.json"
+# The workbench's startup alerts. Upstream has one for stable only (insider 404s).
+ALERTS_URL = "https://main.vscode-cdn.net/core/stable.json"
 IMAGE_CACHE = "vscode-gallery-image"      # under mirror_dir: the saved python image
 
 
@@ -511,6 +513,9 @@ class VscodeProvider(BaseProvider):
                     size=0, repo_path=rel, filename=rel.rsplit("/", 1)[-1]))
                 metadata.append(_json_meta(updates.meta_path(ident, quality, build["version"]),
                                            build))
+        if kind == "desktop" and quality == "stable":
+            metadata.append(MetadataFile(url=ALERTS_URL, repo_path=asset_repo_path(ALERTS_URL),
+                                         is_release=True))
         return packages, metadata
 
     def repair_packages(self, unit, pool, *, status_callback=None, stop_event=None):

@@ -170,6 +170,7 @@ class TransferView(Vertical):
         self._mirror_total_count = 0
         self._mirror_total_mirrors = 0
         self._phase = ""
+        self._prep_label = self._prep_shown = ""     # set_phase's label; the step shown
         self._pending_mirror_change: tuple | None = None
         self._speed_ema: float = 0.0
         self._last_speed_time: float = 0.0
@@ -339,6 +340,7 @@ class TransferView(Vertical):
 
     def set_phase(self, label: str, total: int) -> None:
         p = self.ID_PREFIX
+        self._prep_label, self._prep_shown = label, ""
         self.query_one(f"#{p}-mirror-label", Label).update(f"  {escape(label)}")
         bar = self.query_one(f"#{p}-pbar", ProgressBar)
         bar.total = total or None
@@ -460,6 +462,10 @@ class TransferView(Vertical):
                 phase = status.split(":", 1)[1]
                 self._phase = "" if phase == "done" else f"Gallery image · {IMAGE} · {phase}"
                 self._log_pending.append(f"  [dim]Gallery image · {IMAGE} · {escape(phase)}[/]")
+            elif status.startswith("verify:"):
+                # Many mirrors verify at once: the line shows the latest step,
+                # and the log keeps only each mirror's ✓/✗ line.
+                self._phase = status.split(":", 1)[1]
             elif status.startswith("step:"):
                 message = status.split(":", 1)[1]
                 self._phase = message
@@ -598,7 +604,15 @@ class TransferView(Vertical):
 
         total_done = linked + skipped
         if not self._transferring:
-            # Preparing: only the log and the footer move.
+            # Preparing: the log, the footer, and the step a long check is on.
+            if self._prep_label and phase != self._prep_shown:
+                self._prep_shown = phase
+                step = f"  [dim]·  {escape(phase)}[/]" if phase else ""
+                try:
+                    self.query_one(f"#{p}-mirror-label", Label).update(
+                        f"  {escape(self._prep_label)}{step}")
+                except Exception:
+                    pass
             self._flush(pending, now)
             self._complete_once()
             return

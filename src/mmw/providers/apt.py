@@ -299,7 +299,7 @@ class AptFlatProvider(_AptCommon):
     def _parse_index(self, text: str) -> list[PackageInfo]:
         return _parse_packages_flat(text, "")
 
-    def verify_witness(self, unit, pool):
+    def verify_witness(self, unit, pool, say=None):
         from mmw.core.verify import VerifyResult, _check_checksums, _resolve_first
         result = VerifyResult(unit.name, unit.provider)
         pkg_file = _resolve_first(pool, unit.name, ["Packages.xz", "Packages.gz", "Packages"])
@@ -552,7 +552,7 @@ class AptProvider(_AptCommon):
         write_upgrade_md(ctx.sink, ctx.network, ctx.pool, paths,
                          ctx.result.dist_upgrade_warnings, mirrors=ctx.units)
 
-    def verify_witness(self, unit, pool):
+    def verify_witness(self, unit, pool, say=None):
         from mmw.core.verify import VerifyResult, _check_checksums, _resolve_first
         result = VerifyResult(unit.name, unit.provider)
         suite = unit.suite or ""

@@ -132,7 +132,7 @@ def test_incomplete_mirrors_end_it_without_publishing(two_mirrors, monkeypatch):
     cfg, net, mirror_dir = two_mirrors
     names = [m.name for m in cfg.mirrors]
     # One complete, one not: the popup lists every checked mirror, broken first.
-    monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p: verify.VerifyResult(
+    monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p, **_: verify.VerifyResult(
         m.name, m.provider, total=3, present=3 if m.name == names[0] else 2,
         missing_count=0 if m.name == names[0] else 1))
 
@@ -239,7 +239,7 @@ def test_incomplete_mirrors_are_toasted_and_escaped(two_mirrors, monkeypatch):  
     """A verify error carrying `[/…` used to crash the 60 Hz tick (MarkupError)."""
     import mmw.core.verify as verify
     cfg, net, mirror_dir = two_mirrors
-    monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p: verify.VerifyResult(
+    monkeypatch.setattr(verify, "verify_mirror", lambda m, d, p, **_: verify.VerifyResult(
         m.name, m.provider, error="cannot read [/srv/x] index"))
 
     async def check(app, pilot):
@@ -256,7 +256,7 @@ def test_a_dry_run_waiting_for_you_is_toasted_when_you_are_elsewhere(two_mirrors
     cfg, net, mirror_dir = two_mirrors
     gate = threading.Event()
 
-    def held_verify(m, d, p):
+    def held_verify(m, d, p, **_):
         gate.wait(5)
         return verify.VerifyResult(m.name, m.provider, total=1, present=1)
     monkeypatch.setattr(verify, "verify_mirror", held_verify)
@@ -303,7 +303,7 @@ def test_stop_while_preparing_stops_the_remaining_checks(two_mirrors, monkeypatc
     cfg, net, mirror_dir = two_mirrors
     seen, gate = [], threading.Event()
 
-    def slow_verify(m, d, p):
+    def slow_verify(m, d, p, **_):
         seen.append(m.name)
         gate.wait(5)
         return verify.VerifyResult(m.name, m.provider, total=1, present=1)
@@ -346,3 +346,31 @@ def test_quit_dialog_is_honest_about_a_bundle_writing_its_archive():
 
     from mmw.tui.ui import base
     assert "archive" in inspect.getsource(base.ThemedApp.action_quit)
+
+
+def test_a_long_check_shows_its_step_beside_the_count(two_mirrors, monkeypatch):  # noqa: F811
+    """A VS Code unit is one "mirror" and most of the verify: its steps show
+    on the label while the count sits still, and go when the checks end."""
+    import mmw.core.verify as verify
+    cfg, net, mirror_dir = two_mirrors
+    gate = threading.Event()
+
+    def stepping_verify(m, d, p, say=None):
+        say(f"reading 3 new descriptions ({m.name})…")
+        gate.wait(5)
+        return verify.VerifyResult(m.name, m.provider, total=1, present=1)
+    monkeypatch.setattr(verify, "verify_mirror", stepping_verify)
+
+    async def check(app, pilot):
+        await press_publish(app, pilot)
+        view = await _wait_view(app, pilot)
+        label = lambda: str(view.query_one(f"#{view.ID_PREFIX}-mirror-label").render())  # noqa: E731
+        await _until(pilot, lambda: "reading 3 new descriptions" in label())
+        assert label().startswith("  Verifying mirrors  ·  ")
+        log = view.query_one(f"#{view.ID_PREFIX}-log")
+        assert not any("reading 3 new" in line.text for line in log.lines), \
+            "steps belong on the label, not in the log"
+        gate.set()
+        await _finished(pilot, view)
+        assert "reading 3 new descriptions" not in label()
+    _run(cfg, mirror_dir.parent, check)

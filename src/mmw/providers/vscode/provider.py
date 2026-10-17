@@ -612,7 +612,7 @@ class VscodeProvider(BaseProvider):
                 raise RuntimeError(f"cannot repair from {path}: {exc}") from exc
         return list(packages.values()), witness
 
-    def verify_witness(self, unit, pool):
+    def verify_witness(self, unit, pool, say=None):
         """Re-read the unit's pooled JSON and check the pool holds every file it
         names — an independent second opinion on the refs."""
         from mmw.core.bulk_read import read_all
@@ -621,6 +621,8 @@ class VscodeProvider(BaseProvider):
         started = perf_counter()
         # Keep desired metadata separate from available blobs: an absent package
         # row must not make its metadata disappear from the witness check.
+        if say:
+            say("listing pool references…")
         refs = pool.ref_map(unit.name)
         held = {rel: path for rel, path, *_ in pool.mirror_files([unit.name])}
         result.timings["lookup"] = perf_counter() - started
@@ -632,7 +634,10 @@ class VscodeProvider(BaseProvider):
         # every publish). Each named file is still checked against the pool.
         memo_path = pool.pool_dir.parent / vpub.META_CACHE / f"witness-{unit.name}.json.gz"
         memo = _load_witness_memo(memo_path)
-        bodies = read_all(held[p] for p in metas if p in held and refs[p] not in memo)
+        unread = [held[p] for p in metas if p in held and refs[p] not in memo]
+        if say:
+            say(f"reading {len(unread):,} new descriptions ({len(metas):,} in all)…")
+        bodies = read_all(unread)
         named_by: dict[str, list[str]] = {}
         for path in metas:
             checksum = refs[path]
@@ -656,6 +661,8 @@ class VscodeProvider(BaseProvider):
         if bodies or len(named_by) != len(memo):
             _save_witness_memo(memo_path, named_by)
         result.timings["metadata"] = perf_counter() - started
+        if say:
+            say(f"checking {len(expected):,} files are in the pool…")
         started = perf_counter()
         result.total = len(expected)
         result.present = len(expected.intersection(held))

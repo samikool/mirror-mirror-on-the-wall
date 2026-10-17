@@ -290,8 +290,11 @@ def test_the_witness_reads_only_metadata_it_has_not_seen(tmp_path, reads):
         first = vs.verify_witness(unit, pool)
         assert (first.total, first.present, len(reads)) == (8, 8, 8)
         reads.clear()
-        again = vs.verify_witness(unit, pool)
+        steps = []
+        again = vs.verify_witness(unit, pool, say=steps.append)
         assert (again.total, again.present, reads) == (8, 8, [])
+        assert steps == ["listing pool references…", "reading 0 new descriptions (8 in all)…",
+                         "checking 8 files are in the pool…"]
     with Pool(tmp_path) as pool:
         rows = _metas(pool, unit, 8) + _metas(pool, unit, 9, start=8)
         pool.reconcile_refs(unit.name, rows[:-1])        # e8's VSIX is not pooled

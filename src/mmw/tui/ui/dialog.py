@@ -7,10 +7,11 @@ from textual.markup import escape
 from textual.screen import ModalScreen
 from textual.widgets import Label
 
+from mmw.tui.ui.hit_test import LiveHitTest
 from mmw.tui.ui.widgets import Button
 
 
-class ConfirmDialog(ModalScreen[bool]):
+class ConfirmDialog(LiveHitTest, ModalScreen[bool]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(self, title: str, message: str, confirm_label: str = "Confirm",
@@ -51,7 +52,7 @@ class ConfirmDialog(ModalScreen[bool]):
         self.dismiss(True)
 
 
-class HelpDialog(ModalScreen[None]):
+class HelpDialog(LiveHitTest, ModalScreen[None]):
     """The keys of the page in front of you, plus that page's notes.
 
     The keys are handed in from the live bindings (`MmwApp.action_help`), so

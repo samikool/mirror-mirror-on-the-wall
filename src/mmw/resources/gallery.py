@@ -367,9 +367,21 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404)
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # A client that hangs up mid-answer — VS Code cancelling a search as
+        # the next keystroke sends another, a browser leaving the long list —
+        # is routine, not a fault worth a traceback.
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            log(f"{client_address[0]} hung up before the answer was sent")
+            return
+        super().handle_error(request, client_address)
+
+
 def make_server(store: Store, bind: str, port: int) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((bind, port), Handler)
-    server.daemon_threads = True
+    server = Server((bind, port), Handler)
     server.store = store
     return server
 

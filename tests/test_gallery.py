@@ -261,3 +261,19 @@ def test_the_front_page_is_gzipped_when_asked_and_follows_the_catalog(served):
     page = c.get("/", headers={"Host": "marketplace.visualstudio.com"}).text
     assert "new.thing" in page and "golang.go" not in page
     assert "&lt;b&gt;x&lt;/b&gt;" in page          # descriptions are escaped
+
+
+def test_a_client_hanging_up_is_one_log_line_not_a_traceback(tmp_path, capsys):
+    # VS Code drops a search when the next keystroke sends another.
+    server = gallery.make_server(gallery.Store(str(tmp_path)), "127.0.0.1", 0)
+    try:
+        for exc in (BrokenPipeError(32, "Broken pipe"), ConnectionResetError(104, "reset")):
+            try:
+                raise exc
+            except ConnectionError:
+                server.handle_error(None, ("172.26.0.3", 60480))
+        err = capsys.readouterr().err
+        assert "Traceback" not in err and "-----" not in err
+        assert err.count("172.26.0.3 hung up") == 2
+    finally:
+        server.server_close()

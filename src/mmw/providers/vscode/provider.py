@@ -563,6 +563,7 @@ class VscodeProvider(BaseProvider):
     def verify_witness(self, unit, pool):
         """Re-read the unit's pooled JSON and check the pool holds every file it
         names — an independent second opinion on the refs."""
+        from mmw.core.bulk_read import read_all
         from mmw.core.verify import VerifyResult
         result = VerifyResult(unit.name, unit.provider)
         started = perf_counter()
@@ -573,9 +574,14 @@ class VscodeProvider(BaseProvider):
         result.timings["lookup"] = perf_counter() - started
         started = perf_counter()
         expected: set[str] = set()
-        for path in sorted(p for p in refs if p.startswith(".vscode-meta/")):
+        metas = sorted(p for p in refs if p.startswith(".vscode-meta/"))
+        bodies = read_all(held[p] for p in metas if p in held)
+        for path in metas:
             try:
-                data = json.loads(Path(held[path]).read_bytes())
+                body = bodies[held[path]]
+                if isinstance(body, OSError):
+                    raise body
+                data = json.loads(body)
             except (KeyError, OSError, ValueError):
                 result.error = f"unreadable {path}"
                 result.timings["metadata"] = perf_counter() - started

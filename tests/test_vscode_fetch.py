@@ -206,3 +206,38 @@ def test_verify_witness_rejects_unreadable_metadata(tmp_path, damage):
         r = get_provider("vscode").verify_witness(unit, pool)
     assert not r.complete
     assert r.error == f"unreadable {rel}"
+
+
+def test_witness_and_catalog_read_the_metadata_with_reads_in_flight(tmp_path, monkeypatch):
+    # 120k metadata JSONs one at a time is a seek each on a spinning disk.
+    import threading
+    import time
+    from mmw.core import bulk_read
+    from mmw.core.pool import KIND_META, Pool
+    from mmw.providers.vscode import publish as vpub
+    _, unit = _unit("extensions")
+    with Pool(tmp_path) as pool:
+        rows = []
+        for i in range(8):
+            body = json.dumps({"publisher": {"publisherName": "p"}, "extensionName": f"e{i}",
+                               "versions": [{"version": "1", "files": []}]}).encode()
+            cs = hashlib.sha256(body).hexdigest()
+            pool.add(body, cs, "sha256", f"e{i}.json", len(body))
+            rows.append((cs, f".vscode-meta/extensions/linux-x64/p.e{i}.json", KIND_META))
+        pool.reconcile_refs(unit.name, rows)
+    real, lock, live, peak = bulk_read._read_bytes, threading.Lock(), [0], [0]
+
+    def tracked(path):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(0.05)
+        with lock:
+            live[0] -= 1
+        return real(path)
+    monkeypatch.setattr(bulk_read, "_read_bytes", tracked)
+    with Pool(tmp_path, read_only=True) as pool:
+        r = get_provider("vscode").verify_witness(unit, pool)
+        assert not r.error and peak[0] > 1
+        peak[0] = 0
+        assert len(vpub.catalog(pool, [unit])) == 8 and peak[0] > 1

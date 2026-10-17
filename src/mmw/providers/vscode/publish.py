@@ -34,14 +34,19 @@ def _version_key(v: dict):
 def catalog(pool, units) -> list[dict]:
     """One gallery object per extension: the universal unit's builds plus every
     selected platform's, newest first, each (version, platform) once."""
+    from mmw.core.bulk_read import read_all
     merged: dict[str, dict] = {}
     for unit in units:
         if unit.dims.get("kind") != "extensions":
             continue
-        for rel in sorted(pool.ref_map(unit.name)):
-            if not rel.startswith(".vscode-meta/extensions/"):
+        held = {rel: path for rel, path, *_ in pool.mirror_files([unit.name])
+                if rel.startswith(".vscode-meta/extensions/")}
+        bodies = read_all(held.values())
+        for rel in sorted(held):
+            try:
+                obj = json.loads(bodies[held[rel]])
+            except (TypeError, ValueError):     # an OSError in place of bytes, or bad JSON
                 continue
-            obj = _read_json(pool, unit.name, rel)
             if not obj:
                 continue
             key = f"{obj['publisher']['publisherName']}.{obj['extensionName']}".lower()

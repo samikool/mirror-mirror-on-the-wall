@@ -84,6 +84,8 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
     from mmw.core.item_progress import ItemProgressSession
     items = ItemProgressSession(mirrors)
 
+    from mmw.core.db_warm import warm_for_job
+    warm_for_job(mirror_dir, say=lambda message: typer.echo(f"  {message}"))
     try:
         pool_cm = Pool(mirror_dir)
     except OSError as e:

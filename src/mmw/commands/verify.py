@@ -47,6 +47,8 @@ def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
     else:
         mirrors = resolve.available_mirrors(cfg, mirror_dir)
 
+    from mmw.core.db_warm import warm_for_job
+    warm_for_job(mirror_dir, say=lambda message: print(f"  {message}"))
     pool = Pool(mirror_dir, read_only=True)
     try:
         return [verify_mirror(m, mirror_dir, pool, deep=deep, rehash=rehash) for m in mirrors]

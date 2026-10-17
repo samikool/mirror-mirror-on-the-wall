@@ -1,7 +1,7 @@
 {
   "bundled": {
     "UPGRADE.md": "3dd78484a5f66ebc0f92bb2d88986dd5e79cbf2ea911b0f3de64019c34b9da15",
-    "apply.py": "a347c9543be07902de1a20576808acf7f3c3236d4dc201a2a7eaa682a7a01bb8",
+    "apply.py": "4a5e8022a31525a91647bd1d43366474eb23ce491891747ae2b7b087b9fe1bbc",
     "archive.ubuntu.com/ubuntu/dists/jammy/InRelease": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
     "archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages.gz": "955e2af9c538a4ec47557459cd60a7d7423e3c0b4e718b803d8c899f5de283d3",
     "archive.ubuntu.com/ubuntu/dists/noble/InRelease": "dbe65b3483a9d7bf8ba14af6c9015b6ce0cf9525580ce76aed6ca9027f711161",
@@ -20,7 +20,7 @@
   },
   "published": {
     "UPGRADE.md": "6ea688162dd724ded13dd5ec82fcedb6aa2591c2cd567c6f55114adb16b63394",
-    "apply.py": "a347c9543be07902de1a20576808acf7f3c3236d4dc201a2a7eaa682a7a01bb8",
+    "apply.py": "4a5e8022a31525a91647bd1d43366474eb23ce491891747ae2b7b087b9fe1bbc",
     "archive.ubuntu.com/ubuntu/dists/jammy/InRelease": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
     "archive.ubuntu.com/ubuntu/dists/jammy/by-hash/SHA256/416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc": "416a287b427fd26f9657e411e77d0788508a2d460ed7b5a992b1fc7696493cfc",
     "archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages.gz": "955e2af9c538a4ec47557459cd60a7d7423e3c0b4e718b803d8c899f5de283d3",

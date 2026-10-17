@@ -256,3 +256,46 @@ def test_leaving_the_snapshots_page_open_at_exit_never_crashes(two_mirrors):  # 
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage")
     for _ in range(12):
         _run(cfg, mirror_dir.parent, check)
+
+
+def test_publish_page_can_recheck_and_snapshot_first(two_mirrors, monkeypatch):  # noqa: F811
+    from textual.widgets import Checkbox
+
+    import mmw.core.publisher as publisher
+    cfg, net, mirror_dir = two_mirrors
+    seen = []
+    real = publisher.publish_network
+    monkeypatch.setattr(publisher, "publish_network",
+                        lambda *a, **k: (seen.append(k.get("full")), real(*a, **k))[1])
+
+    async def check(app, pilot):
+        await pilot.press("p")
+        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage")
+        full = app.screen.query_one("#publish-full", Checkbox)
+        snap = app.screen.query_one("#publish-take-snapshot", Checkbox)
+        assert not full.value and not snap.value
+        full.value = snap.value = True
+        await confirm_picker(app, pilot, "PublishPickPage")
+        await until(pilot, lambda: _finished(app))
+        assert app.active_transfer.outcome == "ok", app.notes
+    _run(cfg, mirror_dir.parent, check)
+    assert seen == [True]
+    with Pool(mirror_dir, read_only=True) as pool:
+        assert [s.kind for s in pool.snapshots(net.name)] == ["manual"]
+
+
+def test_publish_page_refuses_a_snapshot_first_of_a_snapshot(two_mirrors):  # noqa: F811
+    from textual.widgets import Checkbox
+    cfg, net, mirror_dir = two_mirrors
+    s1 = take_snapshot(net, cfg, mirror_dir, label="before")
+
+    async def check(app, pilot):
+        await pilot.press("p")
+        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage")
+        app.screen.query_one("#pick-target", Select).value = s1.stamp
+        app.screen.query_one("#publish-take-snapshot", Checkbox).value = True
+        await confirm_picker(app, pilot, "PublishPickPage")
+        await until(pilot, lambda: "nothing to snapshot" in str(
+            app.screen.query_one("#page-status").render()))
+        assert type(app.screen).__name__ == "PublishPickPage"
+    _run(cfg, mirror_dir.parent, check)

@@ -196,3 +196,34 @@ def test_pool_directory_can_be_browsed(tmp_path):
         await _settle(pilot)
         assert app.screen.query_one("#settings-mirror-dir", Input).value == str(tmp_path / "pools" / "big")
     _run(tmp_path, check)
+
+
+def test_move_copies_the_database_and_shows_the_new_path(tmp_path):
+    import hashlib
+
+    from mmw.core.pool import Pool
+    md = tmp_path / "pool"
+    with Pool(md, defer_writes=False) as pool:
+        pool.add(b"x", hashlib.sha256(b"x").hexdigest(), "sha256", "x.deb", 1)
+    cfg = config.Config(settings=config.Settings(mirror_dir=md))
+    config.save(cfg, tmp_path)
+    dest = tmp_path / "fast" / "mmw.db"
+
+    async def check(app, pilot):
+        await app.screen._move_to(dest)
+        await settle(pilot)
+        assert app.cfg.settings.database == dest
+        assert str(dest) in str(app.screen.query_one("#settings-database-path").render())
+        assert dest.exists() and not (md / ".pool" / "mmw.db").exists()
+    _run(tmp_path, check, cfg)
+    assert config.load(tmp_path).settings.database == dest
+
+
+def test_the_pool_directory_hint_tells_the_truth_about_the_database(tmp_path):
+    async def check(app, pilot):
+        app.screen.query_one("#settings-mirror-dir", Input).focus()
+        await _settle(pilot)
+        hint = str(app.screen.query_one("#page-hint").render())
+        assert "empty pool" not in hint
+        assert "database" in hint.lower()
+    _run(tmp_path, check)

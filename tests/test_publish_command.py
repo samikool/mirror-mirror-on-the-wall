@@ -9,6 +9,7 @@ import pytest
 from mmw.commands import publish as publish_cmd
 from mmw.core import config
 from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
+from test_bundle import seeded  # noqa: F401 — the shared seeded-pool fixture
 
 
 @pytest.fixture
@@ -81,7 +82,7 @@ def test_network_exception_goes_to_stderr_and_next_network_still_publishes(cfg_d
     )
     calls = []
 
-    def fake_publish_network(net, cfg, mirror_dir):
+    def fake_publish_network(net, cfg, mirror_dir, **_kw):
         calls.append(net.name)
         if net.name == "lab-a":
             raise RuntimeError("pool is locked")
@@ -158,3 +159,40 @@ def test_dist_upgrade_warnings_go_to_stderr_and_do_not_fail(cfg_dir, monkeypatch
     assert "⚠" in captured.err
     assert "jammy present without jammy-updates" in captured.err
     assert "jammy present without jammy-updates" not in captured.out
+
+
+def _seeded_cfg(seeded, tmp_path):  # noqa: F811
+    mirror_dir, cfg = seeded
+    net = config.NetworkConfig(name="lab", root=tmp_path / "pub", nginx=False)
+    cfg = cfg.model_copy(update={"networks": [net]})
+    config.save(cfg, tmp_path)
+    return mirror_dir, net
+
+
+def test_full_rechecks_through_publish_network(seeded, tmp_path, monkeypatch):  # noqa: F811
+    _seeded_cfg(seeded, tmp_path)
+    seen = []
+    real = publish_cmd.publish_network
+    monkeypatch.setattr(publish_cmd, "publish_network",
+                        lambda *a, **k: (seen.append(k.get("full")), real(*a, **k))[1])
+    assert publish_cmd.run(tmp_path, network="lab", full=True, allow_incomplete=True) == 0
+    assert seen == [True]
+
+
+def test_take_snapshot_snapshots_once_before_publishing(seeded, tmp_path):  # noqa: F811
+    from mmw.core.pool import Pool
+    mirror_dir, _net = _seeded_cfg(seeded, tmp_path)
+    assert publish_cmd.run(tmp_path, network="lab", take_snapshot=True, allow_incomplete=True) == 0
+    with Pool(mirror_dir, read_only=True) as pool:
+        snaps = pool.snapshots("lab")
+    assert len(snaps) == 1 and snaps[0].kind == "manual"
+    assert publish_cmd.run(tmp_path, network="lab", allow_incomplete=True) == 0
+    with Pool(mirror_dir, read_only=True) as pool:
+        assert len(pool.snapshots("lab")) == 1, "a plain publish never snapshots"
+
+
+def test_take_snapshot_with_a_snapshot_target_is_refused(seeded, tmp_path, capsys):  # noqa: F811
+    _seeded_cfg(seeded, tmp_path)
+    assert publish_cmd.run(tmp_path, network="lab", snapshot="x", take_snapshot=True) == 1
+    assert "nothing to snapshot" in capsys.readouterr().err
+

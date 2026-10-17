@@ -117,3 +117,49 @@ def test_stopping_while_a_dry_run_waits_answers_no():
         view.stop()
         assert await task is False
     _run(check)
+
+
+def test_a_burst_of_per_file_lines_is_capped_per_refresh_but_counted():
+    """A 1M-file publish queued a log line per linked file; the counters, not
+    the log, carry totals, so one refresh writes at most the cap plus one
+    summary line — and never drops a non-file line such as a phase note."""
+    from mmw.tui.transfer import _LOG_LINES_PER_TICK
+
+    async def check(app, view, pilot):
+        view.begin(10_000, {"m": 10_000})
+        log = view.query_one(f"#{view.ID_PREFIX}-log")
+        before = len(log.lines)
+        view.record("enumerate-start", "enumerate-start")
+        for i in range(10_000):
+            view.record(f"h/r/pool/{i}.deb", "linked")
+        view._tick()
+        lines = [str(s.text) for s in log.lines[before:]]
+        assert view._linked == 10_000
+        assert len(lines) <= _LOG_LINES_PER_TICK + 2
+        assert any("reading pool index" in s for s in lines)
+        assert lines[-1].strip().startswith("…") and "more" in lines[-1]
+    _run(check)
+
+
+def test_themed_log_resolves_theme_variables_once_per_theme():
+    from mmw.tui.ui.widgets import ThemedLog
+
+    async def go():
+        class _App(ThemedApp):
+            def compose(self):
+                yield ThemedLog(markup=True)
+
+        app = _App()
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            calls = []
+            real = app.get_css_variables
+            app.get_css_variables = lambda: calls.append(1) or real()
+            log = app.query_one(ThemedLog)
+            for i in range(100):
+                log.write(f"[$mmw-ok]line {i}[/]")
+            assert len(calls) == 1
+            app.theme = next(t for t in app.available_themes if t != app.theme)
+            log.write("[$mmw-ok]after[/]")
+            assert len(calls) == 2
+    asyncio.run(go())

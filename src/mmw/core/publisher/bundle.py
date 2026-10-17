@@ -18,7 +18,7 @@ import hashlib
 from pathlib import Path
 
 from mmw.core.config import Config, NetworkConfig
-from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
+from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool, holds_shared_pool_lock
 
 from mmw.core.publisher.manifest import (
     MANIFEST_SUFFIX,
@@ -136,6 +136,7 @@ def _free_target(network, name: str, out_path) -> Path:
     return target
 
 
+@holds_shared_pool_lock
 def bundle_network(
     network: NetworkConfig,
     cfg: Config,
@@ -169,6 +170,8 @@ def bundle_network(
         find_snapshot, import_ledger, recorded_bases, take_snapshot,
     )
 
+    from mmw.core.publisher import warm_for_publish
+    warm_for_publish(mirror_dir, progress, stop_event)
     if full:
         from_ref = None
     with Pool(mirror_dir) as pool:

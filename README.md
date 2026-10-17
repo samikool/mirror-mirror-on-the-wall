@@ -419,6 +419,14 @@ first, release files last, which is safe for a destination being served live.
 Re-syncing an unchanged mirror is a metadata fetch plus a database diff:
 seconds, no downloads.
 
+Each published tree keeps a record of what it holds (`.mmw/manifest.jsonl`,
+the same file a bundle carries), so a repeat publish touches only what
+changed. `mmw publish --full` ignores the record and rechecks every file — for
+a tree someone edited by hand. Heavy jobs first read the database into the
+page cache when it fits. On a spinning pool disk, put the database on a fast
+one: Settings → **Move…**, or `mmw move-database /fast/mmw.db`
+(`settings.database`); the blobs stay where they are.
+
 There is deliberately **no browsable mirror tree** under `mirror_dir`. Use
 `mmw manage` for statistics; trees exist only at publish destinations.
 

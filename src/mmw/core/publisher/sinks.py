@@ -25,7 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
-from mmw.core.publisher.manifest import ManifestHeader, write_manifest
+from mmw.core.publisher.manifest import ManifestHeader, unchanged, write_manifest
 from mmw.core.publisher.nginx import ROOT_PLACEHOLDER
 
 _SCAN_REPORT_EVERY = 5000
@@ -187,13 +187,30 @@ class Sink(Protocol):
 class TreeSink:
     """Hardlinks into a directory — the behaviour publish has always had."""
 
-    def __init__(self, root: Path, progress=None, stop_event=None):
+    def __init__(self, root: Path, progress=None, stop_event=None, *,
+                 prev: dict[str, str] | None = None, full: bool = False):
         self.root = root
         self._progress = progress
         self._stop_event = stop_event
         self.pruned = 0
         self.pruned_bytes = 0
         self.errors: list[str] = []
+        # The tree's record from its last publish (`manifest.RECORD_PATH`), or
+        # None to check the filesystem as publish always did. With a record,
+        # an unchanged path costs nothing and pruning reads the record, not
+        # the tree; `full` ignores it — the recheck.
+        self._prev = None if full else prev
+        self._full = full
+        self._rows: dict[str, str] = {}
+        # Sorted once: each group's records are one bisected slice — VS Code
+        # finalizes once per publisher host, tens of thousands of groups.
+        self._prev_sorted = sorted(self._prev) if self._prev is not None else []
+        self._bh_dirs: set[str] = set()      # by-hash dirs this run placed into
+
+    @property
+    def manifest_rows(self) -> list[tuple[str, str]]:
+        """(path, checksum) of everything this run placed — the new record."""
+        return list(self._rows.items())
 
     @property
     def tmp_dir(self) -> Path:
@@ -201,11 +218,18 @@ class TreeSink:
 
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
         from mmw.core.publisher.links import hardlink_or_copy, same_file
+        if "/by-hash/" in f"/{rel}":
+            self._bh_dirs.add(rel.rsplit("/", 1)[0])
+        if unchanged(self._prev, rel, checksum, self._full):
+            self._rows[rel] = checksum
+            return "skipped"
         dst = self.root / rel
         try:
             if dst.exists() and same_file(dst, src):
+                self._rows[rel] = checksum
                 return "skipped"
             hardlink_or_copy(src, dst, tmp_dir=self.tmp_dir)
+            self._rows[rel] = checksum
             return "linked"
         except OSError as e:
             self.errors.append(f"{rel}: {e}")
@@ -225,6 +249,10 @@ class TreeSink:
                 "written to a live-served destination"
             )
         from mmw.core.publisher.links import atomic_write
+        checksum = hashlib.sha256(data).hexdigest()
+        self._rows[rel] = checksum
+        if unchanged(self._prev, rel, checksum, self._full):
+            return
         # Staged-then-renamed like every other write into a live-served tree:
         # a client fetching nginx/mirror.conf or UPGRADE.md mid-publish gets
         # the old file or the new one, never a half-written one.
@@ -232,6 +260,8 @@ class TreeSink:
 
     def finalize_group(self, base: str, keep: set[str],
                        live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
+        if self._prev is not None:
+            return self._finalize_from_record(base, keep, live_checksums, exclude)
         dst_root = self.root / base if base else self.root
         if not dst_root.exists():
             return 0, 0
@@ -292,6 +322,63 @@ class TreeSink:
                 self._progress(base, f"by-hash:{bh_pruned}")
             self._progress(base, f"prune-scan-done:{checked}:{group_pruned}")
         return group_pruned, group_pruned_bytes
+
+    def _finalize_from_record(self, base: str, keep: set[str],
+                              live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
+        """`finalize_group` trusting the record: what it lists under `base`
+        and `keep` lacks is pruned — no walk of the tree. by-hash companions
+        keep their own retention rule, in the by-hash dirs the record names."""
+        import bisect
+        prefix = f"{base}/" if base else ""
+        skip = tuple(f"{x}/" for x in exclude)
+        pruned = pruned_bytes = 0
+        bh_dirs: set[Path] = set()
+        emptied: set[Path] = set()
+        records = self._prev_sorted
+        start = bisect.bisect_left(records, prefix)
+        for i in range(start, len(records)):
+            rel = records[i]
+            if not rel.startswith(prefix):
+                break
+            if rel in keep or (skip and rel.startswith(skip)):
+                continue
+            if "/by-hash/" in f"/{rel}":
+                bh_dirs.add((self.root / rel).parent)
+                continue
+            target = self.root / rel
+            try:
+                size = target.stat().st_size
+                target.unlink()
+            except FileNotFoundError:
+                continue                  # already gone: nothing to record
+            except OSError:
+                # Still there (permissions, a busy mount): keep it in the
+                # record so the next publish tries again, rather than losing
+                # sight of it and serving it forever.
+                self._rows[rel] = self._prev[rel]
+                continue
+            pruned += 1
+            pruned_bytes += size
+            emptied.add(target.parent)
+            if self._progress:
+                self._progress(rel, "pruned")
+        for rel_dir in self._bh_dirs:
+            if (rel_dir + "/").startswith(prefix) and not (skip and (rel_dir + "/").startswith(skip)):
+                bh_dirs.add(self.root / rel_dir)
+        bh_pruned = sum(_prune_by_hash_dir(d, live_checksums) for d in bh_dirs if d.is_dir())
+        stop = self.root / base if base else self.root
+        for d in sorted(emptied, key=lambda p: len(p.parts), reverse=True):
+            while d != stop and stop in d.parents:
+                try:
+                    d.rmdir()
+                except OSError:
+                    break
+                d = d.parent
+        self.pruned += pruned
+        self.pruned_bytes += pruned_bytes
+        if self._progress and bh_pruned:
+            self._progress(base, f"by-hash:{bh_pruned}")
+        return pruned, pruned_bytes
 
     def drop_if_empty(self, base: str) -> None:
         dst = self.root / base
@@ -471,7 +558,7 @@ class BundleSink:
         # (keys included — `publish_keys` hashes them); this is the backstop.
         # `test_bundle_sink_delta_agrees_with_manifest_delta` only asserts the
         # two rules agree where both have a real checksum.
-        if not self._full and self._prev.get(rel) == checksum and checksum:
+        if unchanged(self._prev, rel, checksum, self._full):
             return "skipped"
         self._send.append((rel, src, size, checksum))
         return "linked"
@@ -480,7 +567,7 @@ class BundleSink:
         checksum = hashlib.sha256(data).hexdigest()
         self._seen.add(rel)
         self.manifest_rows.append((rel, checksum))
-        if not self._full and self._prev.get(rel) == checksum:
+        if unchanged(self._prev, rel, checksum, self._full):
             return
         self._generated[rel] = data
 

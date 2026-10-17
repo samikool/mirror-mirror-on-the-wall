@@ -179,7 +179,6 @@ CREATE TABLE IF NOT EXISTS published (
 
 -- mirror_stats / group_unique_count / ref_map all filter on mirror_name;
 -- without this they full-scan refs on every detail-panel highlight.
-CREATE INDEX IF NOT EXISTS idx_refs_mirror ON refs(mirror_name, checksum);
 
 -- What each synced mirror IS. The pool is the authority on what exists:
 -- architectures are discovered rather than declared, so config expansion is
@@ -250,6 +249,32 @@ _TMP_DIR = "tmp"
 
 class PoolBusy(RuntimeError):
     """Another process (or this one) holds the pool for a conflicting use."""
+
+
+class PoolDatabaseMissing(RuntimeError):
+    """The configured database is not there, but the pool already holds blobs.
+
+    Starting a fresh, empty database would make every blob an orphan: the next
+    prune deletes them and the next sync downloads everything again."""
+
+
+# `settings.database` for each pool, set by `config.load` and by the TUI when
+# it saves settings. Pools are opened from ~40 places that only know
+# `mirror_dir`; they ask here rather than each being handed the path.
+_DATABASES: dict[Path, Path] = {}
+
+
+def default_database(mirror_dir: Path) -> Path:
+    return Path(mirror_dir) / ".pool" / "mmw.db"
+
+
+def register_database(mirror_dir: Path, database: Path) -> None:
+    _DATABASES[Path(mirror_dir).resolve()] = Path(database)
+
+
+def database_path(mirror_dir: Path) -> Path:
+    """Where this pool's database is: `settings.database`, else the default."""
+    return _DATABASES.get(Path(mirror_dir).resolve(), default_database(mirror_dir))
 
 
 def _lock_path(mirror_dir: Path) -> Path:
@@ -341,6 +366,24 @@ def shared_pool_lock(mirror_dir: Path):
         release_sync_lock()
 
 
+def holds_shared_pool_lock(job):
+    """Decorate `job(network, cfg, mirror_dir, ...)` to run holding the pool's
+    shared lock, as sync and snapshots do: a database Move or a prune
+    (exclusive) then waits for a publish or bundle instead of pulling the
+    database or blobs out from under it."""
+    import functools
+
+    @functools.wraps(job)
+    def run(network, cfg, mirror_dir, *args, **kwargs):
+        if not (Path(mirror_dir) / ".pool").is_dir():
+            # No pool, nothing to protect — and taking the lock would create
+            # `.pool/` for its lock file as a side effect.
+            return job(network, cfg, mirror_dir, *args, **kwargs)
+        with shared_pool_lock(mirror_dir):
+            return job(network, cfg, mirror_dir, *args, **kwargs)
+    return run
+
+
 def pool_is_busy(mirror_dir: Path) -> bool:
     """True when a sync currently holds the pool.
 
@@ -374,7 +417,7 @@ def exclusive_pool_lock(mirror_dir: Path, what: str = "operation"):
             fh.close()
         raise PoolBusy(
             f"refusing to {what}: the pool at {mirror_dir} is in use by a running "
-            f"sync. A prune during a sync deletes the blobs it has just "
+            f"sync, publish or bundle. A prune during a sync deletes the blobs it has just "
             f"downloaded, because their refs are not committed until the mirror "
             f"finishes. Wait for the sync to end and try again."
         )
@@ -697,7 +740,12 @@ class Pool:
         self.pool_dir = mirror_dir / ".pool"
         self._packages_dir = self.pool_dir / "packages"
         self._lock = threading.Lock()
-        db_path = self.pool_dir / "mmw.db"
+        db_path = database_path(mirror_dir)
+        self.db_path = db_path
+        if not db_path.exists() and next(self._packages_dir.glob("*/*"), None) is not None:
+            raise PoolDatabaseMissing(
+                f"the pool database is not at {db_path}, but {self._packages_dir} holds "
+                "blobs — move the database there, or point settings.database at it")
         if read_only:
             if db_path.exists():
                 self._conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
@@ -708,6 +756,7 @@ class Pool:
         else:
             self._packages_dir.mkdir(parents=True, exist_ok=True)
             self._tmp_dir.mkdir(parents=True, exist_ok=True)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(SCHEMA)
@@ -721,6 +770,20 @@ class Pool:
             # After the ALTER, never inside SCHEMA: executescript would run this
             # before the column exists on a pre-source database.
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_refs_source ON refs(source)")
+            # Covering indexes for the listings (`mirror_files`, `missing_for`,
+            # snapshot rows): answered from index pages alone, walked in
+            # checksum order. A listing that hopped from an index to each
+            # table row did one random read per file — most of an hour for a
+            # 1M-file mirror on a spinning disk. After the ALTERs for the same
+            # reason as idx_refs_source; the cover replaces idx_refs_mirror,
+            # a prefix of it. Built once, on the first writable open.
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_refs_cover "
+                "ON refs(mirror_name, checksum, repo_path, kind)")
+            self._conn.execute("DROP INDEX IF EXISTS idx_refs_mirror")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_packages_cover "
+                "ON packages(checksum, size, filename)")
             # Pre-dims databases: add the column, then fill it from the
             # legacy columns once. Rows already carrying dims are untouched.
             mcols = {r[1] for r in self._conn.execute("PRAGMA table_info(mirrors)")}
@@ -793,6 +856,12 @@ class Pool:
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
         self._has_download_sources = self._has_table("download_sources")
         self._has_retry_state = self._has_table("retry_state")
+        # SQLite's planner prefers the checksum primary key (one row, but a
+        # second hop to the table) over the covering index, so listings name
+        # it — only when it exists: a read-only open of an older database
+        # has none until a writable open builds it.
+        self._packages_by = (" INDEXED BY idx_packages_cover"
+                             if self._has_index("idx_packages_cover") else "")
 
     @property
     def _tmp_dir(self) -> Path:
@@ -1175,6 +1244,25 @@ class Pool:
             ).fetchone()
         return row is not None
 
+    def blob_path(self, checksum: str, filename: str) -> Path:
+        """Where `add` keeps a blob. Listings derive it rather than read the
+        stored `pool_path`: that column is not in the covering index, and it
+        goes stale when the pool directory moves."""
+        return self._packages_dir / checksum[:2] / f"{checksum}-{filename}"
+
+    def _mirror_files_sql(self, mirror_names: list[str],
+                          kinds: tuple[str, ...] | None) -> tuple[str, list]:
+        m_ph = ",".join("?" * len(mirror_names))
+        kind_sql = ""
+        params: list = list(mirror_names)
+        if kinds:
+            kind_sql = f" AND r.kind IN ({','.join('?' * len(kinds))})"
+            params.extend(kinds)
+        return (f"SELECT DISTINCT r.repo_path, p.filename, p.size, r.kind, r.checksum "
+                f"FROM refs r JOIN packages p{self._packages_by} ON p.checksum = r.checksum "
+                f"WHERE r.mirror_name IN ({m_ph}){kind_sql} "
+                f"ORDER BY r.repo_path", params)
+
     def mirror_files(
         self,
         mirror_names: list[str],
@@ -1190,21 +1278,10 @@ class Pool:
         """
         if not mirror_names:
             return []
-        m_ph = ",".join("?" * len(mirror_names))
-        kind_sql = ""
-        params: list = list(mirror_names)
-        if kinds:
-            kind_sql = f" AND r.kind IN ({','.join('?' * len(kinds))})"
-            params.extend(kinds)
         with self._read() as _c:
-            rows = _c.execute(
-                f"SELECT DISTINCT r.repo_path, p.pool_path, p.size, r.kind, r.checksum "
-                f"FROM refs r JOIN packages p ON p.checksum = r.checksum "
-                f"WHERE r.mirror_name IN ({m_ph}){kind_sql} "
-                f"ORDER BY r.repo_path",
-                params,
-            ).fetchall()
-        return rows
+            rows = _c.execute(*self._mirror_files_sql(mirror_names, kinds)).fetchall()
+        blob = self.blob_path
+        return [(rel, str(blob(cs, fn)), size, kind, cs) for rel, fn, size, kind, cs in rows]
 
     def record_mirror(self, mirror) -> None:
         """Remember what a mirror is, so publish can reconstruct it offline.
@@ -1308,11 +1385,11 @@ class Pool:
         main mirror ran last)."""
         with self._read() as _c:
             row = _c.execute(
-                "SELECT p.pool_path FROM refs r JOIN packages p ON p.checksum = r.checksum "
+                "SELECT r.checksum, p.filename FROM refs r JOIN packages p ON p.checksum = r.checksum "
                 "WHERE r.repo_path = ? LIMIT 1",
                 (repo_path,),
             ).fetchone()
-        return Path(row[0]) if row else None
+        return self.blob_path(*row) if row else None
 
     def missing_for(self, mirror_name: str) -> list[tuple[str, str]]:
         """(repo_path, checksum) the mirror's index wants but the pool lacks.
@@ -1328,14 +1405,15 @@ class Pool:
         """
         self.flush_writes()
         with self._read() as _c:
-            rows = _c.execute(
-                "SELECT r.repo_path, r.checksum FROM refs r "
+            rows = _c.execute(*self._missing_for_sql(mirror_name)).fetchall()
+        return rows
+
+    @staticmethod
+    def _missing_for_sql(mirror_name: str) -> tuple[str, tuple]:
+        return ("SELECT r.repo_path, r.checksum FROM refs r "
                 "WHERE r.mirror_name = ? "
                 "AND NOT EXISTS (SELECT 1 FROM packages p WHERE p.checksum = r.checksum) "
-                "ORDER BY r.repo_path",
-                (mirror_name,),
-            ).fetchall()
-        return rows
+                "ORDER BY r.repo_path", (mirror_name,))
 
     def meta_refs(self, mirror_name: str) -> dict[str, str]:
         """repo_path → checksum for a mirror's `meta` refs: the saved metadata a
@@ -1365,11 +1443,11 @@ class Pool:
         """Pool path for one (mirror, repo_path) — e.g. to parse a pooled index."""
         with self._read() as _c:
             row = _c.execute(
-                "SELECT p.pool_path FROM refs r JOIN packages p ON p.checksum = r.checksum "
+                "SELECT r.checksum, p.filename FROM refs r JOIN packages p ON p.checksum = r.checksum "
                 "WHERE r.mirror_name = ? AND r.repo_path = ? LIMIT 1",
                 (mirror_name, repo_path),
             ).fetchone()
-        return Path(row[0]) if row else None
+        return self.blob_path(*row) if row else None
 
     def add_copy(self, src: Path, checksum: str, filename: str, size: int) -> Path:
         """`add` a COPY of `src` — `add` moves the file it is given, which is
@@ -1523,11 +1601,13 @@ class Pool:
         """(path, checksum, pool_path, size) for every file of a snapshot, in
         path order; pool_path is None for a file the pool no longer holds."""
         self.flush_writes()
-        yield from self._stream(
-            "SELECT p.path, b.checksum, k.pool_path, k.size FROM snapshot_files f "
-            "JOIN snapshot_paths p ON p.id = f.path JOIN snapshot_blobs b ON b.id = f.blob "
-            "LEFT JOIN packages k ON k.checksum = b.checksum "
-            "WHERE f.snapshot = ? ORDER BY p.path", (snapshot_id,))
+        blob = self.blob_path
+        for path, cs, fn, size in self._stream(
+                "SELECT p.path, b.checksum, k.filename, k.size FROM snapshot_files f "
+                "JOIN snapshot_paths p ON p.id = f.path JOIN snapshot_blobs b ON b.id = f.blob "
+                f"LEFT JOIN packages k{self._packages_by} ON k.checksum = b.checksum "
+                "WHERE f.snapshot = ? ORDER BY p.path", (snapshot_id,)):
+            yield path, cs, (str(blob(cs, fn)) if fn is not None else None), size
 
     def snapshot_missing(self, snapshot_id: int) -> int:
         """How many of a snapshot's files the pool no longer holds."""
@@ -1673,6 +1753,11 @@ class Pool:
         return bool(self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
 
+    def _has_index(self, name: str) -> bool:
+        """Init-time schema probe, like `_has_table`."""
+        return bool(self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (name,)).fetchone())
+
     def prune_preview(self, configured_sources: list[str],
                       dropped_mirrors: "list[str] | tuple[str, ...]" = ()) -> tuple[int, int]:
         """(files, bytes) `prune_orphans` would remove — without writing.
@@ -1816,7 +1901,7 @@ class Pool:
     def _stream(self, sql: str, params: tuple = ()):
         """Rows of one query from a short-lived read-only connection, closed
         when the iteration ends (or the generator is dropped)."""
-        db_path = self.pool_dir / "mmw.db"
+        db_path = self.db_path
         if not db_path.exists():
             return
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
@@ -1833,7 +1918,7 @@ class Pool:
         behind `self._lock`. `group_unique_count` established the pattern; the
         expensive aggregates all need it.
         """
-        db_path = self.pool_dir / "mmw.db"
+        db_path = self.db_path
         if not db_path.exists():
             return None
         # Read-only URI: a plain connect would CREATE an empty db file if the
@@ -1862,7 +1947,7 @@ class Pool:
         """
         if not mirror_names:
             return 0, 0
-        db_path = self.pool_dir / "mmw.db"
+        db_path = self.db_path
         if not db_path.exists():
             return 0, 0
         placeholders = ",".join("?" * len(mirror_names))
@@ -1907,7 +1992,12 @@ def wipe(mirror_dir: Path) -> None:
     """
     with exclusive_pool_lock(mirror_dir, "wipe the pool"):
         pool_dir = mirror_dir / ".pool"
+        db = database_path(mirror_dir)
         shutil.rmtree(pool_dir, ignore_errors=True)
+        # A database placed elsewhere (settings.database) goes with its pool:
+        # left behind, it would describe blobs that no longer exist.
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{db}{suffix}").unlink(missing_ok=True)
 
 
 def verify_checksum(path: Path, expected: str, algo: str) -> bool:

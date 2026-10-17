@@ -44,8 +44,10 @@ codes — see [airgap.md](airgap.md#exit-codes).
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
 | [`mmw init`](#mmw-init) | Setup wizard |
 | [`mmw manage`](#mmw-manage) | Manage configured mirrors (add, remove) |
+| [`mmw move-database`](#mmw-move-database) | Move the pool database (settings.database) and point mmw.toml at it |
 | [`mmw prune`](#mmw-prune) | Remove orphaned pool packages not referenced by any mirror |
 | [`mmw publish`](#mmw-publish) | Publish mirrors to network targets |
+| [`mmw retry-failed`](#mmw-retry-failed) | Retry missing VS Code files from saved metadata, without a full sync |
 | [`mmw snapshot`](#mmw-snapshot) | Network snapshots: a network's exact state, kept to bundle to or publish again |
 | [`mmw sync`](#mmw-sync) | Sync configured mirrors |
 | [`mmw verify`](#mmw-verify) | Check the pool holds every blob its mirrors' refs want (read-only unless --repair) |
@@ -136,6 +138,14 @@ Manage configured mirrors (add, remove).
 | `--quiet`, `-q` |  | Print mirror list to stdout, no TUI |
 | `--profile` |  | Sample every thread's stack and CPU use; write a report on exit. In-process, so it needs no ptrace/root. Covers the whole session (publish, bundle, sync-from-manage), not just one action. |
 
+### `mmw move-database`
+
+Move the pool database (settings.database) and point mmw.toml at it.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `PATH` |  | New path for the pool database file, e.g. on a fast disk *(required)* |
+
 ### `mmw prune`
 
 Remove orphaned pool packages not referenced by any mirror.
@@ -148,7 +158,7 @@ Remove orphaned pool packages not referenced by any mirror.
 ### `mmw publish`
 
 Publish mirrors to network targets. Without --quiet opens the TUI
-(--snapshot / --root always run headless).
+(--snapshot / --root / --full / --take-snapshot always run headless).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -158,6 +168,20 @@ Publish mirrors to network targets. Without --quiet opens the TUI
 | `--allow-incomplete` |  | Publish even if the pool cannot serve everything the indexes promise (you are still told what is missing). |
 | `--snapshot`, `-s` |  | Publish this snapshot (stamp, label or id — see `mmw snapshot list`) instead of the current state; 'live' is the current state. Needs -n. |
 | `--root` |  | Publish into this directory instead of the network's root. Its nginx config points there with the same hostnames, so serve it on its own address. Needs -n. |
+| `--full` |  | Ignore the record of the last publish and recheck every published file. |
+| `--take-snapshot` |  | Take a snapshot of the network first. |
+
+### `mmw retry-failed`
+
+Retry missing VS Code files from saved metadata, without a full sync.
+
+Runs headless. Uses the existing snapshot and HTTP retry/backoff policy;
+does not refresh the marketplace or update metadata.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--network`, `-n` |  | Limit recovery to this network |
+| `--dry-run` |  | Count missing files without downloading |
 
 ### `mmw snapshot`
 

@@ -81,7 +81,8 @@ def clear_ledger(mirror_dir: Path, name: str) -> str | None:
     produced, so on a long-lived network this is not the two files it looks
     like."""
     problems = []
-    if (mirror_dir / ".pool" / "mmw.db").exists():
+    from mmw.core.pool import database_path
+    if database_path(mirror_dir).exists():
         try:
             with Pool(mirror_dir) as pool:
                 pool.forget_network(name)

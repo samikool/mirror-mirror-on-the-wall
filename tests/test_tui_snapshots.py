@@ -107,6 +107,15 @@ def test_snapshot_bundle_picker(snap_compare, tmp_path):
                         terminal_size=SNAP_SIZE)
 
 
+def test_snapshot_publish_picker(snap_compare):
+    from mmw.tui.snapshot_pages import PublishPickPage
+    from test_tui_sweep import snapshot_status_demo
+
+    net = config.NetworkConfig(name="lab", root=_Path("/srv/www/lab"), select=[])
+    assert snap_compare(_app(lambda: PublishPickPage(net, snapshot_status_demo())),
+                        terminal_size=SNAP_SIZE)
+
+
 def test_snapshot_certs_modal(snap_compare):
     from mmw.tui.publish_modals import CertsPage
 

@@ -289,17 +289,23 @@ def cmd_publish(
         help="Publish into this directory instead of the network's root. Its nginx "
              "config points there with the same hostnames, so serve it on its own "
              "address. Needs -n."),
+    full: bool = typer.Option(
+        False, "--full",
+        help="Ignore the record of the last publish and recheck every published file."),
+    take_snapshot: bool = typer.Option(
+        False, "--take-snapshot", help="Take a snapshot of the network first."),
 ):
     """Publish mirrors to network targets. Without --quiet opens the TUI
-    (--snapshot / --root always run headless)."""
+    (--snapshot / --root / --full / --take-snapshot always run headless)."""
     cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
-    if quiet or dry_run or snapshot or root:
+    if quiet or dry_run or snapshot or root or full or take_snapshot:
         from mmw.commands.publish import run
         raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run,
                              allow_incomplete=allow_incomplete,
-                             snapshot=snapshot, root=root))
+                             snapshot=snapshot, root=root, full=full,
+                             take_snapshot=take_snapshot))
 
     _run_tui(_open_app(cfg, cfg_dir, "networks"))
 
@@ -369,6 +375,15 @@ def cmd_add(
     code = run(file=file, url=url, label=label, arch=arch, keys_dir=keys_dir,
                dry_run=dry_run, cfg_dir=_cfg_dir(), echo=typer.echo)
     raise typer.Exit(code)
+
+
+@app.command("move-database")
+def cmd_move_database(
+    path: Path = typer.Argument(..., help="New path for the pool database file, e.g. on a fast disk"),
+):
+    """Move the pool database (settings.database) and point mmw.toml at it."""
+    from mmw.commands.move_database import run
+    raise typer.Exit(run(_cfg_dir(), path))
 
 
 @app.command("prune")

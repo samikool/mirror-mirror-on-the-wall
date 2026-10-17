@@ -17,8 +17,17 @@ from test_bundle import seeded, _sign_lab_cert  # noqa: F401
 
 def _files(root):
     # The bundle cursor is snapshot metadata; publish snapshots are manual.
+    # The record's header says who wrote it and when; its rows are compared
+    # on their own (`_record_rows`).
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*")
-            if p.is_file() and p.relative_to(root).as_posix() != ".mmw-state"}
+            if p.is_file() and p.relative_to(root).as_posix()
+            not in (".mmw-state", ".mmw/manifest.jsonl")}
+
+
+def _record_rows(root):
+    from mmw.core.publisher.manifest import RECORD_PATH, iter_manifest
+    _header, rows = iter_manifest(root / RECORD_PATH)
+    return dict(rows)
 
 
 @pytest.mark.parametrize("tls", ["off", "unsigned", "signed"])
@@ -44,6 +53,8 @@ def test_copied_publish_and_applied_bundle_are_one_to_one(seeded, tmp_path, tls,
                           "--root", str(applied), "--verify"], capture_output=True, text=True)
     assert run.returncode == 0, run.stdout + run.stderr
     assert _files(copied) == _files(applied)
+    assert _record_rows(copied) == _record_rows(applied), \
+        "a published tree and an applied bundle must carry the same record"
 
     restored = tmp_path / "snapshot-publish"
     replay = publish_snapshot(net, cfg, mirror_dir, bundled.created, root=restored)

@@ -422,6 +422,7 @@ def https_state(root):
 def apply(bundle, root, dry_run=False, verify=False):
     header = None
     manifest = {}
+    manifest_blob = None
     deletes = []
     written = 0
     tls_installed = []
@@ -487,7 +488,8 @@ def apply(bundle, root, dry_run=False, verify=False):
                     "apply it with the apply.py that came with it\n")
                 return EXIT_TOOLING
             if name == MANIFEST_MEMBER:
-                header, manifest = read_manifest_bytes(tar.extractfile(member).read())
+                manifest_blob = tar.extractfile(member).read()
+                header, manifest = read_manifest_bytes(manifest_blob)
                 have = read_state(root)
                 want = header.get("previous")
                 if not header.get("full") and have != want:
@@ -506,6 +508,14 @@ def apply(bundle, root, dry_run=False, verify=False):
                             header["created"], STATE_FILE)
                     )
                     return EXIT_OUT_OF_ORDER
+                if not dry_run:
+                    # The tree is about to change: its record says what it
+                    # held before. Gone until this apply finishes, so an
+                    # interrupted one never leaves it describing a half-new tree.
+                    try:
+                        os.unlink(os.path.join(root, MANIFEST_MEMBER))
+                    except OSError:
+                        pass
                 sys.stdout.write("%s -> %s\n" % (
                     _named(want, header.get("previous_label")) if want else "(new)",
                     _named(header["created"], header.get("created_label"))))
@@ -662,6 +672,15 @@ def apply(bundle, root, dry_run=False, verify=False):
             with open(state + ".tmp", "w") as fh:
                 fh.write(header["created"] + "\n" + (header.get("created_label") or "") + "\n")
             os.rename(state + ".tmp", state)
+            # The tree's record — the same file a publish keeps in its own
+            # tree, so a copied publish and an applied bundle agree on it.
+            if manifest_blob is not None:
+                current = MANIFEST_MEMBER
+                record = os.path.join(root, MANIFEST_MEMBER)
+                os.makedirs(os.path.dirname(record), exist_ok=True)
+                with open(record + ".tmp", "wb") as fh:
+                    fh.write(manifest_blob)
+                os.rename(record + ".tmp", record)
 
         if verify:
             return verify_tree(root, manifest)

@@ -1250,6 +1250,14 @@ class Pool:
         goes stale when the pool directory moves."""
         return self._packages_dir / checksum[:2] / f"{checksum}-{filename}"
 
+    def _blob_strs(self):
+        """`str(blob_path(cs, fn))` for a listing's every row, as one f-string:
+        two pathlib joins and a str() cost ~8 s across a 1M-file listing, this
+        0.3 s. The same string — the root is already a normalised path, and
+        `add` refuses a checksum or filename that could add a component."""
+        root = str(self._packages_dir)
+        return lambda cs, fn: f"{root}/{cs[:2]}/{cs}-{fn}"
+
     def _mirror_files_sql(self, mirror_names: list[str], kinds: tuple[str, ...] | None,
                           prefix: str = "") -> tuple[str, list]:
         m_ph = ",".join("?" * len(mirror_names))
@@ -1287,8 +1295,8 @@ class Pool:
             return []
         with self._read() as _c:
             rows = _c.execute(*self._mirror_files_sql(mirror_names, kinds, prefix)).fetchall()
-        blob = self.blob_path
-        return [(rel, str(blob(cs, fn)), size, kind, cs) for rel, fn, size, kind, cs in rows]
+        blob = self._blob_strs()
+        return [(rel, blob(cs, fn), size, kind, cs) for rel, fn, size, kind, cs in rows]
 
     def record_mirror(self, mirror) -> None:
         """Remember what a mirror is, so publish can reconstruct it offline.
@@ -1608,13 +1616,13 @@ class Pool:
         """(path, checksum, pool_path, size) for every file of a snapshot, in
         path order; pool_path is None for a file the pool no longer holds."""
         self.flush_writes()
-        blob = self.blob_path
+        blob = self._blob_strs()
         for path, cs, fn, size in self._stream(
                 "SELECT p.path, b.checksum, k.filename, k.size FROM snapshot_files f "
                 "JOIN snapshot_paths p ON p.id = f.path JOIN snapshot_blobs b ON b.id = f.blob "
                 f"LEFT JOIN packages k{self._packages_by} ON k.checksum = b.checksum "
                 "WHERE f.snapshot = ? ORDER BY p.path", (snapshot_id,)):
-            yield path, cs, (str(blob(cs, fn)) if fn is not None else None), size
+            yield path, cs, (blob(cs, fn) if fn is not None else None), size
 
     def snapshot_missing(self, snapshot_id: int) -> int:
         """How many of a snapshot's files the pool no longer holds."""

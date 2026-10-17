@@ -113,3 +113,12 @@ def test_snapshot_rows_and_lookups_derive_the_blob_path(seeded):
         assert held and all(str(r[2]).startswith(str(seeded / ".pool")) for r in held)
         assert str(pool.resolve("m", rows[0][0])).startswith(str(seeded / ".pool"))
         assert str(pool.find_blob(rows[0][0])).startswith(str(seeded / ".pool"))
+
+
+def test_listings_name_each_blob_exactly_as_blob_path_does(seeded):
+    with Pool(seeded) as pool:
+        rows = pool.mirror_files(["m"])
+        assert rows and all(isinstance(path, str) for _, path, *_ in rows)
+        by_checksum = dict(pool._conn.execute("SELECT checksum, filename FROM packages"))
+        assert [path for _, path, _, _, _ in rows] == [
+            str(pool.blob_path(cs, by_checksum[cs])) for *_, cs in rows]

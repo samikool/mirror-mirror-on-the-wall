@@ -48,7 +48,7 @@ build-backend = "uv_build"
 module-name = "mmw"
 # A downstream packager needs to be able to run the suite against the sdist,
 # and to resolve the exact dependency set the project was tested with.
-source-include = ["tests/**", "uv.lock", "LICENSE", "docs/tools/benchmark-reference-reconciliation.py"]
+source-include = ["tests/**", "uv.lock", "LICENSE"]
 
 [dependency-groups]
 dev = [

@@ -6,7 +6,7 @@ from collections.abc import Callable, Hashable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-WORKERS = 32
+WORKERS = 16          # keeps the disk's queue full; 32 left the TUI's thread waiting its turn
 
 
 def _read_bytes(path) -> bytes:

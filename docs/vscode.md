@@ -175,7 +175,8 @@ the two wildcard zones.
 VS Code talks HTTPS only, so the network needs `certs = true`. The
 certificate mmw generates covers all seven names, wildcards included:
 `mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs it here, or
-`sign.py` signs it on the far side (see [Airgapped operation](airgap.md#https)).
+`sign.py` signs it on the far side (see [Airgapped operation](airgap.md#https));
+no CA yet? `make-ca.py`, beside `sign.py`, makes one.
 Install the CA on every client: Windows — Local Machine → Trusted Root
 Certification Authorities; macOS — the System keychain, Always Trust; Linux —
 the system store, which VS Code reads.

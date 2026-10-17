@@ -57,7 +57,7 @@ NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw", "vs
 # manifest payload — so they ride every bundle, delta or full, and sit near
 # the front of the archive rather than in the tail a cut-short copy loses.
 TLS_DIR = ".mmw/tls"
-NON_BASE_FILES = frozenset({"UPGRADE.md", ".mmw-state", "apply.py", "sign.py"})
+NON_BASE_FILES = frozenset({"UPGRADE.md", ".mmw-state", "apply.py", "sign.py", "make-ca.py"})
 
 # Where TreeSink stages content before renaming it onto a live-served path.
 # Never inside a `mirror_base`, so nginx can never serve it — the same

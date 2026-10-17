@@ -11,7 +11,7 @@ from mmw.core.config import NetworkConfig
 from mmw.core.pool import Pool
 from mmw.core.publisher import publish_network, publish_snapshot
 from mmw.core.publisher.bundle import bundle_network
-from mmw.resources import apply_script_bytes, sign_script_bytes
+from mmw.resources import apply_script_bytes, ca_script_bytes, sign_script_bytes
 from test_bundle import seeded, _sign_lab_cert  # noqa: F401
 
 
@@ -68,6 +68,7 @@ def test_copied_publish_and_applied_bundle_are_one_to_one(seeded, tmp_path, tls,
     assert status.returncode == 0
     if tls != "off":
         assert (copied / "sign.py").read_bytes() == sign_script_bytes()
+        assert (copied / "make-ca.py").read_bytes() == ca_script_bytes()
         assert stat.S_IMODE((copied / ".mmw/tls").stat().st_mode) == 0o700
         assert stat.S_IMODE((copied / ".mmw/tls/mirror.key").stat().st_mode) == 0o600
         state = subprocess.run([sys.executable, str(copied / "apply.py"), "--tls", "--root", str(copied)],

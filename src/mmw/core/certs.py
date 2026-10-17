@@ -219,8 +219,9 @@ expire.
 
 Both publish and bundle outputs for a `certs = true` network carry `{key_path.name}`, `{csr_path.name}`
 and `{cnf_path.name}` to `{{root}}/.mmw/tls/` on the far side (no generated server
-block serves it), with `sign.py`. If your CA lives on the airgapped network,
-sign there — any number of mirrors at once:
+block serves it), with `sign.py` and `make-ca.py`. If your CA lives on the
+airgapped network, sign there — any number of mirrors at once (no CA yet?
+`python3 make-ca.py --out ~/site-ca` makes one and says how clients trust it):
 
 ```bash
 python3 sign.py --ca ca.crt --ca-key ca.key /srv/www/lab /srv/www/oak
@@ -410,12 +411,13 @@ def check_cert(out_dir: Path, hostnames: list[str]) -> list[str]:
 def bundle_tls_files(network: NetworkConfig, cfg: Config) -> dict[str, bytes]:
     """What both deployment paths carry to `{root}/.mmw/tls/`: the key,
     the signing request and its OpenSSL config (refreshed for the current
-    hostnames first), the far side's signing script, and the certificate
+    hostnames first), the far side's CA and signing scripts, and the certificate
     when one was signed on this side. **Blocking** (a first key is RSA-4096)."""
-    from mmw.resources import sign_script_bytes
+    from mmw.resources import ca_script_bytes, sign_script_bytes
     _, key, cnf, csr, _ = generate_certs(network, cfg)
     files = {"mirror.key": key.read_bytes(), "mirror.csr": csr.read_bytes(),
-             "mirror.cnf": cnf.read_bytes(), "sign.py": sign_script_bytes()}
+             "mirror.cnf": cnf.read_bytes(), "sign.py": sign_script_bytes(),
+             "make-ca.py": ca_script_bytes()}
     paths = servable_paths(network, cfg)
     if paths is not None:
         files["mirror.crt"] = paths[0].read_bytes()

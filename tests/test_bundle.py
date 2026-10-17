@@ -507,7 +507,7 @@ def test_publish_serves_https_once_signed(seeded, tmp_path):
     assert "listen 443 ssl;" in https
     assert "ssl_certificate /srv/mmw/.mmw/tls/mirror.crt;" in https
     assert (root / ".mmw/tls/mirror.key").is_file()
-    assert (root / "sign.py").is_file()
+    assert (root / "sign.py").is_file() and (root / "make-ca.py").is_file()
 
 
 def test_publish_without_a_signed_cert_stays_http(seeded, tmp_path):
@@ -553,11 +553,12 @@ def test_a_certs_bundle_needs_nothing_signed_here(seeded, tmp_path):
     applied = tmp_path / "applied"
     _extract(result.out_path, applied)
     tls = sorted(p.name for p in (applied / ".mmw" / "tls").iterdir())
-    assert tls == ["mirror.cnf", "mirror.csr", "mirror.key", "sign.py"]
+    assert tls == ["make-ca.py", "mirror.cnf", "mirror.csr", "mirror.key", "sign.py"]
     conf = (applied / "nginx" / "mirror.conf").read_text()
     assert "include /srv/mmw/.mmw/tls/https*.conf;" in conf
     assert "listen 443" not in conf
     assert (tmp_path / "out" / "sign.py").exists()
+    assert (tmp_path / "out" / "make-ca.py").exists()
 
 
 def test_certs_bundle_round_trip(seeded, tmp_path):
@@ -578,7 +579,7 @@ def test_certs_bundle_round_trip(seeded, tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "TLS: mirror.cnf, mirror.crt, mirror.csr, mirror.key, sign.py" in proc.stdout
+    assert "TLS: make-ca.py, mirror.cnf, mirror.crt, mirror.csr, mirror.key, sign.py" in proc.stdout
     assert "HTTPS on" in proc.stdout
 
     tls = dest / ".mmw" / "tls"

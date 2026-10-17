@@ -3,7 +3,7 @@ import io
 from pathlib import Path
 
 from mmw.core.certs import bundle_tls_files
-from mmw.resources import apply_script_bytes, sign_script_bytes
+from mmw.resources import apply_script_bytes, ca_script_bytes, sign_script_bytes
 from mmw.resources.apply import _install_tls, https_state
 
 
@@ -11,6 +11,7 @@ def scripts(certs: bool) -> dict[str, bytes]:
     files = {"apply.py": apply_script_bytes()}
     if certs:
         files["sign.py"] = sign_script_bytes()
+        files["make-ca.py"] = ca_script_bytes()
     return files
 
 

@@ -143,7 +143,7 @@ def test_registered_and_describes():
     d = prov.describe(_src())
     assert [label for label, _ in d.fields] == ["Provider", "Pythons", "Platforms", "Arches", "OS floors", "Requirements"]
     assert d.flags == ["all"] and d.location == "https://pypi.org/simple/"
-    assert prov.unit_label(prov.expand(_src())[1]) == ("3.12 · linux-glibc · amd64", "")
+    assert prov.unit_label(prov.expand(_src())[1]) == ("all · 3.12 · linux-glibc · amd64", "")
 
 
 def test_every_kept_wheel_gets_lazy_core_metadata(tmp_path, up):
@@ -373,3 +373,13 @@ def test_retained_records_read_each_project_once(tmp_path, up, monkeypatch):
         monkeypatch.setattr(cache, "files", lambda name: calls.append(name) or real(name))
         _, meta = _fetch(prov, linux, history)
     assert calls.count("lib") == 1          # two retained lib files, one decode
+
+
+def test_unit_labels_name_the_flow():
+    prov = get_provider("pypi")
+    units = prov.expand(_src(requirements=["a"], platforms=["linux-glibc"]))
+    by_name = {u.name: u for u in units}
+    assert prov.unit_label(by_name["pypi-all-3.12-linux-glibc-amd64"]) == ("all · 3.12 · linux-glibc · amd64", "")
+    assert prov.unit_label(by_name["pypi-req-universal"]) == ("requirements · pure wheels · sdists", "")
+    assert prov.unit_describe(by_name["pypi-req-universal"])[0] == ("Flow", "requirements list")
+    assert prov.unit_describe(by_name["pypi-all-3.12-linux-glibc-amd64"])[0] == ("Flow", "all of PyPI")

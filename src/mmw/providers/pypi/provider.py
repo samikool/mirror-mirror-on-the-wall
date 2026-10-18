@@ -187,14 +187,16 @@ class PypiProvider(BaseProvider):
             location_label="Upstream", location=source.url)
 
     def unit_label(self, unit):
+        flow = "requirements" if unit.options.get("flow") == "req" else "all"
         if not unit.dims:
-            return "pure wheels · sdists", ""
-        return f"{unit.dims['python']} · {unit.dims['platform']} · {unit.dims['arch']}", ""
+            return f"{flow} · pure wheels · sdists", ""
+        return f"{flow} · {unit.dims['python']} · {unit.dims['platform']} · {unit.dims['arch']}", ""
 
     def unit_describe(self, unit):
+        flow = ("Flow", "requirements list" if unit.options.get("flow") == "req" else "all of PyPI")
         if not unit.dims:
-            return [("Files", "pure wheels and sdists, every target")]
-        return [("Python", unit.dims["python"]), ("Platform", unit.dims["platform"]),
+            return [flow, ("Files", "pure wheels and sdists, every target")]
+        return [flow, ("Python", unit.dims["python"]), ("Platform", unit.dims["platform"]),
                 ("Arch", unit.dims["arch"])]
 
     # ── config ──────────────────────────────────────────────────────────────

@@ -70,8 +70,13 @@ def _pins(stdout: str) -> list[tuple[str, str]]:
     return pins
 
 
-def _tail(text: str, lines: int = 12) -> str:
-    return "\n".join(text.strip().splitlines()[-lines:]) or "uv failed without a message"
+def _tail(text: str, limit: int = 4000) -> str:
+    """uv's message, from its head: the "Because …" explanation comes right
+    after the first line, so a long derivation is cut at its end, not start."""
+    text = text.strip()
+    if not text:
+        return "uv failed without a message"
+    return text if len(text) <= limit else text[:limit] + " …"
 
 
 def compile_for(lines: list[str], target: Target, floors: Floors, *, index_url: str = INDEX_URL,

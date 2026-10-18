@@ -84,3 +84,11 @@ def test_uv_failures_are_target_errors(tmp_path, monkeypatch, raised):
     monkeypatch.setattr(uvmod.subprocess, "run", boom)
     r = uvmod.compile_for(["x"], T, Floors(), index_url="http://x", cache_dir=tmp_path)
     assert r.pins == [] and r.error
+
+
+
+def test_error_tail_keeps_uvs_reason_head():
+    long = "  × No solution found when resolving dependencies:\n  ╰─▶ Because a needs b\n" + \
+        "".join(f"      and because x{i} needs y{i},\n" for i in range(30)) + "      we conclude.\n"
+    kept = uvmod._tail(long)
+    assert kept.startswith("× No solution found") and "╰─▶ Because a needs b" in kept

@@ -8,11 +8,8 @@ from textual.widgets import Label
 from mmw.core import config
 from mmw.providers.vscode import marketplace as mp
 from mmw.providers.vscode import provider as vs
-from mmw.tui.provider_form import ProviderSourceForm
-from mmw.tui.ui.form import Heading
-from mmw.tui.ui.page import Page
+from mmw.tui.provider_form import ProviderEditPage, ProviderSourceForm, ProviderStep
 from mmw.tui.ui.widgets import Button
-from mmw.tui.wizard_steps import WizardStep
 
 
 def lookup_ids(source, *, progress=None):
@@ -93,60 +90,18 @@ class VscodeEditor(Vertical):
             self.app.call_from_thread(self._lookup_text, gen, text)
 
 
-class StepVscode(WizardStep):
+class StepVscode(ProviderStep):
     def __init__(self, existing_urls):
-        super().__init__()
         self.existing_urls = existing_urls
-        self.editor = VscodeEditor(config.VscodeSource(provider='vscode'))
-
-    def compose(self):
-        yield Heading('VS Code · Marketplace')
-        if config.MARKETPLACE_URL in self.existing_urls:
-            yield Label('This replaces the existing VS Code selection.', markup=False)
-        yield self.editor
-        yield Label('', id='vs-form-error', markup=False)
-
-    def focus_first(self):
-        self.editor.form.focus_first()
-
-    def get_sources(self):
-        try:
-            return [self.editor.form.get_source()]
-        except ValueError as exc:
-            self.query_one('#vs-form-error', Label).update(str(exc))
-            return []
+        super().__init__(VscodeEditor(config.VscodeSource(provider='vscode')), heading='VS Code · Marketplace',
+                         replaces=('This replaces the existing VS Code selection.'
+                                   if config.MARKETPLACE_URL in existing_urls else None),
+                         error_id='vs-form-error')
 
 
-class EditVscodePage(Page):
+class EditVscodePage(ProviderEditPage):
     TITLE = 'Edit VS Code source'
 
     def __init__(self, source, *, existing_names, existing_urls, save_source=None):
-        super().__init__()
-        self.save_source = save_source
-        self.editor = VscodeEditor(source, existing_names=existing_names)
-
-    def compose_body(self):
-        yield self.editor
-
-    def compose_actions(self):
-        yield Button('Cancel', id='btn-cancel', compact=True)
-        yield Button('Save ✓', id='btn-save', variant='primary', compact=True)
-
-    @on(Button.Pressed, '#btn-cancel')
-    def _cancel(self):
-        self.dismiss(None)
-
-    @on(Button.Pressed, '#btn-save')
-    async def _save(self):
-        try:
-            source = self.editor.form.get_source()
-        except ValueError as exc:
-            self.set_status(str(exc), 'error')
-            return
-        if self.save_source is not None:
-            try:
-                await self.save_source(source)
-            except Exception as exc:
-                self.set_status(f'Not saved: {exc}', 'error')
-                return
-        self.dismiss(source)
+        super().__init__(VscodeEditor(source, existing_names=existing_names), title=self.TITLE,
+                         save_source=save_source)

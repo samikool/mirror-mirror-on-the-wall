@@ -49,6 +49,12 @@ requirements = ["django>=5"]
 requirements_file = "reqs.txt"     # next to mmw.toml; re-read every sync
 ```
 
+In `mmw manage`, open **Sources → Add → PyPI** (also offered during first-run
+setup), or **Edit** on the existing PyPI source. Every key above is on that
+form. **Check requirements** resolves the list for each target with uv
+without saving anything, and shows ✓ with the package count, or ✗ with uv's
+reason (usually the conflict), per target.
+
 `mmw dry-run` shows the exact size first. The straight mirror of all of PyPI
 for one target is roughly 0.7–1.3 TB.
 

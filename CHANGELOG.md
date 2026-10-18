@@ -6,6 +6,22 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.2]
+
+The check flags get one name each, and pool listings are faster. Upgrading
+from 1.1.1: the old flag names are removed, not aliased — a cron entry or
+script that passes `--deep`, `--rehash` or `--full` now fails as an unknown
+option, so update it first (see Changed).
+
+### Changed
+
+- **Check flags renamed, old names removed.** `mmw verify --deep` is now
+  `--stat` and `--rehash` is `--hash`; `mmw publish --full` is `--recheck`.
+  `mmw bundle --full` is gone — `--from none` already did the same thing.
+  `--full` had meant two different things; each name now means one.
+- Pool listings (publish, bundle, verify) dedupe and sort in Python rather
+  than in SQLite: a 1M-file VS Code listing takes 3.7 s instead of 9.8 s.
+
 ## [1.1.1]
 
 VS Code mirrors behave like the real Marketplace in more places, and a publish

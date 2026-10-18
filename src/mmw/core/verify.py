@@ -16,8 +16,8 @@ reconciled from that same index, so agreement is expected; disagreement means
 the refs and the index have drifted.
 
 Neither of those opens a single blob, so neither can see a file deleted or
-truncated underneath the pool. `deep=True` adds that: it stats every blob and
-optionally re-hashes it. It is off by default because it is O(blobs) of disk
+truncated underneath the pool. `stat_blobs=True` adds that: it stats every blob and
+optionally (`hash_blobs`) re-hashes it. It is off by default because it is O(blobs) of disk
 I/O — minutes on a multi-TB pool on one spindle — and making it implicit would
 have quietly turned every publish pre-flight into a full pool scan.
 """
@@ -44,8 +44,8 @@ class VerifyResult:
     # `missing_refs_count` is the true total.
     missing_refs: list[tuple[str, str]] = field(default_factory=list)
     missing_refs_count: int = 0
-    # deep mode only: blobs whose file is gone, the wrong size, or (with
-    # `rehash`) whose bytes no longer hash to their own checksum.
+    # stat_blobs only: blobs whose file is gone, the wrong size, or (with
+    # `hash_blobs`) whose bytes no longer hash to their own checksum.
     corrupt: list[str] = field(default_factory=list)
     # The checksums behind `corrupt` — what `Pool.forget_blobs` (`mmw verify
     # --repair`) drops so the next sync downloads them again.
@@ -83,13 +83,13 @@ def verify_mirror(
     mirror: MirrorConfig,
     mirror_dir: Path,
     pool: Pool,
-    deep: bool = False,
-    rehash: bool = False,
+    stat_blobs: bool = False,
+    hash_blobs: bool = False,
     say=None,
 ) -> VerifyResult:
     """Check that the pool can actually serve everything this mirror promises.
 
-    `deep` stats every blob; `rehash` (which implies `deep`) also re-reads and
+    `stat_blobs` stats every blob; `hash_blobs` (which implies it) also re-reads and
     hashes them. Both are off by default — see the module docstring. `say(text)`
     names each slow step as it starts.
     """
@@ -110,9 +110,9 @@ def verify_mirror(
     started = perf_counter()
     _check_refs(pool, mirror.name, result)
     result.timings["refs"] = perf_counter() - started
-    if deep or rehash:
+    if stat_blobs or hash_blobs:
         started = perf_counter()
-        _check_blobs(pool, mirror.name, result, rehash=rehash)
+        _check_blobs(pool, mirror.name, result, hash_blobs=hash_blobs)
         result.timings["blobs"] = perf_counter() - started
     return result
 
@@ -130,7 +130,8 @@ def _check_refs(pool: Pool, mirror_name: str, result: VerifyResult) -> None:
     result.missing_refs = missing[:20]
 
 
-def _check_blobs(pool: Pool, mirror_name: str, result: VerifyResult, rehash: bool) -> None:
+def _check_blobs(pool: Pool, mirror_name: str, result: VerifyResult,
+                 hash_blobs: bool) -> None:
     """Does the pool physically hold these bytes, and are they still right?
 
     The database says a blob exists; only the filesystem knows whether it
@@ -152,7 +153,7 @@ def _check_blobs(pool: Pool, mirror_name: str, result: VerifyResult, rehash: boo
             )
             result.corrupt_checksums.append(checksum)
             continue
-        if rehash and checksum:
+        if hash_blobs and checksum:
             h = hashlib.sha256()
             try:
                 with p.open("rb") as fh:

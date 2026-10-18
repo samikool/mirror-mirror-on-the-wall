@@ -187,7 +187,7 @@ def test_interrupted_write_leaves_nothing_servable(tmp_path, monkeypatch):
 
 def test_stale_tmp_is_swept_on_next_apply(tmp_path):
     """Debris left by a previous crashed/killed apply must not survive into
-    the next one — nothing else would ever clean it up (a --full recovery
+    the next one — nothing else would ever clean it up (a full recovery
     bundle only removes paths its manifest names, and this file's real path
     is never even mentioned by one)."""
     ns = _load_module()

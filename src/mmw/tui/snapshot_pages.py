@@ -66,8 +66,8 @@ class PublishPickPage(Page):
                              "serve it on its own address."),
             PathField("Directory", "", id="pick-root", browse_title="Publish into",
                       hint="Created if missing."),
-            ToggleField("Recheck every file", False, id="publish-full",
-                        hint="Ignore the record of the last publish (--full) — slow; for a "
+            ToggleField("Recheck every file", False, id="publish-recheck",
+                        hint="Ignore the record of the last publish (--recheck) — slow; for a "
                              "tree edited by hand."),
             ToggleField("Snapshot first", False, id="publish-take-snapshot",
                         hint="Take a snapshot of the network before publishing "
@@ -111,7 +111,7 @@ class PublishPickPage(Page):
                             "existing snapshot.", "error")
             return
         self.dismiss(PublishChoice(snapshot=None if target == "live" else target, root=root,
-                                   full=values["publish-full"],
+                                   recheck=values["publish-recheck"],
                                    take_snapshot=values["publish-take-snapshot"]))
 
 

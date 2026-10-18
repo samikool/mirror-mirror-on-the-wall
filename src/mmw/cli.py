@@ -289,22 +289,22 @@ def cmd_publish(
         help="Publish into this directory instead of the network's root. Its nginx "
              "config points there with the same hostnames, so serve it on its own "
              "address. Needs -n."),
-    full: bool = typer.Option(
-        False, "--full",
+    recheck: bool = typer.Option(
+        False, "--recheck",
         help="Ignore the record of the last publish and recheck every published file."),
     take_snapshot: bool = typer.Option(
         False, "--take-snapshot", help="Take a snapshot of the network first."),
 ):
     """Publish mirrors to network targets. Without --quiet opens the TUI
-    (--snapshot / --root / --full / --take-snapshot always run headless)."""
+    (--snapshot / --root / --recheck / --take-snapshot always run headless)."""
     cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
-    if quiet or dry_run or snapshot or root or full or take_snapshot:
+    if quiet or dry_run or snapshot or root or recheck or take_snapshot:
         from mmw.commands.publish import run
         raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run,
                              allow_incomplete=allow_incomplete,
-                             snapshot=snapshot, root=root, full=full,
+                             snapshot=snapshot, root=root, recheck=recheck,
                              take_snapshot=take_snapshot))
 
     _run_tui(_open_app(cfg, cfg_dir, "networks"))
@@ -431,7 +431,6 @@ def cmd_certs(
 @app.command("bundle")
 def cmd_bundle(
     network: str = typer.Option(None, "--network", "-n", help="Bundle one network by name"),
-    full: bool = typer.Option(False, "--full", help="Send the whole network, not just the delta"),
     out: Path = typer.Option(None, "--out", "-o",
                              help="Write here instead of the network's bundle_dir"),
     allow_incomplete: bool = typer.Option(
@@ -451,7 +450,7 @@ def cmd_bundle(
     snapshots (see `mmw snapshot list`). By default: from where the last
     bundle went, to a new snapshot of now."""
     from mmw.commands.bundle import run
-    raise typer.Exit(run(_cfg_dir(), network=network, full=full, out=out,
+    raise typer.Exit(run(_cfg_dir(), network=network, out=out,
                          allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref))
 
@@ -515,13 +514,15 @@ def cmd_snapshot_clean(network: str = _SNAP_NET,
 @app.command("verify")
 def cmd_verify(
     network: str = typer.Option(None, "--network", "-n", help="Verify only this network's mirrors"),
-    deep: bool = typer.Option(False, "--deep", help="Also stat every blob (slow: one stat per file)"),
-    rehash: bool = typer.Option(False, "--rehash",
-                                help="Also re-hash every blob (slowest: reads the whole pool)"),
+    stat_blobs: bool = typer.Option(False, "--stat",
+                                    help="Also stat every blob (slow: one stat per file)"),
+    hash_blobs: bool = typer.Option(False, "--hash",
+                                    help="Also re-hash every blob (slowest: reads the whole pool)"),
     repair: bool = typer.Option(False, "--repair",
                                 help="Drop damaged blobs so the next sync downloads them again "
-                                     "(implies --deep)"),
+                                     "(implies --stat)"),
 ):
     """Check the pool holds every blob its mirrors' refs want (read-only unless --repair)."""
     from mmw.commands.verify import run
-    raise typer.Exit(run(_cfg_dir(), network=network, deep=deep, rehash=rehash, repair=repair))
+    raise typer.Exit(run(_cfg_dir(), network=network, stat_blobs=stat_blobs,
+                         hash_blobs=hash_blobs, repair=repair))

@@ -199,7 +199,7 @@ def test_full_ignores_the_ledger(seeded, tmp_path):
     mirror_dir, cfg = seeded
     net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
     first = bundle_network(net, cfg, mirror_dir)
-    again = bundle_network(net, cfg, mirror_dir, full=True)
+    again = bundle_network(net, cfg, mirror_dir, from_ref=None)
     assert again.sent == first.sent
     assert again.full is True
 
@@ -259,7 +259,7 @@ def test_apply_refuses_out_of_order(seeded, tmp_path):
     bundle_network(net, cfg, mirror_dir)
     # Change something so the second bundle is a real delta.
     (tmp_path / "out" / "sentinel").write_text("x")
-    second = bundle_network(net, cfg, mirror_dir, full=False)
+    second = bundle_network(net, cfg, mirror_dir)
 
     dest = tmp_path / "far-side"
     proc = subprocess.run(
@@ -269,9 +269,8 @@ def test_apply_refuses_out_of_order(seeded, tmp_path):
     )
     assert proc.returncode != 0
     assert b"expects" in proc.stderr or b"out of order" in proc.stderr
-    # The message must recover the operator, not name a capability no
-    # user-facing surface can invoke (`_execute_bundle` hardcodes
-    # `full=False`).
+    # The message must recover the operator, not name a flag that no
+    # longer exists (`--from none` is the full bundle now).
     assert b"--full" not in proc.stderr
 
 
@@ -301,7 +300,7 @@ def test_apply_verify_succeeds_immediately_after_apply(seeded, tmp_path):
 
 
 def test_full_bundle_still_carries_deletions(seeded, tmp_path):
-    """IMPORTANT 4 -- `--full` means "send everything", never "forget what
+    """IMPORTANT 4 -- a full bundle means "send everything", never "forget what
     the far side has". The original implementation set `prev = {}` for
     `full=True`, so a full bundle always computed zero deletions -- and
     permanently: the new manifest it writes doesn't list the stale path
@@ -322,7 +321,7 @@ def test_full_bundle_still_carries_deletions(seeded, tmp_path):
     ], source="https://archive.ubuntu.com/ubuntu")
     pool.close()
 
-    full = bundle_network(net, cfg, mirror_dir, full=True)
+    full = bundle_network(net, cfg, mirror_dir, from_ref=None)
     assert full.full is True
     assert full.deleted == 1
 
@@ -598,7 +597,7 @@ def test_certs_bundle_round_trip(seeded, tmp_path):
 
 def test_certs_ride_every_delta(seeded, tmp_path):
     """A delta that changes nothing still carries the TLS files — a re-signed
-    certificate must reach the far side without a --full bundle."""
+    certificate must reach the far side without a full bundle."""
     mirror_dir, cfg = seeded
     _sign_lab_cert(tmp_path, mirror_dir, ["archive.ubuntu.com"])
     net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=True)

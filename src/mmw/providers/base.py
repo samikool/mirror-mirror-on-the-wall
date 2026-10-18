@@ -133,7 +133,7 @@ class PublishContext:
     stop_event: Any = None
     keep_extra: frozenset = frozenset()
     mirror_start_callback: Any = None
-    full: bool = False              # `--full`: recheck what a provider would reuse
+    recheck: bool = False           # `--recheck`: recheck what a provider would reuse
 
 
 class BaseProvider(ABC):

@@ -188,7 +188,7 @@ class TreeSink:
     """Hardlinks into a directory — the behaviour publish has always had."""
 
     def __init__(self, root: Path, progress=None, stop_event=None, *,
-                 prev: dict[str, str] | None = None, full: bool = False):
+                 prev: dict[str, str] | None = None, recheck: bool = False):
         self.root = root
         self._progress = progress
         self._stop_event = stop_event
@@ -198,9 +198,9 @@ class TreeSink:
         # The tree's record from its last publish (`manifest.RECORD_PATH`), or
         # None to check the filesystem as publish always did. With a record,
         # an unchanged path costs nothing and pruning reads the record, not
-        # the tree; `full` ignores it — the recheck.
-        self._prev = None if full else prev
-        self._full = full
+        # the tree; `recheck` ignores it.
+        self._prev = None if recheck else prev
+        self._recheck = recheck
         self._rows: dict[str, str] = {}
         # Sorted once: each group's records are one bisected slice — VS Code
         # finalizes once per publisher host, tens of thousands of groups.
@@ -208,9 +208,9 @@ class TreeSink:
         self._bh_dirs: set[str] = set()      # by-hash dirs this run placed into
 
     @property
-    def full(self) -> bool:
-        """`--full`: providers recheck what they would otherwise reuse."""
-        return self._full
+    def recheck(self) -> bool:
+        """`--recheck`: providers recheck what they would otherwise reuse."""
+        return self._recheck
 
     @property
     def manifest_rows(self) -> list[tuple[str, str]]:
@@ -225,7 +225,7 @@ class TreeSink:
         from mmw.core.publisher.links import hardlink_or_copy, same_file
         if "/by-hash/" in f"/{rel}":
             self._bh_dirs.add(rel.rsplit("/", 1)[0])
-        if unchanged(self._prev, rel, checksum, self._full):
+        if unchanged(self._prev, rel, checksum, self._recheck):
             self._rows[rel] = checksum
             return "skipped"
         dst = self.root / rel
@@ -256,7 +256,7 @@ class TreeSink:
         from mmw.core.publisher.links import atomic_write
         checksum = hashlib.sha256(data).hexdigest()
         self._rows[rel] = checksum
-        if unchanged(self._prev, rel, checksum, self._full):
+        if unchanged(self._prev, rel, checksum, self._recheck):
             return
         # Staged-then-renamed like every other write into a live-served tree:
         # a client fetching nginx/mirror.conf or UPGRADE.md mid-publish gets
@@ -533,13 +533,13 @@ class BundleSink:
         # contract as the Sink protocol, with its own status vocabulary
         # (`archive-start`/`archive-progress`/`archive-done`) — see close().
         self._progress = progress
-        # `--full` means "send everything", never "forget what the far side
+        # A full bundle means "send everything", never "forget what the far side
         # has". `prev` is populated the same way for a full bundle as for a
         # delta one (bundle.py always reads the latest manifest) — the delete
         # set in `finalize_group` is computed from it exactly as usual. `full`
         # only bypasses `prev` for the SEND decision in link()/write() below.
         self._full = full
-        self.full = full                     # providers recheck what they would reuse
+        self.recheck = full                  # providers recheck what they would reuse
 
         self.manifest_rows: list[tuple[str, str]] = []
         # The header actually written into the tar, complete with

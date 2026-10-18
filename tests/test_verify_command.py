@@ -140,7 +140,7 @@ def test_verify_repair_drops_damaged_blobs_and_still_exits_1(tmp_path, monkeypat
     monkeypatch.setattr(verify_cmd, "_verify_all", fake_verify_all)
 
     assert verify_cmd.run(tmp_path, repair=True) == 1
-    assert seen == {"deep": True, "rehash": False}
+    assert seen == {"stat_blobs": True, "hash_blobs": False}
     out = capsys.readouterr()
     assert "1 damaged blob" in out.err and "Dropped 1 damaged blob" in out.out
     with Pool(mirror_dir, read_only=True) as pool:

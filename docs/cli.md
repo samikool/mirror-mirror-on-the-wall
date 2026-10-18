@@ -91,7 +91,6 @@ bundle went, to a new snapshot of now.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--network`, `-n` |  | Bundle one network by name |
-| `--full` |  | Send the whole network, not just the delta |
 | `--out`, `-o` |  | Write here instead of the network's bundle_dir |
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for a full bundle. Default: where the last bundle went. |
@@ -158,7 +157,7 @@ Remove orphaned pool packages not referenced by any mirror.
 ### `mmw publish`
 
 Publish mirrors to network targets. Without --quiet opens the TUI
-(--snapshot / --root / --full / --take-snapshot always run headless).
+(--snapshot / --root / --recheck / --take-snapshot always run headless).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -168,7 +167,7 @@ Publish mirrors to network targets. Without --quiet opens the TUI
 | `--allow-incomplete` |  | Publish even if the pool cannot serve everything the indexes promise (you are still told what is missing). |
 | `--snapshot`, `-s` |  | Publish this snapshot (stamp, label or id — see `mmw snapshot list`) instead of the current state; 'live' is the current state. Needs -n. |
 | `--root` |  | Publish into this directory instead of the network's root. Its nginx config points there with the same hostnames, so serve it on its own address. Needs -n. |
-| `--full` |  | Ignore the record of the last publish and recheck every published file. |
+| `--recheck` |  | Ignore the record of the last publish and recheck every published file. |
 | `--take-snapshot` |  | Take a snapshot of the network first. |
 
 ### `mmw retry-failed`
@@ -219,6 +218,6 @@ First syncs and full replacements still require substantial database writes.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--network`, `-n` |  | Verify only this network's mirrors |
-| `--deep` |  | Also stat every blob (slow: one stat per file) |
-| `--rehash` |  | Also re-hash every blob (slowest: reads the whole pool) |
-| `--repair` |  | Drop damaged blobs so the next sync downloads them again (implies --deep) |
+| `--stat` |  | Also stat every blob (slow: one stat per file) |
+| `--hash` |  | Also re-hash every blob (slowest: reads the whole pool) |
+| `--repair` |  | Drop damaged blobs so the next sync downloads them again (implies --stat) |

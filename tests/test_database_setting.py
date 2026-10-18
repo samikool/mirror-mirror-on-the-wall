@@ -135,7 +135,7 @@ def test_a_moved_database_serves_snapshots_bundles_and_stats(seeded, tmp_path): 
     before = sorted(p.name for p in net.root.rglob("*.deb"))
     assert not publish_snapshot(net, cfg, mirror_dir, stamp).errors
     assert sorted(p.name for p in net.root.rglob("*.deb")) == before
-    result = bundle_network(net, cfg, mirror_dir, full=True)
+    result = bundle_network(net, cfg, mirror_dir, from_ref=None)
     assert not result.errors and result.sent > 3
 
 

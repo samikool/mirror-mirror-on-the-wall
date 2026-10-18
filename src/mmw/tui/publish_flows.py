@@ -59,7 +59,7 @@ class PublishChoice:
     snapshot: str | None = None
     root: Path | None = None
     allow_incomplete: bool = False
-    full: bool = False              # ignore the tree's record; recheck every file
+    recheck: bool = False           # ignore the tree's record; recheck every file
     take_snapshot: bool = False     # snapshot the network first (live publishes only)
 
 
@@ -256,7 +256,7 @@ class PublishFlows:
             # A snapshot's files are checked by publish_snapshot itself: the
             # verify below is about the live state's refs.
             await self._guarded(view, "Publish", lambda: self._execute_snapshot_publish(
-                net, choice.snapshot, view, full=choice.full))
+                net, choice.snapshot, view, recheck=choice.recheck))
             return
 
         async def flow():
@@ -275,7 +275,7 @@ class PublishFlows:
                 from mmw.core.snapshots import take_snapshot
                 taken = await asyncio.to_thread(take_snapshot, net, self.cfg(), mirror_dir)
                 view.write(f"  [dim]# snapshot {escape(taken.stamp)} taken[/]")
-            await self._execute_publish(net, per_mirror, view, full=choice.full)
+            await self._execute_publish(net, per_mirror, view, recheck=choice.recheck)
         await self._guarded(view, "Publish", flow)
 
     async def dry_run(self, net: "config.NetworkConfig", view) -> None:
@@ -344,14 +344,14 @@ class PublishFlows:
             view.mark_done(None)
 
     async def _execute_publish(self, net: "config.NetworkConfig", per_mirror: dict[str, int],
-                               view, *, full: bool = False) -> None:
+                               view, *, recheck: bool = False) -> None:
         from mmw.core import publisher
 
         view.begin(sum(per_mirror.values()), per_mirror)
         try:
             result = await asyncio.to_thread(lambda: publisher.publish_network(
                 net, self.cfg(), self.cfg().settings.mirror_dir,
-                view.record, view.stop_event, view.notify_mirror_start, full=full))
+                view.record, view.stop_event, view.notify_mirror_start, recheck=recheck))
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return
@@ -376,7 +376,7 @@ class PublishFlows:
             view.write(f"  [dim]#   {escape(str(path))}[/]")
 
     async def _execute_snapshot_publish(self, net: "config.NetworkConfig", stamp: str,
-                                        view, *, full: bool = False) -> None:
+                                        view, *, recheck: bool = False) -> None:
         from mmw.core.pool import Pool
         from mmw.core.publisher import publish_snapshot
 
@@ -389,7 +389,7 @@ class PublishFlows:
                 lambda: publish_snapshot(
                     net, self.cfg(), self.cfg().settings.mirror_dir, stamp,
                     progress=view.record, stop_event=view.stop_event,
-                    mirror_start_callback=view.notify_mirror_start, full=full))
+                    mirror_start_callback=view.notify_mirror_start, recheck=recheck))
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return

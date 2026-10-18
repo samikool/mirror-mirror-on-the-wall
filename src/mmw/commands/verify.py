@@ -11,7 +11,7 @@ this, but before this module it was reachable only by driving
 the TUI's verify stage — undoable from cron. This check is
 read-only: it never downloads anything.
 
-`--deep` also stats every blob and `--rehash` re-reads and hashes it — the
+`--stat` also stats every blob and `--hash` re-reads and hashes it — the
 only checks that see a file truncated or deleted underneath the pool, and
 O(pool) disk I/O, so never implicit. `--repair` drops what they find damaged
 (`Pool.forget_blobs`), so the next `mmw sync` downloads it again; it is the
@@ -33,7 +33,7 @@ from mmw.core.verify import VerifyResult, verify_mirror
 
 
 def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
-                deep: bool = False, rehash: bool = False) -> list[VerifyResult]:
+                stat_blobs: bool = False, hash_blobs: bool = False) -> list[VerifyResult]:
     """Verify every mirror the pool holds, or one network's slice of them.
 
     Split out from `run()` so tests can stub this one seam instead of
@@ -51,18 +51,18 @@ def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
     warm_for_job(mirror_dir, say=lambda message: print(f"  {message}"))
     pool = Pool(mirror_dir, read_only=True)
     try:
-        return [verify_mirror(m, mirror_dir, pool, deep=deep, rehash=rehash) for m in mirrors]
+        return [verify_mirror(m, mirror_dir, pool, stat_blobs=stat_blobs, hash_blobs=hash_blobs) for m in mirrors]
     finally:
         pool.close()
 
 
 @interruptible
-def run(cfg_dir: Path = Path("."), network: str | None = None, deep: bool = False,
-        rehash: bool = False, repair: bool = False) -> int:
+def run(cfg_dir: Path = Path("."), network: str | None = None, stat_blobs: bool = False,
+        hash_blobs: bool = False, repair: bool = False) -> int:
     """Verify pool completeness for one or all mirrors. Returns a process exit code.
 
-    `deep` stats every blob, `rehash` (implies `deep`) hashes it; `repair`
-    (implies `deep`) drops the damaged ones so the next sync fetches them."""
+    `stat_blobs` stats every blob, `hash_blobs` (implies `stat_blobs`) hashes it;
+    `repair` (implies `stat_blobs`) drops the damaged ones so the next sync fetches them."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
@@ -71,9 +71,9 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, deep: bool = Fals
         eprint(f"Network '{network}' not found.")
         return 1
 
-    deep = deep or rehash or repair
+    stat_blobs = stat_blobs or hash_blobs or repair
     try:
-        results = _verify_all(cfg, cfg.settings.mirror_dir, network, deep=deep, rehash=rehash)
+        results = _verify_all(cfg, cfg.settings.mirror_dir, network, stat_blobs=stat_blobs, hash_blobs=hash_blobs)
     except OSError as e:
         eprint(f"Cannot read the pool in {cfg.settings.mirror_dir}: {e.strerror or e}")
         return 1

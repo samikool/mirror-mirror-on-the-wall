@@ -142,7 +142,6 @@ def bundle_network(
     cfg: Config,
     mirror_dir: Path,
     out_path: Path | None = None,
-    full: bool = False,
     progress=None,
     stop_event=None,
     mirror_start_callback=None,
@@ -157,7 +156,7 @@ def bundle_network(
       snapshot of the network's current state is taken first.
     - `from_ref`: a snapshot (an imported, history-only one is fine — only its
       file list is needed), None for a full bundle, or by default where the
-      last bundle of this network went. `full=True` is `from_ref=None`.
+      last bundle of this network went.
 
     Both ends are complete trees, so the delta is exact: send every path of
     the destination whose checksum differs from (or is absent in) the start;
@@ -172,8 +171,6 @@ def bundle_network(
 
     from mmw.core.publisher import warm_for_publish
     warm_for_publish(mirror_dir, progress, stop_event)
-    if full:
-        from_ref = None
     with Pool(mirror_dir) as pool:
         import_ledger(pool, mirror_dir, network.name)
         start = _resolve_from(pool, network.name, from_ref)

@@ -133,7 +133,7 @@ def test_move_is_refused_while_a_publish_or_bundle_runs(job, seeded, tmp_path): 
     if job == "publish":
         publish_network(net, cfg, mirror_dir, progress=progress)
     else:
-        bundle_network(net, cfg, mirror_dir, full=True, progress=progress)
+        bundle_network(net, cfg, mirror_dir, from_ref=None, progress=progress)
     assert tried
     assert config.load(tmp_path).settings.database == mirror_dir / ".pool" / "mmw.db"
 

@@ -375,7 +375,7 @@ class VscodeProvider(BaseProvider):
         say = (lambda message: ctx.progress(d, f"gallery:{message}")) if ctx.progress else None
         updates = vpub.updates(ctx.pool, units)
         catalog_json, hosts = vpub.catalog_files(
-            ctx.pool, units, ctx.mirror_dir / vpub.META_CACHE, full=ctx.full, say=say)
+            ctx.pool, units, ctx.mirror_dir / vpub.META_CACHE, recheck=ctx.recheck, say=say)
         files = {
             f"{d}/catalog.json": catalog_json,
             f"{d}/updates.json": json.dumps(updates, sort_keys=True).encode(),

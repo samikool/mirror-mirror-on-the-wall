@@ -104,7 +104,7 @@ def test_publish_and_bundle_warm_the_configured_database_once(job, monkeypatch, 
     if job == "publish":
         publish_network(net, cfg, mirror_dir)
     else:
-        bundle_network(net, cfg, mirror_dir, full=True)
+        bundle_network(net, cfg, mirror_dir, from_ref=None)
     assert calls == [database_path(mirror_dir)]
 
 

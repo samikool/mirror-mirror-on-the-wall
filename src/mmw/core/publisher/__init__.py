@@ -77,12 +77,12 @@ def publish_network(
     stop_event=None,
     mirror_start_callback=None,
     *,
-    full: bool = False,
+    recheck: bool = False,
 ) -> NetworkPublishResult:
     """Materialize all of a network's mirrors from the pool DB.
 
     Trusts the tree's record of its last publish (`_open_record`) unless
-    `full`, which rechecks every file and rewrites the record.
+    `recheck`, which rechecks every file and rewrites the record.
 
     Mirrors are processed in groups sharing a mirror_base (apt component
     mirrors of one source URL publish as a unit); each group's destination is
@@ -108,7 +108,7 @@ def publish_network(
     # open (moved, missing) must not cost the tree its record.
     with Pool(mirror_dir, read_only=True) as pool:
         sink = TreeSink(network.root, progress=progress, stop_event=stop_event,
-                        prev=_open_record(network.root, network.name), full=full)
+                        prev=_open_record(network.root, network.name), recheck=recheck)
         try:
             walk_network(network, cfg, mirror_dir, sink, pool, result,
                          nginx_root=str(network.root), prune=network.prune,
@@ -122,7 +122,7 @@ def publish_network(
         finally:
             sink.close()
     if not (stop_event and stop_event.is_set()):
-        _write_record(network.root, network.name, sink, result, full, network.prune, progress)
+        _write_record(network.root, network.name, sink, result, recheck, network.prune, progress)
         _record_published(mirror_dir, network.root, network.name, "live")
 
     return result
@@ -147,7 +147,7 @@ def _open_record(root: Path, network: str) -> "dict[str, str] | None":
     return prev
 
 
-def _write_record(root: Path, network: str, sink, result, full: bool,
+def _write_record(root: Path, network: str, sink, result, recheck: bool,
                   prune: bool = True, progress=None) -> None:
     """Record what this publish laid out — only when it finished cleanly, and
     only when it pruned: without pruning, files dropped upstream stay in the
@@ -166,7 +166,7 @@ def _write_record(root: Path, network: str, sink, result, full: bool,
     if progress:
         # A million-row record takes a while to sort and write: say so.
         progress("", "step:saving the publish record…")
-    write_manifest(Path(root) / RECORD_PATH, ManifestHeader(network, now_stamp(), None, full),
+    write_manifest(Path(root) / RECORD_PATH, ManifestHeader(network, now_stamp(), None, recheck),
                    sorted(sink.manifest_rows))
 
 
@@ -230,7 +230,7 @@ def publish_snapshot(
     progress=None,
     stop_event=None,
     mirror_start_callback=None,
-    full: bool = False,
+    recheck: bool = False,
 ) -> NetworkPublishResult:
     """Lay snapshot `ref` (stamp, label or id) out at `root` (default: the
     network's root) exactly as it was — old packages come back, newer ones
@@ -269,7 +269,7 @@ def publish_snapshot(
         deferred: dict[str, list] = {KIND_META: [], KIND_RELEASE: []}
 
         sink = TreeSink(root, progress=progress, stop_event=stop_event,
-                        prev=_open_record(root, network.name), full=full)
+                        prev=_open_record(root, network.name), recheck=recheck)
         try:
             def place(row, base):
                 rel, checksum, pool_path, size = row
@@ -349,7 +349,7 @@ def publish_snapshot(
     if other.total_files or other.errors:
         result.mirrors.append(other)
     if not (stop_event and stop_event.is_set()):
-        _write_record(root, network.name, sink, result, full, network.prune, progress)
+        _write_record(root, network.name, sink, result, recheck, network.prune, progress)
         _record_published(mirror_dir, root, network.name, snap.stamp)
     return result
 
@@ -398,7 +398,7 @@ def walk_network(
                          progress=progress, stop_event=stop_event,
                          keep_extra=frozenset(upstream_paths),
                          mirror_start_callback=mirror_start_callback,
-                         full=getattr(sink, "full", False))
+                         recheck=getattr(sink, "recheck", False))
     all_bases: set[str] = set()
     started = 0                         # groups numbered by earlier providers
     for provider in all_providers():

@@ -92,7 +92,7 @@ def delete(cfg_dir: Path, network: str, ref: str, yes: bool = False) -> int:
     def act(pool, s):
         if not yes and s.stamp == snapshots.last_bundled_to(pool, s.network):
             eprint(f"{s.stamp} is where the last bundle of {s.network} went — without it "
-                   "the next bundle needs --from or --full. Run again with --yes to delete it.")
+                   "the next bundle needs --from (or --from none). Run again with --yes to delete it.")
             return 1
         try:
             snapshots.delete_snapshot(pool, s)

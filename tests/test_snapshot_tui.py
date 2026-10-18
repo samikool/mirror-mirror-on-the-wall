@@ -266,15 +266,15 @@ def test_publish_page_can_recheck_and_snapshot_first(two_mirrors, monkeypatch): 
     seen = []
     real = publisher.publish_network
     monkeypatch.setattr(publisher, "publish_network",
-                        lambda *a, **k: (seen.append(k.get("full")), real(*a, **k))[1])
+                        lambda *a, **k: (seen.append(k.get("recheck")), real(*a, **k))[1])
 
     async def check(app, pilot):
         await pilot.press("p")
         await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage")
-        full = app.screen.query_one("#publish-full", Checkbox)
+        recheck = app.screen.query_one("#publish-recheck", Checkbox)
         snap = app.screen.query_one("#publish-take-snapshot", Checkbox)
-        assert not full.value and not snap.value
-        full.value = snap.value = True
+        assert not recheck.value and not snap.value
+        recheck.value = snap.value = True
         await confirm_picker(app, pilot, "PublishPickPage")
         await until(pilot, lambda: _finished(app))
         assert app.active_transfer.outcome == "ok", app.notes

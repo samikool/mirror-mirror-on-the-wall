@@ -75,7 +75,7 @@ def test_deep_verify_finds_a_truncated_blob_and_repair_refetches_it(pool, mirror
     """A blob truncated under its own (correct) checksum is invisible to every
     database check, and a sync never re-fetches a pooled checksum — so the
     damage is permanent until something stats the file and drops the row.
-    That is `mmw verify --deep --repair`; afterwards the ref is simply
+    That is `mmw verify --stat --repair`; afterwards the ref is simply
     missing, which is what the next sync fills."""
     content = b"x" * 4096
     cs = _seed(pool, content, "a.deb")
@@ -85,7 +85,7 @@ def test_deep_verify_finds_a_truncated_blob_and_repair_refetches_it(pool, mirror
 
     m = _mirror("apt-flat")
     assert verify_mirror(m, mirror_dir, pool).corrupt == []          # shallow: blind to it
-    r = verify_mirror(m, mirror_dir, pool, deep=True)
+    r = verify_mirror(m, mirror_dir, pool, stat_blobs=True)
     assert r.corrupt_checksums == [cs] and not r.complete
 
     assert pool.forget_blobs(r.corrupt_checksums) == (1, len(content))
@@ -100,5 +100,5 @@ def test_rehash_finds_a_blob_rewritten_at_the_same_size(pool, mirror_dir):
     (pool.pool_dir / "packages" / cs[:2] / f"{cs}-a.deb").write_bytes(b"evil-bytes")
 
     m = _mirror("apt-flat")
-    assert verify_mirror(m, mirror_dir, pool, deep=True).corrupt == []
-    assert verify_mirror(m, mirror_dir, pool, rehash=True).corrupt_checksums == [cs]
+    assert verify_mirror(m, mirror_dir, pool, stat_blobs=True).corrupt == []
+    assert verify_mirror(m, mirror_dir, pool, hash_blobs=True).corrupt_checksums == [cs]

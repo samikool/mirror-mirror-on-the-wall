@@ -53,12 +53,12 @@ It writes three files next to each other in the network's `bundle_dir`:
 Useful flags:
 
 ```bash
-mmw bundle -n lab --full              # send everything, not just the delta
+mmw bundle -n lab --from none         # send everything, not just the delta
 mmw bundle -n lab --out /media/usb    # write here instead of bundle_dir
 mmw bundle -n lab --allow-incomplete  # ship anyway, having been told what is missing
 ```
 
-`--full` still computes deletions. It means "send every file", not "forget what
+`--from none` still computes deletions. It means "send every file", not "forget what
 the far side has".
 
 ### Between any two snapshots
@@ -396,7 +396,7 @@ says the same thing.
 The far side is not where this bundle expects it to be. Either apply the bundle
 you skipped, or ask for one from where the far side actually is — the refusal
 prints the exact `mmw bundle -n … --from … --to …` to run on the connected
-side. `--full` also works and bypasses the check.
+side. `--from none` also works and bypasses the check.
 
 **`apply.py --verify` reports mismatches.**
 Keep generated files unchanged; edit Compose mount sources in a deployment

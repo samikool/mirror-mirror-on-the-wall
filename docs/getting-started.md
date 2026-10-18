@@ -327,7 +327,7 @@ freshness check; the GPG signature is still verified.
 The index knows about a package the tree does not hold. Run `mmw verify` on the
 connected side — that is exactly what it catches — then sync and publish again.
 If it reports the pool complete but a client still gets a bad file,
-`mmw verify --deep --repair` finds pool files that are damaged on disk and drops
+`mmw verify --stat --repair` finds pool files that are damaged on disk and drops
 them, and the next sync downloads them again.
 
 ---

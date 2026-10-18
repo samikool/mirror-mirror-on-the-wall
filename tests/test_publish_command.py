@@ -169,13 +169,13 @@ def _seeded_cfg(seeded, tmp_path):  # noqa: F811
     return mirror_dir, net
 
 
-def test_full_rechecks_through_publish_network(seeded, tmp_path, monkeypatch):  # noqa: F811
+def test_recheck_rechecks_through_publish_network(seeded, tmp_path, monkeypatch):  # noqa: F811
     _seeded_cfg(seeded, tmp_path)
     seen = []
     real = publish_cmd.publish_network
     monkeypatch.setattr(publish_cmd, "publish_network",
-                        lambda *a, **k: (seen.append(k.get("full")), real(*a, **k))[1])
-    assert publish_cmd.run(tmp_path, network="lab", full=True, allow_incomplete=True) == 0
+                        lambda *a, **k: (seen.append(k.get("recheck")), real(*a, **k))[1])
+    assert publish_cmd.run(tmp_path, network="lab", recheck=True, allow_incomplete=True) == 0
     assert seen == [True]
 
 

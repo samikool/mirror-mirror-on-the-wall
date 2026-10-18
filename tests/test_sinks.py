@@ -316,7 +316,7 @@ def test_bundle_sink_full_resends_despite_matching_prev(pool, tmp_path):
 
 
 def test_bundle_sink_full_still_computes_deletions_from_prev(pool, tmp_path):
-    """IMPORTANT 4 -- `--full` means "send everything", never "forget what
+    """IMPORTANT 4 -- a full bundle means "send everything", never "forget what
     the far side has". `finalize_group` must still read `prev` for the
     delete set even when `full=True` -- setting `prev={}` for a full bundle
     (the original implementation) computed zero deletions, permanently

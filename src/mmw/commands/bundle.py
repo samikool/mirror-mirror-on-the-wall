@@ -21,7 +21,7 @@ from mmw.core.publisher.bundle import bundle_network
 
 @interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None,
-        full: bool = False, out: Path | None = None,
+        out: Path | None = None,
         allow_incomplete: bool = False, from_ref: str | None = None,
         to_ref: str | None = None) -> int:
     """Bundle one or all configured networks. Returns a process exit code.
@@ -48,7 +48,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         eprint("--from / --to name a snapshot of one network — pass -n too.")
         return 1
     from mmw.core.publisher.bundle import _LAST
-    start = None if (full or from_ref == "none") else (from_ref or _LAST)
+    start = None if from_ref == "none" else (from_ref or _LAST)
     mirror_dir = cfg.settings.mirror_dir
     ok = True
     for net in networks:

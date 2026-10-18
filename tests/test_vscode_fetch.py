@@ -342,8 +342,8 @@ def test_the_catalog_is_rebuilt_only_when_its_metadata_changed(tmp_path, reads):
         assert built == json.dumps(vpub.catalog(pool, [unit]), sort_keys=True).encode()
         reads.clear()
         assert vpub.catalog_files(pool, [unit], cache) == (built, hosts) and reads == []
-        assert vpub.catalog_files(pool, [unit], cache, full=True) == (built, hosts)
-        assert len(reads) == 4                       # --full rebuilds
+        assert vpub.catalog_files(pool, [unit], cache, recheck=True) == (built, hosts)
+        assert len(reads) == 4                       # --recheck rebuilds
     with Pool(tmp_path) as pool:
         pool.reconcile_refs(unit.name, _metas(pool, unit, 5))
     with Pool(tmp_path, read_only=True) as pool:

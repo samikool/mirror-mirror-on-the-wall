@@ -72,7 +72,7 @@ def test_snapshot_freezes_image_and_replay_does_not_contact_docker(two_mirrors, 
     restored = tmp_path / "restored"
     publish_snapshot(net, cfg, mirror_dir, snap.stamp, root=restored)
     assert (restored / "nginx" / nginx.TAR_NAME).read_bytes() == b"original image"
-    result = bundle_network(net, cfg, mirror_dir, to_ref=snap.stamp, full=True, out_path=tmp_path / "old.tar")
+    result = bundle_network(net, cfg, mirror_dir, to_ref=snap.stamp, from_ref=None, out_path=tmp_path / "old.tar")
     assert _members(result.out_path)[f"nginx/{nginx.TAR_NAME}"] == b"original image"
 
 
@@ -82,7 +82,7 @@ def test_delta_only_resends_image_when_it_changes_and_apply_leaves_binary_untouc
     # Both the placeholder and the real root must survive in binary payloads.
     payload = b"\x00" + ROOT_PLACEHOLDER.encode() + str(destination).encode() + b"\xff"
     _docker(tmp_path, monkeypatch, payload)
-    first = bundle_network(net, cfg, mirror_dir, full=True, out_path=tmp_path / "first.tar")
+    first = bundle_network(net, cfg, mirror_dir, from_ref=None, out_path=tmp_path / "first.tar")
     assert not first.errors
     assert _members(first.out_path)[f"nginx/{nginx.TAR_NAME}"] == payload
     same = bundle_network(net, cfg, mirror_dir, out_path=tmp_path / "same.tar")
@@ -112,7 +112,7 @@ def test_nginx_off_omits_and_prunes_runtime(two_mirrors, tmp_path, monkeypatch):
     monkeypatch.setattr(nginx, "nginx_image", lambda *a, **kw: pytest.fail("nginx is off"))
     publish_network(off, cfg, mirror_dir)
     assert not list((net.root / "nginx").rglob("*"))
-    result = bundle_network(off, cfg, mirror_dir, full=True, out_path=tmp_path / "off.tar")
+    result = bundle_network(off, cfg, mirror_dir, from_ref=None, out_path=tmp_path / "off.tar")
     assert not any(name.startswith("nginx/") for name in _members(result.out_path))
 
 

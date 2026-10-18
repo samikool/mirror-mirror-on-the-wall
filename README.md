@@ -271,8 +271,8 @@ of an airgap. `mmw verify` is the read-only check that catches it while you can
 still fix it. (`publish` and `bundle` run it themselves too, but running it
 separately tells you *before* you start a multi-hour transfer.)
 
-Those checks read the database, not the files. `mmw verify --deep` also stats
-every pool file and `--rehash` re-hashes it — slow, so never implicit — and
+Those checks read the database, not the files. `mmw verify --stat` also stats
+every pool file and `--hash` re-hashes it — slow, so never implicit — and
 `--repair` drops any that are damaged so the next `mmw sync` downloads them
 again. A bundle refuses to write while the pool holds a damaged file.
 
@@ -373,7 +373,7 @@ the last one, and `apply.py` refuses to apply bundles out of order.
 
 ```bash
 uv run mmw bundle -n lab                    # delta since the last bundle
-uv run mmw bundle -n lab --full             # send everything
+uv run mmw bundle -n lab --from none        # send everything
 # ...carry lab-20260906T143000Z.tar across...
 tar -xf lab-20260906T143000Z.tar .mmw/apply.py   # every bundle carries its own applier
 python3 .mmw/apply.py lab-20260906T143000Z.tar --root /srv/www
@@ -422,7 +422,7 @@ seconds, no downloads.
 
 Each published tree keeps a record of what it holds (`.mmw/manifest.jsonl`,
 the same file a bundle carries), so a repeat publish touches only what
-changed. `mmw publish --full` ignores the record and rechecks every file — for
+changed. `mmw publish --recheck` ignores the record and rechecks every file — for
 a tree someone edited by hand. Heavy jobs first read the database into the
 page cache when it fits. On a spinning pool disk, put the database on a fast
 one: Settings → **Move…**, or `mmw move-database /fast/mmw.db`

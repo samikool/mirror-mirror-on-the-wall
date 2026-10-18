@@ -136,10 +136,10 @@ def _save_descriptions(path: Path, bodies: dict[str, bytes]) -> None:
     tmp.replace(path)
 
 
-def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
+def catalog_files(pool, units, cache_dir: Path, *, recheck: bool = False,
                   say=None) -> tuple[bytes, list[str]]:
     """catalog.json's bytes and the publisher hosts it names — rebuilt only
-    when the metadata changed (or `full`), else the copy in `cache_dir`."""
+    when the metadata changed (or `recheck`), else the copy in `cache_dir`."""
     from mmw.core.bulk_read import read_all
     if say:
         say("checking the extension catalog…")
@@ -150,7 +150,7 @@ def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
         digest.update(f"{unit_name}\0{rel}\0{checksum}\n".encode())
     key = digest.hexdigest()[:32]
     data_path, hosts_path = cache_dir / f"catalog-{key}.json", cache_dir / f"catalog-{key}.hosts"
-    if not full and data_path.exists() and hosts_path.exists():
+    if not recheck and data_path.exists() and hosts_path.exists():
         if say:
             say(f"extension catalog unchanged ({len(rows):,} descriptions) — reusing it…")
         try:
@@ -160,7 +160,7 @@ def catalog_files(pool, units, cache_dir: Path, *, full: bool = False,
     # A sync that updates one extension changes the key above, so the bodies
     # are remembered too, by checksum: only the descriptions not seen by an
     # earlier publish are read from the pool.
-    known = {} if full else _load_descriptions(cache_dir / DESCRIPTIONS)
+    known = {} if recheck else _load_descriptions(cache_dir / DESCRIPTIONS)
     unread = [path for _, _, path, checksum in rows if checksum not in known]
     if say:
         say(f"reading {len(unread):,} of {len(rows):,} extension descriptions…")

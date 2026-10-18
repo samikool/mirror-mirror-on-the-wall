@@ -46,7 +46,7 @@ def test_copied_publish_and_applied_bundle_are_one_to_one(seeded, tmp_path, tls,
     shutil.copytree(net.root, copied)
     assert (copied / "apply.py").read_bytes() == apply_script_bytes()
 
-    bundled = bundle_network(net, cfg, mirror_dir, full=True)
+    bundled = bundle_network(net, cfg, mirror_dir, from_ref=None)
     assert not bundled.errors
     applied = tmp_path / "applied"
     run = subprocess.run([sys.executable, str(bundled.out_path.parent / "apply.py"), str(bundled.out_path),
@@ -87,7 +87,7 @@ def test_snapshot_outputs_stay_equal_after_network_flags_change(seeded, tmp_path
     changed = net.model_copy(update={"certs": False, "nginx": False})
     published = publish_snapshot(changed, cfg, mirror_dir, snapshot.stamp)
     assert not published.errors
-    bundle = bundle_network(changed, cfg, mirror_dir, to_ref=snapshot.stamp, full=True,
+    bundle = bundle_network(changed, cfg, mirror_dir, to_ref=snapshot.stamp, from_ref=None,
                             out_path=tmp_path / "old-snapshot.tar")
     applied = tmp_path / "applied-old"
     run = subprocess.run([sys.executable, str(bundle.out_path.parent / "apply.py"), str(bundle.out_path),

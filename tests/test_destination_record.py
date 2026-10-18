@@ -2,7 +2,7 @@
 
 `{root}/.mmw/manifest.jsonl` says what a publish last laid out. The next
 publish skips every path whose checksum is unchanged without touching the
-filesystem, and prunes from the record instead of walking the tree. `--full`
+filesystem, and prunes from the record instead of walking the tree. `--recheck`
 ignores the record and rechecks everything.
 """
 # ruff: noqa: F811
@@ -124,7 +124,7 @@ def test_a_publish_stopped_midway_leaves_no_record(seeded, tmp_path):
     def progress(rel, status):
         if status in ("linked", "skipped"):
             stop.set()
-    publish_network(net, cfg, mirror_dir, progress=progress, stop_event=stop, full=True)
+    publish_network(net, cfg, mirror_dir, progress=progress, stop_event=stop, recheck=True)
     assert stop.is_set()
     assert not (net.root / RECORD_PATH).exists()
 
@@ -197,7 +197,7 @@ def test_full_repairs_hand_edits_and_rewrites_the_record(seeded, tmp_path):
     release.write_bytes(b"tampered")
     publish_network(net, cfg, mirror_dir)             # trusted: does not notice
     assert not deb.exists()
-    assert not publish_network(net, cfg, mirror_dir, full=True).errors
+    assert not publish_network(net, cfg, mirror_dir, recheck=True).errors
     assert deb.read_bytes() == b"hello-pkg"
     assert release.read_bytes() == b"signed-release"
     assert DEB in _record(net.root)

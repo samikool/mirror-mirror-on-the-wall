@@ -1,5 +1,6 @@
 """`MmwApp` — the one TUI. Sections are modes; see docs/history/tui-overhaul.md."""
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -52,6 +53,7 @@ class MmwApp(ThemedApp):
         self._start_sync_selection = start_sync_selection
         self._resolving = False
         self._resolve_gen = 0
+        self._resolve_stop: threading.Event | None = None
         self._resolve_section = None
         self.setup_defaults = {"mirror_dir": mirror_dir or Path("./mirror"),
                                "max_connections": max_connections}
@@ -227,9 +229,17 @@ class MmwApp(ThemedApp):
         await self.screen.start(verb, net, choice=choice)
 
     def cancel_resolution(self) -> None:
+        # The resolver stops at its next check (a PyPI resolve can run for hours).
+        if self._resolve_stop is not None:
+            self._resolve_stop.set()
         self._resolve_gen += 1
         if self._resolve_section is not None:
             self._resolve_section.end_resolution("Resolution cancelled; the current request is finishing.")
+
+    def on_unmount(self) -> None:
+        # Quitting must not wait for a resolve still running in its thread.
+        if self._resolve_stop is not None:
+            self._resolve_stop.set()
 
     def _resolution_phase(self, gen, text):
         if gen == self._resolve_gen and self._resolve_section is not None:
@@ -261,6 +271,7 @@ class MmwApp(ThemedApp):
             return
         cfg = self.cfg
         self._resolving = True
+        self._resolve_stop = threading.Event()
         self._resolve_gen += 1
         gen = self._resolve_gen
         try:
@@ -271,7 +282,8 @@ class MmwApp(ThemedApp):
             from mmw.core.sync_engine import SyncEvents
             events = SyncEvents(phase=lambda text: self.call_from_thread(self._resolution_phase, gen, text))
             resolver = resolve_retry_selection if retry_failed else resolve_selection
-            mirrors, messages = await asyncio.to_thread(resolver, cfg, selection, progress=events.phase)
+            mirrors, messages = await asyncio.to_thread(resolver, cfg, selection, progress=events.phase,
+                                                        stop_event=self._resolve_stop)
             if self.cfg is None or gen != self._resolve_gen:
                 if gen == self._resolve_gen:
                     section.end_resolution("Resolution cancelled; configuration was reset.")

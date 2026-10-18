@@ -185,6 +185,39 @@ ids   = ["golang.go", "ms-python.python"]
 | `prerelease` | bool | `false` | Mirror prerelease versions too. Off: the newest release per platform, even when the newest build is a prerelease. |
 
 
+### PyPI: `provider = "pypi"`
+
+pypi.org, filtered to targets (Python × platform × arch). Units are
+`{name}-all-universal` (pure wheels and sdists) and
+`{name}-all-{python}-{platform}-{arch}`. Each keeps every project's
+latest installable release plus the older releases its dependencies need;
+what cannot be guaranteed is listed in the unit's report.
+
+```toml
+[[sources]]
+provider  = "pypi"
+pythons   = ["3.12"]
+platforms = ["linux-glibc"]
+arches    = ["amd64"]
+all       = true
+```
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `provider` | `pypi` | **required** | `"pypi"` — pypi.org. At most one per config. |
+| `name` | string | `'pypi'` | Prefix of the sync-unit names (`pypi-all-universal`, `pypi-all-3.12-linux-glibc-amd64`, …). |
+| `label` | string | `'pypi'` | Grouping label. Rarely worth changing. |
+| `url` | string | `'https://pypi.org/simple/'` | Fixed to `https://pypi.org/simple/`; any other value is refused. |
+| `pythons` | list of string | `[]` — *all* | CPython versions: `3.9` … `3.14`. |
+| `platforms` | list of string | `[]` — *all* | `linux-glibc` (manylinux wheels), `linux-musl` (musllinux: Alpine), `windows`, `macos`. glibc and musl wheels do not install on each other. |
+| `arches` | list of string | `[]` — *all* | `amd64`, `arm64`. |
+| `glibc` | string | `'2.31'` | Oldest glibc on the far side (`2.31` = Ubuntu 20.04). A release counts as installable only if a client this old can install one of its wheels. |
+| `musl` | string | `'1.2'` | Oldest musl on the far side (`1.2` = Alpine 3.13+). |
+| `macos` | string | `'11.0'` | Oldest macOS on the far side. |
+| `sdists` | bool | `false` | Also mirror the sdist of every kept release. Off, an sdist is still mirrored when a dependency has no compatible wheel. |
+| `all` | bool | `false` | The straight mirror: every project's latest installable release per target, plus the older releases its dependencies require. Very large — run `mmw dry-run` first. |
+
+
 ## `[[networks]]`
 
 A network is a named downselect of the mirror — what one site gets. `publish`
@@ -213,7 +246,7 @@ a dimension filter keeps following the repository.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `source` | string | **required** | The repository URI this selection applies to — must match a `[[sources]]` `url`. Normalized before comparison, so a trailing slash or an upper-case host still matches. |
-| `dims` | dict[str, list[str]] | every dimension *all* | Not a key itself: write one list per dimension of that source's provider, as flat keys — apt: `suites`, `components`, `arches`; apt-flat: `arches`; vscode: `kinds`, `platforms`, `qualities`. Empty = everything mirrored for it on that dimension, **and it keeps meaning that** as new suites or architectures appear upstream — the reason selection is by dimension rather than by a frozen list of mirror names. A key that is not a dimension of the source's provider is a load error. A flat repository whose URL names no architecture matches any `arches` filter; a VS Code extensions unit (no quality) matches any `qualities` filter. |
+| `dims` | dict[str, list[str]] | every dimension *all* | Not a key itself: write one list per dimension of that source's provider, as flat keys — apt: `suites`, `components`, `arches`; apt-flat: `arches`; vscode: `kinds`, `platforms`, `qualities`; pypi: `pythons`, `platforms`, `arches`. Empty = everything mirrored for it on that dimension, **and it keeps meaning that** as new suites or architectures appear upstream — the reason selection is by dimension rather than by a frozen list of mirror names. A key that is not a dimension of the source's provider is a load error. A flat repository whose URL names no architecture matches any `arches` filter; a VS Code extensions unit (no quality) matches any `qualities` filter; the PyPI universal unit (pure wheels and sdists) matches every filter. |
 
 
 ## Where things live

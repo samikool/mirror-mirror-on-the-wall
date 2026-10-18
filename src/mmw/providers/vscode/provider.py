@@ -204,7 +204,7 @@ class VscodeProvider(BaseProvider):
     def needs_resolving(self, source) -> bool:
         return "extensions" in self._effective(source)[0]
 
-    def resolve(self, source, *, progress=None):
+    def resolve(self, source, *, progress=None, context=None):
         from mmw.core.resolve import ResolvedSource
         say = progress or (lambda _m: None)
         units = self.expand(source)

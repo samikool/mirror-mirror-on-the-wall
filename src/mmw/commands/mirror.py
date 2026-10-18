@@ -1,5 +1,8 @@
 import asyncio
 import concurrent.futures
+import re
+import signal
+import threading
 import time
 from pathlib import Path
 
@@ -33,6 +36,20 @@ def _make_progress(mirror_name: str):
     return callback
 
 
+def _throttled(echo, every: float = 10.0):
+    """Resolve progress for a terminal or a cron log: each new phase at once,
+    repeats of the same phase (a counter ticking) at most every `every` s."""
+    last = {"phase": None, "at": 0.0}
+
+    def say(message: str) -> None:
+        phase = re.sub(r"[\d.,/]+", "#", message)     # a ticking counter is one phase
+        now = time.monotonic()
+        if phase != last["phase"] or now - last["at"] >= every:
+            last["phase"], last["at"] = phase, now
+            echo(f"  … {message}")
+    return say
+
+
 def resolve_and_report(cfg: config.Config, echo=typer.echo):
     """Expand any "all" dimensions, telling the user what they expanded to.
 
@@ -40,7 +57,22 @@ def resolve_and_report(cfg: config.Config, echo=typer.echo):
     it must never quietly become a hundred mirrors, so what it resolved to is
     printed before anything is fetched.
     """
-    mirrors, notes, errors = resolve_sources(cfg.sources, progress=None)
+    from mmw.providers.base import ResolveContext
+    stop = threading.Event()
+    say = _throttled(echo)
+    # Ctrl-C stops the resolve at its next check rather than waiting it out (a
+    # first PyPI resolve runs for hours); asyncio's own handler would only
+    # cancel a task that is not awaiting anything.
+    on_main = threading.current_thread() is threading.main_thread()
+    previous = signal.signal(signal.SIGINT, lambda *_: stop.set()) if on_main else None
+    try:
+        mirrors, notes, errors = resolve_sources(
+            cfg.sources, progress=say, context=ResolveContext.from_settings(cfg.settings, stop))
+    finally:
+        if on_main:
+            signal.signal(signal.SIGINT, previous)
+    if stop.is_set():
+        raise KeyboardInterrupt
     for note in notes:
         echo(f"  {note}")
     for err in errors:

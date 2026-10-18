@@ -21,6 +21,9 @@ class UnitHistory:
             self._loaded = self._pool.ref_map(self._name) if self._pool is not None else {}
         return self._loaded
 
+    def checksum(self, repo_path: str) -> str | None:
+        return self._refs.get(repo_path)
+
     def paths(self, prefix: str) -> list[str]:
         return sorted(p for p in self._refs if p.startswith(prefix))
 

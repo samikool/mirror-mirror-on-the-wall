@@ -1,0 +1,5 @@
+Metadata-Version: 2.1
+Name: cffi
+Version: 1.16.0
+Requires-Python: >=3.8
+Requires-Dist: pycparser

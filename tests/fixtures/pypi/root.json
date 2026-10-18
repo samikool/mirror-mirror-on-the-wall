@@ -1,0 +1,68 @@
+{
+ "projects": [
+  {
+   "name": "requests",
+   "_last-serial": 37059094
+  },
+  {
+   "name": "urllib3",
+   "_last-serial": 41105803
+  },
+  {
+   "name": "idna",
+   "_last-serial": 41170495
+  },
+  {
+   "name": "charset-normalizer",
+   "_last-serial": 41624470
+  },
+  {
+   "name": "certifi",
+   "_last-serial": 39243739
+  },
+  {
+   "name": "pysocks",
+   "_last-serial": 5859776
+  },
+  {
+   "name": "botocore",
+   "_last-serial": 42241284
+  },
+  {
+   "name": "jmespath",
+   "_last-serial": 33736438
+  },
+  {
+   "name": "python-dateutil",
+   "_last-serial": 22120696
+  },
+  {
+   "name": "six",
+   "_last-serial": 26356948
+  },
+  {
+   "name": "numpy",
+   "_last-serial": 42069282
+  },
+  {
+   "name": "cryptography",
+   "_last-serial": 41646096
+  },
+  {
+   "name": "cffi",
+   "_last-serial": 39662188
+  },
+  {
+   "name": "pycparser",
+   "_last-serial": 42017432
+  },
+  {
+   "name": "psycopg2",
+   "_last-serial": 40911532
+  },
+  {
+   "name": "pywin32",
+   "_last-serial": 37702950
+  }
+ ]
+}

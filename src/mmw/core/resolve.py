@@ -23,9 +23,10 @@ class ResolvedSource:
     errors: list[str] = field(default_factory=list)  # nothing listed upstream
 
 
-def resolve_source(src: SourceConfig, *, progress: Callable[[str], None] | None = None) -> ResolvedSource:
+def resolve_source(src: SourceConfig, *, progress: Callable[[str], None] | None = None,
+                   context=None) -> ResolvedSource:
     from mmw.providers import get_provider
-    return get_provider(src.provider).resolve(src, progress=progress)
+    return get_provider(src.provider).resolve(src, progress=progress, context=context)
 
 
 def _dimension_notes(
@@ -60,6 +61,7 @@ def resolve_sources(
     sources: list[SourceConfig],
     *,
     progress: Callable[[str], None] | None = None,
+    context=None,
 ) -> tuple[list[MirrorConfig], list[str], list[str]]:
     """Resolve every source. Returns (mirrors, notes, errors).
 
@@ -71,7 +73,7 @@ def resolve_sources(
     errors: list[str] = []
     for src in sources:
         try:
-            r = resolve_source(src, progress=progress)
+            r = resolve_source(src, progress=progress, context=context)
         except Exception as e:  # noqa: BLE001 — one source must not sink the rest
             errors.append(f"{src.name}: could not be resolved — {type(e).__name__}: {e}")
             continue

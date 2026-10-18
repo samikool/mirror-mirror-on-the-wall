@@ -151,3 +151,29 @@ def preflight_ok(verb: str, net, cfg, mirror_dir: Path, allow_incomplete: bool,
         "Sync first, or pass --allow-incomplete."
     )
     return False
+
+
+def write_single_source(cfg_dir: Path, source, describe, *, dry_run: bool, echo) -> int:
+    """Write a provider's one-per-config source: add it, or **replace** the
+    existing one (saying what it replaced) — never merge. `--dry-run` prints
+    the TOML and needs no config."""
+    import tomli_w
+    if dry_run:
+        echo(tomli_w.dumps({"sources": [config.source_to_dict(source)]}))
+        return 0
+    try:
+        cfg = load_config(cfg_dir)
+    except ConfigError as e:
+        eprint(str(e))
+        return 1
+    existing = next((s for s in cfg.sources if s.provider == source.provider), None)
+    sources = [source if s is existing else s for s in cfg.sources]
+    if existing is None:
+        sources.append(source)
+    config.save(cfg.model_copy(update={"sources": sources}), cfg_dir)
+    if existing is None:
+        echo(f"Added the {source.provider} source.")
+    else:
+        echo(f"Replaced the {source.provider} source (was: {describe(existing)}; "
+             f"now: {describe(source)}).")
+    return 0

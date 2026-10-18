@@ -179,7 +179,7 @@ def derive_name(url: str, taken: set[str] | None = None,
     return name
 
 
-Provider = Literal["apt", "apt-flat", "vscode"]
+Provider = Literal["apt", "apt-flat", "vscode", "pypi"]
 """Every provider a unit may belong to. A free string let `provider =
 "apt_flat"` load clean, expand to zero mirrors, and exit 0 having mirrored
 nothing."""
@@ -644,7 +644,67 @@ class VscodeSource(_StrictModel):
         return True
 
 
-AnySource = Annotated[Union[SourceConfig, VscodeSource], Field(discriminator="provider")]
+PYPI_URL = "https://pypi.org/simple/"
+_FLOOR_RE = re.compile(r"\d+\.\d+")
+
+
+class PypiSource(_StrictModel):
+    """pypi.org: the straight mirror (`all`) — every project's latest
+    installable release plus the older releases its dependencies need, per
+    target. One per config. Empty pythons / platforms / arches mean *all*.
+    `glibc` / `musl` / `macos` are the oldest far-side OS versions: a release
+    counts as installable only if a client there can install it."""
+    provider: Literal["pypi"]
+    name: str = "pypi"
+    label: str = "pypi"
+    url: str = PYPI_URL
+    pythons: list[str] = []
+    platforms: list[str] = []
+    arches: list[str] = []
+    glibc: str = "2.31"
+    musl: str = "1.2"
+    macos: str = "11.0"
+    sdists: bool = False
+    all: bool = False
+
+    @model_validator(mode="after")
+    def _known_values(self):
+        from mmw.providers.pypi.targets import ARCHES, PLATFORMS, PYTHONS
+        if normalize_url(self.url) != normalize_url(PYPI_URL):
+            raise ValueError(f"the pypi provider mirrors pypi.org ({PYPI_URL}), not {self.url}")
+        for field, allowed in (("pythons", PYTHONS), ("platforms", PLATFORMS), ("arches", ARCHES)):
+            bad = [v for v in getattr(self, field) if v not in allowed]
+            if bad:
+                raise ValueError(f"unknown {field}: {', '.join(bad)} "
+                                 f"(expected: {', '.join(allowed)})")
+        for field in ("glibc", "musl", "macos"):
+            if not _FLOOR_RE.fullmatch(getattr(self, field)):
+                raise ValueError(f"{field} must be a MAJOR.MINOR version, not {getattr(self, field)!r}")
+        return self
+
+    @property
+    def identity(self) -> str:
+        return normalize_url(self.url)
+
+    @property
+    def floors(self):
+        from mmw.providers.pypi.targets import Floors
+        return Floors(glibc=self.glibc, musl=self.musl, macos=self.macos)
+
+    def configured_units(self) -> set:
+        return set()
+
+    def covers(self, unit) -> bool:
+        if (unit.source or "") != self.identity:
+            return False
+        for field, key in (("pythons", "python"), ("platforms", "platform"), ("arches", "arch")):
+            chosen, have = getattr(self, field), unit.dims.get(key)
+            if chosen and have and have not in chosen:
+                return False
+        return True
+
+
+AnySource = Annotated[Union[SourceConfig, VscodeSource, PypiSource], Field(discriminator="provider")]
 
 
 # The TUI's colour theme when none is chosen. Lives here, not in tui/, because
@@ -835,6 +895,12 @@ class Config(_StrictModel):
     def _one_vscode_source(self):
         if sum(1 for s in self.sources if s.provider == "vscode") > 1:
             raise ValueError("only one vscode source is allowed (it is the whole marketplace)")
+        return self
+
+    @model_validator(mode="after")
+    def _one_pypi_source(self):
+        if sum(1 for s in self.sources if s.provider == "pypi") > 1:
+            raise ValueError("only one pypi source is allowed (it is the whole of pypi.org)")
         return self
 
     @property

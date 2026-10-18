@@ -173,7 +173,7 @@ def test_resolve_selection_is_quiet_and_returns_messages(monkeypatch):
     import mmw.tui.repositories as repos_mod
     resolved = [_rm("a-noble-main-arm64", "https://a.example.com/a")]
     monkeypatch.setattr(repos_mod, "resolve_sources",
-                        lambda sources, progress=None: (resolved, ["a: 1 arch"], []))
+                        lambda sources, progress=None, context=None: (resolved, ["a: 1 arch"], []))
     mirrors, messages = R.resolve_selection(_cfg("https://a.example.com/a"), ((), ()))
     assert [m.name for m in mirrors] == ["a-noble-main-arm64"]
     assert messages == ["a: 1 arch"]

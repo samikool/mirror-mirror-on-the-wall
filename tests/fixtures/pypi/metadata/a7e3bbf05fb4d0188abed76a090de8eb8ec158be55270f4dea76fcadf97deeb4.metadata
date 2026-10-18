@@ -1,0 +1,13 @@
+Metadata-Version: 2.1
+Name: requests
+Version: 2.30.0
+Requires-Python: >=3.7
+Requires-Dist: charset-normalizer (<4,>=2)
+Requires-Dist: idna (<4,>=2.5)
+Requires-Dist: urllib3 (<3,>=1.21.1)
+Requires-Dist: certifi (>=2017.4.17)
+Provides-Extra: security
+Provides-Extra: socks
+Requires-Dist: PySocks (!=1.5.7,>=1.5.6) ; extra == 'socks'
+Provides-Extra: use_chardet_on_py3
+Requires-Dist: chardet (<6,>=3.0.2) ; extra == 'use_chardet_on_py3'

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,22 @@ class PublishContext:
     recheck: bool = False           # `--recheck`: recheck what a provider would reuse
 
 
+@dataclass(frozen=True)
+class ResolveContext:
+    """What a provider's `resolve` may use beyond the source itself: where the
+    mirror lives (a provider may keep an upstream cache there), how many
+    connections it may open, and the sync's stop. Providers that resolve with
+    a request or two ignore it."""
+    mirror_dir: Path | None = None
+    max_connections: int = 8
+    stop_event: threading.Event | None = None
+
+    @classmethod
+    def from_settings(cls, settings, stop_event=None) -> "ResolveContext":
+        return cls(mirror_dir=settings.mirror_dir, max_connections=settings.max_connections,
+                   stop_event=stop_event)
+
+
 class BaseProvider(ABC):
     """One ecosystem's plugin. Core never branches on a provider's name; it
     asks the provider. A provider that can recognise a pasted URL also
@@ -223,7 +240,8 @@ class BaseProvider(ABC):
         return False
 
     @abstractmethod
-    def resolve(self, source, *, progress: Callable[[str], None] | None = None):
+    def resolve(self, source, *, progress: Callable[[str], None] | None = None,
+                context: ResolveContext | None = None):
         """Fill open dimensions against upstream → `mmw.core.resolve.ResolvedSource`."""
 
     # ── fetch ────────────────────────────────────────────────────────────────

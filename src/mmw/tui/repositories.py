@@ -404,7 +404,7 @@ def narrow_to_selection(mirrors: list[config.MirrorConfig], errors: list[str], s
     return mirrors, None, False
 
 
-def resolve_retry_selection(cfg: config.Config, selection, *, progress=None):
+def resolve_retry_selection(cfg: config.Config, selection, *, progress=None, stop_event=None):
     """Resolve a recovery selection from the pool, with no upstream calls."""
     from mmw.core.resolve import pooled_mirrors
     mirrors = [m for m in pooled_mirrors(cfg, cfg.settings.mirror_dir) if get_provider(m.provider).retries_failures]
@@ -413,7 +413,8 @@ def resolve_retry_selection(cfg: config.Config, selection, *, progress=None):
                     if problem else [])
 
 
-def resolve_selection(cfg: config.Config, selection, *, progress=None) -> tuple[list[config.MirrorConfig], list[str]]:
+def resolve_selection(cfg: config.Config, selection, *, progress=None,
+                      stop_event=None) -> tuple[list[config.MirrorConfig], list[str]]:
     """Expand "all" dimensions by listing upstream, then narrow to `selection`.
     Quiet — the notes come back as messages. **Blocking** (network).
 
@@ -426,7 +427,9 @@ def resolve_selection(cfg: config.Config, selection, *, progress=None) -> tuple[
     if ids or names:
         sources = [s for s in cfg.sources if s.identity in ids
                    or any(n == s.name or n.startswith(s.name + "-") for n in names)]
-    mirrors, notes, errors = resolve_sources(sources, progress=progress)
+    from mmw.providers.base import ResolveContext
+    mirrors, notes, errors = resolve_sources(
+        sources, progress=progress, context=ResolveContext.from_settings(cfg.settings, stop_event))
     messages = [*notes, *(f"⚠ {e}" for e in errors)]
     chosen, problem, _ = narrow_to_selection(mirrors, errors, selection)
     if problem:

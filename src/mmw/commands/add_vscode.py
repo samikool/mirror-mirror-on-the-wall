@@ -1,10 +1,9 @@
 """`mmw add vscode` — write (or replace) the config's one VS Code source."""
 from pathlib import Path
 
-import tomli_w
 from pydantic import ValidationError
 
-from mmw.commands.common import ConfigError, eprint, load_config
+from mmw.commands.common import eprint, write_single_source
 from mmw.core import config
 
 
@@ -36,23 +35,4 @@ def run(cfg_dir: Path, *, kinds, platforms, qualities, top_n, ids, ids_file, all
     except (ValidationError, OSError) as e:
         eprint(f"Not added: {e}")
         return 2
-    if dry_run:
-        # Like `mmw add --dry-run` for apt files: a preview needs no config.
-        echo(tomli_w.dumps({"sources": [config.source_to_dict(source)]}))
-        return 0
-    try:
-        cfg = load_config(cfg_dir)
-    except ConfigError as e:
-        eprint(str(e))
-        return 1
-    existing = next((s for s in cfg.sources if s.provider == "vscode"), None)
-    sources = [source if s is existing else s for s in cfg.sources]
-    if existing is None:
-        sources.append(source)
-    config.save(cfg.model_copy(update={"sources": sources}), cfg_dir)
-    if existing is None:
-        echo("Added the vscode source.")
-    else:
-        echo(f"Replaced the vscode source (was: {_describe(existing)}; "
-             f"now: {_describe(source)}).")
-    return 0
+    return write_single_source(cfg_dir, source, _describe, dry_run=dry_run, echo=echo)

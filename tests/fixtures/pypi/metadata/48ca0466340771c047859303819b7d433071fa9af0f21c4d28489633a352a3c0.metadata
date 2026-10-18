@@ -1,0 +1,9 @@
+Metadata-Version: 2.1
+Name: botocore
+Version: 1.43.101
+Requires-Python: >= 3.10
+Requires-Dist: jmespath (<2.0.0,>=0.7.1)
+Requires-Dist: python-dateutil (<3.0.0,>=2.1)
+Requires-Dist: urllib3 (!=2.2.0,<3,>=1.25.4)
+Provides-Extra: crt
+Requires-Dist: awscrt (==0.36.0) ; extra == 'crt'

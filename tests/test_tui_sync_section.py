@@ -151,7 +151,8 @@ def test_cancelling_resolution_stops_the_resolver(tmp_path, monkeypatch):
     import threading
     captured = {}
 
-    def slow_resolve(c, sel, *, progress=None, stop_event=None):
+    def slow_resolve(c, sel, *, progress=None, stop_event=None, config_dir=None):
+        captured["config_dir"] = config_dir
         captured["stop"] = stop_event
         stop_event.wait(10)
         return [], []
@@ -162,6 +163,7 @@ def test_cancelling_resolution_stops_the_resolver(tmp_path, monkeypatch):
         await pilot.press("s")
         await until(pilot, lambda: "stop" in captured)
         assert isinstance(captured["stop"], threading.Event) and not captured["stop"].is_set()
+        assert captured["config_dir"] == tmp_path
         app.cancel_resolution()
         assert captured["stop"].is_set()
         await until(pilot, lambda: not app._resolving)

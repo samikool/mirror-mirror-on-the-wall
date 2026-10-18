@@ -359,6 +359,10 @@ def cmd_add(
     musl: str = typer.Option(None, "--musl", help="pypi: oldest far-side musl (default 1.2)."),
     macos: str = typer.Option(None, "--macos", help="pypi: oldest far-side macOS (default 11.0)."),
     sdists: bool = typer.Option(False, "--sdists", help="pypi: also mirror every kept release's sdist."),
+    req: list[str] = typer.Option(None, "--req", help="pypi: a requirement to resolve with the others, "
+                                                     "e.g. 'numpy<2' (repeatable)."),
+    requirements_file: str = typer.Option(None, "--requirements-file",
+                                          help="pypi: a requirements.txt-style file, relative to mmw.toml."),
 ):
     """Add sources from a sources.list or deb822 .sources file — or the VS Code source.
 
@@ -375,7 +379,8 @@ def cmd_add(
         from mmw.commands.add_pypi import run as run_pypi
         raise typer.Exit(run_pypi(
             _cfg_dir(), pythons=python, platforms=platform, arches=arch, glibc=glibc, musl=musl,
-            macos=macos, sdists=sdists, all_=all_, dry_run=dry_run, echo=typer.echo))
+            macos=macos, sdists=sdists, all_=all_, dry_run=dry_run, echo=typer.echo,
+            requirements=req, requirements_file=requirements_file))
     if what is not None:
         if what != "vscode":
             typer.echo(f"Unknown source kind {what!r} — use `mmw add vscode` or `mmw add pypi`, "

@@ -216,6 +216,8 @@ all       = true
 | `macos` | string | `'11.0'` | Oldest macOS on the far side. |
 | `sdists` | bool | `false` | Also mirror the sdist of every kept release. Off, an sdist is still mirrored when a dependency has no compatible wheel. |
 | `all` | bool | `false` | The straight mirror: every project's latest installable release per target, plus the older releases its dependencies require. Very large — run `mmw dry-run` first. |
+| `requirements` | list of string | `[]` | Packages that must install **together**, requirements.txt style (names, versions, extras, markers; no options, URLs, paths or hashes). Resolved per target by uv against PyPI; the solution and the build tools of anything built from source are mirrored, in `{name}-req-*` units. Like `pip download -r`, resolving may build an sdist to read its metadata, which runs that package's build backend on the mirror host. Build requirements are static only: what a backend asks for at build time (`get_requires_for_build_wheel`) is not mirrored. |
+| `requirements_file` | string | none | A requirements.txt-style file of the same, relative to `mmw.toml`; re-read every sync and unioned with `requirements`. |
 
 
 ## `[[networks]]`

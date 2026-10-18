@@ -282,8 +282,10 @@ class MmwApp(ThemedApp):
             from mmw.core.sync_engine import SyncEvents
             events = SyncEvents(phase=lambda text: self.call_from_thread(self._resolution_phase, gen, text))
             resolver = resolve_retry_selection if retry_failed else resolve_selection
+            # The TUI keeps edited sources without reloading mmw.toml, so they
+            # do not know its directory: the resolve is told.
             mirrors, messages = await asyncio.to_thread(resolver, cfg, selection, progress=events.phase,
-                                                        stop_event=self._resolve_stop)
+                                                        stop_event=self._resolve_stop, config_dir=self.cfg_dir)
             if self.cfg is None or gen != self._resolve_gen:
                 if gen == self._resolve_gen:
                     section.end_resolution("Resolution cancelled; configuration was reset.")

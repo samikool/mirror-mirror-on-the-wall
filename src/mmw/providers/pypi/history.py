@@ -49,10 +49,13 @@ def advance(previous: dict[str, Entry], current: list[PackageInfo], today: str) 
     return out
 
 
-def retained(history: dict[str, Entry]) -> list[PackageInfo]:
+def as_packages(entries) -> list[PackageInfo]:
     return [PackageInfo(name=e.item_id, url=e.url, checksum=e.sha256, checksum_type="sha256", size=e.size,
-                        repo_path=e.repo_path, filename=e.filename, item_id=e.item_id)
-            for e in history.values() if e.left_at]
+                        repo_path=e.repo_path, filename=e.filename, item_id=e.item_id) for e in entries]
+
+
+def retained(history: dict[str, Entry]) -> list[PackageInfo]:
+    return as_packages(e for e in history.values() if e.left_at)
 
 
 def dump(history: dict[str, Entry]) -> bytes:

@@ -142,7 +142,8 @@ class IndexCache:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(
             "CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, serial INTEGER, files BLOB);"
-            "CREATE TABLE IF NOT EXISTS metadata (sha256 TEXT PRIMARY KEY, body BLOB);")
+            "CREATE TABLE IF NOT EXISTS metadata (sha256 TEXT PRIMARY KEY, body BLOB);"
+            "CREATE TABLE IF NOT EXISTS build_requires (sha256 TEXT PRIMARY KEY, requires TEXT);")
 
     def serials(self) -> dict[str, int]:
         with self._lock:
@@ -209,6 +210,18 @@ class IndexCache:
         with self._lock, self._db:
             self._db.executemany("INSERT OR REPLACE INTO metadata VALUES (?, ?)", rows)
 
+    def build_requires(self, sha: str):
+        """An sdist's cached `BuildRequires`, or None."""
+        from mmw.providers.pypi.build import BuildRequires
+        with self._lock:
+            row = self._db.execute("SELECT requires FROM build_requires WHERE sha256 = ?", (sha,)).fetchone()
+        return None if row is None else BuildRequires(**json.loads(row[0]))
+
+    def put_build_requires(self, sha: str, found) -> None:
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO build_requires VALUES (?, ?)",
+                             (sha, json.dumps({"requires": found.requires, "note": found.note})))
+
     def close(self) -> None:
         with self._lock:
             self._db.close()
@@ -273,6 +286,44 @@ def refresh(cache: IndexCache, client_factory, *, threads: int, say=None, stop_e
                 result.fetched += len(rows)
                 if say:
                     say(f"PyPI index: {start + len(todo[start:start + batch])}/{len(todo)} changed projects")
+    return result
+
+
+def refresh_projects(cache: IndexCache, names, client_factory, *, threads: int,
+                     stop_event=None) -> RefreshResult:
+    """Fetch the named project pages now, whatever their cached serial — the
+    requirements flow needs only these, current with what uv just resolved,
+    and never the 917k-project listing."""
+    result = RefreshResult()
+    names = sorted(set(names))
+    with client_factory() as client:
+
+        def one(name):
+            if stop_event is not None and stop_event.is_set():
+                return name, None, "stopped"
+            try:
+                resp = client.get(f"{SIMPLE_URL}{name}/", headers={"Accept": ACCEPT})
+                if resp.status_code == 404:
+                    return name, ([], 0, 0), None
+                resp.raise_for_status()
+                body = resp.json()
+                serial = int(((body.get("meta") or {}) if isinstance(body, dict) else {}).get("_last-serial") or 0)
+                return name, (*parse_project(name, body), serial), None
+            except (httpx.HTTPError, ValueError) as e:
+                return name, None, e
+
+        rows = []
+        with ThreadPoolExecutor(max(1, threads)) as pool:
+            for name, page, error in pool.map(one, names):
+                if error is not None:
+                    result.failed.append(name)
+                    result.stopped = result.stopped or error == "stopped"
+                    continue
+                files, skipped, serial = page
+                result.skipped_files += skipped
+                rows.append((name, serial, files))
+        cache.put_projects(rows)
+        result.fetched = len(rows)
     return result
 
 

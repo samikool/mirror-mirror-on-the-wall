@@ -73,3 +73,47 @@ def test_covers_filters_by_dims():
     other = config.MirrorConfig(name="u", provider="pypi", source_url="x", source="https://elsewhere",
                                 dims={"python": "3.12"})
     assert not src.covers(other)
+
+
+def test_requirements_lines_and_file_union(tmp_path):
+    (tmp_path / "reqs.txt").write_text("numpy>=2\n# comment\n\nrequests\n")
+    cfg = _cfg(tmp_path, PY + 'requirements = ["requests", "# c", ""]\nrequirements_file = "reqs.txt"\n')
+    (src,) = cfg.sources
+    assert src.requirements == ["requests"]
+    assert src.requirement_lines() == ["requests", "numpy>=2"]
+
+
+@pytest.mark.parametrize("line", ["-r base.txt", "-e .", "--index-url x", "pkg @ https://x/p.whl",
+                                  "git+https://x/y.git", "./x.whl", "/abs/x.tar.gz",
+                                  "pkg==1 --hash=sha256:ab", "https://x/p.whl"])
+def test_unsupported_lines_are_rejected(line):
+    with pytest.raises(ValidationError, match="unsupported requirements line") as e:
+        _src(requirements=[line])
+    assert line in str(e.value)
+
+
+def test_markers_and_extras_are_fine():
+    src = _src(requirements=['requests[socks]>=2; python_version >= "3.10"', "Django"])
+    assert src.requirements == ['requests[socks]>=2; python_version >= "3.10"', "Django"]
+
+
+def test_missing_requirements_file_raises_at_read(tmp_path):
+    (src,) = _cfg(tmp_path, PY + 'requirements_file = "nope.txt"\n').sources
+    with pytest.raises(FileNotFoundError, match="nope.txt"):
+        src.requirement_lines()
+
+
+def test_bad_line_in_file_raises_at_read(tmp_path):
+    (tmp_path / "r.txt").write_text("requests\n-r other.txt\n")
+    (src,) = _cfg(tmp_path, PY + 'requirements_file = "r.txt"\n').sources
+    with pytest.raises(ValueError, match="-r other.txt"):
+        src.requirement_lines()
+
+
+def test_to_toml_keeps_requirements(tmp_path):
+    (src,) = _cfg(tmp_path, PY + 'requirements = ["requests"]\nrequirements_file = "r.txt"\n').sources
+    config.save(config.load(tmp_path), tmp_path)
+    text = (tmp_path / "mmw.toml").read_text()
+    assert 'requirements_file = "r.txt"' in text
+    (again,) = config.load(tmp_path).sources
+    assert again == src

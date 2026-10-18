@@ -140,7 +140,7 @@ def test_to_toml_roundtrip(tmp_path):
 def test_registered_and_describes():
     prov = get_provider("pypi")
     d = prov.describe(_src())
-    assert [label for label, _ in d.fields] == ["Provider", "Pythons", "Platforms", "Arches", "OS floors"]
+    assert [label for label, _ in d.fields] == ["Provider", "Pythons", "Platforms", "Arches", "OS floors", "Requirements"]
     assert d.flags == ["all"] and d.location == "https://pypi.org/simple/"
     assert prov.unit_label(prov.expand(_src())[1]) == ("3.12 · linux-glibc · amd64", "")
 
@@ -173,3 +173,107 @@ def test_retained_wheel_metadata_comes_from_its_ref(tmp_path, up):
     _, meta = _fetch(prov, linux, _History(first, {old.repo_path + ".metadata": "ab" * 32}))
     entry = {m.repo_path: m for m in meta}[old.repo_path + ".metadata"]
     assert entry.expected_sha256 == "ab" * 32 and entry.content is None
+
+
+# ── the requirements flow (stage 2) ──────────────────────────────────────────
+
+@pytest.fixture
+def req_index(monkeypatch):
+    from mmw.providers.pypi import uv as uvmod
+    from pypi_server import serve
+    fake = FakePyPI()
+    fake.add("a", [whl("a", "1.0", requires=["b<2"])])
+    fake.add("b", [whl("b", "1.0"), whl("b", "2.0")])
+    fake.add("x", [whl("x", "1.0", requires=["b>=2"])])
+    monkeypatch.setattr(index, "_client", fake.client)
+    with serve(fake) as base:
+        monkeypatch.setattr(uvmod, "INDEX_URL", f"{base}/simple")
+        yield fake
+
+
+def _req_src(reqs, **kw):
+    kw = {"pythons": ["3.12"], "platforms": ["linux-glibc", "windows"], "arches": ["amd64"],
+          "requirements": reqs, **kw}
+    return config.PypiSource(provider="pypi", **kw)
+
+
+def test_expand_req_units():
+    units = get_provider("pypi").expand(_req_src(["a"], platforms=["linux-glibc"]))
+    assert [u.name for u in units] == ["pypi-req-universal", "pypi-req-3.12-linux-glibc-amd64"]
+    assert all(u.options["flow"] == "req" for u in units)
+
+
+def test_resolve_req_only_fetches_only_pinned_pages(tmp_path, req_index):
+    r = get_provider("pypi").resolve(_req_src(["a"]), context=_ctx(tmp_path))
+    assert not r.errors, r.errors
+    paths = [str(q.url) for q in req_index.requests]
+    assert "https://pypi.org/simple/" not in paths
+    assert set(req_index.project_requests()) <= {"a", "b"}
+
+
+def test_req_fetch_all_serves_the_solution(tmp_path, req_index):
+    prov = get_provider("pypi")
+    r = prov.resolve(_req_src(["a", "b"]), context=_ctx(tmp_path))
+    uni = next(u for u in r.mirrors if u.name == "pypi-req-universal")
+    names = sorted(p.filename for p in _fetch(prov, uni)[0])
+    assert names == ["a-1.0-py3-none-any.whl", "b-1.0-py3-none-any.whl"]
+
+
+def test_failed_target_keeps_previous_state(tmp_path, req_index):
+    prov = get_provider("pypi")
+    r = prov.resolve(_req_src(["a", 'x; sys_platform == "win32"']), context=_ctx(tmp_path))
+    assert "pypi-req-3.12-windows-amd64" not in [u.name for u in r.mirrors]   # keeps its previous state
+    assert any("3.12-windows-amd64" in e for e in r.errors)
+
+
+def test_both_flows_together(tmp_path, req_index):
+    prov = get_provider("pypi")
+    r = prov.resolve(_req_src(["a"], all=True), context=_ctx(tmp_path))
+    assert not r.errors, r.errors
+    names = [u.name for u in r.mirrors]
+    assert names[0] == "pypi-all-universal" and "pypi-req-universal" in names
+    all_files = {p.repo_path for p in _fetch(prov, r.mirrors[0])[0]}
+    req_files = {p.repo_path for p in _fetch(prov, next(u for u in r.mirrors if u.name == "pypi-req-universal"))[0]}
+    assert "a-1.0-py3-none-any.whl" in {p.rsplit("/", 1)[1] for p in all_files & req_files}
+
+
+def test_missing_requirements_file_is_a_resolve_error(tmp_path, req_index):
+    r = get_provider("pypi").resolve(_req_src([], requirements_file=str(tmp_path / "nope.txt")),
+                                     context=_ctx(tmp_path))
+    assert r.mirrors == [] and any("nope.txt" in e for e in r.errors)
+
+
+def test_partial_failure_still_ships_req_universal(tmp_path, req_index):
+    prov = get_provider("pypi")
+    r = prov.resolve(_req_src(["a", 'x; sys_platform == "win32"']), context=_ctx(tmp_path))
+    names = [u.name for u in r.mirrors]
+    assert names == ["pypi-req-universal", "pypi-req-3.12-linux-glibc-amd64"]
+    uni = r.mirrors[0]
+    assert sorted(p.filename for p in _fetch(prov, uni)[0]) == ["a-1.0-py3-none-any.whl", "b-1.0-py3-none-any.whl"]
+
+
+def test_partial_failure_keeps_what_the_failed_target_had(tmp_path, req_index):
+    req_index.add("y", [whl("y", "1.0")])
+    prov = get_provider("pypi")
+    good = prov.resolve(_req_src(["a", 'y; sys_platform == "win32"']), context=_ctx(tmp_path))
+    uni = good.mirrors[0]
+    _, meta = _fetch(prov, uni)
+    first = {m.repo_path: m for m in meta}[HISTORY_PATH].content
+    bad = prov.resolve(_req_src(["a", 'y; sys_platform == "win32"', 'x; sys_platform == "win32"']),
+                       context=_ctx(tmp_path))
+    uni = bad.mirrors[0]
+    assert uni.name == "pypi-req-universal" and any("windows" in e for e in bad.errors)
+    pkgs, meta = _fetch(prov, uni, _History(first))
+    assert "y-1.0-py3-none-any.whl" in [p.filename for p in pkgs]
+    rows = json.loads(gzip.decompress({m.repo_path: m for m in meta}[HISTORY_PATH].content))
+    assert all(r["left_at"] is None for r in rows if r["filename"].startswith("y-"))
+
+
+def test_requirements_file_is_relative_to_the_contexts_config_dir(tmp_path, req_index):
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    (conf / "reqs.txt").write_text("a\n")
+    src = _req_src([], requirements_file="reqs.txt", platforms=["linux-glibc"])   # a fresh object, as the TUI makes
+    r = get_provider("pypi").resolve(src, context=ResolveContext(mirror_dir=tmp_path, max_connections=2,
+                                                                 config_dir=conf))
+    assert not r.errors, r.errors

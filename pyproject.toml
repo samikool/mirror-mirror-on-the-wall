@@ -29,6 +29,7 @@ dependencies = [
     "textual>=8.2.8,<9",
     "tomli-w>=1.2.0",
     "typer>=0.25.1",
+    "uv>=0.11.23,<0.12",
     "cryptography>=44.0.0",
     "zstandard>=0.25.0",
 ]

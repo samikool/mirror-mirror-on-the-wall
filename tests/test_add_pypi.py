@@ -54,3 +54,11 @@ def test_apt_add_rejects_two_arches(tmp_path):
     src.write_text("deb http://archive.ubuntu.com/ubuntu noble main\n")
     r = runner.invoke(app, ["--config", str(tmp_path), "add", "-f", str(src), "--arch", "amd64", "--arch", "arm64"])
     assert r.exit_code == 2 and "one --arch" in r.output
+
+
+def test_add_pypi_req_flags(tmp_path):
+    _init(tmp_path)
+    r = _run(tmp_path, "--req", "requests", "--req", "numpy<2", "--requirements-file", "r.txt")
+    assert r.exit_code == 0, r.output
+    (src,) = config.load(tmp_path).sources
+    assert src.requirements == ["requests", "numpy<2"] and src.requirements_file == "r.txt"

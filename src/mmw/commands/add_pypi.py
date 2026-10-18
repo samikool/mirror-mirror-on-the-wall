@@ -13,14 +13,15 @@ def _describe(source) -> str:
 
 
 def run(cfg_dir: Path, *, pythons, platforms, arches, glibc, musl, macos, sdists, all_,
-        dry_run, echo) -> int:
+        dry_run, echo, requirements=(), requirements_file=None) -> int:
     """Write the config's PyPI source. There is only ever one, so running this
     again **replaces** it (and says what it replaced) — it never merges."""
     floors = {k: v for k, v in (("glibc", glibc), ("musl", musl), ("macos", macos)) if v}
     try:
         source = config.PypiSource(provider="pypi", pythons=list(pythons or []),
                                    platforms=list(platforms or []), arches=list(arches or []),
-                                   sdists=sdists, all=all_, **floors)
+                                   sdists=sdists, all=all_, requirements=list(requirements or []),
+                                   requirements_file=requirements_file, **floors)
     except ValidationError as e:
         eprint(f"Not added: {e}")
         return 2

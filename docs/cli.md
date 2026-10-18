@@ -87,6 +87,8 @@ Everything is taken from the file — no discovery, no prompts:
 | `--musl` |  | pypi: oldest far-side musl (default 1.2). |
 | `--macos` |  | pypi: oldest far-side macOS (default 11.0). |
 | `--sdists` |  | pypi: also mirror every kept release's sdist. |
+| `--req` |  | pypi: a requirement to resolve with the others, e.g. 'numpy<2' (repeatable). |
+| `--requirements-file` |  | pypi: a requirements.txt-style file, relative to mmw.toml. |
 
 ### `mmw bundle`
 

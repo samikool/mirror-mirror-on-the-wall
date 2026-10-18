@@ -160,3 +160,39 @@ def from_fixtures() -> FakePyPI:
                           "data-dist-info-metadata": meta, "_body": body, "_metadata": metadata})
         fake.add(data["name"], files, serial=data["serial"])
     return fake
+
+
+# ── real sdists, for tests where uv reads them ──────────────────────────────
+
+def real_sdist_bytes(name: str, version: str, requires=(), build_requires=None, *,
+                     pyproject: str | None = None) -> bytes:
+    """A minimal real .tar.gz: static PKG-INFO (Metadata-Version 2.2) and, when
+    `build_requires` is given (or `pyproject` text), a pyproject.toml."""
+    import io
+    import json
+    import tarfile
+    top = f"{name.replace('-', '_')}-{version}"
+    members = {"PKG-INFO": "\n".join(["Metadata-Version: 2.2", f"Name: {name}", f"Version: {version}",
+                                      *(f"Requires-Dist: {r}" for r in requires)]) + "\n"}
+    if pyproject is not None:
+        members["pyproject.toml"] = pyproject
+    elif build_requires is not None:
+        members["pyproject.toml"] = (
+            f"[build-system]\nrequires = {json.dumps(list(build_requires))}\n"
+            f'build-backend = "flit_core.buildapi"\n\n'
+            f'[project]\nname = "{name}"\nversion = "{version}"\n'
+            f"dependencies = {json.dumps(list(requires))}\n")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        for rel, text in members.items():
+            data = text.encode()
+            info = tarfile.TarInfo(f"{top}/{rel}")
+            info.size, info.mtime = len(data), 0
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def real_sdist(name: str, version: str, requires=(), build_requires=None) -> dict:
+    stem = name.replace("-", "_")
+    return file_entry(f"{stem}-{version}.tar.gz",
+                      body=real_sdist_bytes(name, version, requires, build_requires))

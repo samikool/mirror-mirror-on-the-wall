@@ -5,7 +5,7 @@ import tomli_w
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 from urllib.parse import urlparse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
 CONFIG_FILENAME = "mmw.toml"
 
@@ -646,6 +646,28 @@ class VscodeSource(_StrictModel):
 
 PYPI_URL = "https://pypi.org/simple/"
 _FLOOR_RE = re.compile(r"\d+\.\d+")
+_ARCHIVE_SUFFIXES = (".whl", ".tar.gz", ".zip", ".tar.bz2", ".tgz")
+
+
+def check_requirement_line(line: str) -> str | None:
+    """One requirements.txt line as mmw accepts it: names, specifiers, extras
+    and markers. None for a comment or blank line. Options (`-r`, `-e`, …),
+    URLs, paths and hashes are refused — a mirror resolves against PyPI only."""
+    from packaging.requirements import InvalidRequirement, Requirement
+    text = line.split(" #", 1)[0].strip()
+    if not text or text.startswith("#"):
+        return None
+    refused = (text.startswith(("-", ".", "/", "~")) or "--hash" in text or "://" in text
+               or text.startswith("git+") or text.lower().endswith(_ARCHIVE_SUFFIXES))
+    if not refused:
+        try:
+            refused = Requirement(text).url is not None
+        except InvalidRequirement:
+            refused = True
+    if refused:
+        raise ValueError(f"unsupported requirements line: '{line.strip()}' (only names, versions, "
+                         "extras and markers — no options, URLs, paths or hashes)")
+    return text
 
 
 class PypiSource(_StrictModel):
@@ -666,6 +688,44 @@ class PypiSource(_StrictModel):
     macos: str = "11.0"
     sdists: bool = False
     all: bool = False
+    requirements: list[str] = []
+    requirements_file: str | None = None
+    # Where mmw.toml lives, so a relative requirements_file means "next to the
+    # config". Set by `load`; absent for drafts (then: the working directory).
+    _config_dir: Path | None = PrivateAttr(default=None)
+
+    @field_validator("requirements", mode="before")
+    @classmethod
+    def _requirement_lines(cls, value):
+        lines = value.splitlines() if isinstance(value, str) else list(value or [])
+        return [kept for kept in (check_requirement_line(str(line)) for line in lines) if kept]
+
+    @field_validator("requirements_file", mode="before")
+    @classmethod
+    def _blank_file_is_none(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
+
+    def __eq__(self, other):
+        # Where the config was loaded from is not part of what the source is.
+        return type(other) is type(self) and self.model_dump() == other.model_dump()
+
+    __hash__ = None
+
+    def requirement_lines(self, config_dir: Path | None = None) -> list[str]:
+        """The inline list then the file's lines, de-duplicated in order. The
+        file is read now, every time: it may change between syncs. A relative
+        file is next to mmw.toml: `config_dir`, else where it was loaded from."""
+        lines = list(self.requirements)
+        if self.requirements_file:
+            path = Path(self.requirements_file).expanduser()
+            if not path.is_absolute():
+                path = (config_dir or self._config_dir or Path.cwd()) / path
+            try:
+                text = path.read_text()
+            except FileNotFoundError:
+                raise FileNotFoundError(f"requirements_file not found: {path}") from None
+            lines += [kept for kept in (check_requirement_line(line) for line in text.splitlines()) if kept]
+        return list(dict.fromkeys(lines))
 
     @model_validator(mode="after")
     def _known_values(self):
@@ -1185,6 +1245,9 @@ def load(directory: Path = Path(".")) -> Config:
     with open(path, "rb") as f:
         data = tomllib.load(f)
     cfg = Config.model_validate(data)
+    for source in cfg.sources:
+        if isinstance(source, PypiSource):
+            source._config_dir = Path(directory).resolve()
     from mmw.core.pool import register_database
     register_database(cfg.settings.mirror_dir, cfg.settings.database)
     return cfg

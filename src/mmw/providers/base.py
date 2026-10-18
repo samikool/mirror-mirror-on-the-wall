@@ -146,11 +146,12 @@ class ResolveContext:
     mirror_dir: Path | None = None
     max_connections: int = 8
     stop_event: threading.Event | None = None
+    config_dir: Path | None = None    # where mmw.toml lives: relative paths in sources mean "next to it"
 
     @classmethod
-    def from_settings(cls, settings, stop_event=None) -> "ResolveContext":
+    def from_settings(cls, settings, stop_event=None, config_dir=None) -> "ResolveContext":
         return cls(mirror_dir=settings.mirror_dir, max_connections=settings.max_connections,
-                   stop_event=stop_event)
+                   stop_event=stop_event, config_dir=config_dir)
 
 
 class BaseProvider(ABC):

@@ -41,8 +41,9 @@ class Report:
     sdist_fallback: list[tuple[str, str]] = field(default_factory=list)      # (target, "n==v")
     extras_gaps: list[tuple[str, str, str]] = field(default_factory=list)    # (target, "n==v", extra)
     invalid: list[tuple[str, str]] = field(default_factory=list)             # ("n==v", raw line)
+    built_from_source: list[tuple[str, str]] = field(default_factory=list)   # (target, "n==v")
 
-    _TARGETED = ("unsatisfiable", "unknown_deps", "sdist_fallback", "extras_gaps")
+    _TARGETED = ("unsatisfiable", "unknown_deps", "sdist_fallback", "extras_gaps", "built_from_source")
 
     def _normalize(self) -> "Report":
         for name in (*self._TARGETED, "invalid"):
@@ -61,7 +62,8 @@ class Report:
     def summary(self) -> str:
         return (f"{len(self.unsatisfiable)} unsatisfiable, {len(self.unknown_deps)} unknown dependencies, "
                 f"{len(self.sdist_fallback)} sdist fallbacks, {len(self.extras_gaps)} extras gaps, "
-                f"{len(self.invalid)} invalid requirements")
+                f"{len(self.invalid)} invalid requirements, {len(self.built_from_source)} built from source"
+                + (" (build requirements: static only)" if self.built_from_source else ""))
 
 
 @dataclass
@@ -285,13 +287,21 @@ class _TargetClosure:
 
     def _collect(self, kept: dict[tuple[str, Version], str]) -> None:
         for (name, v), how in kept.items():
-            for f in self._files_of(name, v):
-                if not self._usable(f, allow_yanked=how == "yanked"):
-                    continue
-                if f.kind == "wheel" and self.matcher.keeps(f.wheel_tags):
-                    self.keep.add(UNIVERSAL if is_universal(f.wheel_tags) else self.t.key, f)
-                elif f.kind == "sdist" and (self.sdists or how == "sdist"):
-                    self.keep.add(UNIVERSAL, f)
+            collect_release(self.keep, self.t, self.matcher, self._files_of(name, v), how, self.sdists)
+
+
+def collect_release(keep: KeepSet, target: Target, matcher: TagMatcher, files: list[DistFile],
+                    how: str, sdists: bool) -> None:
+    """The files a kept release contributes on `target` — the one rule both
+    flows use. `how`: "wheel", "sdist" (installed from source) or "yanked"
+    (an exact pin to a yanked release)."""
+    for f in files:
+        if (f.yanked and how != "yanked") or not requires_python_ok(f.requires_python, target):
+            continue
+        if f.kind == "wheel" and matcher.keeps(f.wheel_tags):
+            keep.add(UNIVERSAL if is_universal(f.wheel_tags) else target.key, f)
+        elif f.kind == "sdist" and (sdists or how == "sdist"):
+            keep.add(UNIVERSAL, f)
 
 
 def keep_closure(universe: Universe, targets: list[Target], floors: Floors, *, sdists: bool,

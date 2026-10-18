@@ -115,6 +115,7 @@ def publish_network(
                          progress=progress, stop_event=stop_event,
                          mirror_start_callback=mirror_start_callback)
             if not (stop_event and stop_event.is_set()):
+                _render_derived(network.root, progress)
                 prepare_tree(network.root, network, cfg)
                 if network.prune and not network.certs:
                     for script in ("sign.py", "make-ca.py"):
@@ -126,6 +127,14 @@ def publish_network(
         _record_published(mirror_dir, network.root, network.name, "live")
 
     return result
+
+
+def _render_derived(root: Path, progress=None) -> None:
+    """The derived pages (PyPI's) from the tree's shards — the same rule
+    apply.py runs on the far side."""
+    from mmw.resources.apply import render_derived
+    render_derived(str(root), say=(lambda message: progress("pypi.org", f"render:{message}"))
+                   if progress else None)
 
 
 def warm_for_publish(mirror_dir: Path, progress=None, stop_event=None) -> None:
@@ -330,18 +339,22 @@ def publish_snapshot(
                         r.pruned, r.pruned_bytes = sink.finalize_group(
                             b, keep[b], live[b], nested)
                     extra = keep[None]
-                    for prefix in ("keys", CHANGELOGS_DIR, "vscode-gallery"):
+                    for prefix in ("keys", CHANGELOGS_DIR, "vscode-gallery", "pypi-data"):
                         reconcile_extra_prefix(
                             sink, prefix, {p for p in extra if p.startswith(prefix + "/")})
                     sink.drop_if_empty("vscode-gallery")
+                    sink.drop_if_empty("pypi-data")
                     reconcile_extra_prefix(sink, "nginx", nginx_rels)
-                    if "UPGRADE.md" not in extra:
-                        (Path(root) / "UPGRADE.md").unlink(missing_ok=True)
+                    for generated in ("UPGRADE.md", "PYPI.md"):
+                        if generated not in extra:
+                            (Path(root) / generated).unlink(missing_ok=True)
                     upstream = {p: None for p in extra
                                 if not p.startswith(("keys/", CHANGELOGS_DIR + "/",
-                                                     "vscode-gallery/"))}
+                                                     "vscode-gallery/", "pypi-data/"))}
                     sink.prune_stale_bases(set(bases) | upstream_file_live_dirs(
                         upstream, set(bases)))
+            if not (stop_event and stop_event.is_set()):
+                _render_derived(root, progress)
         finally:
             sink.close()
 

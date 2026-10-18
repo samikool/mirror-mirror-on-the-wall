@@ -46,8 +46,9 @@ class DistFile:
     version: str
     kind: str               # "wheel" | "sdist"
     requires_python: str | None
-    yanked: bool
+    yanked: bool | str               # True, or PyPI's reason string
     metadata_sha256: str | None
+    upload_time: str | None = None   # PEP 700
 
     @property
     def repo_path(self) -> str:
@@ -59,7 +60,7 @@ class DistFile:
 
     def _row(self) -> list:
         return [self.filename, self.url, self.sha256, self.size, self.version, self.kind,
-                self.requires_python, self.yanked, self.metadata_sha256]
+                self.requires_python, self.yanked, self.metadata_sha256, self.upload_time]
 
 
 @lru_cache(maxsize=1 << 18)
@@ -67,6 +68,13 @@ def _wheel_tags(filename: str) -> frozenset[Tag]:
     # By name, not per object: the closure rebuilds DistFiles from the cache
     # on every lookup, and parsing tags dominated its time.
     return parse_wheel_filename(filename)[3]
+
+
+def _yanked(value) -> bool | str:
+    """PEP 592/691: false, true, or a reason string (which means yanked)."""
+    if isinstance(value, str):
+        return value or True
+    return bool(value)
 
 
 def _metadata_hash(entry: dict) -> str | None:
@@ -103,7 +111,8 @@ def _parse_entry(project: str, entry: dict) -> DistFile | None:
         project=project, filename=filename, url=entry["url"], sha256=digest,
         size=int(entry.get("size") or 0), version=str(version), kind=kind,
         requires_python=entry.get("requires-python") or None,
-        yanked=bool(entry.get("yanked")), metadata_sha256=_metadata_hash(entry))
+        yanked=_yanked(entry.get("yanked")), metadata_sha256=_metadata_hash(entry),
+        upload_time=entry.get("upload-time") or None)
 
 
 def parse_project(name: str, body: dict) -> tuple[list[DistFile], int]:

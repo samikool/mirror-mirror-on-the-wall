@@ -20,7 +20,7 @@ from mmw.core.http import retrying_client
 
 from mmw.core.config import ExtensionSelection
 from mmw.core.history import UnitHistory
-from mmw.core.pool import KIND_PKG, KIND_RELEASE
+from mmw.core.pool import KIND_PKG
 from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, ProgressUnit, Site, SourceDescription, SourceField
 from mmw.providers.vscode import marketplace as mp
 from mmw.providers.vscode import image as gallery_image
@@ -330,36 +330,10 @@ class VscodeProvider(BaseProvider):
     def publish(self, ctx, units):
         """Every payload at its upstream host/path, grouped by host (each host
         is a base); provider JSON under `.vscode-meta/` is never published."""
-        from mmw.core.publisher.links import _dedup_rows, _link_rows
-        from mmw.core.publisher.results import MirrorPublishResult
+        from mmw.core.publisher.links import _dedup_rows, publish_by_host
         rows = [r for r in _dedup_rows(ctx.pool.mirror_files([u.name for u in units]))
                 if not r[0].startswith(".vscode-meta/")]
-        by_host: dict[str, list] = {}
-        for repo_path, pool_path, size, kind, checksum in rows:
-            host, rest = repo_path.split("/", 1)
-            by_host.setdefault(host, []).append((rest, pool_path, size, kind, checksum))
-        results = []
-        for idx, host in enumerate(sorted(by_host)):
-            if ctx.stop_event and ctx.stop_event.is_set():
-                break
-            host_rows = by_host[host]
-            if ctx.mirror_start_callback:
-                # A host is no unit the pre-publish counts know by name, so
-                # its own count goes with it.
-                ctx.mirror_start_callback(host, idx + 1, len(by_host), count=len(host_rows))
-            result = MirrorPublishResult(mirror_name=host)
-            ordered = [r for r in host_rows if r[3] != KIND_RELEASE] + \
-                      [r for r in host_rows if r[3] == KIND_RELEASE]
-            if not _link_rows(ordered, host, ctx.sink, result, ctx.progress, ctx.stop_event,
-                              by_hash=False):
-                results.append(result)
-                break
-            if ctx.prune:
-                keep = {f"{host}/{r[0]}" for r in host_rows}
-                result.pruned, result.pruned_bytes = ctx.sink.finalize_group(
-                    host, keep, set(), set())
-            results.append(result)
-        return results, set(by_host)
+        return publish_by_host(ctx, rows)
 
     def contribute(self, ctx) -> None:
         from mmw.core.publisher.links import reconcile_extra_prefix

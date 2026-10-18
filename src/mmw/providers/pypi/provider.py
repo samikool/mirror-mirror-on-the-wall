@@ -5,6 +5,7 @@ Units are one universal unit (pure wheels and sdists) plus one per target
 keep policy once per sync and holds the catalog; each unit's `fetch_all`
 reads its slice of it, plus the files its history still retains.
 """
+import dataclasses
 import tarfile
 import tempfile
 import threading
@@ -18,10 +19,11 @@ import httpx
 from mmw.core.format import fmt_size
 from mmw.core.history import UnitHistory
 from mmw.providers.base import (BaseProvider, Dimension, MetadataFile, PackageInfo, ProgressUnit,
-                                ResolveContext, SourceDescription, SourceField)
+                                ResolveContext, Site, SourceDescription, SourceField)
 from mmw.providers.pypi import build
 from mmw.providers.pypi import history as hist
-from mmw.providers.pypi import index
+from mmw.providers.pypi import index, records, simple
+from mmw.providers.pypi import publish as pypub
 from mmw.providers.pypi import uv as uvmod
 from mmw.providers.pypi.closure import UNIVERSAL, KeepSet, Report, keep_closure
 from mmw.providers.pypi.requirements import resolve_requirements
@@ -82,6 +84,7 @@ class _Catalog:
         self.keep, self.report = keep, report
         self.req_keep, self.req_report = req_keep, req_report
         self.failed: set[str] = set()
+        self.window_days: int | None = None   # widest network retention; None = forever
 
     def flow(self, name: str):
         return (self.req_keep, self.req_report) if name == "req" else (self.keep, self.report)
@@ -136,7 +139,7 @@ class PypiProvider(BaseProvider):
         Dimension("platforms", "platform", "Platforms", absent_matches=True),
         Dimension("arches", "arch", "Arches", absent_matches=True),
     )
-    publishes = False          # stage 3
+    publishes = True
     carries_history = True
     retries_failures = True
     site_per_base = False
@@ -254,6 +257,9 @@ class PypiProvider(BaseProvider):
                 errors.append(f"{source.name}: requirements not read — {e}")
         cache = index.IndexCache(context.mirror_dir)
         catalog = _Catalog(cache)
+        # Without the config (tests, previews) nothing is trimmed.
+        catalog.window_days = (records.widest_window(context.cfg, source.identity)
+                               if context.cfg is not None else None)
         units: list = []
         if source.all:
             if not self._resolve_all(source, cache, catalog, context, say, notes, errors):
@@ -326,6 +332,72 @@ class PypiProvider(BaseProvider):
 
     # ── fetch ───────────────────────────────────────────────────────────────
 
+    # ── publish ─────────────────────────────────────────────────────────────
+
+    def publish(self, ctx, units):
+        """Files at files.pythonhosted.org/… (pool rows, narrowed by the
+        network's retention), then the generated pypi.org pages."""
+        from mmw.core.publisher.links import publish_by_host, reconcile_extra_prefix
+        from mmw.resources import pypi_render_bytes
+        rows, recs = pypub.published_rows(ctx.pool, units, ctx.network, date.today())
+        results, _ = publish_by_host(ctx, rows)
+        if ctx.stop_event is not None and ctx.stop_event.is_set():
+            return results, set(pypub.HOSTS)
+        published = {row[0] for row in rows}
+        with_metadata = {path.rsplit("/", 1)[1].removesuffix(".metadata")
+                         for path in published if path.endswith(".metadata")}
+        by_project: dict[str, list] = {}
+        for path, rec in recs.items():
+            if path in published:
+                by_project.setdefault(rec.project, []).append(rec)
+        # The pages are derived (spec §5.0): only their data and the renderer
+        # go through the sink; render_derived makes pypi.org/ from them.
+        files = simple.shards([simple.entry_of(p, by_project[p], with_metadata) for p in sorted(by_project)])
+        files[simple.RENDERER] = pypi_render_bytes()
+        for rel, data in files.items():
+            ctx.sink.write(rel, data)
+        if ctx.prune:
+            reconcile_extra_prefix(ctx.sink, "pypi-data", set(files))
+        return results, {"files.pythonhosted.org"}
+
+    def contribute(self, ctx) -> None:
+        from mmw.core.publisher.links import reconcile_extra_prefix
+        units = [u for u in ctx.units if u.provider == self.name]
+        if units:
+            ctx.sink.write("PYPI.md", pypub.pypi_md(ctx.network))
+        elif ctx.prune:
+            # No renderer left: render_derived removes the pages it made.
+            reconcile_extra_prefix(ctx.sink, "pypi-data", set())
+            ctx.sink.drop_if_empty("pypi-data")
+            if getattr(ctx.sink, "root", None) is not None:
+                (ctx.sink.root / "PYPI.md").unlink(missing_ok=True)
+
+    def preview(self, network, cfg, pool, mirror_dir, result) -> None:
+        """Dry-run: what this network publishes only because of its retention."""
+        from mmw.core.config import retention_days
+        from mmw.core.resolve import network_mirrors
+        units = [u for u in network_mirrors(network, cfg, mirror_dir) if u.provider == self.name]
+        if not units:
+            return
+        days, today = retention_days(network.retention), date.today()
+        sizes: dict[str, int] = {}
+        for unit in units:
+            left = {path for path, e in hist.load(pypub._read(pool, unit.name, hist.HISTORY_PATH)).items()
+                    if e.left_at is not None and hist.in_window(e.left_at, days, today)}
+            for row in pool.mirror_files([unit.name]):
+                if row[0] in left:
+                    sizes[row[0]] = row[2]
+        if sizes:
+            result.warnings.append(f"pypi: {len(sizes)} files ({fmt_size(sum(sizes.values()))}) published "
+                                   f"only through retention ({network.retention})")
+
+    def nginx_sites(self, units):
+        return [Site("pypi.org", root="pypi.org", negotiated_index="/simple/", json_paths="/pypi/"),
+                Site("files.pythonhosted.org", root="files.pythonhosted.org")]
+
+    def cert_names(self, network, units) -> list[str]:
+        return list(pypub.HOSTS) if units else []
+
     def progress_unit(self, mirror) -> ProgressUnit:
         return ProgressUnit("releases", mirror.source)
 
@@ -352,7 +424,10 @@ class PypiProvider(BaseProvider):
                        if p.repo_path not in held]
             current += carried
             held |= {p.repo_path for p in carried}
-        advanced = hist.advance(before, current, date.today().isoformat())
+        today = date.today()
+        # What no network still wants leaves history and refs; prune frees it.
+        advanced = {path: e for path, e in hist.advance(before, current, today.isoformat()).items()
+                    if hist.in_window(e.left_at, cat.window_days, today)}
         retained = [p for p in hist.retained(advanced) if p.repo_path not in held]
         packages = current + retained
         # Every kept wheel's PEP 658 metadata, by hash and without its body: the
@@ -370,7 +445,32 @@ class PypiProvider(BaseProvider):
         report = report if key == UNIVERSAL else report.for_units({key})
         metadata.append(MetadataFile(url="", repo_path=REPORT_PATH, content=report.to_json()))
         metadata.append(MetadataFile(url="", repo_path=hist.HISTORY_PATH, content=hist.dump(advanced)))
+        metadata.append(MetadataFile(url="", repo_path=records.RECORDS_PATH,
+                                     content=records.dump(self._records(cat, kept, [*retained, *carried],
+                                                                        history))))
         return packages, metadata
+
+    @staticmethod
+    def _records(cat, kept, older, history) -> dict:
+        """Current files from the index; retained/carried ones from the last
+        records, their yank state refreshed from the index. A unit synced
+        before records existed has none: those come from the index outright.
+        Each project's index entry is decoded once, however many files it has."""
+        out = {f.repo_path: records.record_of(f) for f in kept}
+        previous = records.load(history.read(records.RECORDS_PATH))
+        by_project: dict[str, list] = {}
+        for p in older:
+            project = p.item_id.split("==", 1)[0]
+            by_project.setdefault(project, []).append(p)
+        for project, packages in by_project.items():
+            now = {f.repo_path: f for f in cat.cache.files(project)}
+            for p in packages:
+                rec, current = previous.get(p.repo_path), now.get(p.repo_path)
+                if rec is not None:
+                    out[p.repo_path] = rec if current is None else dataclasses.replace(rec, yanked=current.yanked)
+                elif current is not None:
+                    out[p.repo_path] = records.record_of(current)
+        return out
 
     def fetch_packages(self, mirror_config, client, status_callback=None):
         return self.fetch_all(mirror_config, client, status_callback)[0]

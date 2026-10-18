@@ -40,12 +40,13 @@ def _ctx(tmp_path, **kw):
 
 
 class _History:
-    def __init__(self, raw=None, checksums=None):
+    def __init__(self, raw=None, checksums=None, files=None):
         self.raw = raw
         self.checksums = checksums or {}
+        self.files = files or {}
 
     def read(self, path):
-        return self.raw if path == HISTORY_PATH else None
+        return self.raw if path == HISTORY_PATH else self.files.get(path)
 
     def checksum(self, path):
         return self.checksums.get(path)
@@ -277,3 +278,98 @@ def test_requirements_file_is_relative_to_the_contexts_config_dir(tmp_path, req_
     r = get_provider("pypi").resolve(src, context=ResolveContext(mirror_dir=tmp_path, max_connections=2,
                                                                  config_dir=conf))
     assert not r.errors, r.errors
+
+
+# ── records and the retention trim (stage 3) ─────────────────────────────────
+
+def _meta(meta, path):
+    return {m.repo_path: m for m in meta}[path].content
+
+
+def _two_syncs(tmp_path, up, context):
+    from mmw.providers.pypi.records import RECORDS_PATH
+    prov = get_provider("pypi")
+    linux = prov.resolve(_src(), context=context).mirrors[1]
+    _, meta = _fetch(prov, linux)
+    history = _History(_meta(meta, HISTORY_PATH), files={RECORDS_PATH: _meta(meta, RECORDS_PATH)})
+    up.projects["lib"]["files"].append(whl("lib", "1.9.5", GLIBC))
+    up.projects["lib"]["serial"] = 2
+    linux = prov.resolve(_src(), context=context).mirrors[1]
+    return _fetch(prov, linux, history)
+
+
+def test_fetch_all_writes_records_for_current_and_retained(tmp_path, up):
+    from mmw.providers.pypi.records import RECORDS_PATH, load
+    pkgs, meta = _two_syncs(tmp_path, up, _ctx(tmp_path))
+    recs = load(_meta(meta, RECORDS_PATH))
+    names = sorted(r.filename for r in recs.values())
+    assert f"lib-1.9-{GLIBC}.whl" in names and f"lib-1.9.5-{GLIBC}.whl" in names
+    assert sorted(p.repo_path for p in pkgs) == sorted(recs)
+
+
+def _cfg_with(tmp_path, retention):
+    return config.Config(settings=config.Settings(mirror_dir=tmp_path), sources=[_src()],
+                         networks=[config.NetworkConfig(name="n", retention=retention)])
+
+
+def test_trim_drops_retained_outside_widest_window(tmp_path, up):
+    ctx = ResolveContext.from_config(_cfg_with(tmp_path, "current"))
+    pkgs, _ = _two_syncs(tmp_path, up, ctx)
+    assert f"lib-1.9-{GLIBC}.whl" not in [p.filename for p in pkgs]
+
+
+def test_trim_keeps_retained_for_forever(tmp_path, up):
+    ctx = ResolveContext.from_config(_cfg_with(tmp_path, "forever"))
+    pkgs, _ = _two_syncs(tmp_path, up, ctx)
+    assert f"lib-1.9-{GLIBC}.whl" in [p.filename for p in pkgs]
+
+
+def test_yank_upstream_shows_in_records(tmp_path, up):
+    # app 1.0 is kept, then yanked upstream: it leaves the keep set but stays
+    # retained, and its record must now say yanked so pages mark it.
+    from mmw.providers.pypi.records import RECORDS_PATH, load
+    prov = get_provider("pypi")
+    uni = prov.resolve(_src(), context=_ctx(tmp_path)).mirrors[0]
+    _, meta = _fetch(prov, uni)
+    history = _History(_meta(meta, HISTORY_PATH), files={RECORDS_PATH: _meta(meta, RECORDS_PATH)})
+    up.projects["app"]["files"][0]["yanked"] = "broken"
+    up.projects["app"]["files"].append(whl("app", "0.9", requires=["lib<2"]))
+    up.projects["app"]["serial"] = 2
+    uni = prov.resolve(_src(), context=_ctx(tmp_path)).mirrors[0]
+    _, meta = _fetch(prov, uni, history)
+    recs = {r.filename: r for r in load(_meta(meta, RECORDS_PATH)).values()}
+    assert recs["app-1.0-py3-none-any.whl"].yanked == "broken"
+    assert recs["app-0.9-py3-none-any.whl"].yanked is False
+
+
+def test_units_synced_before_records_get_records_for_retained(tmp_path, up):
+    # A unit from before stage 3 has history but no records file: its retained
+    # files must still get records (from the index), or no page lists them.
+    from mmw.providers.pypi.records import RECORDS_PATH, load
+    prov = get_provider("pypi")
+    linux = prov.resolve(_src(), context=_ctx(tmp_path)).mirrors[1]
+    _, meta = _fetch(prov, linux)
+    old_history = _History(_meta(meta, HISTORY_PATH))          # no records file
+    up.projects["lib"]["files"].append(whl("lib", "1.9.5", GLIBC))
+    up.projects["lib"]["serial"] = 2
+    linux = prov.resolve(_src(), context=_ctx(tmp_path)).mirrors[1]
+    _, meta = _fetch(prov, linux, old_history)
+    assert f"lib-1.9-{GLIBC}.whl" in [r.filename for r in load(_meta(meta, RECORDS_PATH)).values()]
+
+
+def test_retained_records_read_each_project_once(tmp_path, up, monkeypatch):
+    from mmw.providers.pypi.records import RECORDS_PATH
+    prov = get_provider("pypi")
+    linux = prov.resolve(_src(), context=_ctx(tmp_path)).mirrors[1]
+    _, meta = _fetch(prov, linux)
+    for version, serial in (("1.9.5", 2), ("1.9.7", 3)):
+        history = _History(_meta(meta, HISTORY_PATH), files={RECORDS_PATH: _meta(meta, RECORDS_PATH)})
+        up.projects["lib"]["files"].append(whl("lib", version, GLIBC))
+        up.projects["lib"]["serial"] = serial
+        linux = prov.resolve(_src(), context=_ctx(tmp_path)).mirrors[1]
+        cache = prov.catalog["https://pypi.org/simple"].cache
+        calls = []
+        real = cache.files
+        monkeypatch.setattr(cache, "files", lambda name: calls.append(name) or real(name))
+        _, meta = _fetch(prov, linux, history)
+    assert calls.count("lib") == 1          # two retained lib files, one decode

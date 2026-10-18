@@ -10,6 +10,9 @@ from pathlib import Path
 
 from mmw.core import downloader
 from mmw.tui import custom_repo
+# `up` — recorded PyPI served on 127.0.0.1 with real uv, offline — for every
+# PyPI test module, without each importing (and shadowing) the fixture.
+from test_pypi_req_e2e import up  # noqa: F401
 
 
 @pytest.fixture(autouse=True)

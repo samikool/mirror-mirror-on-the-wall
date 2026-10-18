@@ -885,6 +885,22 @@ class NetworkSelect(_StrictModel):
 _LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port"})
 
 
+DEFAULT_RETENTION = "90d"
+_RETENTION_RE = re.compile(r"([1-9]\d*)d")
+
+
+def retention_days(value: str) -> int | None:
+    """A network's `retention`: "current" → 0, "<N>d" → N, "forever" → None."""
+    if value == "current":
+        return 0
+    if value == "forever":
+        return None
+    match = _RETENTION_RE.fullmatch(value or "")
+    if match is None:
+        raise ValueError(f"retention must be current, forever or a number of days like 90d, not {value!r}")
+    return int(match.group(1))
+
+
 class NetworkConfig(_StrictModel):
     """A named downselect of the mirror — what one site gets.
 
@@ -901,6 +917,15 @@ class NetworkConfig(_StrictModel):
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
     certs: bool = False       # TLS key/CSR; serve HTTPS wherever it lands — bundles carry cert + key
     nginx: bool = True        # ship the nginx image, nginx/compose.yaml and mirror.conf
+    # How long a release that left a provider's keep set stays published
+    # (providers with version history — PyPI). Widening is not retroactive.
+    retention: str = DEFAULT_RETENTION
+
+    @field_validator("retention")
+    @classmethod
+    def _valid_retention(cls, value):
+        retention_days(value)
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -1380,6 +1405,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"nginx": False} if not n.nginx else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
+            **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
         }
         for n in cfg.networks
     ]

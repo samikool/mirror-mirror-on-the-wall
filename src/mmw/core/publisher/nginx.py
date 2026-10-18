@@ -121,10 +121,42 @@ _PROXY_BODY = """
 """
 
 
+# PEP 691: a client asking for the JSON type gets index.json, anyone else the
+# PEP 503 HTML. Emitted once, at http level, when any site negotiates.
+_SIMPLE_MAP = """\
+map $http_accept $pypi_simple_index {
+    default index.html;
+    "~application/vnd\\.pypi\\.simple\\.v1\\+json" index.json;
+}
+"""
+
+_NEGOTIATED_BODY = """
+    location {prefix} {{
+        types {{
+            application/vnd.pypi.simple.v1+json json;
+            text/html html;
+        }}
+        try_files $uri$pypi_simple_index $uri/$pypi_simple_index $uri =404;
+    }}
+"""
+
+_JSON_BODY = """
+    location {prefix} {{
+        types {{ }}
+        default_type application/json;
+        try_files $uri =404;
+    }}
+"""
+
+
 def _render_site(site, root: str, tls_block: str, port: int, proxy_host: str) -> str:
     body = ""
     if site.root is not None:
         body += (_CORS_STATIC_BODY if site.cors else _STATIC_BODY).format(root=root, dir=site.root)
+    if site.negotiated_index:
+        body += _NEGOTIATED_BODY.format(prefix=site.negotiated_index)
+    if site.json_paths:
+        body += _JSON_BODY.format(prefix=site.json_paths)
     for path in site.proxy:
         body += _PROXY_BODY.format(eq="= " if site.exact else "", path=path, port=port, proxy_host=proxy_host)
     for path in site.proxy_prefixes:
@@ -238,6 +270,8 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
     )
     if provider_sites:
         rendered = "\n".join(_render_site(s, root, tls_block, port, proxy_host) for s in provider_sites)
+        if any(s.negotiated_index for s in provider_sites):
+            rendered = f"{_SIMPLE_MAP}\n{rendered}"
         sites = f"{sites}\n{rendered}" if sites else rendered
         hosts = hosts + [_dns_name(s.server_name) for s in provider_sites]
     tls_note = ("#\n# HTTPS: every host also listens on 443 with\n"

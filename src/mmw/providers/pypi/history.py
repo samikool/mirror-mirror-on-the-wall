@@ -8,6 +8,7 @@ a file that left is still published; until then every left file is kept.
 import gzip
 import json
 from dataclasses import asdict, dataclass
+from datetime import date
 
 from mmw.providers.base import PackageInfo
 
@@ -47,6 +48,13 @@ def advance(previous: dict[str, Entry], current: list[PackageInfo], today: str) 
         if path not in out:
             out[path] = e if e.left_at else Entry(**{**asdict(e), "left_at": today})
     return out
+
+
+def in_window(left_at: str | None, days: int | None, today: date) -> bool:
+    """Is a file still published under a retention of `days` (None = forever)?"""
+    if left_at is None or days is None:
+        return True
+    return (today - date.fromisoformat(left_at)).days < days
 
 
 def as_packages(entries) -> list[PackageInfo]:

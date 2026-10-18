@@ -431,7 +431,7 @@ def resolve_selection(cfg: config.Config, selection, *, progress=None, stop_even
     from mmw.providers.base import ResolveContext
     mirrors, notes, errors = resolve_sources(
         sources, progress=progress,
-        context=ResolveContext.from_settings(cfg.settings, stop_event, config_dir=config_dir))
+        context=ResolveContext.from_config(cfg, stop_event, config_dir=config_dir))
     messages = [*notes, *(f"⚠ {e}" for e in errors)]
     chosen, problem, _ = narrow_to_selection(mirrors, errors, selection)
     if problem:

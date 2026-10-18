@@ -67,7 +67,7 @@ def resolve_and_report(cfg: config.Config, echo=typer.echo):
     previous = signal.signal(signal.SIGINT, lambda *_: stop.set()) if on_main else None
     try:
         mirrors, notes, errors = resolve_sources(
-            cfg.sources, progress=say, context=ResolveContext.from_settings(cfg.settings, stop))
+            cfg.sources, progress=say, context=ResolveContext.from_config(cfg, stop))
     finally:
         if on_main:
             signal.signal(signal.SIGINT, previous)

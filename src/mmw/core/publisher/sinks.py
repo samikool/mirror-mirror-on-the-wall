@@ -49,7 +49,9 @@ _ANNOUNCE_LARGE_FILE_BYTES = 50 * 1024 * 1024
 # by `publish_network`/`bundle_network`); `changelogs.ubuntu.com/` belongs to
 # the dist-upgrade step; `.mmw/` is apply.py's staging area and `.mmw-state`
 # its ledger cursor — deleting either from a far side would be catastrophic.
-NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw", "vscode-gallery"})
+# `pypi.org` is rendered in place from `pypi-data/` (render_derived), never a sink base.
+NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw", "vscode-gallery",
+                           "pypi-data", "pypi.org"})
 
 # Where a `certs` network's certificate and key land on the far side:
 # under `.mmw/`, which no generated server block serves (each one's root is a
@@ -57,7 +59,7 @@ NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw", "vs
 # manifest payload — so they ride every bundle, delta or full, and sit near
 # the front of the archive rather than in the tail a cut-short copy loses.
 TLS_DIR = ".mmw/tls"
-NON_BASE_FILES = frozenset({"UPGRADE.md", ".mmw-state", "apply.py", "sign.py", "make-ca.py"})
+NON_BASE_FILES = frozenset({"UPGRADE.md", "PYPI.md", ".mmw-state", "apply.py", "sign.py", "make-ca.py"})
 
 # Where TreeSink stages content before renaming it onto a live-served path.
 # Never inside a `mirror_base`, so nginx can never serve it — the same

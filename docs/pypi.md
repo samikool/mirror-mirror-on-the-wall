@@ -94,3 +94,16 @@ both hosts. Each network gets a `PYPI.md` with:
   - pip ≥ 24.2 on Python ≥ 3.10 uses the system store; older pip uses `PIP_CERT`;
   - uv uses `UV_NATIVE_TLS=1` or `SSL_CERT_FILE`;
   - requests-based tools use `REQUESTS_CA_BUNDLE`.
+
+## Tested with
+
+Every change runs a real-client test (`tests/test_pypi_client_e2e.py`, see
+`tests/e2e/README.md`). Stock **pip** from `python:3.13-slim` and mmw's
+bundled **uv**, in an offline container, install through the generated nginx
+with TLS at `pypi.org` and `files.pythonhosted.org`. The test covers:
+
+- a dependency pinned below the newest release;
+- an sdist built with mirrored build tools;
+- `--require-hashes`;
+- a `uv.lock` round-trip;
+- the same again on a far side that rendered its own pages from a bundle.

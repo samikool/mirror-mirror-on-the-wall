@@ -6,7 +6,6 @@ See tests/e2e/README.md for tooling preparation and isolated local execution.
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -29,19 +28,11 @@ from test_seam_golden import _build
 from test_vscode_client_fixtures import source
 from test_vscode_sync_e2e import _sync
 from vscode_client_fixtures import ClientUpstream, SIGNED_EXTENSION
+from e2e_stack import ComposeStack, _run
 
 pytestmark = pytest.mark.skipif(os.environ.get('MMW_VSCODE_E2E') != '1',
                                 reason='opt-in real Docker/Microsoft client: MMW_VSCODE_E2E=1')
 CHECKS = Path(__file__).parent / 'e2e'
-
-
-def _run(args, log, *, timeout=120):
-    result = subprocess.run([str(a) for a in args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, timeout=timeout)
-    with log.open('a') as stream:
-        stream.write(' '.join(str(a) for a in args) + '\n' + result.stdout + '\n')
-    assert result.returncode == 0, result.stdout
-    return result.stdout
 
 
 def _ca(root):
@@ -52,6 +43,8 @@ def _ca(root):
                    .public_key(key.public_key()).serial_number(x509.random_serial_number())
                    .not_valid_before(now-timedelta(minutes=5)).not_valid_after(now+timedelta(days=1))
                    .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+                   # Python ≥ 3.13 verifies strictly and requires it, as mmw's make-ca.py sets it.
+                   .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
                    .add_extension(x509.KeyUsage(digital_signature=True, key_encipherment=False,
                                   content_commitment=False, data_encipherment=False, key_agreement=False,
                                   key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False),
@@ -64,40 +57,34 @@ def _ca(root):
     return ca, private
 
 
-class Stack:
-    """The network's own nginx/compose.yaml — its host paths filled in, as the
-    deployment instructions say — plus a test-only override: an internal
-    network, no host ports, and a client container."""
+class Stack(ComposeStack):
+    """VS Code on the shared harness: the gallery service joins the isolated
+    network, and the client is the Microsoft desktop CLI."""
+    ALIASES = ('marketplace.visualstudio.com', 'update.code.visualstudio.com',
+               'vscode.download.prss.microsoft.com', 'main.vscode-cdn.net',
+               'mmw-fixture.gallerycdn.vsassets.io', 'mmw-fixture.gallery.vsassets.io',
+               'github.gallerycdn.vsassets.io', 'github.gallery.vsassets.io',
+               'archive.ubuntu.com', 'uncovered.fixture.invalid')
+    CLIENT_IMAGE = ('MMW_VSCODE_CLIENT_IMAGE', 'mmw-vscode-client:local')
+    NGINX_IMAGE = ('MMW_VSCODE_NGINX_IMAGE', 'nginx:latest')
+    CLIENT_ENV = {'NODE_EXTRA_CA_CERTS': '/usr/local/share/ca-certificates/mmw-e2e.crt'}
+
     def __init__(self, scratch, root, ca, network):
-        self.scratch, self.root = scratch, root
-        self.state = scratch/('client-'+root.name)
-        self.state.mkdir()
-        self.project = 'mmw-e2e-'+uuid.uuid4().hex[:12]
-        self.log = scratch/('docker-'+root.name+'.log')
         self.expected = scratch/'checks'
         self.expected.mkdir(exist_ok=True)
-        self.deployed = scratch/('compose-deploy-'+root.name+'.yaml')
-        self.deployed.write_text((root/'nginx/compose.yaml').read_text().replace(f'/path/to/{network}', str(root)))
-        self.override = scratch/('compose-'+root.name+'.yaml')
-        client_image = os.environ.get('MMW_VSCODE_CLIENT_IMAGE', 'mmw-vscode-client:local')
-        nginx_image = os.environ.get('MMW_VSCODE_NGINX_IMAGE', 'nginx:latest')
-        client_volumes = [{'type': 'bind', 'source': str(ca),
-                           'target': '/usr/local/share/ca-certificates/mmw-e2e.crt', 'read_only': True},
-                          {'type': 'bind', 'source': str(CHECKS.resolve()), 'target': '/scripts', 'read_only': True},
-                          {'type': 'bind', 'source': str(self.expected), 'target': '/checks', 'read_only': True},
-                          {'type': 'bind', 'source': str(self.state), 'target': '/state'}]
+        super().__init__(scratch, root, ca, network)
+
+    def client_volumes(self):
+        volumes = [{'type': 'bind', 'source': str(CHECKS.resolve()), 'target': '/scripts', 'read_only': True},
+                   {'type': 'bind', 'source': str(self.expected), 'target': '/checks', 'read_only': True}]
         if code_root := os.environ.get('MMW_VSCODE_ROOT'):
             code_root = Path(code_root).resolve()
             assert (code_root/'resources/app/product.json').exists(), 'MMW_VSCODE_ROOT must be a Microsoft desktop installation'
-            client_volumes.append({'type': 'bind', 'source': str(code_root), 'target': '/opt/code', 'read_only': True})
-        aliases = ['marketplace.visualstudio.com', 'update.code.visualstudio.com',
-                   'vscode.download.prss.microsoft.com', 'main.vscode-cdn.net',
-                   'mmw-fixture.gallerycdn.vsassets.io', 'mmw-fixture.gallery.vsassets.io',
-                   'github.gallerycdn.vsassets.io', 'github.gallery.vsassets.io',
-                   'archive.ubuntu.com', 'uncovered.fixture.invalid']
-        health = {'interval': '1s', 'timeout': '5s', 'retries': 30, 'start_period': '1s'}
-        self.override.write_text(f'''services:
-  gallery:
+            volumes.append({'type': 'bind', 'source': str(code_root), 'target': '/opt/code', 'read_only': True})
+        return volumes
+
+    def extra_services(self):
+        return """  gallery:
     init: true
     restart: "no"
     networks: [isolated]
@@ -105,63 +92,10 @@ class Stack:
       interval: 1s
       timeout: 5s
       retries: 30
-  nginx:
-    image: {json.dumps(nginx_image)}
-    ports: !reset []
-    restart: "no"
-    networks:
-      isolated:
-        aliases: {json.dumps(aliases)}
-    healthcheck: {json.dumps(dict(health, test=['CMD', 'nginx', '-t']))}
-  client:
-    init: true
-    image: {json.dumps(client_image)}
-    pull_policy: never
-    command: ["bash", "-c", "update-ca-certificates > /state/ca-import.log 2>&1 && exec sleep infinity"]
-    environment:
-      NODE_EXTRA_CA_CERTS: /usr/local/share/ca-certificates/mmw-e2e.crt
-      HTTP_PROXY: ""
-      HTTPS_PROXY: ""
-      ALL_PROXY: ""
-      http_proxy: ""
-      https_proxy: ""
-      all_proxy: ""
-    volumes: {json.dumps(client_volumes)}
-    networks: [isolated]
-    depends_on:
-      nginx:
-        condition: service_healthy
-    healthcheck: {json.dumps(dict(health, test=['CMD', 'test', '-f', '/etc/ssl/certs/mmw-e2e.pem']))}
-networks:
-  isolated:
-    internal: true
-''')
-        self.command = ['docker', 'compose', '-p', self.project, '-f', self.deployed,
-                        '-f', self.override]
+"""
 
-    def compose(self, *args, timeout=120):
-        return _run([*self.command, *args], self.log, timeout=timeout)
-
-    def __enter__(self):
-        try:
-            rendered = json.loads(self.compose('config', '--format', 'json'))
-            assert rendered['networks']['isolated']['internal']
-            assert all(not s.get('ports') for s in rendered['services'].values())
-            self.compose('up', '-d', '--wait', '--wait-timeout', '60')
-            self.code('--version')
-            return self
-        except BaseException:
-            self.close()
-            raise
-
-    def close(self):
-        try:
-            self.compose('logs', '--no-color')
-        finally:
-            self.compose('down', '--timeout', '2')
-
-    def __exit__(self, *args):
-        self.close()
+    def started(self):
+        self.code('--version')
 
     def code(self, *args):
         return self.compose('exec', '-T', 'client', '/opt/code/bin/code',

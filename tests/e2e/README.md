@@ -68,3 +68,52 @@ license retained. Synthetic server/editor archives prove protocol and exact
 payload delivery; this test does not launch a real editor update or an SSH
 server. Real upstream editor/server payload processing is covered by the
 provider's recorded metadata fixtures and checksum/retention tests.
+
+# PyPI client end-to-end test
+
+This opt-in test proves the PyPI far side with stock clients: **pip** from
+`python:3.13-slim` and mmw's own bundled **uv**, in an isolated container,
+against the generated nginx with TLS at `pypi.org` and
+`files.pythonhosted.org`. There are no index flags: the clients find the mirror
+the way `PYPI.md` tells users to, through DNS (Compose aliases here) and a
+trusted CA (`UV_NATIVE_TLS=1` for uv). Ordinary `pytest` skips it.
+
+The fixture graph is real: wheels with correct RECORD hashes, a flit-built
+sdist, and the committed `tests/fixtures/pypi/real/flit_core-3.9.0-py3-none-any.whl`
+(BSD-3, sha256 `7aada352fb0c7f5538c4fafeddf314d3a6a92ee8e2b1de70482329e42de70301`).
+It checks:
+
+- `pip install mmw-a` gets the pinned `mmw-b 1.0`, not the newer 2.0;
+- `mmw-c`, an sdist only, builds offline with pip and with uv, using flit_core
+  fetched from the mirror;
+- `pip install --require-hashes -r` with upstream hashes works;
+- a `uv.lock` written against the mirror names `files.pythonhosted.org` URLs
+  and `uv sync --frozen` works from a fresh copy;
+- the straight mirror carries these anyway, so the test also asserts that the
+  requirements unit itself selected the sdist and its build tool;
+- after bundle → `apply.py` on an empty directory, the far side renders its
+  own `pypi.org/` pages, the installs work again, and the hashed requirements
+  file and `uv.lock` made on the connected side work there unchanged (synced
+  with an empty uv cache);
+- TLS really verifies: an uncovered hostname fails certificate verification
+  (an HTTP answer would fail the test), `/simple/` serves
+  PEP 691 JSON only on request, and the client has no external route.
+
+Prepare once, with internet access:
+
+```bash
+docker pull python:3.13-slim
+docker pull nginx:latest
+```
+
+Both client tests share one Compose harness (`tests/e2e_stack.py`).
+
+From the project root:
+
+```bash
+mkdir -p .superpowers/work
+MMW_PYPI_E2E=1 uv run pytest -q tests/test_pypi_client_e2e.py \
+  --basetemp=.superpowers/work/pypi-client-e2e
+```
+
+`MMW_PYPI_CLIENT_IMAGE` and `MMW_PYPI_NGINX_IMAGE` override the images.

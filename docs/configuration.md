@@ -211,7 +211,7 @@ all       = true
 | `pythons` | list of string | `[]` — *all* | CPython versions: `3.9` … `3.14`. |
 | `platforms` | list of string | `[]` — *all* | `linux-glibc` (manylinux wheels), `linux-musl` (musllinux: Alpine), `windows`, `macos`. glibc and musl wheels do not install on each other. |
 | `arches` | list of string | `[]` — *all* | `amd64`, `arm64`. |
-| `glibc` | string | `'2.31'` | Oldest glibc on the far side (`2.31` = Ubuntu 20.04). A release counts as installable only if a client this old can install one of its wheels. |
+| `glibc` | string | `'2.31'` | Oldest glibc on the far side (`2.31` = Ubuntu 20.04; at least `2.17`). A release counts as installable only if a client this old can install one of its wheels. |
 | `musl` | string | `'1.2'` | Oldest musl on the far side (`1.2` = Alpine 3.13+). |
 | `macos` | string | `'11.0'` | Oldest macOS on the far side. |
 | `sdists` | bool | `false` | Also mirror the sdist of every kept release. Off, an sdist is still mirrored when a dependency has no compatible wheel. |

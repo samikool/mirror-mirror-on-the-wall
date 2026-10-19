@@ -9,15 +9,47 @@ mmw.toml can point it at another index.
 """
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
+from mmw.providers.pypi.index import CACHE_DIR, SIMPLE_URL
 from mmw.providers.pypi.targets import Floors, Target
 
-INDEX_URL = "https://pypi.org/simple"
+INDEX_URL = SIMPLE_URL.rstrip("/")
+
+
+def cache_dir(mirror_dir) -> Path:
+    """uv's own cache, beside mmw's index cache under the mirror."""
+    return Path(mirror_dir) / CACHE_DIR / "uv-cache"
+
+
+class Cancelled(Exception):
+    """The caller gave up on this resolve; the uv process was killed."""
+
+
+def _run_uv(cmd, text, env, timeout, cancelled) -> subprocess.CompletedProcess:
+    """Run uv, killing it when `cancelled()` turns true or `timeout` passes —
+    a Check or sync that is abandoned must not wait out a hung resolve."""
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env)
+    deadline, send = time.monotonic() + timeout, text
+    while True:
+        try:
+            out, err = proc.communicate(input=send, timeout=0.2)
+            return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            send = None
+            stop = cancelled is not None and cancelled()
+            if stop or time.monotonic() > deadline:
+                proc.kill()
+                proc.communicate()
+                if stop:
+                    raise Cancelled() from None
+                raise subprocess.TimeoutExpired(cmd, timeout) from None
 
 # The manylinux floors uv's --python-platform names (besides manylinux2014 = 2.17).
 _UV_GLIBC = [(2, 17), (2, 28), *((2, minor) for minor in range(31, 41))]
@@ -46,9 +78,16 @@ class Compiled:
     built: bool                     # True: only a solution with source builds exists
 
 
+# The user's uv settings that only shape *how* uv talks to the network (TLS,
+# timeouts, retries) — kept, so uv works behind the same proxy mmw does.
+# Everything else UV_* / PIP_* (indexes, config, constraints) is dropped.
+_TRANSPORT = frozenset({"UV_NATIVE_TLS", "UV_INSECURE_HOST", "UV_HTTP_TIMEOUT", "UV_REQUEST_TIMEOUT",
+                        "UV_HTTP_RETRIES", "UV_CONCURRENT_DOWNLOADS"})
+
+
 def _env(target: Target, floors: Floors) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("UV_", "PIP_")) and k != "MACOSX_DEPLOYMENT_TARGET"}
+           if (k in _TRANSPORT or not k.startswith(("UV_", "PIP_"))) and k != "MACOSX_DEPLOYMENT_TARGET"}
     if target.platform == "macos":
         env["MACOSX_DEPLOYMENT_TARGET"] = floors.macos
     return env
@@ -80,7 +119,7 @@ def _tail(text: str, limit: int = 4000) -> str:
 
 
 def compile_for(lines: list[str], target: Target, floors: Floors, *, index_url: str = INDEX_URL,
-                cache_dir: Path, timeout: float = 1800) -> Compiled:
+                cache_dir: Path, timeout: float = 1800, cancelled=None) -> Compiled:
     from uv import find_uv_bin
     base = [find_uv_bin(), "--no-config", "pip", "compile", "-",
             "--python-version", target.python, "--python-platform", platform_triple(target, floors),
@@ -88,11 +127,12 @@ def compile_for(lines: list[str], target: Target, floors: Floors, *, index_url: 
     env = _env(target, floors)
     text = "\n".join(lines) + "\n"
     try:
-        wheels = subprocess.run([*base, "--only-binary", ":all:"], input=text, text=True,
-                                capture_output=True, env=env, timeout=timeout)
+        wheels = _run_uv([*base, "--only-binary", ":all:"], text, env, timeout, cancelled)
         if wheels.returncode == 0:
             return Compiled(_pins(wheels.stdout), None, False)
-        any_dist = subprocess.run(base, input=text, text=True, capture_output=True, env=env, timeout=timeout)
+        any_dist = _run_uv(base, text, env, timeout, cancelled)
+    except Cancelled:
+        return Compiled([], "cancelled", False)
     except subprocess.TimeoutExpired:
         # One target's failure, never the source's: the straight mirror
         # resolved in the same pass must still ship.

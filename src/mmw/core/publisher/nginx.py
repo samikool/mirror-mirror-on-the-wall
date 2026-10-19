@@ -132,6 +132,8 @@ map $http_accept $pypi_simple_index {
 
 _NEGOTIATED_BODY = """
     location {prefix} {{
+        # PEP 691: the same URL answers JSON or HTML by Accept — caches must know.
+        add_header Vary Accept always;
         types {{
             application/vnd.pypi.simple.v1+json json;
             text/html html;

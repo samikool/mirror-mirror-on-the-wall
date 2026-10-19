@@ -67,3 +67,27 @@ def test_cached_by_sha(tmp_path):
     with pytest.raises(ValueError, match="sha256"):
         build_requires(g, cache, bad.client)
     assert cache.build_requires(g.sha256) is None
+
+
+def _tar(members):
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, text in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(text)
+            tar.addfile(info, io.BytesIO(text))
+    return buf.getvalue()
+
+
+def test_dot_slash_members_are_read():
+    data = _tar([("./x-1.0/pyproject.toml", b'[build-system]\nrequires = ["hatchling"]\n')])
+    assert read_build_requires("x-1.0.tar.gz", data).requires == ["hatchling"]
+
+
+def test_the_search_is_bounded(monkeypatch):
+    from mmw.providers.pypi import build
+    monkeypatch.setattr(build, "_MAX_SCAN", 64)
+    data = _tar([("x-1.0/big.bin", b"\0" * 200), ("x-1.0/pyproject.toml", b'[build-system]\nrequires = ["h"]\n')])
+    got = read_build_requires("x-1.0.tar.gz", data)
+    assert got.requires == LEGACY and "first" in got.note

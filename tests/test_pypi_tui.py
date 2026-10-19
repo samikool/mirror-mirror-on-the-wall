@@ -135,6 +135,8 @@ def fake_uv(monkeypatch):
             gate["event"].wait(10)
         if target.platform == "windows":
             return Compiled([], REAL_CONFLICT, False)
+        if target.platform == "macos":
+            return Compiled([("p", "1.0")], None, True)
         return Compiled([(f"p{i}", "1.0") for i in range(14)], None, False)
     monkeypatch.setattr(pypi_source.uvmod, "compile_for", compile_for)
     return calls, gate
@@ -260,3 +262,36 @@ def test_pypi_edit_saves_in_page_through_sources(tmp_path, monkeypatch):
             await until(pilot, lambda: "Not saved: disk full" in str(page.query_one("#page-status").render()))
             assert app.screen is page                     # the edits are still on screen
     asyncio.run(go())
+
+
+def test_check_says_when_a_target_needs_source_builds(fake_uv):
+    async def body(app, pilot):
+        app.screen.query_one("#btn-pypi-check").press()
+        await until(pilot, lambda: "macos" in _status(app))
+        assert "3.12-macos-amd64: ✓ 1 packages — needs source builds" in _status(app)
+        assert "linux-glibc-amd64: ✓ 14 packages\n" in _status(app) + "\n"
+    _check(_src(platforms=["linux-glibc", "macos"], requirements=["a"]), body)
+
+
+def test_check_cleans_its_temporary_cache(fake_uv, monkeypatch):
+    import tempfile
+    made = []
+    real = tempfile.mkdtemp
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **kw: made.append(real(*a, **kw)) or made[-1])
+
+    async def scenario():
+        app = _Harness(lambda: _edit_page(_src(requirements=["a"])))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await until(pilot, lambda: app.screen.query("#btn-pypi-check"))
+            for _ in range(2):
+                app.screen.query_one("#btn-pypi-check").press()
+                await until(pilot, lambda: "✓" in _status(app))
+            app.screen.query_one("#btn-cancel").press()
+            await until(pilot, lambda: app.result is None)
+    asyncio.run(scenario())
+    import time
+    from pathlib import Path
+    deadline = time.monotonic() + 5          # removed by a background thread
+    while Path(made[0]).exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(made) == 1 and not Path(made[0]).exists()

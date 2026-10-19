@@ -117,3 +117,15 @@ def test_to_toml_keeps_requirements(tmp_path):
     assert 'requirements_file = "r.txt"' in text
     (again,) = config.load(tmp_path).sources
     assert again == src
+
+
+def test_requirements_file_with_a_bom_reads(tmp_path):
+    (tmp_path / "r.txt").write_bytes("﻿requests\nnumpy\n".encode())
+    (src,) = _cfg(tmp_path, PY + 'requirements_file = "r.txt"\n').sources
+    assert src.requirement_lines() == ["requests", "numpy"]
+
+
+def test_glibc_floor_below_2_17_is_refused():
+    with pytest.raises(ValidationError, match="2.17"):
+        _src(glibc="2.12")
+    assert _src(glibc="2.17").glibc == "2.17"

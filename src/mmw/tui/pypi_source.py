@@ -1,6 +1,8 @@
 """PyPI authoring: the shared provider form, a live summary, and Check —
 resolve the requirements list per target without saving anything."""
+import shutil
 import tempfile
+import threading
 from pathlib import Path
 
 from textual import on, work
@@ -49,9 +51,12 @@ def check_requirements(source, *, config_dir, cache_dir, progress=None, cancelle
             return out                     # superseded: stop spending uv runs on it
         if progress:
             progress(f"Checking {target.key} ({i}/{len(ts)})…")
-        got = uvmod.compile_for(lines, target, source.floors, cache_dir=cache_dir)
+        got = uvmod.compile_for(lines, target, source.floors, cache_dir=cache_dir, cancelled=cancelled)
+        if got.error == "cancelled":
+            return out
         if got.error is None:
-            out.append(f"{target.key}: ✓ {len(got.pins)} packages")
+            out.append(f"{target.key}: ✓ {len(got.pins)} packages"
+                       + (" — needs source builds" if got.built else ""))
         else:
             out.append(f"{target.key}: ✗ {uv_reason(got.error)}")
     return out
@@ -62,6 +67,7 @@ class PypiEditor(Vertical):
         super().__init__()
         self.form = ProviderSourceForm(source, existing_names=existing_names)
         self._check_gen = 0
+        self._scratch: str | None = None      # a uv cache when there is no mirror dir yet
 
     def compose(self) -> ComposeResult:
         yield self.form
@@ -96,6 +102,10 @@ class PypiEditor(Vertical):
 
     def on_unmount(self):
         self._check_gen += 1
+        if self._scratch is not None:
+            # Off the event loop: removing a uv cache is disk work.
+            threading.Thread(target=shutil.rmtree, args=(self._scratch,), kwargs={"ignore_errors": True},
+                             daemon=True).start()
 
     @on(Button.Pressed, "#btn-pypi-check")
     def _check(self, event):
@@ -117,8 +127,10 @@ class PypiEditor(Vertical):
         cfg = getattr(self.app, "cfg", None)
         config_dir = getattr(self.app, "cfg_dir", None)
         if cfg is not None:
-            return config_dir, Path(cfg.settings.mirror_dir) / "pypi-cache" / "uv-cache"
-        return config_dir, Path(tempfile.mkdtemp(prefix="mmw-uv-check-"))
+            return config_dir, uvmod.cache_dir(cfg.settings.mirror_dir)
+        if self._scratch is None:
+            self._scratch = tempfile.mkdtemp(prefix="mmw-uv-check-")
+        return config_dir, Path(self._scratch)
 
     @work(thread=True, exit_on_error=False, group="pypi-check", exclusive=True)
     def _check_worker(self, gen, source):

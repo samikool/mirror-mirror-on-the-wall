@@ -62,3 +62,16 @@ def test_add_pypi_req_flags(tmp_path):
     assert r.exit_code == 0, r.output
     (src,) = config.load(tmp_path).sources
     assert src.requirements == ["requests", "numpy<2"] and src.requirements_file == "r.txt"
+
+
+def test_foreign_flags_are_refused(tmp_path):
+    _init(tmp_path)
+    r = _run(tmp_path, "--all", "--top-n", "50")
+    assert r.exit_code == 2 and "--top-n" in r.output and "pypi" in r.output
+    r = runner.invoke(app, ["--config", str(tmp_path), "add", "vscode", "--python", "3.12"])
+    assert r.exit_code == 2 and "--python" in r.output
+    src = tmp_path / "x.list"
+    src.write_text("deb http://archive.ubuntu.com/ubuntu noble main\n")
+    r = runner.invoke(app, ["--config", str(tmp_path), "add", "-f", str(src), "--sdists"])
+    assert r.exit_code == 2 and "--sdists" in r.output
+    assert config.load(tmp_path).sources == []

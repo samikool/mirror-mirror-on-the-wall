@@ -63,7 +63,7 @@ class PypiStack(ComposeStack):
         """`uv sync --frozen` from a fresh copy and an empty cache: every wheel
         is fetched through the lock's own files.pythonhosted.org URLs."""
         self.sh("rm -rf /tmp/proj2 && cp -r /state/proj /tmp/proj2 && rm -rf /tmp/proj2/.venv && cd /tmp/proj2 && "
-                "UV_NO_CACHE=1 /opt/uv/uv sync -q --frozen && .venv/bin/python -c 'import mmw_a, mmw_b'")
+                "UV_NO_CACHE=1 /opt/uv/uv sync -q --frozen && .venv/bin/python -c 'import mmw_a, mmw_b, mmw_c'")
 
     def probe(self):
         self.compose("exec", "-T", "client", "python3", "/scripts/pypi-client-probe.py")
@@ -150,8 +150,10 @@ def test_stock_clients_live_publish_and_applied_bundle(tmp_path, monkeypatch):
         (proj / "pyproject.toml").write_text('[project]\nname = "proj"\nversion = "0"\n'
                                              'requires-python = ">=3.13"\ndependencies = ["mmw-a"]\n')
         stack.sh("cd /state/proj && /opt/uv/uv lock -q")
+        stack.sh("cd /state/proj && /opt/uv/uv add -q mmw-c")      # spec SC1: `uv add` works as-is
         lock = (proj / "uv.lock").read_text()
         assert "https://files.pythonhosted.org/packages/" in lock and 'name = "mmw-b"' in lock
+        assert 'name = "mmw-c"' in lock
         assert f"sha256:{hashes[b1[0]]}" in lock          # upstream hashes, as PyPI publishes them
         stack.locked_sync()
         lockfile, requirements = lock, reqs
@@ -159,9 +161,11 @@ def test_stock_clients_live_publish_and_applied_bundle(tmp_path, monkeypatch):
     # (e) the far side renders its own pages from the bundle's shards
     bundled = bundle_network(net, cfg, cfg.settings.mirror_dir)
     assert not bundled.errors, bundled.errors
+    import tarfile
+    with tarfile.open(bundled.out_path) as archive:          # pages are rendered there, never shipped
+        assert not any(m.name.startswith("pypi.org/") for m in archive.getmembers())
     far = scratch / "applied"
     far.mkdir()
-    assert not (far / "pypi.org").exists()
     _run([sys.executable, bundled.out_path.parent / "apply.py", bundled.out_path, "--root", far],
          scratch / "apply.log")
     assert (far / "pypi.org" / "simple" / "mmw-a" / "index.html").is_file()

@@ -29,6 +29,9 @@ SIMPLE_URL = "https://pypi.org/simple/"
 ACCEPT = "application/vnd.pypi.simple.v1+json"
 CACHE_DIR = "pypi-cache"   # under mirror_dir
 FILES_HOST = "files.pythonhosted.org"
+# A listing may drop at most this many projects, or this share of the cache.
+MAX_DROP = 100
+MAX_DROP_FRACTION = 0.01
 USER_AGENT = "mmw (+https://github.com/samikool/mirror-mirror-on-the-wall)"
 
 
@@ -243,6 +246,7 @@ class RefreshResult:
     failed: list[str] = field(default_factory=list)
     skipped_files: int = 0
     stopped: bool = False
+    refused: str | None = None     # the listing looked broken; nothing was changed
 
 
 def _fetch_page(client: httpx.Client, name: str):
@@ -267,6 +271,12 @@ def refresh(cache: IndexCache, client_factory, *, threads: int, say=None, stop_e
                   for p in resp.json().get("projects", [])}
         have = cache.serials()
         gone = [n for n in have if n not in listed]
+        if len(gone) > MAX_DROP and len(gone) > MAX_DROP_FRACTION * len(have):
+            # PyPI removes a handful of projects a day, never a large share:
+            # a listing like this is truncated or empty, not real.
+            result.refused = (f"PyPI's project listing would remove {len(gone)} of {len(have)} cached "
+                              "projects; refusing it as truncated — the previous state is kept")
+            return result
         if gone:
             cache.drop_projects(gone)
             result.removed = len(gone)

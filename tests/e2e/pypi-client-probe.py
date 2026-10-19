@@ -26,6 +26,8 @@ def get(url, accept=None):
 ctype, body = get("https://pypi.org/simple/", JSON)
 assert ctype.startswith(JSON), ctype
 assert {"name": "mmw-a"} in json.loads(body)["projects"]
+ctype, _ = get("https://pypi.org/simple/")          # the same URL, no Accept: PEP 503 HTML
+assert ctype.startswith("text/html"), ctype
 ctype, body = get("https://pypi.org/simple/mmw-b/")
 assert ctype.startswith("text/html") and b"mmw_b-1.0-py3-none-any.whl" in body, ctype
 ctype, body = get("https://pypi.org/pypi/mmw-b/json")

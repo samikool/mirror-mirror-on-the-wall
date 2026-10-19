@@ -17,6 +17,13 @@ from mmw.providers.pypi.index import DistFile, IndexCache
 
 LEGACY = ["setuptools>=40.8.0"]
 _MAX_PYPROJECT = 1 << 20
+# How much of an archive is walked looking for it: a hostile sdist must not
+# make the mirror host decompress gigabytes for one lookup.
+_MAX_SCAN = 256 << 20
+
+
+class _GaveUp(Exception):
+    pass
 
 
 @dataclass
@@ -26,7 +33,7 @@ class BuildRequires:
 
 
 def _top_level_pyproject(name: str) -> bool:
-    parts = name.split("/")
+    parts = name.removeprefix("./").split("/")
     return len(parts) == 2 and parts[1] == "pyproject.toml" and parts[0] not in ("", ".", "..")
 
 
@@ -38,14 +45,21 @@ def _pyproject_text(filename: str, data: bytes) -> bytes | None:
                     return z.read(info)
         return None
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tar:
+        scanned = 0
         for member in tar:
             if member.isfile() and _top_level_pyproject(member.name) and member.size <= _MAX_PYPROJECT:
                 return tar.extractfile(member).read()
+            scanned += member.size
+            if scanned > _MAX_SCAN:
+                raise _GaveUp
     return None
 
 
 def read_build_requires(filename: str, data: bytes) -> BuildRequires:
-    text = _pyproject_text(filename, data)
+    try:
+        text = _pyproject_text(filename, data)
+    except _GaveUp:
+        return BuildRequires(list(LEGACY), f"no top-level pyproject.toml in the first {_MAX_SCAN >> 20} MB")
     if text is None:
         return BuildRequires(list(LEGACY), "no pyproject.toml")
     try:

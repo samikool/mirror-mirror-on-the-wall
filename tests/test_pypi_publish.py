@@ -186,3 +186,40 @@ def test_bundle_carries_pages_and_snapshot_replays(tmp_path, up):
         return sorted(str(p.relative_to(r)) for p in r.rglob("*") if p.is_file()
                       and p.parts[len(r.parts)] in ("pypi.org", "files.pythonhosted.org"))
     assert listing(replay) == listing(live)
+
+
+def test_files_host_is_pruned_when_nothing_is_published(tmp_path, up):
+    cfg = _cfg(tmp_path, _src(), retention="current")
+    _sync(cfg)
+    root = _publish(cfg)
+    assert list((root / "files.pythonhosted.org").rglob("*.whl"))
+    for project in up.projects.values():
+        project["files"] = []
+        project["serial"] += 1
+    _sync(cfg)
+    _publish(cfg)
+    assert not list((root / "files.pythonhosted.org").rglob("*.whl"))
+
+
+def test_simple_pages_vary_on_accept():
+    unit = get_provider("pypi").expand(_src())[1]
+    conf = nginx_files([], "/srv/lab", sites=get_provider("pypi").nginx_sites([unit]))["nginx/mirror.conf"].decode()
+    assert "add_header Vary Accept always;" in conf
+
+
+def test_retention_window_is_counted_in_days_at_publish(tmp_path, up):
+    from datetime import date, timedelta
+
+    from mmw.providers.pypi.publish import published_rows
+    cfg = _cfg(tmp_path, _src(), retention="forever")
+    units = _sync(cfg)
+    _bump_pysocks(up)
+    units = _sync(cfg)
+    thirty = cfg.networks[0].model_copy(update={"retention": "30d"})
+    today = date.today()
+
+    def has_old(day):
+        with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+            rows, _ = published_rows(pool, [u for u in units if u.provider == "pypi"], thirty, day)
+        return any(r[0].endswith("PySocks-1.7.1-py3-none-any.whl") for r in rows)
+    assert has_old(today + timedelta(days=29)) and not has_old(today + timedelta(days=30))

@@ -175,3 +175,25 @@ def test_scan_yields_every_project_once(tmp_path):
     scanned = list(cache.scan(batch=2))
     assert sorted(n for n, _ in scanned) == cache.names()
     assert all(files == cache.files(n) for n, files in scanned)
+
+
+def test_a_listing_that_drops_most_of_the_cache_is_refused(tmp_path):
+    # A truncated or empty /simple/ (CDN hiccup, proxy cutting the body) must
+    # not read as "most of PyPI was deleted".
+    fake = _fake(300)
+    cache = IndexCache(tmp_path)
+    refresh(cache, fake.client, threads=8)
+    for name in list(fake.projects)[10:]:
+        del fake.projects[name]
+    r = refresh(cache, fake.client, threads=8)
+    assert r.refused and "290" in r.refused
+    assert len(cache.names()) == 300 and r.removed == 0
+
+
+def test_ordinary_removals_still_apply(tmp_path):
+    fake = _fake(300)
+    cache = IndexCache(tmp_path)
+    refresh(cache, fake.client, threads=8)
+    del fake.projects["p7"]
+    r = refresh(cache, fake.client, threads=8)
+    assert not r.refused and r.removed == 1 and "p7" not in cache.names()

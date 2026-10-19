@@ -53,14 +53,14 @@ class ComposeStack:
     init: true
     image: {json.dumps(os.environ.get(*self.CLIENT_IMAGE))}
     pull_policy: never
-    command: ["bash", "-c", "update-ca-certificates > /state/ca-import.log 2>&1 && exec sleep infinity"]
+    command: ["bash", "-c", "update-ca-certificates > /state/ca-import.log 2>&1 && touch /tmp/ca-ready && exec sleep infinity"]
     environment: {json.dumps({**NO_PROXY_ENV, **self.CLIENT_ENV})}
     volumes: {json.dumps(volumes)}
     networks: [isolated]
     depends_on:
       nginx:
         condition: service_healthy
-    healthcheck: {json.dumps(dict(HEALTH, test=["CMD", "test", "-f", "/etc/ssl/certs/mmw-e2e.pem"]))}
+    healthcheck: {json.dumps(dict(HEALTH, test=["CMD", "test", "-f", "/tmp/ca-ready"]))}
 networks:
   isolated:
     internal: true
@@ -91,12 +91,20 @@ networks:
             self.started()
             return self
         except BaseException:
-            self.close()
+            try:
+                self.close()
+            except Exception:  # noqa: BLE001 — the start failure is the error to report
+                pass
             raise
 
     def close(self):
         try:
             self.compose("logs", "--no-color")
+            # The client writes as root; hand its files back so a re-run on the
+            # same scratch path can clean them up.
+            self.compose("exec", "-T", "client", "chown", "-R", f"{os.getuid()}:{os.getgid()}", "/state")
+        except AssertionError:
+            pass
         finally:
             self.compose("down", "--timeout", "2")
 

@@ -310,6 +310,16 @@ def cmd_publish(
     _run_tui(_open_app(cfg, cfg_dir, "networks"))
 
 
+# Which `mmw add` options each kind takes; any other given option is refused,
+# never silently ignored.
+_ADD_FLAGS = {
+    "apt": {"--file", "--url", "--label", "--arch", "--keys-dir"},
+    "vscode": {"--kind", "--platform", "--quality", "--top-n", "--id", "--ids-file", "--all", "--prerelease"},
+    "pypi": {"--python", "--platform", "--arch", "--glibc", "--musl", "--macos", "--sdists", "--all", "--req",
+             "--requirements-file"},
+}
+
+
 @app.command("add")
 def cmd_add(
     what: str = typer.Argument(
@@ -375,6 +385,17 @@ def cmd_add(
       mmw add vscode --kind extensions --top-n 200 --platform linux-x64
       mmw add pypi --python 3.12 --platform linux-glibc --arch amd64 --all
     """
+    given = {"--file": file, "--url": url, "--label": label, "--keys-dir": keys_dir, "--arch": arch,
+             "--kind": kind, "--platform": platform, "--quality": quality, "--top-n": top_n, "--id": ext_id,
+             "--ids-file": ids_file, "--all": all_, "--prerelease": prerelease, "--python": python,
+             "--glibc": glibc, "--musl": musl, "--macos": macos, "--sdists": sdists, "--req": req,
+             "--requirements-file": requirements_file}
+    kind_name = what if what in _ADD_FLAGS else "apt"
+    foreign = [flag for flag, value in given.items() if value and flag not in _ADD_FLAGS[kind_name]]
+    if foreign:
+        typer.echo(f"mmw add {'' if kind_name == 'apt' else kind_name + ' '}does not take "
+                   f"{', '.join(foreign)}.", err=True)
+        raise typer.Exit(2)
     if what == "pypi":
         from mmw.commands.add_pypi import run as run_pypi
         raise typer.Exit(run_pypi(

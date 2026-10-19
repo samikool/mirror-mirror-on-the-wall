@@ -94,3 +94,11 @@ def test_without_a_renderer_the_rendered_tree_goes(tmp_path):
     (root / "pypi.org").mkdir()                     # not ours: no marker, left alone
     apply_mod.render_derived(str(root))
     assert (root / "pypi.org").exists()
+
+
+def test_without_a_renderer_pypi_md_goes_too(tmp_path):
+    root = tmp_path / "t"
+    (root / "pypi.org" / ".mmw-rendered").mkdir(parents=True)
+    (root / "PYPI.md").write_text("old")
+    apply_mod.render_derived(str(root))
+    assert not (root / "PYPI.md").exists()

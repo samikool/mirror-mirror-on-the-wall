@@ -252,9 +252,11 @@ class PypiProvider(BaseProvider):
             notes.append(f"{source.name}: nothing selected (all / requirements)")
             return ResolvedSource(source, [], notes, errors)
         lines: list[str] = []
+        lines_read = False             # a list that could not be read keeps its previous state
         if _has_requirements(source):
             try:
                 lines = source.requirement_lines(context.config_dir)
+                lines_read = True
             except (OSError, ValueError) as e:
                 errors.append(f"{source.name}: requirements not read — {e}")
         cache = index.IndexCache(context.mirror_dir)
@@ -267,7 +269,13 @@ class PypiProvider(BaseProvider):
             if not self._resolve_all(source, cache, catalog, context, say, notes, errors):
                 return ResolvedSource(source, [], notes, errors)
             units += self._flow_units(source, "all")
-        if lines:
+        if lines_read and not lines:
+            # Emptied on purpose: the requirements units sync to empty (and
+            # retention gives lockfiles their grace), never to their old set.
+            catalog.req_keep, catalog.req_report = KeepSet(), Report()
+            notes.append(f"{source.name}: requirements list is empty — its units sync to nothing")
+            units += self._flow_units(source, "req")
+        elif lines:
             if not self._resolve_requirements(source, lines, cache, catalog, context, say, notes, errors):
                 return ResolvedSource(source, [], notes, errors)
             # A failed target keeps its previous state. req-universal always
@@ -280,8 +288,12 @@ class PypiProvider(BaseProvider):
 
     def _resolve_requirements(self, source, lines, cache, catalog, context, say, notes, errors) -> bool:
         ts = targets(source.pythons, source.platforms, source.arches)
-        uv_cache = (Path(context.mirror_dir) / index.CACHE_DIR / "uv-cache" if context.mirror_dir
-                    else Path(tempfile.mkdtemp(prefix="mmw-uv-")))
+        if context.mirror_dir:
+            uv_cache = uvmod.cache_dir(context.mirror_dir)
+        else:                               # no mirror (previews): a cache for this resolve only
+            scratch = tempfile.TemporaryDirectory(prefix="mmw-uv-")
+            self._scratch = scratch         # removed when the next resolve replaces it, or at exit
+            uv_cache = Path(scratch.name)
         universe = _PinnedUniverse(cache, context)
         say(f"{source.name}: resolving the requirements list ({len(lines)} lines) for {len(ts)} target(s)…")
         result = resolve_requirements(
@@ -306,6 +318,9 @@ class PypiProvider(BaseProvider):
         say(f"{source.name}: reading the PyPI index…")
         refreshed = index.refresh(cache, index._client, threads=context.max_connections, say=say,
                                   stop_event=context.stop_event)
+        if refreshed.refused:
+            errors.append(f"{source.name}: {refreshed.refused}")
+            return False
         if refreshed.stopped:
             errors.append(f"{source.name}: stopped while reading the PyPI index "
                           f"({len(cache.names())} projects cached; the next sync continues)")
@@ -342,7 +357,11 @@ class PypiProvider(BaseProvider):
         from mmw.core.publisher.links import publish_by_host, reconcile_extra_prefix
         from mmw.resources import pypi_render_bytes
         rows, recs = pypub.published_rows(ctx.pool, units, ctx.network, date.today())
-        results, _ = publish_by_host(ctx, rows)
+        results, hosts = publish_by_host(ctx, rows)
+        if ctx.prune and "files.pythonhosted.org" not in hosts:
+            # No file survives this network's retention: the host still has to
+            # be emptied, which publish_by_host only does for hosts with rows.
+            ctx.sink.finalize_group("files.pythonhosted.org", set(), set(), set())
         if ctx.stop_event is not None and ctx.stop_event.is_set():
             return results, set(pypub.HOSTS)
         published = {row[0] for row in rows}

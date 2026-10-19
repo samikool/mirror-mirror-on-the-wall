@@ -383,3 +383,13 @@ def test_unit_labels_name_the_flow():
     assert prov.unit_label(by_name["pypi-req-universal"]) == ("requirements · pure wheels · sdists", "")
     assert prov.unit_describe(by_name["pypi-req-universal"])[0] == ("Flow", "requirements list")
     assert prov.unit_describe(by_name["pypi-all-3.12-linux-glibc-amd64"])[0] == ("Flow", "all of PyPI")
+
+
+def test_an_emptied_requirements_list_syncs_to_empty(tmp_path, req_index):
+    reqs = tmp_path / "reqs.txt"
+    reqs.write_text("# nothing for now\n")
+    prov = get_provider("pypi")
+    r = prov.resolve(_req_src([], requirements_file=str(reqs), platforms=["linux-glibc"]), context=_ctx(tmp_path))
+    assert not r.errors and any("requirements list is empty" in n for n in r.notes)
+    assert [u.name for u in r.mirrors] == ["pypi-req-universal", "pypi-req-3.12-linux-glibc-amd64"]
+    assert all(_fetch(prov, u)[0] == [] for u in r.mirrors)

@@ -71,7 +71,7 @@ def test_macos_floor_is_passed_as_deployment_target(tmp_path, monkeypatch):
 
     class Done:
         returncode, stdout, stderr = 0, "", ""
-    monkeypatch.setattr(uvmod.subprocess, "run", lambda *a, **kw: seen.append(kw["env"]) or Done())
+    monkeypatch.setattr(uvmod, "_run_uv", lambda cmd, text, env, timeout, cancelled: seen.append(env) or Done())
     uvmod.compile_for(["x"], Target("3.12", "macos", "arm64"), Floors(), index_url="http://x", cache_dir=tmp_path)
     uvmod.compile_for(["x"], T, Floors(), index_url="http://x", cache_dir=tmp_path)
     assert seen[0]["MACOSX_DEPLOYMENT_TARGET"] == "11.0" and "MACOSX_DEPLOYMENT_TARGET" not in seen[1]
@@ -81,7 +81,7 @@ def test_macos_floor_is_passed_as_deployment_target(tmp_path, monkeypatch):
 def test_uv_failures_are_target_errors(tmp_path, monkeypatch, raised):
     def boom(*a, **kw):
         raise raised
-    monkeypatch.setattr(uvmod.subprocess, "run", boom)
+    monkeypatch.setattr(uvmod, "_run_uv", boom)
     r = uvmod.compile_for(["x"], T, Floors(), index_url="http://x", cache_dir=tmp_path)
     assert r.pins == [] and r.error
 
@@ -92,3 +92,34 @@ def test_error_tail_keeps_uvs_reason_head():
         "".join(f"      and because x{i} needs y{i},\n" for i in range(30)) + "      we conclude.\n"
     kept = uvmod._tail(long)
     assert kept.startswith("× No solution found") and "╰─▶ Because a needs b" in kept
+
+
+def test_a_cancelled_run_is_killed_promptly():
+    import time
+    started = time.monotonic()
+    with pytest.raises(uvmod.Cancelled):
+        uvmod._run_uv(["sleep", "30"], "", {}, timeout=60, cancelled=lambda: time.monotonic() - started > 0.3)
+    assert time.monotonic() - started < 5
+
+
+def test_cancel_reaches_compile_for(tmp_path):
+    r = uvmod.compile_for(["x"], T, Floors(), index_url="http://127.0.0.1:9", cache_dir=tmp_path,
+                          cancelled=lambda: True)
+    assert r.pins == [] and r.error == "cancelled"
+
+
+def test_cache_dir_helper_and_a_single_upstream(tmp_path):
+    from mmw.providers.pypi import index
+    assert uvmod.cache_dir(tmp_path) == tmp_path / "pypi-cache" / "uv-cache"
+    assert uvmod.INDEX_URL == index.SIMPLE_URL.rstrip("/")
+
+
+def test_transport_settings_pass_through_index_settings_do_not(monkeypatch):
+    monkeypatch.setenv("UV_NATIVE_TLS", "1")
+    monkeypatch.setenv("UV_HTTP_TIMEOUT", "99")
+    monkeypatch.setenv("UV_INDEX_URL", "http://127.0.0.1:9/nope")
+    monkeypatch.setenv("UV_CONSTRAINT", "/tmp/c.txt")
+    monkeypatch.setenv("PIP_INDEX_URL", "http://127.0.0.1:9/nope")
+    env = uvmod._env(T, Floors())
+    assert env["UV_NATIVE_TLS"] == "1" and env["UV_HTTP_TIMEOUT"] == "99"
+    assert not any(k in env for k in ("UV_INDEX_URL", "UV_CONSTRAINT", "PIP_INDEX_URL"))

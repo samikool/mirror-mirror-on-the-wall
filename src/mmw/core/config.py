@@ -721,7 +721,7 @@ class PypiSource(_StrictModel):
             if not path.is_absolute():
                 path = (config_dir or self._config_dir or Path.cwd()) / path
             try:
-                text = path.read_text()
+                text = path.read_text(encoding="utf-8-sig")   # Windows editors add a BOM
             except FileNotFoundError:
                 raise FileNotFoundError(f"requirements_file not found: {path}") from None
             lines += [kept for kept in (check_requirement_line(line) for line in text.splitlines()) if kept]
@@ -740,6 +740,11 @@ class PypiSource(_StrictModel):
         for field in ("glibc", "musl", "macos"):
             if not _FLOOR_RE.fullmatch(getattr(self, field)):
                 raise ValueError(f"{field} must be a MAJOR.MINOR version, not {getattr(self, field)!r}")
+        if tuple(int(x) for x in self.glibc.split(".")) < (2, 17):
+            # manylinux2014: the oldest glibc uv resolves for, and the oldest
+            # current binary wheels target.
+            raise ValueError(f"glibc floor {self.glibc} is older than 2.17, the oldest uv and current "
+                             "wheels support")
         return self
 
     @property

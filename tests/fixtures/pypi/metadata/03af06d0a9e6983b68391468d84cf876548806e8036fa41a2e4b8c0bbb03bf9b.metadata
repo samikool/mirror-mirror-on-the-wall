@@ -1,0 +1,11 @@
+Metadata-Version: 2.5
+Name: idna
+Version: 3.19
+Requires-Python: >=3.9
+Requires-Dist: ruff >= 0.16.0 ; extra == "all"
+Requires-Dist: mypy >= 1.11.2 ; extra == "all"
+Requires-Dist: ty >= 0.0.37 ; extra == "all"
+Requires-Dist: pytest >= 8.3.2 ; extra == "all"
+Requires-Dist: hypothesis >= 6.141.1 ; extra == "all"
+Requires-Dist: coverage >= 7.10.0 ; extra == "all"
+Provides-Extra: all

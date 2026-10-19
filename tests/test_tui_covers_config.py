@@ -47,6 +47,7 @@ EDITORS = {
     ("NetworkConfig", "dist_upgrade"): ("network_screens.py", "du-switch"),
     ("NetworkConfig", "certs"): ("network_screens.py", "certs-switch"),
     ("NetworkConfig", "nginx"): ("network_screens.py", "nginx-switch"),
+    ("NetworkConfig", "retention"): ("network_screens.py", "inp-retention"),
 
     ("NetworkSelect", "source"): ("network_screens.py", "repo-checklist"),
     # One list per provider dimension (suites/components/arches for apt),
@@ -68,3 +69,15 @@ def test_every_config_field_has_a_tui_editor():
 def test_mapped_editor_exists(field, where):
     filename, marker = where
     assert marker in (TUI / filename).read_text(), f"{field}: {marker!r} not in {filename}"
+
+
+
+def test_every_provider_source_key_is_a_form_field():
+    """Provider sources are edited through their provider's declarative
+    fields: a key added to the model without a field would be reachable only
+    by editing mmw.toml."""
+    from mmw.providers import get_provider
+    for model, provider in ((config.PypiSource, "pypi"), (config.VscodeSource, "vscode")):
+        fields = {f.path.split(".")[0] for f in get_provider(provider).fields}
+        missing = sorted(set(model.model_fields) - {"provider", "url"} - fields)
+        assert not missing, f"{model.__name__}: no TUI field for {missing}"

@@ -387,3 +387,35 @@ def test_snapshot_network_with_vscode(snap_compare):
         pilot.app.screen.query_one('#nginx-switch').focus()
     assert snap_compare(_app(lambda: EditNetworkPage(net, [*_mirrors(), *units])),
                         terminal_size=SNAP_SIZE, run_before=show_options)
+
+
+@_pytest.mark.parametrize('size', [(80, 24), (100, 32), (120, 40)])
+def test_snapshot_pypi_add(snap_compare, size):
+    from mmw.tui.add_source import AddSourcePage
+    assert snap_compare(_app(lambda: AddSourcePage(entry='pypi')), terminal_size=size)
+
+
+@_pytest.mark.parametrize('size', [(80, 24), (100, 32), (120, 40)])
+def test_snapshot_pypi_edit(snap_compare, size):
+    from mmw.tui.pypi_source import EditPypiPage
+    source = config.PypiSource(provider='pypi', pythons=['3.12'], platforms=['linux-glibc'], arches=['amd64'],
+                               all=True, requirements=['requests[socks]', 'numpy<2'])
+    assert snap_compare(_app(lambda: EditPypiPage(source, existing_names=set(), existing_urls=set())),
+                        terminal_size=size)
+
+
+def test_snapshot_pypi_check(snap_compare, monkeypatch):
+    from mmw.providers.pypi.uv import Compiled
+    from mmw.tui import pypi_source
+    monkeypatch.setattr(pypi_source.uvmod, 'compile_for', lambda lines, target, floors, **kw: (
+        Compiled([], '  × No solution found when resolving dependencies:\n  ╰─▶ Because you require a and b, and a needs c<2 while b needs c>=3, we can conclude\n      that your requirements are unsatisfiable.\n', False) if target.platform == 'windows'
+        else Compiled([('requests', '2.34.2'), ('urllib3', '2.5.0')], None, False)))
+    source = config.PypiSource(provider='pypi', pythons=['3.12'], platforms=['linux-glibc', 'windows'],
+                               arches=['amd64'], requirements=['a', 'b'])
+
+    async def check(pilot):
+        await until(pilot, lambda: pilot.app.screen.query('#btn-pypi-check'))
+        pilot.app.screen.query_one('#btn-pypi-check').press()
+        await until(pilot, lambda: '✗' in str(pilot.app.screen.query_one('#pypi-check-status').render()))
+    assert snap_compare(_app(lambda: pypi_source.EditPypiPage(source, existing_names=set(), existing_urls=set())),
+                        terminal_size=(100, 32), run_before=check)

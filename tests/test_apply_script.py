@@ -17,13 +17,18 @@ SCRIPT = Path(__file__).parent.parent / "src" / "mmw" / "resources" / "apply.py"
 
 _STDLIB = {
     "argparse", "hashlib", "io", "json", "os", "posixpath", "shutil",
-    "ssl", "sys", "tarfile", "tempfile",
+    "ssl", "sys", "tarfile", "tempfile", "runpy", "gzip", "html",
 }
+# Every script that runs on the far side, under the same guards: no pip there,
+# and possibly an old Python.
+RENDER = SCRIPT.with_name("pypi_render.py")
+FAR_SIDE = [SCRIPT, RENDER]
 
 
-def test_apply_script_imports_only_stdlib():
+@pytest.mark.parametrize("script", FAR_SIDE, ids=lambda p: p.name)
+def test_apply_script_imports_only_stdlib(script):
     """The far side has no pip. An import outside this set breaks every site."""
-    tree = ast.parse(SCRIPT.read_text())
+    tree = ast.parse(script.read_text())
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -44,9 +49,10 @@ _POST_36_CALLS = {
 }
 
 
-def test_apply_script_avoids_post_36_syntax():
+@pytest.mark.parametrize("script", FAR_SIDE, ids=lambda p: p.name)
+def test_apply_script_avoids_post_36_syntax(script):
     """RHEL 8 ships Python 3.6, and `apply.py` runs there with no mmw beside it."""
-    src = SCRIPT.read_text()
+    src = script.read_text()
     tree = ast.parse(src)
     for node in ast.walk(tree):
         assert not isinstance(node, ast.NamedExpr), "walrus operator is 3.8+"
@@ -69,8 +75,9 @@ def test_apply_script_avoids_post_36_syntax():
         "f-strings are avoided in apply.py by convention"
 
 
-def test_apply_script_compiles():
-    subprocess.run([sys.executable, "-m", "py_compile", str(SCRIPT)], check=True)
+@pytest.mark.parametrize("script", FAR_SIDE, ids=lambda p: p.name)
+def test_apply_script_compiles(script):
+    subprocess.run([sys.executable, "-m", "py_compile", str(script)], check=True)
 
 
 def test_apply_script_bytes_returns_the_file():

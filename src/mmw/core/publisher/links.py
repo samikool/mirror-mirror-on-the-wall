@@ -247,6 +247,40 @@ def _dedup_rows(rows) -> list[tuple]:
     return list(chosen.values())
 
 
+def publish_by_host(ctx, rows) -> tuple[list, set[str]]:
+    """Payloads at their upstream `host/path`, one group per host (each host
+    is a base) — for providers that serve at the real hostnames. `rows` are
+    de-duplicated `mirror_files` rows; release files go last in each host."""
+    from mmw.core.pool import KIND_RELEASE
+    from mmw.core.publisher.results import MirrorPublishResult
+    by_host: dict[str, list] = {}
+    for repo_path, pool_path, size, kind, checksum in rows:
+        host, rest = repo_path.split("/", 1)
+        by_host.setdefault(host, []).append((rest, pool_path, size, kind, checksum))
+    results = []
+    for idx, host in enumerate(sorted(by_host)):
+        if ctx.stop_event and ctx.stop_event.is_set():
+            break
+        host_rows = by_host[host]
+        if ctx.mirror_start_callback:
+            # A host is no unit the pre-publish counts know by name, so
+            # its own count goes with it.
+            ctx.mirror_start_callback(host, idx + 1, len(by_host), count=len(host_rows))
+        result = MirrorPublishResult(mirror_name=host)
+        ordered = [r for r in host_rows if r[3] != KIND_RELEASE] + \
+                  [r for r in host_rows if r[3] == KIND_RELEASE]
+        if not _link_rows(ordered, host, ctx.sink, result, ctx.progress, ctx.stop_event,
+                          by_hash=False):
+            results.append(result)
+            break
+        if ctx.prune:
+            keep = {f"{host}/{r[0]}" for r in host_rows}
+            result.pruned, result.pruned_bytes = ctx.sink.finalize_group(
+                host, keep, set(), set())
+        results.append(result)
+    return results, set(by_host)
+
+
 def reconcile_extra_prefix(sink, prefix: str, keep: set[str]) -> tuple[int, int]:
     """Reconcile one non-mirror_base prefix (`nginx/`, `keys/`) on a sink.
 

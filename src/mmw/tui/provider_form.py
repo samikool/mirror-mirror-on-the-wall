@@ -5,13 +5,16 @@ from pydantic import TypeAdapter, ValidationError
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Checkbox, Input, TextArea
+from textual.widgets import Checkbox, Input, Label, TextArea
 
 from mmw.core import config
 from mmw.providers import get_provider
 from mmw.tui.pick import PickPage
 from mmw.tui.ui.form import ActionField, Form, TextAreaField, TextField, ToggleField
+from mmw.tui.ui.form import Heading
+from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
+from mmw.tui.wizard_steps import WizardStep
 
 
 def parse_top_n(text: str) -> int | None:
@@ -147,3 +150,67 @@ class ProviderSourceForm(Vertical):
                 self.focus_first()
             raise ValueError("Choose a nonempty, unique source name.")
         return source
+
+
+class ProviderStep(WizardStep):
+    """A provider's Add step: its editor, under a heading, with a note when
+    adding replaces the config's existing source of that provider."""
+
+    def __init__(self, editor, *, heading: str, replaces: str | None, error_id: str):
+        super().__init__()
+        self.editor = editor
+        self._heading, self._replaces, self._error_id = heading, replaces, error_id
+
+    def compose(self):
+        yield Heading(self._heading)
+        if self._replaces:
+            yield Label(self._replaces, markup=False)
+        yield self.editor
+        yield Label("", id=self._error_id, markup=False)
+
+    def focus_first(self):
+        self.editor.form.focus_first()
+
+    def get_sources(self):
+        try:
+            return [self.editor.form.get_source()]
+        except ValueError as exc:
+            self.query_one("#" + self._error_id, Label).update(str(exc))
+            return []
+
+
+class ProviderEditPage(Page):
+    """A provider's Edit page around its editor: Cancel, or Save the source
+    (through `save_source` when given, before dismissing)."""
+
+    def __init__(self, editor, *, title: str, save_source=None):
+        super().__init__()
+        self.TITLE = title
+        self.save_source = save_source
+        self.editor = editor
+
+    def compose_body(self):
+        yield self.editor
+
+    def compose_actions(self):
+        yield Button("Cancel", id="btn-cancel", compact=True)
+        yield Button("Save ✓", id="btn-save", variant="primary", compact=True)
+
+    @on(Button.Pressed, "#btn-cancel")
+    def _cancel(self):
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-save")
+    async def _save(self):
+        try:
+            source = self.editor.form.get_source()
+        except ValueError as exc:
+            self.set_status(str(exc), "error")
+            return
+        if self.save_source is not None:
+            try:
+                await self.save_source(source)
+            except Exception as exc:
+                self.set_status(f"Not saved: {exc}", "error")
+                return
+        self.dismiss(source)

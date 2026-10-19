@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: idna
+Version: 3.17
+Requires-Python: >=3.9
+Requires-Dist: ruff >= 0.6.2 ; extra == "all"
+Requires-Dist: mypy >= 1.11.2 ; extra == "all"
+Requires-Dist: pytest >= 8.3.2 ; extra == "all"
+Provides-Extra: all

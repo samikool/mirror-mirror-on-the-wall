@@ -1,0 +1,4 @@
+Metadata-Version: 2.0
+Name: python-dateutil
+Version: 2.3
+Requires-Dist: six

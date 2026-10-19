@@ -310,10 +310,21 @@ def cmd_publish(
     _run_tui(_open_app(cfg, cfg_dir, "networks"))
 
 
+# Which `mmw add` options each kind takes; any other given option is refused,
+# never silently ignored.
+_ADD_FLAGS = {
+    "apt": {"--file", "--url", "--label", "--arch", "--keys-dir"},
+    "vscode": {"--kind", "--platform", "--quality", "--top-n", "--id", "--ids-file", "--all", "--prerelease"},
+    "pypi": {"--python", "--platform", "--arch", "--glibc", "--musl", "--macos", "--sdists", "--all", "--req",
+             "--requirements-file"},
+}
+
+
 @app.command("add")
 def cmd_add(
     what: str = typer.Argument(
-        None, help="`vscode` to add (or replace) the VS Code source; omit for apt files.", metavar="[vscode]"),
+        None, help="`vscode` or `pypi` to add (or replace) that source; omit for apt files.",
+        metavar="[vscode|pypi]"),
     file: list[Path] = typer.Option(
         None, "--file", "-f",
         help="apt config file(s) or a directory of them ('-' for stdin). "
@@ -325,10 +336,11 @@ def cmd_add(
         None, "--label",
         help="Override the key-grouping label (default: the host's domain name).",
     ),
-    arch: str = typer.Option(
-        "", "--arch",
-        help="Architecture to use when the file does not state one "
-             "(default: leave unset — every architecture upstream serves).",
+    arch: list[str] = typer.Option(
+        None, "--arch",
+        help="apt: the architecture to use when the file does not state one "
+             "(default: leave unset — every architecture upstream serves). "
+             "pypi: amd64 or arm64 (repeatable; default both).",
     ),
     keys_dir: Path = typer.Option(
         None, "--keys-dir",
@@ -341,15 +353,26 @@ def cmd_add(
     kind: list[str] = typer.Option(
         None, "--kind", help="vscode: extensions, desktop, server (repeatable; default all)."),
     platform: list[str] = typer.Option(
-        None, "--platform", help="vscode: target platform, e.g. linux-x64 (repeatable; default all)."),
+        None, "--platform", help="vscode: target platform, e.g. linux-x64; pypi: linux-glibc, linux-musl, "
+                                 "windows, macos (repeatable; default all)."),
     quality: list[str] = typer.Option(
         None, "--quality", help="vscode: stable or insider (repeatable; default both)."),
     top_n: int = typer.Option(None, "--top-n", min=1, help="vscode: the N most-installed extensions."),
     ext_id: list[str] = typer.Option(
         None, "--id", help="vscode: an extension id, publisher.name (repeatable)."),
     ids_file: Path = typer.Option(None, "--ids-file", help="vscode: a file of extension ids, one per line."),
-    all_: bool = typer.Option(False, "--all", help="vscode: every extension on the marketplace (very large)."),
+    all_: bool = typer.Option(False, "--all", help="vscode: every extension on the marketplace; pypi: "
+                                                  "every project, latest + dependencies (both very large)."),
     prerelease: bool = typer.Option(False, "--prerelease", help="vscode: allow prerelease versions."),
+    python: list[str] = typer.Option(None, "--python", help="pypi: a Python version, e.g. 3.12 (repeatable; default all)."),
+    glibc: str = typer.Option(None, "--glibc", help="pypi: oldest far-side glibc (default 2.31)."),
+    musl: str = typer.Option(None, "--musl", help="pypi: oldest far-side musl (default 1.2)."),
+    macos: str = typer.Option(None, "--macos", help="pypi: oldest far-side macOS (default 11.0)."),
+    sdists: bool = typer.Option(False, "--sdists", help="pypi: also mirror every kept release's sdist."),
+    req: list[str] = typer.Option(None, "--req", help="pypi: a requirement to resolve with the others, "
+                                                     "e.g. 'numpy<2' (repeatable)."),
+    requirements_file: str = typer.Option(None, "--requirements-file",
+                                          help="pypi: a requirements.txt-style file, relative to mmw.toml."),
 ):
     """Add sources from a sources.list or deb822 .sources file — or the VS Code source.
 
@@ -360,19 +383,40 @@ def cmd_add(
       mmw add --url https://example.com/repo.list --dry-run
       mmw add -f /etc/apt/sources.list.d --keys-dir /path/to/keyrings
       mmw add vscode --kind extensions --top-n 200 --platform linux-x64
+      mmw add pypi --python 3.12 --platform linux-glibc --arch amd64 --all
     """
+    given = {"--file": file, "--url": url, "--label": label, "--keys-dir": keys_dir, "--arch": arch,
+             "--kind": kind, "--platform": platform, "--quality": quality, "--top-n": top_n, "--id": ext_id,
+             "--ids-file": ids_file, "--all": all_, "--prerelease": prerelease, "--python": python,
+             "--glibc": glibc, "--musl": musl, "--macos": macos, "--sdists": sdists, "--req": req,
+             "--requirements-file": requirements_file}
+    kind_name = what if what in _ADD_FLAGS else "apt"
+    foreign = [flag for flag, value in given.items() if value and flag not in _ADD_FLAGS[kind_name]]
+    if foreign:
+        typer.echo(f"mmw add {'' if kind_name == 'apt' else kind_name + ' '}does not take "
+                   f"{', '.join(foreign)}.", err=True)
+        raise typer.Exit(2)
+    if what == "pypi":
+        from mmw.commands.add_pypi import run as run_pypi
+        raise typer.Exit(run_pypi(
+            _cfg_dir(), pythons=python, platforms=platform, arches=arch, glibc=glibc, musl=musl,
+            macos=macos, sdists=sdists, all_=all_, dry_run=dry_run, echo=typer.echo,
+            requirements=req, requirements_file=requirements_file))
     if what is not None:
         if what != "vscode":
-            typer.echo(f"Unknown source kind {what!r} — use `mmw add vscode`, or no argument "
-                       "for apt files.", err=True)
+            typer.echo(f"Unknown source kind {what!r} — use `mmw add vscode` or `mmw add pypi`, "
+                       "or no argument for apt files.", err=True)
             raise typer.Exit(2)
         from mmw.commands.add_vscode import run as run_vscode
         raise typer.Exit(run_vscode(
             _cfg_dir(), kinds=kind, platforms=platform, qualities=quality, top_n=top_n,
             ids=ext_id, ids_file=ids_file, all_=all_, prerelease=prerelease,
             dry_run=dry_run, echo=typer.echo))
+    if arch and len(arch) > 1:
+        typer.echo("apt files take one --arch (the default for records that state none).", err=True)
+        raise typer.Exit(2)
     from mmw.commands.add import run
-    code = run(file=file, url=url, label=label, arch=arch, keys_dir=keys_dir,
+    code = run(file=file, url=url, label=label, arch=arch[0] if arch else "", keys_dir=keys_dir,
                dry_run=dry_run, cfg_dir=_cfg_dir(), echo=typer.echo)
     raise typer.Exit(code)
 

@@ -1,0 +1,6 @@
+Metadata-Version: 2.1
+Name: charset-normalizer
+Version: 2.0.9
+Requires-Python: >=3.5.0
+Provides-Extra: unicode_backport
+Requires-Dist: unicodedata2 ; extra == 'unicode_backport'

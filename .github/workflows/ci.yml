@@ -128,6 +128,45 @@ jobs:
             .superpowers/work/vscode-client-e2e/**/*.log
             .superpowers/work/vscode-client-e2e/**/probe.json
 
+  pypi-client:
+    # Stock pip and the bundled uv, offline, against the generated nginx with
+    # TLS at PyPI's own hostnames — live publish and an applied bundle.
+    name: PyPI clients (isolated offline network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Sync test dependencies
+        run: uv sync --python 3.13
+
+      # Only tooling preparation uses the internet. The test's Compose
+      # network is internal, images never pull, and no host port is exposed.
+      - name: Prepare client and nginx images
+        run: |
+          mkdir -p .superpowers/work
+          docker pull python:3.13-slim
+          docker pull --platform linux/amd64 nginx:latest
+
+      - name: Stock pip and uv against live publish and applied bundle
+        env:
+          MMW_PYPI_E2E: "1"
+        run: |
+          uv run --python 3.13 pytest -q tests/test_pypi_client_e2e.py \
+            --basetemp=.superpowers/work/pypi-client-e2e
+
+      - name: Upload client and server logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pypi-client-logs
+          include-hidden-files: true
+          path: |
+            .superpowers/work/pypi-client-e2e/**/*.log
+            .superpowers/work/pypi-client-e2e/**/probe.json
+
   apply-script-compat:
     # `resources/apply.py` and `resources/sign.py` are the only parts of mmw
     # that run on the far side of an airgap: no mmw install, no pip, sometimes

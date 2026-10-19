@@ -63,24 +63,32 @@ Everything is taken from the file — no discovery, no prompts:
   mmw add --url https://example.com/repo.list --dry-run
   mmw add -f /etc/apt/sources.list.d --keys-dir /path/to/keyrings
   mmw add vscode --kind extensions --top-n 200 --platform linux-x64
+  mmw add pypi --python 3.12 --platform linux-glibc --arch amd64 --all
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `WHAT` |  | `vscode` to add (or replace) the VS Code source; omit for apt files. |
+| `WHAT` |  | `vscode` or `pypi` to add (or replace) that source; omit for apt files. |
 | `--file`, `-f` |  | apt config file(s) or a directory of them ('-' for stdin). Repeatable; joined with blank lines so records never run together. Defaults to stdin. |
 | `--url` |  | Fetch the config file from a URL. |
 | `--label` |  | Override the key-grouping label (default: the host's domain name). |
-| `--arch` |  | Architecture to use when the file does not state one (default: leave unset — every architecture upstream serves). |
+| `--arch` |  | apt: the architecture to use when the file does not state one (default: leave unset — every architecture upstream serves). pypi: amd64 or arm64 (repeatable; default both). |
 | `--keys-dir` |  | Directory of keyrings (searched recursively). A `Signed-By:` path is matched by basename; .gpg and .asc are both accepted. |
 | `--dry-run` |  | Print the resulting [[sources]] TOML without writing. |
 | `--kind` |  | vscode: extensions, desktop, server (repeatable; default all). |
-| `--platform` |  | vscode: target platform, e.g. linux-x64 (repeatable; default all). |
+| `--platform` |  | vscode: target platform, e.g. linux-x64; pypi: linux-glibc, linux-musl, windows, macos (repeatable; default all). |
 | `--quality` |  | vscode: stable or insider (repeatable; default both). |
 | `--top-n` |  | vscode: the N most-installed extensions. |
 | `--id` |  | vscode: an extension id, publisher.name (repeatable). |
 | `--ids-file` |  | vscode: a file of extension ids, one per line. |
-| `--all` |  | vscode: every extension on the marketplace (very large). |
+| `--all` |  | vscode: every extension on the marketplace; pypi: every project, latest + dependencies (both very large). |
 | `--prerelease` |  | vscode: allow prerelease versions. |
+| `--python` |  | pypi: a Python version, e.g. 3.12 (repeatable; default all). |
+| `--glibc` |  | pypi: oldest far-side glibc (default 2.31). |
+| `--musl` |  | pypi: oldest far-side musl (default 1.2). |
+| `--macos` |  | pypi: oldest far-side macOS (default 11.0). |
+| `--sdists` |  | pypi: also mirror every kept release's sdist. |
+| `--req` |  | pypi: a requirement to resolve with the others, e.g. 'numpy<2' (repeatable). |
+| `--requirements-file` |  | pypi: a requirements.txt-style file, relative to mmw.toml. |
 
 ### `mmw bundle`
 

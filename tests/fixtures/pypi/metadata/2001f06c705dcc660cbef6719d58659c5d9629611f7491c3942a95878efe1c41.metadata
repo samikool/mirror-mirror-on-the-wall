@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: charset-normalizer
+Version: 3.4.7
+Requires-Python: >=3.7
+Provides-Extra: unicode-backport

@@ -1,0 +1,17 @@
+Metadata-Version: 2.1
+Name: urllib3
+Version: 2.0.0
+Requires-Python: >=3.7
+Provides-Extra: brotli
+Requires-Dist: brotli>=1.0.9; platform_python_implementation == 'CPython' and extra == 'brotli'
+Requires-Dist: brotlicffi>=0.8.0; platform_python_implementation != 'CPython' and extra == 'brotli'
+Provides-Extra: secure
+Requires-Dist: certifi; extra == 'secure'
+Requires-Dist: cryptography>=1.9; extra == 'secure'
+Requires-Dist: idna>=2.0.0; extra == 'secure'
+Requires-Dist: pyopenssl>=17.1.0; extra == 'secure'
+Requires-Dist: urllib3-secure-extra; extra == 'secure'
+Provides-Extra: socks
+Requires-Dist: pysocks!=1.5.7,<2.0,>=1.5.6; extra == 'socks'
+Provides-Extra: zstd
+Requires-Dist: zstandard>=0.18.0; extra == 'zstd'

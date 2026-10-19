@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: cffi
+Version: 2.1.1
+Requires-Python: >=3.10
+Requires-Dist: pycparser; implementation_name != "PyPy"

@@ -99,6 +99,7 @@ end, from zero to a client running `apt update` against your mirror.
 | [Configuration](docs/configuration.md) | Every `mmw.toml` key and default, generated from the models |
 | [CLI reference](docs/cli.md) | Every command and flag, generated from the CLI |
 | [VS Code](docs/vscode.md) | Mirror the VS Code Marketplace, installers and Remote-SSH server builds |
+| [PyPI](docs/pypi.md) | Mirror pypi.org: latest + dependencies per target, or a requirements list resolved together |
 
 ## How clients find the mirror
 

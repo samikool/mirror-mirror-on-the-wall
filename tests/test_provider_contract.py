@@ -8,7 +8,7 @@ from mmw.providers.base import BaseProvider, Dimension
 
 
 def test_registry_order_and_lookup():
-    assert [p.name for p in all_providers()] == ["apt", "apt-flat", "vscode"]
+    assert [p.name for p in all_providers()] == ["apt", "apt-flat", "vscode", "pypi"]
     assert get_provider("apt").name == "apt"
     with pytest.raises(ValueError, match="Unknown provider"):
         get_provider("nope")
@@ -56,7 +56,7 @@ def test_core_resolution_dispatches_to_the_provider(monkeypatch):
 
     calls = []
 
-    def fake(self, source, *, progress=None):
+    def fake(self, source, *, progress=None, context=None):
         calls.append(source.url)
         return ResolvedSource(source, [], ["note"], [])
 
@@ -147,3 +147,22 @@ def test_destination_index_reading_lives_in_the_providers(tmp_path):
     assert [p.checksum for p in apt.published_packages(index)] == ["abc"]
     flat = config.MirrorConfig(name="f", provider="apt-flat", source_url="https://x/f")
     assert get_provider("apt-flat").published_index(tmp_path, flat) is None
+
+
+def test_resolve_sources_hands_every_provider_the_context(monkeypatch, tmp_path):
+    from mmw.core import resolve
+    from mmw.providers.base import ResolveContext
+    seen = []
+    for p in all_providers():
+        # On the class: an instance attribute would outlive monkeypatch's undo.
+        monkeypatch.setattr(type(p), "resolve", lambda self, src, *, progress=None, context=None:
+                            seen.append((self.name, context)) or resolve.ResolvedSource(src, []))
+    ctx = ResolveContext(mirror_dir=tmp_path, max_connections=3)
+    resolve.resolve_sources([config.VscodeSource(provider="vscode")], context=ctx)
+    assert seen == [("vscode", ctx)]
+
+
+def test_resolve_context_from_settings(tmp_path):
+    from mmw.providers.base import ResolveContext
+    s = config.Settings(mirror_dir=tmp_path, max_connections=7)
+    assert ResolveContext.from_settings(s) == ResolveContext(mirror_dir=tmp_path, max_connections=7)

@@ -12,7 +12,7 @@ def test_resolution_progress_is_visible_second_start_refused_and_cancel_discards
     from mmw.tui import repositories
     started, release = threading.Event(), threading.Event()
     calls = []
-    def resolve(cfg, selection, *, progress=None):
+    def resolve(cfg, selection, *, progress=None, stop_event=None, config_dir=None):
         calls.append(selection)
         if progress:
             progress('marketplace: HTTP 429 — retrying in 1s')

@@ -185,6 +185,41 @@ ids   = ["golang.go", "ms-python.python"]
 | `prerelease` | bool | `false` | Mirror prerelease versions too. Off: the newest release per platform, even when the newest build is a prerelease. |
 
 
+### PyPI: `provider = "pypi"`
+
+pypi.org, filtered to targets (Python × platform × arch). Units are
+`{name}-all-universal` (pure wheels and sdists) and
+`{name}-all-{python}-{platform}-{arch}`. Each keeps every project's
+latest installable release plus the older releases its dependencies need;
+what cannot be guaranteed is listed in the unit's report.
+
+```toml
+[[sources]]
+provider  = "pypi"
+pythons   = ["3.12"]
+platforms = ["linux-glibc"]
+arches    = ["amd64"]
+all       = true
+```
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `provider` | `pypi` | **required** | `"pypi"` — pypi.org. At most one per config. |
+| `name` | string | `'pypi'` | Prefix of the sync-unit names (`pypi-all-universal`, `pypi-all-3.12-linux-glibc-amd64`, …). |
+| `label` | string | `'pypi'` | Grouping label. Rarely worth changing. |
+| `url` | string | `'https://pypi.org/simple/'` | Fixed to `https://pypi.org/simple/`; any other value is refused. |
+| `pythons` | list of string | `[]` — *all* | CPython versions: `3.9` … `3.14`. |
+| `platforms` | list of string | `[]` — *all* | `linux-glibc` (manylinux wheels), `linux-musl` (musllinux: Alpine), `windows`, `macos`. glibc and musl wheels do not install on each other. |
+| `arches` | list of string | `[]` — *all* | `amd64`, `arm64`. |
+| `glibc` | string | `'2.31'` | Oldest glibc on the far side (`2.31` = Ubuntu 20.04; at least `2.17`). A release counts as installable only if a client this old can install one of its wheels. |
+| `musl` | string | `'1.2'` | Oldest musl on the far side (`1.2` = Alpine 3.13+). |
+| `macos` | string | `'11.0'` | Oldest macOS on the far side. |
+| `sdists` | bool | `false` | Also mirror the sdist of every kept release. Off, an sdist is still mirrored when a dependency has no compatible wheel. |
+| `all` | bool | `false` | The straight mirror: every project's latest installable release per target, plus the older releases its dependencies require. Very large — run `mmw dry-run` first. |
+| `requirements` | list of string | `[]` | Packages that must install **together**, requirements.txt style (names, versions, extras, markers; no options, URLs, paths or hashes). Resolved per target by uv against PyPI; the solution and the build tools of anything built from source are mirrored, in `{name}-req-*` units. Like `pip download -r`, resolving may build an sdist to read its metadata, which runs that package's build backend on the mirror host. Build requirements are static only: what a backend asks for at build time (`get_requires_for_build_wheel`) is not mirrored. |
+| `requirements_file` | string | none | A requirements.txt-style file of the same, relative to `mmw.toml`; re-read every sync and unioned with `requirements`. |
+
+
 ## `[[networks]]`
 
 A network is a named downselect of the mirror — what one site gets. `publish`
@@ -202,6 +237,7 @@ destination is unset says so rather than inventing one.
 | `dist_upgrade` | bool | `false` | Publish `changelogs.ubuntu.com/meta-release*` to the network root and write an `UPGRADE.md` with the DNS entries this network actually needs (derived from its own mirrors) and the LTS upgrade paths parsed out of the mirrored meta-release file. Needs `dist_upgrade = true` on the Ubuntu source too, or there is nothing to publish. |
 | `certs` | bool | `false` | Generate a 4096-bit TLS key and CSR for the network in `{mirror_dir}/certs/{name}/`. Both publish and bundle deployments include the key, request, OpenSSL config, signing tools, and signed certificate when available under private `{root}/.mmw/tls/` (key 0600; directory 0700; outside the generated web roots). Top-level `apply.py` and `sign.py` allow a copied publish tree to be signed and deployed offline, exactly like an applied bundle. Sign with `mmw certs` on this side or `sign.py` on the far side; `apply.py --tls` enables HTTPS once the certificate fits its key. Leave disabled when transfer media must not carry a private key. The retired `bundle_tls` field is ignored. |
 | `nginx` | bool | `true` | Include the official `nginx:latest` Linux amd64 image tar, `nginx/compose.yaml`, setup instructions, and `nginx/mirror.conf` with a server block per mirrored hostname. Config roots always use `/srv/mmw` inside the container; replace the host-side `/path/to/<network>` placeholders in its simple bind mounts. Mounts are read-only; bridge networking maps editable host ports to container ports 80/443. VS Code networks include an internal gallery service. Compose never pulls on the serving host. Signed networks can serve HTTPS. Set `false` to omit nginx artifacts; a VS Code network then has nothing that starts its gallery. The retired `gallery_port` field is ignored. See [Serving it](../README.md#serving-it). |
+| `retention` | string | `'90d'` | How long a release that left a provider's keep set stays published (PyPI): `current`, `forever` or a number of days like `30d`. The widest window of the networks selecting a source decides what the pool keeps; widening is not retroactive. |
 
 
 ### `[[networks.select]]`
@@ -213,7 +249,7 @@ a dimension filter keeps following the repository.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `source` | string | **required** | The repository URI this selection applies to — must match a `[[sources]]` `url`. Normalized before comparison, so a trailing slash or an upper-case host still matches. |
-| `dims` | dict[str, list[str]] | every dimension *all* | Not a key itself: write one list per dimension of that source's provider, as flat keys — apt: `suites`, `components`, `arches`; apt-flat: `arches`; vscode: `kinds`, `platforms`, `qualities`. Empty = everything mirrored for it on that dimension, **and it keeps meaning that** as new suites or architectures appear upstream — the reason selection is by dimension rather than by a frozen list of mirror names. A key that is not a dimension of the source's provider is a load error. A flat repository whose URL names no architecture matches any `arches` filter; a VS Code extensions unit (no quality) matches any `qualities` filter. |
+| `dims` | dict[str, list[str]] | every dimension *all* | Not a key itself: write one list per dimension of that source's provider, as flat keys — apt: `suites`, `components`, `arches`; apt-flat: `arches`; vscode: `kinds`, `platforms`, `qualities`; pypi: `pythons`, `platforms`, `arches`. Empty = everything mirrored for it on that dimension, **and it keeps meaning that** as new suites or architectures appear upstream — the reason selection is by dimension rather than by a frozen list of mirror names. A key that is not a dimension of the source's provider is a load error. A flat repository whose URL names no architecture matches any `arches` filter; a VS Code extensions unit (no quality) matches any `qualities` filter; the PyPI universal unit (pure wheels and sdists) matches every filter. |
 
 
 ## Where things live

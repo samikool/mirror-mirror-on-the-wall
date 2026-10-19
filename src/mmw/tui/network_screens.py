@@ -169,6 +169,10 @@ class NetworkForm(Vertical):
                     hint=("Optional. The network name is created inside it." if add else
                           "Optional. Saved exactly as shown — nothing is appended."),
                 ),
+                TextField(
+                    "Retention", net.retention if net else config.DEFAULT_RETENTION, id="inp-retention",
+                    hint="How long releases that left the mirror stay published (PyPI): current, "
+                         "forever or days like 90d. Widening is not retroactive."),
                 PathField(
                     "Bundle output", str(net.bundle_dir) if net and net.bundle_dir else "",
                     id="inp-bundle-dir", browse_id="btn-browse-bundle",
@@ -306,6 +310,11 @@ class NetworkForm(Vertical):
                                          selects=selects)
         if problem:
             return None, problem, "repo-checklist" if not selects else "inp-net-name"
+        retention = self._value("inp-retention") or config.DEFAULT_RETENTION
+        try:
+            config.retention_days(retention)
+        except ValueError as e:
+            return None, str(e), "inp-retention"
         bundle = self._value("inp-bundle-dir")
         return config.NetworkConfig.model_validate({
             **(self._network.model_dump() if self._network else {}),
@@ -317,7 +326,13 @@ class NetworkForm(Vertical):
             "dist_upgrade": self._flag("du-switch"),
             "certs": self._flag("certs-switch"),
             "nginx": self._flag("nginx-switch"),
+            "retention": retention,
         }), None, None
+
+
+def _widens(old: str, new: str) -> bool:
+    before, after = config.retention_days(old), config.retention_days(new)
+    return before is not None and (after is None or after > before)
 
 
 class EditNetworkPage(Page):
@@ -358,6 +373,9 @@ class EditNetworkPage(Page):
             self.notify(problem, severity="warning")
             self.query_one(f"#{focus}").focus()
             return
+        if _widens(self._network.retention, net.retention):
+            self.notify(f"Retention widened to {net.retention}: not retroactive — releases already "
+                        "pruned from the pool do not come back.", timeout=10)
         self.dismiss(net)
 
 

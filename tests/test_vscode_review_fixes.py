@@ -122,7 +122,7 @@ def test_transport_errors_are_retried_then_raised_as_marketplace_errors():
 def test_a_provider_exception_becomes_a_resolve_error(monkeypatch):
     from mmw.core.resolve import resolve_sources
 
-    def broken(self, source, *, progress=None):
+    def broken(self, source, *, progress=None, context=None):
         raise ValueError("kaboom")
     monkeypatch.setattr(prov.VscodeProvider, "resolve", broken)
     _, _, errors = resolve_sources([_vs()])

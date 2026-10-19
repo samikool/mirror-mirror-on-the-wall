@@ -5,7 +5,7 @@ import tomli_w
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 from urllib.parse import urlparse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
 CONFIG_FILENAME = "mmw.toml"
 
@@ -179,7 +179,7 @@ def derive_name(url: str, taken: set[str] | None = None,
     return name
 
 
-Provider = Literal["apt", "apt-flat", "vscode"]
+Provider = Literal["apt", "apt-flat", "vscode", "pypi"]
 """Every provider a unit may belong to. A free string let `provider =
 "apt_flat"` load clean, expand to zero mirrors, and exit 0 having mirrored
 nothing."""
@@ -644,7 +644,132 @@ class VscodeSource(_StrictModel):
         return True
 
 
-AnySource = Annotated[Union[SourceConfig, VscodeSource], Field(discriminator="provider")]
+PYPI_URL = "https://pypi.org/simple/"
+_FLOOR_RE = re.compile(r"\d+\.\d+")
+_ARCHIVE_SUFFIXES = (".whl", ".tar.gz", ".zip", ".tar.bz2", ".tgz")
+
+
+def check_requirement_line(line: str) -> str | None:
+    """One requirements.txt line as mmw accepts it: names, specifiers, extras
+    and markers. None for a comment or blank line. Options (`-r`, `-e`, …),
+    URLs, paths and hashes are refused — a mirror resolves against PyPI only."""
+    from packaging.requirements import InvalidRequirement, Requirement
+    text = line.split(" #", 1)[0].strip()
+    if not text or text.startswith("#"):
+        return None
+    refused = (text.startswith(("-", ".", "/", "~")) or "--hash" in text or "://" in text
+               or text.startswith("git+") or text.lower().endswith(_ARCHIVE_SUFFIXES))
+    if not refused:
+        try:
+            refused = Requirement(text).url is not None
+        except InvalidRequirement:
+            refused = True
+    if refused:
+        raise ValueError(f"unsupported requirements line: '{line.strip()}' (only names, versions, "
+                         "extras and markers — no options, URLs, paths or hashes)")
+    return text
+
+
+class PypiSource(_StrictModel):
+    """pypi.org: the straight mirror (`all`) — every project's latest
+    installable release plus the older releases its dependencies need, per
+    target. One per config. Empty pythons / platforms / arches mean *all*.
+    `glibc` / `musl` / `macos` are the oldest far-side OS versions: a release
+    counts as installable only if a client there can install it."""
+    provider: Literal["pypi"]
+    name: str = "pypi"
+    label: str = "pypi"
+    url: str = PYPI_URL
+    pythons: list[str] = []
+    platforms: list[str] = []
+    arches: list[str] = []
+    glibc: str = "2.31"
+    musl: str = "1.2"
+    macos: str = "11.0"
+    sdists: bool = False
+    all: bool = False
+    requirements: list[str] = []
+    requirements_file: str | None = None
+    # Where mmw.toml lives, so a relative requirements_file means "next to the
+    # config". Set by `load`; absent for drafts (then: the working directory).
+    _config_dir: Path | None = PrivateAttr(default=None)
+
+    @field_validator("requirements", mode="before")
+    @classmethod
+    def _requirement_lines(cls, value):
+        lines = value.splitlines() if isinstance(value, str) else list(value or [])
+        return [kept for kept in (check_requirement_line(str(line)) for line in lines) if kept]
+
+    @field_validator("requirements_file", mode="before")
+    @classmethod
+    def _blank_file_is_none(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
+
+    def __eq__(self, other):
+        # Where the config was loaded from is not part of what the source is.
+        return type(other) is type(self) and self.model_dump() == other.model_dump()
+
+    __hash__ = None
+
+    def requirement_lines(self, config_dir: Path | None = None) -> list[str]:
+        """The inline list then the file's lines, de-duplicated in order. The
+        file is read now, every time: it may change between syncs. A relative
+        file is next to mmw.toml: `config_dir`, else where it was loaded from."""
+        lines = list(self.requirements)
+        if self.requirements_file:
+            path = Path(self.requirements_file).expanduser()
+            if not path.is_absolute():
+                path = (config_dir or self._config_dir or Path.cwd()) / path
+            try:
+                text = path.read_text(encoding="utf-8-sig")   # Windows editors add a BOM
+            except FileNotFoundError:
+                raise FileNotFoundError(f"requirements_file not found: {path}") from None
+            lines += [kept for kept in (check_requirement_line(line) for line in text.splitlines()) if kept]
+        return list(dict.fromkeys(lines))
+
+    @model_validator(mode="after")
+    def _known_values(self):
+        from mmw.providers.pypi.targets import ARCHES, PLATFORMS, PYTHONS
+        if normalize_url(self.url) != normalize_url(PYPI_URL):
+            raise ValueError(f"the pypi provider mirrors pypi.org ({PYPI_URL}), not {self.url}")
+        for field, allowed in (("pythons", PYTHONS), ("platforms", PLATFORMS), ("arches", ARCHES)):
+            bad = [v for v in getattr(self, field) if v not in allowed]
+            if bad:
+                raise ValueError(f"unknown {field}: {', '.join(bad)} "
+                                 f"(expected: {', '.join(allowed)})")
+        for field in ("glibc", "musl", "macos"):
+            if not _FLOOR_RE.fullmatch(getattr(self, field)):
+                raise ValueError(f"{field} must be a MAJOR.MINOR version, not {getattr(self, field)!r}")
+        if tuple(int(x) for x in self.glibc.split(".")) < (2, 17):
+            # manylinux2014: the oldest glibc uv resolves for, and the oldest
+            # current binary wheels target.
+            raise ValueError(f"glibc floor {self.glibc} is older than 2.17, the oldest uv and current "
+                             "wheels support")
+        return self
+
+    @property
+    def identity(self) -> str:
+        return normalize_url(self.url)
+
+    @property
+    def floors(self):
+        from mmw.providers.pypi.targets import Floors
+        return Floors(glibc=self.glibc, musl=self.musl, macos=self.macos)
+
+    def configured_units(self) -> set:
+        return set()
+
+    def covers(self, unit) -> bool:
+        if (unit.source or "") != self.identity:
+            return False
+        for field, key in (("pythons", "python"), ("platforms", "platform"), ("arches", "arch")):
+            chosen, have = getattr(self, field), unit.dims.get(key)
+            if chosen and have and have not in chosen:
+                return False
+        return True
+
+
+AnySource = Annotated[Union[SourceConfig, VscodeSource, PypiSource], Field(discriminator="provider")]
 
 
 # The TUI's colour theme when none is chosen. Lives here, not in tui/, because
@@ -765,6 +890,22 @@ class NetworkSelect(_StrictModel):
 _LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port"})
 
 
+DEFAULT_RETENTION = "90d"
+_RETENTION_RE = re.compile(r"([1-9]\d*)d")
+
+
+def retention_days(value: str) -> int | None:
+    """A network's `retention`: "current" → 0, "<N>d" → N, "forever" → None."""
+    if value == "current":
+        return 0
+    if value == "forever":
+        return None
+    match = _RETENTION_RE.fullmatch(value or "")
+    if match is None:
+        raise ValueError(f"retention must be current, forever or a number of days like 90d, not {value!r}")
+    return int(match.group(1))
+
+
 class NetworkConfig(_StrictModel):
     """A named downselect of the mirror — what one site gets.
 
@@ -781,6 +922,15 @@ class NetworkConfig(_StrictModel):
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
     certs: bool = False       # TLS key/CSR; serve HTTPS wherever it lands — bundles carry cert + key
     nginx: bool = True        # ship the nginx image, nginx/compose.yaml and mirror.conf
+    # How long a release that left a provider's keep set stays published
+    # (providers with version history — PyPI). Widening is not retroactive.
+    retention: str = DEFAULT_RETENTION
+
+    @field_validator("retention")
+    @classmethod
+    def _valid_retention(cls, value):
+        retention_days(value)
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -835,6 +985,12 @@ class Config(_StrictModel):
     def _one_vscode_source(self):
         if sum(1 for s in self.sources if s.provider == "vscode") > 1:
             raise ValueError("only one vscode source is allowed (it is the whole marketplace)")
+        return self
+
+    @model_validator(mode="after")
+    def _one_pypi_source(self):
+        if sum(1 for s in self.sources if s.provider == "pypi") > 1:
+            raise ValueError("only one pypi source is allowed (it is the whole of pypi.org)")
         return self
 
     @property
@@ -1119,6 +1275,9 @@ def load(directory: Path = Path(".")) -> Config:
     with open(path, "rb") as f:
         data = tomllib.load(f)
     cfg = Config.model_validate(data)
+    for source in cfg.sources:
+        if isinstance(source, PypiSource):
+            source._config_dir = Path(directory).resolve()
     from mmw.core.pool import register_database
     register_database(cfg.settings.mirror_dir, cfg.settings.database)
     return cfg
@@ -1251,6 +1410,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"nginx": False} if not n.nginx else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": True} if n.certs else {}),
+            **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
         }
         for n in cfg.networks
     ]

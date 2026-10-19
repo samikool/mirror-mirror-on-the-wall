@@ -330,10 +330,10 @@ class RepositoriesPage(Page):
         if page is None:
             from mmw.providers import get_provider
             self.notify(f"{get_provider(src.provider).label} sources are edited in mmw.toml "
-                        "(or with `mmw add vscode`) for now.", severity="warning")
+                        "for now.", severity="warning")
             return
-        from mmw.tui.vscode_source import EditVscodePage
-        if isinstance(page, EditVscodePage):
+        from mmw.tui.provider_form import ProviderEditPage
+        if isinstance(page, ProviderEditPage):
             async def save_source(edited):
                 await self.app.save_config(lambda c: replace_source(c, src.identity, edited))
             page.save_source = save_source
@@ -341,7 +341,7 @@ class RepositoriesPage(Page):
         if edited is None:
             return
         try:
-            if not isinstance(page, EditVscodePage):
+            if not isinstance(page, ProviderEditPage):
                 await self.app.save_config(lambda c: replace_source(c, src.identity, edited))
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.set_status(f"Not saved: {e}", "error")

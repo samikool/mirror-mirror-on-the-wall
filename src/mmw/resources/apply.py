@@ -419,6 +419,29 @@ def https_state(root):
     return notes
 
 
+# Derived trees: (renderer shipped in the tree, the directory it owns). The
+# one rule every side runs — live publish, snapshot replay, and here after a
+# bundle — so a far side's pages are the near side's, byte for byte.
+DERIVED = (("pypi-data/render.py", "pypi.org", ("PYPI.md",)),)
+RENDERED_MARK = ".mmw-rendered"
+
+
+def render_derived(root, say=None):
+    """Run each shipped renderer; with none left, remove the directory it
+    owned (only if it carries the renderer's mark — never someone else's)."""
+    import runpy
+    for script, owned, companions in DERIVED:
+        renderer = os.path.join(root, script)
+        if os.path.isfile(renderer):
+            runpy.run_path(renderer, run_name="mmw_render")["render"](root, say=say)
+        elif os.path.isdir(os.path.join(root, owned, RENDERED_MARK)):
+            shutil.rmtree(os.path.join(root, owned))
+            for name in companions:          # its far-side notes go with it
+                path = os.path.join(root, name)
+                if os.path.isfile(path):
+                    os.remove(path)
+
+
 def apply(bundle, root, dry_run=False, verify=False):
     header = None
     manifest = {}
@@ -664,6 +687,8 @@ def apply(bundle, root, dry_run=False, verify=False):
                                 sys.stderr.write(
                                     "warning: %r still contains %s after "
                                     "substitution\n" % (rel, ROOT_PLACEHOLDER))
+            current = "rendering derived pages"
+            render_derived(root, say=lambda message: sys.stdout.write(message + "\n"))
             current = STATE_FILE
             # Staged and renamed: a state file cut short by a full disk or a
             # kill reads as "at nothing", and every later delta is refused as

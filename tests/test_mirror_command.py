@@ -51,7 +51,7 @@ def env(tmp_path, monkeypatch):
 
     state = {"mirrors": [_mirror()], "errors": [], "summaries": {}, "raise": None}
 
-    def fake_resolve(sources, progress=None):
+    def fake_resolve(sources, progress=None, context=None):
         return state["mirrors"], [], state["errors"]
 
     async def fake_sync(mirror, **kw):
@@ -201,3 +201,45 @@ def test_cfg_dir_is_honoured(tmp_path, monkeypatch):
 
     mirror_cmd.run(tmp_path / "elsewhere")
     assert seen == [tmp_path / "elsewhere"]
+
+
+def test_ctrl_c_during_resolve_stops_it(monkeypatch, tmp_path):
+    import os
+    import signal
+
+    import pytest
+
+    from mmw.commands import mirror as mirror_cmd
+    seen = {}
+
+    def fake_resolve(sources, progress=None, context=None):
+        os.kill(os.getpid(), signal.SIGINT)
+        for _ in range(100):
+            if context.stop_event.is_set():
+                break
+        seen["stopped"] = context.stop_event.is_set()
+        return [], [], []
+    monkeypatch.setattr(mirror_cmd, "resolve_sources", fake_resolve)
+    before = signal.getsignal(signal.SIGINT)
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "m"))
+    with pytest.raises(KeyboardInterrupt):
+        mirror_cmd.resolve_and_report(cfg, echo=lambda *_: None)
+    assert seen["stopped"] and signal.getsignal(signal.SIGINT) is before
+
+
+def test_resolve_progress_is_printed_but_throttled(monkeypatch, tmp_path):
+    from mmw.commands import mirror as mirror_cmd
+    lines = []
+
+    def fake_resolve(sources, progress=None, context=None):
+        progress("pypi: reading the PyPI index…")
+        for i in range(500):
+            progress(f"PyPI index: {i}/500 changed projects")
+        progress("pypi: resolving latest + dependencies for 1 target(s)…")
+        return [], [], []
+    monkeypatch.setattr(mirror_cmd, "resolve_sources", fake_resolve)
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "m"))
+    mirror_cmd.resolve_and_report(cfg, echo=lines.append)
+    assert any("reading the PyPI index" in line for line in lines)
+    assert any("resolving latest" in line for line in lines)
+    assert sum("PyPI index:" in line for line in lines) <= 3

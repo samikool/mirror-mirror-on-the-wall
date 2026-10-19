@@ -145,3 +145,27 @@ def test_mmw_sync_opens_the_sync_section_and_starts_with_the_given_mirrors(tmp_p
             assert "Dry run" in str(app.screen.query_one("#page-status").render())
             view.stop()
     asyncio.run(go())
+
+
+def test_cancelling_resolution_stops_the_resolver(tmp_path, monkeypatch):
+    import threading
+    captured = {}
+
+    def slow_resolve(c, sel, *, progress=None, stop_event=None, config_dir=None):
+        captured["config_dir"] = config_dir
+        captured["stop"] = stop_event
+        stop_event.wait(10)
+        return [], []
+
+    async def check(app, pilot):
+        monkeypatch.setattr(R, "resolve_selection", slow_resolve)
+        app.screen.query_one("#repo-list", ListView).focus()
+        await pilot.press("s")
+        await until(pilot, lambda: "stop" in captured)
+        assert isinstance(captured["stop"], threading.Event) and not captured["stop"].is_set()
+        assert captured["config_dir"] == tmp_path
+        app.cancel_resolution()
+        assert captured["stop"].is_set()
+        await until(pilot, lambda: not app._resolving)
+
+    _run(tmp_path, monkeypatch, check)

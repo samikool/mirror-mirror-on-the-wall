@@ -286,7 +286,7 @@ class AptFlatProvider(_AptCommon):
     description = "A Packages file at the repository root, no dists/ tree"
     dimensions = (_ARCHES,)
 
-    def resolve(self, source, *, progress=None):
+    def resolve(self, source, *, progress=None, context=None):
         from mmw.providers.apt_resolve import resolve_apt_flat
         return resolve_apt_flat(source, progress=progress)
 
@@ -507,7 +507,7 @@ class AptProvider(_AptCommon):
     def needs_resolving(self, source) -> bool:
         return not source.suites or not source.components or not source.arches
 
-    def resolve(self, source, *, progress=None):
+    def resolve(self, source, *, progress=None, context=None):
         from mmw.providers.apt_resolve import resolve_apt
         return resolve_apt(source, progress=progress)
 

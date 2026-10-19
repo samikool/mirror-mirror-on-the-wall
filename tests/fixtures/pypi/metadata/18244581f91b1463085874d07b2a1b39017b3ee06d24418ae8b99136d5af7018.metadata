@@ -1,0 +1,4 @@
+Metadata-Version: 2.1
+Name: psycopg2
+Version: 2.9.9
+Requires-Python: >=3.7

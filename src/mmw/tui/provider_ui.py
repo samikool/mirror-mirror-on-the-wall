@@ -40,6 +40,16 @@ def _vscode_edit(source, existing_names, existing_urls):
     return EditVscodePage(source, existing_names=existing_names, existing_urls=existing_urls)
 
 
+def _pypi_step(existing_urls):
+    from mmw.tui.pypi_source import StepPypi
+    return StepPypi(existing_urls)
+
+
+def _pypi_edit(source, existing_names, existing_urls):
+    from mmw.tui.pypi_source import EditPypiPage
+    return EditPypiPage(source, existing_names=existing_names, existing_urls=existing_urls)
+
+
 # provider name → (Add entry or None, Edit page factory). apt's step adds
 # flat repositories too (probing tells them apart), so apt-flat has no entry.
 _ADD: dict[str, AddEntry] = {
@@ -48,8 +58,12 @@ _ADD: dict[str, AddEntry] = {
                     "Repository", _apt_step, offer_source_packages=True),
     "vscode": AddEntry("vscode", "VS Code", "Marketplace extensions, desktop and server builds",
                        "VS Code", _vscode_step, False, confirm_required=False),
+    "pypi": AddEntry("pypi", "PyPI",
+                     "Python packages: all of PyPI per target, or a requirements list resolved together",
+                     "PyPI", _pypi_step, False, confirm_required=False),
 }
-_EDIT: dict[str, Callable] = {"apt": _apt_edit, "apt-flat": _apt_edit, "vscode": _vscode_edit}
+_EDIT: dict[str, Callable] = {"apt": _apt_edit, "apt-flat": _apt_edit, "vscode": _vscode_edit,
+                              "pypi": _pypi_edit}
 
 _DETECT = AddEntry("detect", "Detect from URL or paste…",
                    "A repository URL, a .list / .sources file, or pasted config",

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -104,13 +105,19 @@ class Site:
     to the network's gallery (`/` = everything); `exact` = `location = …`
     for those; `proxy_prefixes` go to the gallery as prefix locations either way;
     `cors` = the static files are fetched cross-origin (VS Code's workbench),
-    so preflights are answered and every answer allows any origin."""
+    so preflights are answered and every answer allows any origin.
+    `negotiated_index` / `json_paths`: see the fields."""
     server_name: str
     root: str | None = None
     proxy: tuple = ()
     exact: bool = False
     proxy_prefixes: tuple = ()
     cors: bool = False
+    # PyPI-style: directory requests under this prefix serve index.json when
+    # the client asks for the PEP 691 JSON type, else index.html.
+    negotiated_index: str = ""
+    # Extension-less JSON files under this prefix (`/pypi/<name>/json`).
+    json_paths: str = ""
 
 
 @dataclass
@@ -134,6 +141,29 @@ class PublishContext:
     keep_extra: frozenset = frozenset()
     mirror_start_callback: Any = None
     recheck: bool = False           # `--recheck`: recheck what a provider would reuse
+
+
+@dataclass(frozen=True)
+class ResolveContext:
+    """What a provider's `resolve` may use beyond the source itself: where the
+    mirror lives (a provider may keep an upstream cache there), how many
+    connections it may open, and the sync's stop. Providers that resolve with
+    a request or two ignore it."""
+    mirror_dir: Path | None = None
+    max_connections: int = 8
+    stop_event: threading.Event | None = None
+    config_dir: Path | None = None    # where mmw.toml lives: relative paths in sources mean "next to it"
+    cfg: Any = None                    # the whole config, for providers that weigh networks (retention)
+
+    @classmethod
+    def from_settings(cls, settings, stop_event=None, config_dir=None) -> "ResolveContext":
+        return cls(mirror_dir=settings.mirror_dir, max_connections=settings.max_connections,
+                   stop_event=stop_event, config_dir=config_dir)
+
+    @classmethod
+    def from_config(cls, cfg, stop_event=None, config_dir=None) -> "ResolveContext":
+        return cls(mirror_dir=cfg.settings.mirror_dir, max_connections=cfg.settings.max_connections,
+                   stop_event=stop_event, config_dir=config_dir, cfg=cfg)
 
 
 class BaseProvider(ABC):
@@ -223,7 +253,8 @@ class BaseProvider(ABC):
         return False
 
     @abstractmethod
-    def resolve(self, source, *, progress: Callable[[str], None] | None = None):
+    def resolve(self, source, *, progress: Callable[[str], None] | None = None,
+                context: ResolveContext | None = None):
         """Fill open dimensions against upstream → `mmw.core.resolve.ResolvedSource`."""
 
     # ── fetch ────────────────────────────────────────────────────────────────

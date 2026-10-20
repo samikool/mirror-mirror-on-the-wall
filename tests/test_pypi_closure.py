@@ -189,3 +189,48 @@ def test_seeding_reads_the_universe_by_one_scan():
     keep, _ = keep_closure(u, [T], Floors(), sdists=False)
     assert releases(keep) == [("a", "1.0"), ("lib", "1.0"), ("lone", "2.0")]
     assert set(u.files_calls) <= {"lib"}    # seeds come from the scan; only a dependency pick may look up
+
+
+def test_every_target_seeds_from_the_same_single_scan():
+    u = FakeUniverse(dist("a", "1.0"), dist("b", "1.0"))
+    scans = []
+    original = u.scan
+    u.scan = lambda: (scans.append(1), (yield from original()))[1]
+    t310 = Target("3.10", "linux-glibc", "amd64")
+    keep, _ = keep_closure(u, [T, t310, Target("3.12", "windows", "amd64")], Floors(), sdists=False)
+    assert len(scans) == 1 and releases(keep) == [("a", "1.0"), ("b", "1.0")]
+
+
+def test_a_tiny_requirement_cache_changes_nothing(monkeypatch):
+    from mmw.providers.pypi import closure
+    universe = (dist("app", "1.0", requires=["lib", 'extra-dep; extra == "x"', "bad line ((("], extras=["x"]),
+                dist("lib", "1.0", requires=["leaf<2"]), dist("leaf", "1.5"), dist("leaf", "2.0"))
+    _, big_keep, big_report = run(*universe)
+    monkeypatch.setattr(closure._Requirements, "REQUIREMENTS", 1)
+    _, keep, report = run(*universe)
+    assert releases(keep) == releases(big_keep) and report.to_json() == big_report.to_json()
+    assert report.extras_gaps and report.invalid
+
+
+def test_a_reached_release_holds_only_this_targets_files():
+    from mmw.providers.pypi.closure import KeepSet, Report, _Requirements, _TargetClosure
+    u = FakeUniverse(dist("np", "2.0", GLIBC), dist("np", "2.0", "cp312-cp312-win_amd64"),
+                     dist("np", "2.0", "cp312-cp312-macosx_11_0_arm64"), dist("np", "2.0", kind="sdist"))
+    closure = _TargetClosure(u, T, Floors(), False, Report(), KeepSet(), _Requirements())
+    closure.add_seed("np", u.files("np"))
+    held = {f.filename for files in closure._release_files.values() for f in files}
+    assert held == {f"np-2.0-{GLIBC}.whl", "np-2.0.tar.gz"}
+
+
+def test_self_extras_expand_a_release_once_per_growth_not_per_subset():
+    n = 10
+    chain = [f'pkg[e{i + 1}]; extra == "e{i}"' for i in range(n - 1)]
+    u = FakeUniverse(dist("pkg", "1.0", requires=chain, extras=[f"e{i}" for i in range(n)]),
+                     dist("user", "1.0", requires=["pkg[e0]", "pkg[e3]", "pkg[e6]"]))
+    reads = []
+    original = u.metadata
+    u.metadata = lambda f: (reads.append(f.project), original(f))[1]
+    keep, report = keep_closure(u, [T], Floors(), sdists=False, seeds=["user"])
+    assert releases(keep) == [("pkg", "1.0"), ("user", "1.0")] and not report.unsatisfiable
+    # Subsets of the extras were nodes of their own: hundreds of reads here.
+    assert reads.count("pkg") <= n

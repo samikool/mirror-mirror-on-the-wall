@@ -21,12 +21,16 @@ import os
 import shutil
 import tarfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
 from mmw.core.publisher.manifest import ManifestHeader, unchanged, write_manifest
 from mmw.core.publisher.nginx import ROOT_PLACEHOLDER
+
+# More measured slower on the HDD (32: 0.4x of 8); see `TreeSink.link_many`.
+LINK_THREADS = 8
 
 _SCAN_REPORT_EVERY = 5000
 _BY_HASH_KEEP_STALE = 2
@@ -208,6 +212,7 @@ class TreeSink:
         # finalizes once per publisher host, tens of thousands of groups.
         self._prev_sorted = sorted(self._prev) if self._prev is not None else []
         self._bh_dirs: set[str] = set()      # by-hash dirs this run placed into
+        self._links: ThreadPoolExecutor | None = None   # link_many's, made on first use
 
     @property
     def recheck(self) -> bool:
@@ -224,23 +229,57 @@ class TreeSink:
         return self.root.joinpath(*_TMP_SUBDIR)
 
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
-        from mmw.core.publisher.links import hardlink_or_copy, same_file
         if "/by-hash/" in f"/{rel}":
             self._bh_dirs.add(rel.rsplit("/", 1)[0])
         if unchanged(self._prev, rel, checksum, self._recheck):
             self._rows[rel] = checksum
             return "skipped"
+        return self._settle(rel, checksum, self._place(src, rel))
+
+    def link_many(self, items):
+        """`link` for each (src, rel, size, checksum, kind), the filesystem
+        work on LINK_THREADS threads. A cold publish waits on inode and
+        directory reads, one at a time; several in flight let the disk order
+        them (2.5x on the HDD, measured). Yields (status, error or None) per
+        item, in item order, as soon as that item is done — collecting the
+        whole run first made progress arrive in bursts of a run. The record
+        and `errors` are settled here, on the caller's thread."""
+        work = [(src, rel) for src, rel, _size, checksum, _kind in items
+                if not unchanged(self._prev, rel, checksum, self._recheck)]
+        if len(work) > 1:
+            if self._links is None:
+                self._links = ThreadPoolExecutor(LINK_THREADS, thread_name_prefix="publish-link")
+            placed = self._links.map(lambda w: self._place(*w), work)
+        else:
+            placed = (self._place(*w) for w in work)
+        for _src, rel, _size, checksum, _kind in items:
+            if "/by-hash/" in f"/{rel}":
+                self._bh_dirs.add(rel.rsplit("/", 1)[0])
+            if unchanged(self._prev, rel, checksum, self._recheck):
+                self._rows[rel] = checksum
+                yield "skipped", None
+                continue
+            status = self._settle(rel, checksum, next(placed))
+            yield status, (self.errors[-1] if status == "error" else None)
+
+    def _place(self, src: Path, rel: str) -> "str | OSError":
+        """The filesystem half of `link` — safe on any thread."""
+        from mmw.core.publisher.links import hardlink_or_copy, same_file
         dst = self.root / rel
         try:
             if dst.exists() and same_file(dst, src):
-                self._rows[rel] = checksum
                 return "skipped"
             hardlink_or_copy(src, dst, tmp_dir=self.tmp_dir)
-            self._rows[rel] = checksum
             return "linked"
         except OSError as e:
-            self.errors.append(f"{rel}: {e}")
+            return e
+
+    def _settle(self, rel: str, checksum: str, outcome: "str | OSError") -> str:
+        if isinstance(outcome, OSError):
+            self.errors.append(f"{rel}: {outcome}")
             return "error"
+        self._rows[rel] = checksum
+        return outcome
 
     def write(self, rel: str, data: bytes) -> None:
         # A TreeSink destination is live-served. The nginx root placeholder
@@ -443,6 +482,9 @@ class TreeSink:
         return removed, removed_bytes
 
     def close(self) -> None:
+        if self._links is not None:
+            self._links.shutdown()
+            self._links = None
         # Debris from a killed publish: not servable (nothing under
         # `{root}/.mmw/` is inside any mirror_base, so no nginx site roots
         # reach it), but it would accumulate forever otherwise. One listdir.

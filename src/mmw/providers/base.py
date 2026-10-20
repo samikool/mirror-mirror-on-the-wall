@@ -40,6 +40,9 @@ class MetadataFile:
     content: bytes | None = None  # pre-fetched content; skips the GET in _fetch_one_metadata
     expected_sha256: str | None = None  # if set, content is verified before writing
     fallback_url: str | None = None     # canonical URL to try if url (by-hash) is exhausted
+    # A local copy to try before the URL: called with expected_sha256, returns
+    # the bytes or None. A miss or a checksum mismatch falls through to the URL.
+    local: Callable[[str], bytes | None] | None = None
     # Explicit ref kind. The sync used to infer this from the shape of the
     # other fields — "content is set and expected_sha256 is not" meant a
     # release file — which happened to be true for `AptProvider` (it pre-fetches

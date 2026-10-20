@@ -42,6 +42,19 @@ def is_safe_checksum(checksum: str) -> bool:
     return bool(_HEX_DIGEST_RE.match(checksum))
 
 
+NAME_MAX = 255  # bytes in one path component, on every filesystem a pool lives on
+
+
+def fit_name(name: str) -> str:
+    """`name` cut to NAME_MAX bytes. Pool and tmp names prefix the upstream
+    filename with a digest or ids, and a filename that fits on its own can
+    overflow then — PyPI has a 211-byte wheel name. Callers keep their unique
+    part at the front, so cutting the tail never makes two names collide."""
+    if len(name) <= NAME_MAX // 4 or (len(name) <= NAME_MAX and name.isascii()):
+        return name
+    return name.encode()[:NAME_MAX].decode("utf-8", "ignore")
+
+
 def _validate_blob_name(checksum: str, filename: str) -> None:
     if not is_safe_checksum(checksum):
         raise ValueError(
@@ -1011,11 +1024,11 @@ class Pool:
         components, and a metadata checksum is upstream-supplied.
         """
         _validate_blob_name(checksum, filename)
-        pool_dest = self._packages_dir / checksum[:2] / f"{checksum}-{filename}"
+        pool_dest = self._packages_dir / checksum[:2] / fit_name(f"{checksum}-{filename}")
         pool_dest.parent.mkdir(parents=True, exist_ok=True)
 
         if isinstance(source, bytes):
-            tmp = self._tmp_dir / f"{os.getpid()}-{threading.get_ident()}-{filename}"
+            tmp = self._tmp_dir / fit_name(f"{os.getpid()}-{threading.get_ident()}-{filename}")
             tmp.write_bytes(source)
         else:
             tmp = source
@@ -1249,7 +1262,7 @@ class Pool:
         """Where `add` keeps a blob. Listings derive it rather than read the
         stored `pool_path`: that column is not in the covering index, and it
         goes stale when the pool directory moves."""
-        return self._packages_dir / checksum[:2] / f"{checksum}-{filename}"
+        return self._packages_dir / checksum[:2] / fit_name(f"{checksum}-{filename}")
 
     def _blob_strs(self):
         """`str(blob_path(cs, fn))` for a listing's every row, as one f-string:
@@ -1257,7 +1270,7 @@ class Pool:
         0.3 s. The same string — the root is already a normalised path, and
         `add` refuses a checksum or filename that could add a component."""
         root = str(self._packages_dir)
-        return lambda cs, fn: f"{root}/{cs[:2]}/{cs}-{fn}"
+        return lambda cs, fn: f"{root}/{cs[:2]}/{fit_name(f'{cs}-{fn}')}"
 
     def _mirror_files_sql(self, mirror_names: list[str], kinds: tuple[str, ...] | None,
                           prefix: str = "") -> tuple[str, list]:
@@ -1477,7 +1490,7 @@ class Pool:
         right for a download's tmp file and wrong for anything that stays
         where it is (a key, a mirrored upstream file)."""
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._tmp_dir / f"copy-{os.getpid()}-{threading.get_ident()}-{filename}"
+        tmp = self._tmp_dir / fit_name(f"copy-{os.getpid()}-{threading.get_ident()}-{filename}")
         shutil.copyfile(src, tmp)
         return self.add(tmp, checksum, "sha256", filename, size)
 

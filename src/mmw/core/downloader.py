@@ -28,6 +28,7 @@ from mmw.core.pool import (
     KIND_RELEASE,
     Pool,
     acquire_sync_lock,
+    fit_name,
     release_sync_lock,
 )
 from mmw.providers.base import MetadataFile, PackageInfo
@@ -189,6 +190,10 @@ def _fetch_metadata_content_scoped(mf: MetadataFile, stop_event=None) -> FetchRe
         if mf.expected_sha256 and hashlib.sha256(content).hexdigest() != mf.expected_sha256:
             return Fetch.FAILED, None, "checksum mismatch on pre-fetched content"
         return Fetch.OK, content, None
+    if mf.local is not None and mf.expected_sha256:
+        content = mf.local(mf.expected_sha256)
+        if content is not None and hashlib.sha256(content).hexdigest() == mf.expected_sha256:
+            return Fetch.OK, content, None
 
     if mf.fallback_url is not None:
         return _fetch_by_hash(mf, stop_event)
@@ -372,7 +377,7 @@ def _partial_path(pool: Pool, pkg: PackageInfo) -> Path:
     Abandoned partials are swept by the pool's 24 h tmp reaper.
     """
     key = hashlib.sha256(pkg.url.encode()).hexdigest()[:16]
-    return pool._tmp_dir / f"{os.getpid()}-part-{key}-{uuid.uuid4().hex[:12]}-{pkg.filename}"
+    return pool._tmp_dir / fit_name(f"{os.getpid()}-part-{key}-{uuid.uuid4().hex[:12]}-{pkg.filename}")
 
 
 def _download_sync(
@@ -523,19 +528,59 @@ async def _verify_metadata_batch(files, pooled, executor, stop_event, max_connec
     return results
 
 
-def _store_verified_metadata(files, results, pool, stop_event, phase_callback):
+def _store_verified_metadata(files, results, pool, stop_event, seen):
     """Keep small sequential HDD writes together, off the event loop."""
-    seen = set()
-    for index, (mf, result) in enumerate(zip(files, results)):
+    for mf, result in zip(files, results):
         if stop_event is not None and stop_event.is_set():
             return False
+        if isinstance(result, BaseException):
+            continue
         outcome, content, _reason = result
         if outcome is Fetch.OK and content is not None and mf.expected_sha256 not in seen:
             pool.add(content, mf.expected_sha256, "sha256", _meta_filename(mf.repo_path), len(content))
             seen.add(mf.expected_sha256)
-        if phase_callback and (index + 1) % 1000 == 0:
-            phase_callback(f"Storing verified metadata: {index + 1:,}/{len(files):,} files...")
     return True
+
+
+# Verified metadata is fetched and pooled this many files at a time: a
+# full-PyPI unit's 600k bodies (~3.5 GB) are never all in memory at once.
+_VERIFY_SLICE = 5000
+
+
+async def _verify_and_store_metadata(files, pooled, executor, pool, stop_event, max_connections,
+                                     phase_callback, record_time):
+    """Fetch and pool verified metadata a slice at a time, each slice written
+    while the next one downloads. Returns (results without their bytes,
+    stored) — stored False when stopped. Blobs are pooled even when another
+    slice fails: unreferenced, they cost nothing and prune reaps them; only
+    the refs make the index, and those still land all or nothing.
+    "metadata writes" is only the time spent waiting on writes the downloads
+    did not hide."""
+    loop = asyncio.get_running_loop()
+    results: list = []
+    seen: set[str] = set()
+    storing = None
+    record_time("metadata writes", time.perf_counter())   # reported even when nothing is written
+
+    async def written() -> bool:
+        started = time.perf_counter()
+        try:
+            return await storing
+        finally:
+            record_time("metadata writes", started)
+
+    for start in range(0, len(files), _VERIFY_SLICE):
+        part = files[start:start + _VERIFY_SLICE]
+        fetched = await _verify_metadata_batch(part, pooled, executor, stop_event, max_connections)
+        if storing is not None and not await written():
+            return results, False
+        storing = loop.run_in_executor(executor, _store_verified_metadata, part, fetched, pool, stop_event, seen)
+        results += [r if isinstance(r, BaseException) else (r[0], None, r[2]) for r in fetched]
+        if phase_callback and len(files) > _VERIFY_SLICE:
+            phase_callback(f"Verifying metadata: {len(results):,}/{len(files):,} files...")
+    if storing is not None and not await written():
+        return results, False
+    return results, True
 
 
 async def download_mirror(
@@ -837,9 +882,10 @@ async def download_mirror(
             )
 
         # ── Phase 3: metadata blobs ────────────────────────────────────────────
-        # Verified files are fetched into memory and ALL checked before any
-        # entry is recorded; nothing becomes visible until the refs flip, so a
-        # mid-update CDN mismatch simply leaves the previous snapshot in force.
+        # Verified files are ALL checked before any entry is recorded (their
+        # blobs are pooled slice by slice, unreferenced); nothing becomes
+        # visible until the refs flip, so a mid-update CDN mismatch simply
+        # leaves the previous snapshot in force.
         if phase_callback:
             phase_callback("Syncing metadata...")
         if summary.stopped or (stop_event and stop_event.is_set()):
@@ -929,9 +975,12 @@ async def download_mirror(
             record_time("metadata lookup", started)
             if phase_callback:
                 phase_callback(f"Verifying metadata: {len(verified_files):,} files...")
+            # Fresh verified blobs are pooled as they arrive; ALREADY_DONE ones
+            # are referenced as-is. NOT_FOUND files get no entry.
             started = time.perf_counter()
-            fetch_results = await _verify_metadata_batch(
-                verified_files, already_pooled, executor, stop_event, max_connections)
+            fetch_results, stored = await _verify_and_store_metadata(
+                verified_files, already_pooled, executor, pool, stop_event, max_connections,
+                phase_callback, record_time)
             record_time("metadata verification", started)
 
             failed_paths = [
@@ -954,15 +1003,6 @@ async def download_mirror(
                     + ("…" if len(failed_paths) > 3 else "")
                 )
             else:
-                if phase_callback:
-                    phase_callback(f"Storing verified metadata: {len(verified_files):,} files...")
-                started = time.perf_counter()
-                # Pool freshly fetched verified blobs; ALREADY_DONE blobs are
-                # referenced as-is. NOT_FOUND files get no entry.
-                stored = await loop.run_in_executor(
-                    executor, _store_verified_metadata, verified_files, fetch_results,
-                    pool, stop_event, phase_callback)
-                record_time("metadata writes", started)
                 if not stored:
                     summary.stopped = True
                     summary.metadata_ok = False

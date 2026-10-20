@@ -177,42 +177,72 @@ def _link_rows(
 
     Returns False if interrupted by the stop event.
     """
+    many = getattr(sink, "link_many", None)
     for i in range(0, len(rows), _LINK_CHUNK):
         if stop_event and stop_event.is_set():
             return False
-        for repo_path, pool_path, size, kind, checksum in rows[i:i + _LINK_CHUNK]:
-            rel = f"{base}/{repo_path}"
-            is_pkg = kind == KIND_PKG
-
-            # `errors` is part of the Sink protocol: capture the length before
-            # the call so an "error" status can attribute exactly the entries
-            # THIS call added, not just assume the last one is ours.
-            before = len(sink.errors)
-            status = sink.link(Path(pool_path), rel, size, checksum, kind)
-            if status == "linked":
-                result.linked += 1
-                result.linked_bytes += size
-                if progress:
-                    progress(rel, "linked" if is_pkg else "linked-meta")
-            elif status == "skipped":
-                result.skipped += 1
-                result.skipped_bytes += size
-                if progress:
-                    progress(rel, "skipped" if is_pkg else "skipped-meta")
-            else:  # "error"
-                added = sink.errors[before:]
-                result.errors.extend(added if added else [f"{rel}: link error"])
-                continue
-
-            # by-hash link for apt index files — the pool key IS the sha256,
-            # so this costs one hardlink, no hashing. Status is ignored: a
-            # failed by-hash link is not fatal to the file it mirrors.
-            if by_hash and _wants_by_hash(repo_path, kind):
-                parent = str(Path(repo_path).parent)
-                bh_base = f"{base}/{parent}" if parent != "." else base
-                sink.link(Path(pool_path), f"{bh_base}/by-hash/SHA256/{checksum}",
-                         size, checksum, kind)
+        for run in _trust_runs(rows[i:i + _LINK_CHUNK]):
+            if many is not None:
+                placed = many([(Path(r[1]), f"{base}/{r[0]}", r[2], r[4], r[3]) for r in run])
+            for repo_path, pool_path, size, kind, checksum in run:
+                rel = f"{base}/{repo_path}"
+                if many is not None:
+                    status, error = next(placed)
+                    added = [error] if error else []
+                else:
+                    # Capture the length before the call so an "error" status
+                    # can attribute exactly the entries THIS call added, not
+                    # just assume the last one is ours.
+                    before = len(sink.errors)
+                    status = sink.link(Path(pool_path), rel, size, checksum, kind)
+                    added = sink.errors[before:]
+                _settle_row(status, added, repo_path, pool_path, size, kind, checksum,
+                            base, sink, result, progress, by_hash)
     return True
+
+
+def _trust_runs(rows):
+    """Consecutive rows a sink may place in any order: a run never crosses
+    into the release files, which go last. `publish_group` already calls once
+    per kind; `publish_by_host` interleaves each file with its `.metadata`
+    (pkg, meta, pkg, …), so splitting on every kind change made runs of one."""
+    run: list = []
+    for row in rows:
+        if run and (row[3] == KIND_RELEASE) != (run[-1][3] == KIND_RELEASE):
+            yield run
+            run = []
+        run.append(row)
+    if run:
+        yield run
+
+
+def _settle_row(status, added, repo_path, pool_path, size, kind, checksum,
+                base, sink, result, progress, by_hash) -> None:
+    """Count one row's status and report it; then its by-hash link."""
+    rel = f"{base}/{repo_path}"
+    is_pkg = kind == KIND_PKG
+    if status == "linked":
+        result.linked += 1
+        result.linked_bytes += size
+        if progress:
+            progress(rel, "linked" if is_pkg else "linked-meta")
+    elif status == "skipped":
+        result.skipped += 1
+        result.skipped_bytes += size
+        if progress:
+            progress(rel, "skipped" if is_pkg else "skipped-meta")
+    else:  # "error"
+        result.errors.extend(added if added else [f"{rel}: link error"])
+        return
+
+    # by-hash link for apt index files — the pool key IS the sha256,
+    # so this costs one hardlink, no hashing. Status is ignored: a
+    # failed by-hash link is not fatal to the file it mirrors.
+    if by_hash and _wants_by_hash(repo_path, kind):
+        parent = str(Path(repo_path).parent)
+        bh_base = f"{base}/{parent}" if parent != "." else base
+        sink.link(Path(pool_path), f"{bh_base}/by-hash/SHA256/{checksum}",
+                  size, checksum, kind)
 
 
 def _dedup_rows(rows) -> list[tuple]:

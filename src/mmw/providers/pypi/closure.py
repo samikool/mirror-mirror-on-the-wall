@@ -82,13 +82,39 @@ def _ver(text: str) -> Version | None:
         return None
 
 
+class _Requirements:
+    """Parsed requirement lines, shared by every target: the most recent
+    REQUIREMENTS of them. All of PyPI has millions of distinct lines at about
+    1 KB parsed — an unbounded table was gigabytes."""
+
+    REQUIREMENTS = 1 << 17
+
+    def __init__(self):
+        self._parsed: OrderedDict[str, Requirement | None] = OrderedDict()
+
+    def get(self, line: str) -> Requirement | None:
+        parsed = self._parsed
+        if line in parsed:
+            parsed.move_to_end(line)
+            return parsed[line]
+        try:
+            req = Requirement(line)
+        except InvalidRequirement:
+            req = None
+        parsed[line] = req
+        if len(parsed) > self.REQUIREMENTS:
+            parsed.popitem(last=False)
+        return req
+
+
 class _TargetClosure:
     """One target's fixpoint. Project files are re-read from the universe on
     demand rather than held: at full PyPI scale only small per-project answers
-    are cached."""
+    are cached, and of a reached release only the files this target can use."""
 
     def __init__(self, universe: Universe, target: Target, floors: Floors, sdists: bool,
-                 report: Report, keep: KeepSet, requirements: dict, stop_event=None, progress=None):
+                 report: Report, keep: KeepSet, requirements: _Requirements, stop_event=None,
+                 progress=None):
         self.u, self.t, self.sdists = universe, target, sdists
         self.stop_event, self.say = stop_event, progress or (lambda _m: None)
         self.report, self.keep, self._requirements = report, keep, requirements
@@ -101,6 +127,7 @@ class _TargetClosure:
         self._release_files: dict[tuple[str, Version], list[DistFile]] = {}
         self._picks: dict[tuple[str, str], tuple[Version, str] | None] = {}
         self._markers: dict[tuple[str, frozenset], bool] = {}
+        self._seeds: list[tuple[str, Version, frozenset, str]] = []
 
     # ── per-project answers ───────────────────────────────────────────────
 
@@ -124,10 +151,17 @@ class _TargetClosure:
             self._tables.popitem(last=False)
         return table
 
+    def _for_target(self, files: list[DistFile]) -> list[DistFile]:
+        """The files of a release this target could keep or install — numpy's
+        forty wheels are one or two on a single target. Yanked ones stay: an
+        exact pin may keep them."""
+        return [f for f in files if requires_python_ok(f.requires_python, self.t)
+                and (f.kind == "sdist" or self.matcher.keeps(f.wheel_tags))]
+
     def _files_of(self, name: str, version: Version) -> list[DistFile]:
         key = (name, version)
         if key not in self._release_files:
-            self._release_files[key] = self._releases(name).get(version, [])
+            self._release_files[key] = self._for_target(self._releases(name).get(version, []))
         return self._release_files[key]
 
     def _installable_release(self, files: list[DistFile], *, allow_yanked: bool = False) -> bool:
@@ -147,7 +181,7 @@ class _TargetClosure:
         stable = [v for v in versions if not v.is_prerelease]
         seed = (stable or versions or [None])[0]
         if seed is not None:
-            self._release_files[(name, seed)] = by_v[seed]
+            self._release_files[(name, seed)] = self._for_target(by_v[seed])
         return seed
 
     def chosen_wheel(self, name: str, version: Version, *, allow_yanked: bool = False) -> DistFile | None:
@@ -187,12 +221,7 @@ class _TargetClosure:
     # ── requirements ──────────────────────────────────────────────────────
 
     def parse(self, release: str, line: str) -> Requirement | None:
-        if line not in self._requirements:
-            try:
-                self._requirements[line] = Requirement(line)
-            except InvalidRequirement:
-                self._requirements[line] = None
-        req = self._requirements[line]
+        req = self._requirements.get(line)
         if req is None:
             self.report.invalid.append((release, line))
         return req
@@ -210,26 +239,30 @@ class _TargetClosure:
 
     # ── the fixpoint ──────────────────────────────────────────────────────
 
-    def run(self, seeds: Iterable[tuple[str, list[DistFile] | None]]) -> None:
-        """`seeds`: (name, its files) — files None to look the project up."""
+    def add_seed(self, name: str, files: list[DistFile]) -> None:
+        v = self.seed(name, files)
+        if v is not None:
+            self._seeds.append((name, v, frozenset(), "wheel"))
+
+    def run(self) -> None:
+        """The fixpoint from the seeds added so far."""
         key = self.t.key
         kept: dict[tuple[str, Version], str] = {}      # release -> how it was reached
-        frontier = []
-        for name, files in seeds:
-            v = self.seed(name, files)
-            if v is not None:
-                frontier.append((name, v, frozenset(), "wheel"))
+        frontier, self._seeds = self._seeds, []
         seed_releases = {(n, v) for n, v, _, _ in frontier}
         seed_meta: dict[tuple[str, Version], tuple[list[str], list[str]]] = {}
-        seen: set[tuple[str, Version, frozenset]] = set()
+        # Per release, the extras expanded so far and the best way it was
+        # reached. A release is expanded again only when either grows: keyed
+        # on the extras set itself, self-extras (`pkg[a]` → `pkg[a,b]` → …)
+        # made every subset a node — 557k releases in one wave on real PyPI.
+        expanded: dict[tuple[str, Version], tuple[frozenset, str]] = {}
         waves = 0
         while frontier:
             if self.stop_event is not None and self.stop_event.is_set():
                 return
-            wave = [node for node in dict.fromkeys(frontier) if node[:3] not in seen]
+            wave = self._merge(frontier, expanded)
             waves += 1
             self.say(f"{key}: wave {waves}, {len(wave):,} releases")
-            seen.update(node[:3] for node in wave)
             chosen: dict[tuple[str, Version], DistFile | None] = {}
             for name, v, _, how in wave:
                 if kept.get((name, v)) in (None, "sdist"):     # a wheel reach outranks a fallback
@@ -269,6 +302,25 @@ class _TargetClosure:
         self._extras_gaps(seed_meta, kept)
         self._collect(kept)
 
+    _RANK = {"sdist": 0, "yanked": 1, "wheel": 2}
+
+    def _merge(self, frontier, expanded) -> list:
+        """The frontier's new work: one node per release whose extras or reach
+        grew, carrying the union — markers are any-of over extras, so one
+        expansion with the union reaches what each subset would."""
+        merged: dict[tuple[str, Version], tuple[frozenset, str]] = {}
+        for name, v, extras, how in frontier:
+            release = (name, v)
+            have = merged.get(release) or expanded.get(release)
+            if have is not None:
+                if extras <= have[0] and self._RANK[how] <= self._RANK[have[1]]:
+                    continue
+                extras = extras | have[0]
+                how = max(how, have[1], key=self._RANK.__getitem__)
+            merged[release] = (extras, how)
+        expanded.update(merged)
+        return [(name, v, extras, how) for (name, v), (extras, how) in merged.items()]
+
     def _extras_gaps(self, seed_meta, kept) -> None:
         kept_versions: dict[str, list[Version]] = {}
         for name, v in kept:
@@ -277,7 +329,7 @@ class _TargetClosure:
             for extra in provides:
                 extra_key = frozenset({canonicalize_name(extra)})
                 for line in requires:
-                    req = self._requirements.get(line)
+                    req = self._requirements.get(line)   # reported invalid when it was first read
                     if req is None or self.active(req, frozenset()) or not self.active(req, extra_key):
                         continue
                     have = kept_versions.get(canonicalize_name(req.name), [])
@@ -312,12 +364,24 @@ def keep_closure(universe: Universe, targets: list[Target], floors: Floors, *, s
     result is then partial and the caller must not use it."""
     say = progress or (lambda _m: None)
     keep, report = KeepSet(), Report()
-    requirements: dict[str, Requirement | None] = {}
-    named = None if seeds is None else [canonicalize_name(s) for s in seeds]
-    for i, target in enumerate(targets, start=1):
+    requirements = _Requirements()
+    closures = [_TargetClosure(universe, target, floors, sdists, report, keep, requirements, stop_event, say)
+                for target in targets]
+    # Every target seeds from one pass over the index: decoding all of PyPI
+    # costs minutes, and each target's seeds are only a few files a project.
+    found = (universe.scan() if seeds is None
+             else ((n, universe.files(n)) for n in dict.fromkeys(canonicalize_name(s) for s in seeds)))
+    for i, (name, files) in enumerate(found, start=1):
+        if i % 10_000 == 0:
+            if stop_event is not None and stop_event.is_set():
+                return keep, report._normalize()
+            say(f"seeding {len(targets)} target(s): {i:,} projects read")
+        for closure in closures:
+            closure.add_seed(name, files)
+    for i in range(len(closures)):
         if stop_event is not None and stop_event.is_set():
             break
-        say(f"{target.key}: resolving latest + dependencies ({i}/{len(targets)})")
-        _TargetClosure(universe, target, floors, sdists, report, keep, requirements,
-                       stop_event, say).run(universe.scan() if named is None else ((n, None) for n in named))
+        closure, closures[i] = closures[i], None       # its tables go when it is done
+        say(f"{closure.t.key}: resolving latest + dependencies ({i + 1}/{len(targets)})")
+        closure.run()
     return keep, report._normalize()

@@ -94,6 +94,19 @@ def test_sync_then_verify(up, tmp_path):
         assert wheels and all(p + ".metadata" in refs for p in wheels)
 
 
+def test_core_metadata_the_resolve_read_is_not_downloaded_again(up, tmp_path):
+    units = _resolve(tmp_path)
+    resolved = [str(r.url) for r in up.requests if str(r.url).endswith(".metadata")]
+    assert resolved
+    up.requests.clear()
+    assert all(s.ok for s in _sync(tmp_path, units))
+    synced = [str(r.url) for r in up.requests if str(r.url).endswith(".metadata")]
+    assert not set(resolved) & set(synced)      # read back from the index cache
+    with Pool(tmp_path, read_only=True) as pool:
+        refs = pool.ref_map(_unit(units, "3.12-linux-glibc-amd64").name)
+        assert all(p + ".metadata" in refs for p in refs if p.endswith(".whl"))
+
+
 def test_closure_facts_on_real_data(up, tmp_path):
     units = _resolve(tmp_path)
     _sync(tmp_path, units)

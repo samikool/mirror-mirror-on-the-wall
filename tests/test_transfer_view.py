@@ -217,3 +217,29 @@ def test_transfer_view_renders_pypi_render_progress():
         assert view._phase == ""
         assert any("120 written" in line for line in view._log_pending)
     _run(check)
+
+
+def test_a_finished_publish_clears_the_phase_line():
+    """The last step's text ("saving the publish record…") must not stay up
+    beside a finished publish."""
+    async def check(app, view, pilot):
+        view.begin(1)
+        view.record("", "step:saving the publish record…")
+        assert view._phase
+        view.mark_done(SimpleNamespace(linked=1, skipped=0, errors=[]))
+        assert view._phase == ""
+    _run(check)
+
+
+def test_publish_summary_counts_packages_as_the_bar_does():
+    async def check(app, view, pilot):
+        from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
+        view.begin(3)
+        result = NetworkPublishResult(network_name="pypi", mirrors=[
+            MirrorPublishResult(mirror_name="h", linked=5, skipped=1, linked_meta=2, skipped_meta=1)])
+        view.mark_done(result)
+        assert view._counts() == "3 linked, 0 already current (+ 3 metadata files)"
+        view.mark_done(NetworkPublishResult(network_name="apt", mirrors=[
+            MirrorPublishResult(mirror_name="h", linked=4, skipped=2)]))
+        assert view._counts() == "4 linked, 2 already current"
+    _run(check)

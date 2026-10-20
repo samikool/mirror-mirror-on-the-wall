@@ -51,6 +51,10 @@ class MirrorPublishResult:
     pruned: int = 0
     pruned_bytes: int = 0
     errors: list[str] = field(default_factory=list)
+    # Of `linked` / `skipped`, the metadata files (an index, a wheel's
+    # `.metadata`): a summary counts packages, as the progress bar does.
+    linked_meta: int = 0
+    skipped_meta: int = 0
 
     @property
     def total_files(self) -> int:
@@ -126,6 +130,14 @@ class NetworkPublishResult:
         if self.totals is not None:
             return min(self.totals.bytes, self.totals.published_bytes)
         return sum(r.skipped_bytes for r in self.mirrors)
+
+    @property
+    def linked_meta(self) -> int:
+        return 0 if self.totals is not None else sum(r.linked_meta for r in self.mirrors)
+
+    @property
+    def skipped_meta(self) -> int:
+        return 0 if self.totals is not None else sum(r.skipped_meta for r in self.mirrors)
 
     @property
     def pruned(self) -> int:

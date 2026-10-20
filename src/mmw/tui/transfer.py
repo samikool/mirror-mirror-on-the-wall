@@ -292,7 +292,12 @@ class TransferView(Vertical):
             if getattr(r, "deleted", 0):
                 text += f", {r.deleted:,} to delete"
         else:
-            text = f"{r.linked:,} linked, {r.skipped:,} already current"
+            # Packages, as the bar counts them; metadata files after.
+            linked_meta, skipped_meta = getattr(r, "linked_meta", 0), getattr(r, "skipped_meta", 0)
+            text = (f"{r.linked - linked_meta:,} linked, "
+                    f"{r.skipped - skipped_meta:,} already current")
+            if linked_meta + skipped_meta:
+                text += f" (+ {linked_meta + skipped_meta:,} metadata files)"
             if getattr(r, "pruned", 0):
                 text += f", {r.pruned:,} pruned"
         warnings = [*(getattr(r, "dist_upgrade_warnings", None) or []),
@@ -415,6 +420,7 @@ class TransferView(Vertical):
             self._stopped_at_end = self.stop_event.is_set() if stopped is None else stopped
             self._transfer_done = True
             self._result = result
+            self._phase = ""            # the last step's line ends with the work
 
     def mark_error(self, msg: str) -> None:
         with self._lock:

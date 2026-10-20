@@ -148,11 +148,13 @@ def _settle_row(status, added, repo_path, pool_path, size, kind, checksum,
     if status == "linked":
         result.linked += 1
         result.linked_bytes += size
+        result.linked_meta += not is_pkg
         if progress:
             progress(rel, "linked" if is_pkg else "linked-meta")
     elif status == "skipped":
         result.skipped += 1
         result.skipped_bytes += size
+        result.skipped_meta += not is_pkg
         if progress:
             progress(rel, "skipped" if is_pkg else "skipped-meta")
     else:  # "error"
@@ -218,8 +220,10 @@ def publish_by_host(ctx, rows) -> tuple[list, set[str]]:
         host_rows = by_host[host]
         if ctx.mirror_start_callback:
             # A host is no unit the pre-publish counts know by name, so
-            # its own count goes with it.
-            ctx.mirror_start_callback(host, idx + 1, len(by_host), count=len(host_rows))
+            # its own count goes with it — package files only, as the bar
+            # counts them (a `.metadata` beside each wheel is linked-meta).
+            ctx.mirror_start_callback(host, idx + 1, len(by_host),
+                                      count=sum(r[3] == KIND_PKG for r in host_rows))
         result = MirrorPublishResult(mirror_name=host)
         ordered = [r for r in host_rows if r[3] != KIND_RELEASE] + \
                   [r for r in host_rows if r[3] == KIND_RELEASE]

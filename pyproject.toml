@@ -1,14 +1,14 @@
 [project]
 name = "mirror-mirror-on-the-wall"
 version = "1.1.2"
-description = "APT repository mirror for airgapped networks — exact upstream mirroring, GPG signatures preserved, content-addressable pool"
+description = "Mirror APT repositories, PyPI and VS Code for airgapped networks — exact upstream layouts at the real hostnames, signatures preserved, one deduplicated pool"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
     { name = "Sam Morgan", email = "sam.morgan44@gmail.com" }
 ]
-keywords = ["mirror", "apt", "debian", "ubuntu", "repository", "airgap"]
+keywords = ["mirror", "apt", "debian", "ubuntu", "pypi", "pip", "vscode", "repository", "airgap", "offline"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",

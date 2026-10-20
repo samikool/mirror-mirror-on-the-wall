@@ -81,7 +81,7 @@ def _digest(data: bytes, root: Path) -> str:
 def _capture(tmp_path: Path) -> dict:
     mirror_dir, cfg = _build(tmp_path)
     root = tmp_path / "published"
-    publish_network(config.NetworkConfig(name="lab", root=root, dist_upgrade=True),
+    publish_network(config.NetworkConfig(name="lab", root=root, dist_upgrade=True, certs=False),
                     cfg, mirror_dir)
     published = {
         p.relative_to(root).as_posix(): _digest(p.read_bytes(), root)
@@ -89,7 +89,8 @@ def _capture(tmp_path: Path) -> dict:
         if p.is_file() and not p.relative_to(root).as_posix().startswith(".mmw/")
     }
     result = bundle_network(
-        config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", dist_upgrade=True),
+        config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", dist_upgrade=True,
+                             certs=False),
         cfg, mirror_dir)
     bundled = {}
     with tarfile.open(result.out_path) as tar:

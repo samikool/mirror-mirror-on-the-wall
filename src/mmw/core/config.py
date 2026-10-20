@@ -931,7 +931,7 @@ class NetworkConfig(_StrictModel):
     select: list[NetworkSelect] = []  # empty = every mirrored repository
     prune: bool = True        # remove destination files no longer in source
     dist_upgrade: bool = False  # publish changelogs.ubuntu.com files + UPGRADE.md
-    certs: bool = False       # TLS key/CSR; serve HTTPS wherever it lands — bundles carry cert + key
+    certs: bool = True        # TLS key/CSR; serve HTTPS wherever it lands — bundles carry cert + key
     nginx: bool = True        # ship the nginx image, nginx/compose.yaml and mirror.conf
     # How long a release that left a provider's keep set stays published
     # (providers with version history — PyPI). Widening is not retroactive.
@@ -1421,7 +1421,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             ),
             **({"nginx": False} if not n.nginx else {}),
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
-            **({"certs": True} if n.certs else {}),
+            **({"certs": False} if not n.certs else {}),
             **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
         }
         for n in cfg.networks

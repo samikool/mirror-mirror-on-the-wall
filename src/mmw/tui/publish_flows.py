@@ -366,9 +366,11 @@ class PublishFlows:
         """What headless `mmw publish` does after a clean publish of a certs
         network — refresh key/CSR — reported in the panel, not a page. A certs
         failure never turns a good publish into a failed one."""
-        from mmw.core.certs import generate_certs
+        from mmw.core.certs import collect_hostnames, generate_certs
 
         try:
+            if not await asyncio.to_thread(collect_hostnames, net, self.cfg()):
+                return                  # nothing served yet: nothing to certify
             hostnames, *paths = await asyncio.to_thread(generate_certs, net, self.cfg())
         except Exception as e:  # noqa: BLE001 — reported, publish stands
             view.write(f"  [$mmw-warn]⚠ certs: {escape(str(e) or type(e).__name__)}[/]")

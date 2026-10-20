@@ -311,7 +311,7 @@ certificate they trust. No server-side trick can fake a public certificate;
 this works when every client trusts **your** CA, which on an airgapped network
 lives on the airgapped side. Nothing has to come back across.
 
-With `certs = true`, both published trees and bundles carry the private key,
+With TLS on (the default; `certs = false` turns it off), both published trees and bundles carry the private key,
 certificate signing request, OpenSSL config and signing tools. Publish installs
 them directly; `apply.py` installs a bundle's copies in the same
 `{root}/.mmw/tls/` layout (key 0600, directory 0700; outside every web root).

@@ -49,7 +49,7 @@ def states(tmp_path):
     cfg = config.Config(settings=config.Settings(mirror_dir=mirror_dir),
                         sources=[config.SourceConfig(url=SRC, suites=["noble"],
                                                      components=["main"], arches=["amd64"])])
-    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", certs=False)  # snapshots, not TLS
     snaps, published = {}, {}
     for v in (1, 2, 3):
         _state(mirror_dir, v)

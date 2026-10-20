@@ -206,7 +206,7 @@ class NetworkForm(Vertical):
                             hint="Remove destination files no longer in the mirror on publish."),
                 ToggleField("dist-upgrade", net.dist_upgrade if net else False, id="du-switch",
                             hint="Serve changelogs.ubuntu.com meta-release files + UPGRADE.md."),
-                ToggleField("TLS certs", net.certs if net else False, id="certs-switch",
+                ToggleField("TLS certs", net.certs if net else True, id="certs-switch",
                             hint="HTTPS for every mirror hostname. Bundles carry the cert and its "
                                  "private key, and wait for the cert to be signed."),
                 ToggleField("nginx config", net.nginx if net else True, id="nginx-switch",

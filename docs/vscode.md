@@ -91,7 +91,6 @@ by dimension:
 [[networks]]
 name  = "lab"
 root  = "/srv/www/lab"
-certs = true                   # VS Code only speaks HTTPS — see TLS below
 
 [[networks.select]]
 source    = "https://marketplace.visualstudio.com"
@@ -172,7 +171,7 @@ the two wildcard zones.
 
 ### 2. TLS
 
-VS Code talks HTTPS only, so the network needs `certs = true`. The
+VS Code talks HTTPS only, so leave the network's TLS on (the default). The
 certificate mmw generates covers all seven names, wildcards included:
 `mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs it here, or
 `sign.py` signs it on the far side (see [Airgapped operation](airgap.md#https));

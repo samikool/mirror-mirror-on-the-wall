@@ -224,7 +224,7 @@ def test_a_legacy_bundle_tls_key_still_loads_and_is_dropped_on_save(tmp_path):
         '[[networks]]\nname = "lab"\ncerts = true\nbundle_tls = true\n\n'
         '[[networks]]\nname = "old"\nbundle_tls = false\n')
     cfg = config.load(tmp_path)
-    assert [(n.name, n.certs) for n in cfg.networks] == [("lab", True), ("old", False)]
+    assert [(n.name, n.certs) for n in cfg.networks] == [("lab", True), ("old", True)]
     assert "bundle_tls" not in config.NetworkConfig.model_fields
     config.save(cfg, tmp_path)
     assert "bundle_tls =" not in config.config_path(tmp_path).read_text()
@@ -298,3 +298,15 @@ def test_certs_command_encrypted_key_without_tty_or_env_fails_clearly(
     assert certs_cmd.run(cfg_dir, ca=ca_crt, ca_key=ca_key) == 1
     assert certs_cmd.PASSPHRASE_ENV in capsys.readouterr().err
     assert not (out / "mirror.crt").exists()
+
+
+def test_tls_is_on_by_default_and_off_survives_a_save(tmp_path):
+    """Every network serves HTTPS once signed (PyPI and VS Code clients only
+    speak it); `certs = false` is the opt-out, and a save keeps it."""
+    config.config_path(tmp_path).write_text(
+        f'[settings]\nmirror_dir = "{tmp_path / "m"}"\n\n'
+        '[[networks]]\nname = "on"\n\n[[networks]]\nname = "off"\ncerts = false\n')
+    cfg = config.load(tmp_path)
+    assert [(n.name, n.certs) for n in cfg.networks] == [("on", True), ("off", False)]
+    config.save(cfg, tmp_path)
+    assert [(n.name, n.certs) for n in config.load(tmp_path).networks] == [("on", True), ("off", False)]

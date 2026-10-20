@@ -242,8 +242,9 @@ remain available at `/mmw-keys/{label}/`. See
 
 Sources that say `https://` — most vendor repositories, and Ubuntu's
 release-upgrade check — need the mirror to answer on 443 with a certificate
-the client trusts, which in an airgap means one signed by your own CA. With
-`certs = true` on the network:
+the client trusts, which in an airgap means one signed by your own CA. Every
+network has TLS on by default (`certs = false` turns it off), so publish
+already wrote its key and signing request:
 
 ```bash
 uv run mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key

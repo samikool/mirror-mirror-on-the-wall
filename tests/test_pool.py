@@ -32,6 +32,25 @@ def test_contains_and_batch_contains(pool):
     assert pool.batch_contains([]) == set()
 
 
+def test_a_filename_that_fits_alone_but_not_behind_a_digest_still_pools(pool, mirror_dir):
+    # PyPI's zzz…z project: a 211-byte wheel name, 276 bytes behind the checksum.
+    name = "z" * 190 + "-0.1.0-py3-none-any.whl"
+    checksum = _add(pool, b"wheel", name)
+    path = pool.blob_path(checksum, name)
+    assert path.read_bytes() == b"wheel"
+    assert len(path.name.encode()) == 255 and path.name.startswith(checksum)
+    assert pool._blob_strs()(checksum, name) == str(path)   # what listings derive
+    assert pool.add_copy(path, checksum, name, 5) == path
+    assert not any((mirror_dir / ".pool" / "tmp").iterdir())
+
+
+def test_fit_name_never_splits_a_character():
+    from mmw.core.pool import fit_name
+    assert fit_name("a" * 300) == "a" * 255
+    assert fit_name("é" * 200) == "é" * 127
+    assert fit_name("short.whl") == "short.whl"
+
+
 def test_add_upsert_updates_pool_path_for_new_filename(pool):
     """Same checksum re-added under a new filename → DB follows the live file."""
     content = b"same-bytes"

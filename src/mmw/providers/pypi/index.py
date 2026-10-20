@@ -3,7 +3,10 @@
 The PEP 691 root listing carries each project's `_last-serial`; a project
 page is refetched only when its serial moved. Pages are committed a batch at
 a time, so a stopped first sync (about 917k pages) keeps what it read and the
-next run continues from there. PEP 658 core metadata is cached by its sha256.
+next run continues from there. PEP 658 core metadata is cached by its sha256:
+the body (read once more by the sync, so it is never downloaded twice) and,
+apart, the only two headers the closure reads — a small table that stays in
+RAM where the bodies (about 4 GB for all of PyPI) would be read from disk.
 """
 import json
 import posixpath
@@ -12,6 +15,7 @@ import threading
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from email.parser import HeaderParser
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
@@ -33,13 +37,14 @@ FILES_HOST = "files.pythonhosted.org"
 MAX_DROP = 100
 MAX_DROP_FRACTION = 0.01
 USER_AGENT = "mmw (+https://github.com/samikool/mirror-mirror-on-the-wall)"
+SCHEMA_VERSION = 1   # 1: `requires` holds the parsed headers of every cached body
 
 
 def _client() -> httpx.Client:
     return retrying_client(timeout=60, follow_redirects=True, headers={"User-Agent": USER_AGENT})
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DistFile:
     project: str            # canonical name
     filename: str
@@ -86,6 +91,12 @@ def _metadata_hash(entry: dict) -> str | None:
         if isinstance(value, dict) and value.get("sha256"):
             return value["sha256"]
     return None
+
+
+def parse_core_metadata(body: bytes) -> tuple[list[str], list[str]]:
+    """(Requires-Dist lines, Provides-Extra names) of a core metadata body."""
+    headers = HeaderParser().parsestr(body.decode("utf-8", errors="replace"))
+    return headers.get_all("Requires-Dist") or [], headers.get_all("Provides-Extra") or []
 
 
 def _file_url_ok(url: str) -> bool:
@@ -152,10 +163,14 @@ class IndexCache:
         self._lock = threading.Lock()
         self._db = sqlite3.connect(target, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
+        fresh = self._db.execute("SELECT 1 FROM sqlite_master WHERE name = 'projects'").fetchone() is None
         self._db.executescript(
             "CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, serial INTEGER, files BLOB);"
             "CREATE TABLE IF NOT EXISTS metadata (sha256 TEXT PRIMARY KEY, body BLOB);"
+            "CREATE TABLE IF NOT EXISTS requires (sha256 TEXT PRIMARY KEY, deps TEXT) WITHOUT ROWID;"
             "CREATE TABLE IF NOT EXISTS build_requires (sha256 TEXT PRIMARY KEY, requires TEXT);")
+        if fresh:
+            self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def serials(self) -> dict[str, int]:
         with self._lock:
@@ -203,9 +218,28 @@ class IndexCache:
             return [n for (n,) in self._db.execute("SELECT name FROM projects ORDER BY name")]
 
     def metadata(self, sha: str) -> bytes | None:
+        """A cached core metadata body — for the sync's copy, not the closure."""
         with self._lock:
             row = self._db.execute("SELECT body FROM metadata WHERE sha256 = ?", (sha,)).fetchone()
         return row[0] if row else None
+
+    def metadata_order(self, shas) -> dict[str, int]:
+        """{sha: its body's place in the file} for the cached ones — reading
+        bodies in this order is one forward pass, not a seek each."""
+        wanted = list(dict.fromkeys(s for s in shas if s))
+        found: dict[str, int] = {}
+        with self._lock:
+            for start in range(0, len(wanted), 500):
+                chunk = wanted[start:start + 500]
+                found.update(self._db.execute(
+                    f"SELECT sha256, rowid FROM metadata WHERE sha256 IN ({','.join('?' * len(chunk))})", chunk))
+        return found
+
+    def requires(self, sha: str) -> tuple[list[str], list[str]] | None:
+        """(Requires-Dist, Provides-Extra) of a cached body, without reading it."""
+        with self._lock:
+            row = self._db.execute("SELECT deps FROM requires WHERE sha256 = ?", (sha,)).fetchone()
+        return None if row is None else tuple(json.loads(row[0]))
 
     def missing_metadata(self, shas) -> set[str]:
         """Which of `shas` the cache does not hold — by key, never reading a body."""
@@ -215,12 +249,41 @@ class IndexCache:
             for start in range(0, len(wanted), 500):
                 chunk = wanted[start:start + 500]
                 have.update(r for (r,) in self._db.execute(
-                    f"SELECT sha256 FROM metadata WHERE sha256 IN ({','.join('?' * len(chunk))})", chunk))
+                    f"SELECT sha256 FROM requires WHERE sha256 IN ({','.join('?' * len(chunk))})", chunk))
         return set(wanted) - have
 
     def put_metadata(self, rows: list[tuple[str, bytes]]) -> None:
+        parsed = [(sha, json.dumps(parse_core_metadata(body), separators=(",", ":"))) for sha, body in rows]
         with self._lock, self._db:
             self._db.executemany("INSERT OR REPLACE INTO metadata VALUES (?, ?)", rows)
+            self._db.executemany("INSERT OR REPLACE INTO requires VALUES (?, ?)", parsed)
+
+    def backfill_requires(self, *, say=None, stop_event=None, batch: int = 2000) -> bool:
+        """Parse the bodies a cache from before `requires` holds — once, in
+        storage order. False when stopped (the next resolve starts over)."""
+        with self._lock:
+            if self._db.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+                return True
+            total = self._db.execute("SELECT max(rowid) FROM metadata").fetchone()[0] or 0
+        last = 0
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return False
+            with self._lock:
+                rows = self._db.execute("SELECT rowid, sha256, body FROM metadata WHERE rowid > ? "
+                                        "ORDER BY rowid LIMIT ?", (last, batch)).fetchall()
+            if not rows:
+                break
+            parsed = [(sha, json.dumps(parse_core_metadata(body), separators=(",", ":")))
+                      for _rowid, sha, body in rows]
+            with self._lock, self._db:
+                self._db.executemany("INSERT OR REPLACE INTO requires VALUES (?, ?)", parsed)
+            last = rows[-1][0]
+            if say:
+                say(f"PyPI metadata: indexing dependencies {last:,}/{total:,}")
+        with self._lock:
+            self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        return True
 
     def build_requires(self, sha: str):
         """An sdist's cached `BuildRequires`, or None."""

@@ -203,3 +203,62 @@ def test_prune_scan_keeps_by_hash_entries(tmp_path, pool):
     assert bh.exists()
     publish_group([m], TreeSink(net.root), pool, prune=True)
     assert bh.exists()  # current generation survives the prune walk
+
+
+def test_link_rows_hands_a_sink_whole_runs_with_release_files_last():
+    from mmw.core.publisher.links import _link_rows
+    from mmw.core.publisher.results import MirrorPublishResult
+
+    class Many:
+        def __init__(self):
+            self.errors, self.runs = [], []
+
+        def link_many(self, items):
+            self.runs.append([kind for *_, kind in items])
+            for _src, rel, _size, _cs, _kind in items:
+                if rel.endswith("bad"):
+                    self.errors.append(f"{rel}: boom")
+                    yield "error", self.errors[-1]
+                else:
+                    yield "linked", None
+
+    # PyPI's shape: each file then its .metadata, release files last.
+    rows = ([(f"pool/{i}", "/p", 1, KIND_PKG, "c") for i in range(2)]
+            + [("dists/Packages.bad", "/p", 1, KIND_META, "c"), ("pool/2", "/p", 1, KIND_PKG, "c"),
+               ("dists/Sources", "/p", 1, KIND_META, "c")]
+            + [("dists/InRelease", "/p", 1, KIND_RELEASE, "c")])
+    sink, result = Many(), MirrorPublishResult(mirror_name="m")
+
+    assert _link_rows(rows, "base", sink, result, None, None, by_hash=False)
+
+    assert sink.runs == [[KIND_PKG, KIND_PKG, KIND_META, KIND_PKG, KIND_META], [KIND_RELEASE]]
+    assert result.linked == 5
+    assert result.errors == ["base/dists/Packages.bad: boom"]
+
+
+def test_publish_by_host_links_a_pypi_tree_in_whole_runs():
+    """What PyPI publish actually hands the sink: path-ordered rows, each
+    file then its .metadata. Runs of one meant no thread ever got a second
+    file — correct output, serial speed."""
+    from types import SimpleNamespace
+
+    from mmw.core.publisher.links import _LINK_CHUNK, publish_by_host
+
+    class Many:
+        def __init__(self):
+            self.errors, self.runs = [], []
+
+        def link_many(self, items):
+            self.runs.append(len(items))
+            return iter([("linked", None)] * len(items))
+
+    rows = []
+    for i in range(3000):
+        path = f"files.pythonhosted.org/packages/{i:04x}/p-{i}-py3-none-any.whl"
+        rows += [(path, "/p", 1, KIND_PKG, "c"), (f"{path}.metadata", "/p", 1, KIND_META, "c")]
+    sink = Many()
+    ctx = SimpleNamespace(sink=sink, progress=None, stop_event=None, mirror_start_callback=None, prune=False)
+
+    publish_by_host(ctx, rows)
+
+    assert sink.runs == [_LINK_CHUNK, _LINK_CHUNK, 6000 - 2 * _LINK_CHUNK]

@@ -197,3 +197,55 @@ def test_ordinary_removals_still_apply(tmp_path):
     del fake.projects["p7"]
     r = refresh(cache, fake.client, threads=8)
     assert not r.refused and r.removed == 1 and "p7" not in cache.names()
+
+
+def test_metadata_keeps_the_body_and_its_two_headers(tmp_path):
+    meta = metadata_text("a", "1.0", requires=["b>=1", 'c; extra == "x"'], extras=["x"])
+    fake = FakePyPI()
+    fake.add("a", [file_entry("a-1.0-py3-none-any.whl", metadata=meta)])
+    cache = IndexCache(tmp_path)
+    refresh(cache, fake.client, threads=1)
+    f = cache.files("a")[0]
+    fetch_metadata(cache, [f], fake.client, threads=1)
+    assert cache.requires(f.metadata_sha256) == (["b>=1", 'c; extra == "x"'], ["x"])
+    assert cache.metadata(f.metadata_sha256) == meta      # the sync reads it back, not PyPI
+    assert cache.requires("0" * 64) is None
+
+
+def test_a_cache_from_before_requires_is_backfilled_once(tmp_path):
+    import sqlite3
+    meta = metadata_text("a", "1.0", requires=["b"])
+    sha = index.sha256(meta).hexdigest()
+    db = sqlite3.connect(tmp_path / "old.sqlite")
+    db.executescript("CREATE TABLE projects (name TEXT PRIMARY KEY, serial INTEGER, files BLOB);"
+                     "CREATE TABLE metadata (sha256 TEXT PRIMARY KEY, body BLOB);")
+    db.execute("INSERT INTO metadata VALUES (?, ?)", (sha, meta))
+    db.commit()
+    db.close()
+    (tmp_path / index.CACHE_DIR).mkdir()
+    (tmp_path / "old.sqlite").rename(tmp_path / index.CACHE_DIR / "index.sqlite")
+    cache = IndexCache(tmp_path)
+    assert cache.missing_metadata([sha]) == {sha}         # not yet indexed: would be refetched
+    stop = threading.Event()
+    stop.set()
+    assert cache.backfill_requires(stop_event=stop) is False
+    said = []
+    assert cache.backfill_requires(say=said.append) is True and said
+    assert cache.requires(sha) == (["b"], []) and cache.missing_metadata([sha]) == set()
+    said.clear()
+    assert cache.backfill_requires(say=said.append) is True and not said   # once
+
+
+def test_a_new_cache_needs_no_backfill(tmp_path):
+    cache = IndexCache(tmp_path)
+    said = []
+    assert cache.backfill_requires(say=said.append) and not said
+
+
+def test_metadata_order_is_storage_order(tmp_path):
+    cache = IndexCache(tmp_path)
+    bodies = [metadata_text(f"p{i}", "1.0") for i in range(3)]
+    cache.put_metadata([(index.sha256(b).hexdigest(), b) for b in bodies])
+    shas = [index.sha256(b).hexdigest() for b in bodies]
+    order = cache.metadata_order([*reversed(shas), "f" * 64])
+    assert sorted(order, key=order.get) == shas

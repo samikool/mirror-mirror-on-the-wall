@@ -11,7 +11,6 @@ import tempfile
 import threading
 import zipfile
 from datetime import date
-from email.parser import HeaderParser
 from pathlib import Path
 
 import httpx
@@ -54,11 +53,7 @@ class _Universe:
                                               stop_event=self.context.stop_event)
 
     def metadata(self, file):
-        body = self.cache.metadata(file.metadata_sha256) if file.metadata_sha256 else None
-        if body is None:
-            return None
-        headers = HeaderParser().parsestr(body.decode("utf-8", errors="replace"))
-        return headers.get_all("Requires-Dist") or [], headers.get_all("Provides-Extra") or []
+        return self.cache.requires(file.metadata_sha256) if file.metadata_sha256 else None
 
 
 class _PinnedUniverse:
@@ -329,6 +324,9 @@ class PypiProvider(BaseProvider):
             notes.append(f"{source.name}: {len(refreshed.failed)} project page(s) could not be read; "
                          f"their previous state is used: {', '.join(refreshed.failed[:5])}"
                          f"{'…' if len(refreshed.failed) > 5 else ''}")
+        if not cache.backfill_requires(say=say, stop_event=context.stop_event):
+            errors.append(f"{source.name}: stopped while indexing the cached core metadata")
+            return False
         universe = _Universe(cache, context, say)
         ts = targets(source.pythons, source.platforms, source.arches)
         say(f"{source.name}: resolving latest + dependencies for {len(ts)} target(s)…")
@@ -453,16 +451,21 @@ class PypiProvider(BaseProvider):
         packages = current + retained
         # Every kept wheel's PEP 658 metadata, by hash and without its body: the
         # engine skips what the pool holds and fetches only the rest, so a
-        # million-wheel unit never holds a million bodies.
+        # million-wheel unit never holds a million bodies. What the resolve
+        # already downloaded is read back from the index cache, not refetched.
+        local = cat.cache.metadata
         metadata = [MetadataFile(url=f.url + ".metadata", repo_path=f.repo_path + ".metadata",
-                                 expected_sha256=f.metadata_sha256)
+                                 expected_sha256=f.metadata_sha256, local=local)
                     for f in kept if f.kind == "wheel" and f.metadata_sha256]
         # A retained or carried wheel keeps its core metadata, known from the unit's own refs.
         for p in [*retained, *carried]:
             checksum = history.checksum(p.repo_path + ".metadata")
             if checksum is not None:
                 metadata.append(MetadataFile(url=p.url + ".metadata", repo_path=p.repo_path + ".metadata",
-                                             expected_sha256=checksum))
+                                             expected_sha256=checksum, local=local))
+        # In the cache's storage order: the engine's reads of it are one forward pass.
+        order = cat.cache.metadata_order(m.expected_sha256 for m in metadata)
+        metadata.sort(key=lambda m: order.get(m.expected_sha256, len(order)))
         report = report if key == UNIVERSAL else report.for_units({key})
         metadata.append(MetadataFile(url="", repo_path=REPORT_PATH, content=report.to_json()))
         metadata.append(MetadataFile(url="", repo_path=hist.HISTORY_PATH, content=hist.dump(advanced)))

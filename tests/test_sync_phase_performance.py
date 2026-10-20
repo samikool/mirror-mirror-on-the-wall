@@ -2,6 +2,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import httpx
 import threading
 import time
 
@@ -137,7 +138,9 @@ def test_bad_prefetched_metadata_aborts_entire_batch(tmp_path):
         result = asyncio.run(dl.download_mirror([], metadata, pool, "unit", 2))
         assert not result.ok and not result.metadata_ok
         assert pool.ref_map("unit") == {"previous": old}
-        assert not pool.contains(digest), "part of an invalid batch was pooled"
+        # Verified blobs are pooled as they arrive (memory stays bounded), but
+        # unreferenced: only the refs make an index visible. A bad body never is.
+        assert pool.blob_path(digest, "good.json").read_bytes() == good
 
 
 def test_stopping_during_metadata_writes_keeps_previous_refs(tmp_path, monkeypatch):
@@ -156,3 +159,38 @@ def test_stopping_during_metadata_writes_keeps_previous_refs(tmp_path, monkeypat
         result = asyncio.run(dl.download_mirror([], metadata, pool, "unit", 2, stop_event=stop))
         assert result.stopped and not result.metadata_ok
         assert pool.ref_map("unit") == {"previous": old}
+
+
+def test_a_local_copy_is_used_before_the_url():
+    body = b"core metadata"
+    digest = hashlib.sha256(body).hexdigest()
+    asked = []
+    mf = MetadataFile("http://127.0.0.1:9/never", "a.metadata", expected_sha256=digest,
+                      local=lambda sha: (asked.append(sha), body)[1])
+    assert dl._fetch_metadata_content(mf) == (dl.Fetch.OK, body, None) and asked == [digest]
+
+
+def test_a_wrong_or_missing_local_copy_falls_through_to_the_url(monkeypatch):
+    body = b"core metadata"
+    digest = hashlib.sha256(body).hexdigest()
+
+    class Client:
+        def get(self, url):
+            return httpx.Response(200, content=body, request=httpx.Request("GET", url))
+    monkeypatch.setattr(dl, "_thread_client", Client)
+    for local in (lambda sha: b"stale", lambda sha: None):
+        mf = MetadataFile("https://example.invalid/a.metadata", "a.metadata", expected_sha256=digest, local=local)
+        assert dl._fetch_metadata_content(mf) == (dl.Fetch.OK, body, None)
+
+
+def test_verified_metadata_is_stored_slice_by_slice(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "_VERIFY_SLICE", 2)
+    bodies = [f"body {i}".encode() for i in range(5)]
+    metadata = [MetadataFile("unused", f"{i}.json", content=b, expected_sha256=hashlib.sha256(b).hexdigest())
+                for i, b in enumerate(bodies)]
+    phases = []
+    with Pool(tmp_path) as pool:
+        result = asyncio.run(dl.download_mirror([], metadata, pool, "unit", 2, phase_callback=phases.append))
+        assert result.ok and result.metadata_ok
+        assert set(pool.ref_map("unit")) == {f"{i}.json" for i in range(5)}
+    assert any("Verifying metadata: 4/5" in p for p in phases)

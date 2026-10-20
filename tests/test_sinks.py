@@ -1,6 +1,7 @@
 import hashlib
 import json
 import tarfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,46 @@ def test_tree_sink_links_and_reports_status(pool, tmp_path):
     assert dst.read_bytes() == b"hello"
     # Second call to the same destination is a hardlink no-op, not a relink.
     assert sink.link(src, "host/repo/pool/a.deb", 5, cs, KIND_PKG) == "skipped"
+
+
+def test_tree_sink_link_many_settles_like_link_in_item_order(pool, tmp_path):
+    seeded = [_seed(pool, f"blob {i}".encode(), f"{i}.whl") for i in range(40)]
+    items = [(src, f"host/p/{i}.whl", 6, cs, KIND_PKG) for i, (cs, src) in enumerate(seeded)]
+    items[7] = (tmp_path / "missing", "host/p/7.whl", 6, seeded[7][0], KIND_PKG)
+    items[30] = (tmp_path / "gone", "host/p/30.whl", 6, seeded[30][0], KIND_PKG)
+    sink = TreeSink(tmp_path / "pub", prev={"host/p/0.whl": seeded[0][0]})
+
+    results = list(sink.link_many(items))
+    statuses = [status for status, _ in results]
+
+    assert statuses[0] == "skipped"                      # the record's word, no disk
+    assert statuses[7] == statuses[30] == "error"
+    assert statuses.count("linked") == 37
+    assert [e.split(":")[0] for e in sink.errors] == ["host/p/7.whl", "host/p/30.whl"]
+    assert [error for _, error in results if error] == sink.errors   # each with its own row
+    assert (tmp_path / "pub" / "host/p/39.whl").read_bytes() == b"blob 39"
+    assert [rel for rel, _ in sink.manifest_rows] == [it[1] for i, it in enumerate(items) if i not in (7, 30)]
+    sink.close()
+
+
+def test_tree_sink_link_many_yields_each_row_before_the_run_is_done(pool, tmp_path, monkeypatch):
+    seeded = [_seed(pool, f"blob {i}".encode(), f"{i}.whl") for i in range(20)]
+    sink = TreeSink(tmp_path / "pub")
+    gate, place, timed_out = threading.Event(), sink._place, []
+
+    def held(src, rel):
+        if rel.endswith("/19.whl"):
+            timed_out.append(not gate.wait(5))           # the run's last row is stuck
+        return place(src, rel)
+
+    monkeypatch.setattr(sink, "_place", held)
+    results = sink.link_many([(src, f"host/p/{i}.whl", 6, cs, KIND_PKG) for i, (cs, src) in enumerate(seeded)])
+
+    assert next(results) == ("linked", None)             # reported while row 19 still waits
+    gate.set()
+    assert [status for status, _ in results] == ["linked"] * 19
+    assert timed_out == [False]                          # nobody waited for row 19 to report row 0
+    sink.close()
 
 
 def test_tree_sink_write_creates_parents(tmp_path):

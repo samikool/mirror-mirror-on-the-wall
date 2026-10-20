@@ -292,7 +292,12 @@ class TransferView(Vertical):
             if getattr(r, "deleted", 0):
                 text += f", {r.deleted:,} to delete"
         else:
-            text = f"{r.linked:,} linked, {r.skipped:,} already current"
+            # Packages, as the bar counts them; metadata files after.
+            linked_meta, skipped_meta = getattr(r, "linked_meta", 0), getattr(r, "skipped_meta", 0)
+            text = (f"{r.linked - linked_meta:,} linked, "
+                    f"{r.skipped - skipped_meta:,} already current")
+            if linked_meta + skipped_meta:
+                text += f" (+ {linked_meta + skipped_meta:,} metadata files)"
             if getattr(r, "pruned", 0):
                 text += f", {r.pruned:,} pruned"
         warnings = [*(getattr(r, "dist_upgrade_warnings", None) or []),

@@ -229,3 +229,17 @@ def test_a_finished_publish_clears_the_phase_line():
         view.mark_done(SimpleNamespace(linked=1, skipped=0, errors=[]))
         assert view._phase == ""
     _run(check)
+
+
+def test_publish_summary_counts_packages_as_the_bar_does():
+    async def check(app, view, pilot):
+        from mmw.core.publisher.results import MirrorPublishResult, NetworkPublishResult
+        view.begin(3)
+        result = NetworkPublishResult(network_name="pypi", mirrors=[
+            MirrorPublishResult(mirror_name="h", linked=5, skipped=1, linked_meta=2, skipped_meta=1)])
+        view.mark_done(result)
+        assert view._counts() == "3 linked, 0 already current (+ 3 metadata files)"
+        view.mark_done(NetworkPublishResult(network_name="apt", mirrors=[
+            MirrorPublishResult(mirror_name="h", linked=4, skipped=2)]))
+        assert view._counts() == "4 linked, 2 already current"
+    _run(check)

@@ -286,3 +286,27 @@ def test_publish_by_host_counts_the_files_the_bar_counts():
                           mirror_start_callback=lambda *a, **kw: started.append(kw["count"]))
     publish_by_host(ctx, rows)
     assert started == [10]
+
+
+def test_publish_result_counts_metadata_files_apart():
+    """`linked`/`skipped` stay every file placed; `linked_meta`/`skipped_meta` say how many of them
+    were metadata, so a summary can count packages as the bar does."""
+    from types import SimpleNamespace
+
+    from mmw.core.publisher.links import publish_by_host
+
+    class Many:
+        errors: list = []
+
+        def link_many(self, items):
+            return iter([("linked", None)] * len(items))
+
+    rows = []
+    for i in range(10):
+        path = f"files.pythonhosted.org/packages/p-{i}-py3-none-any.whl"
+        rows += [(path, "/p", 1, KIND_PKG, "c"), (f"{path}.metadata", "/p", 1, KIND_META, "c")]
+    ctx = SimpleNamespace(sink=Many(), progress=None, stop_event=None, prune=False,
+                          mirror_start_callback=None)
+    results, _ = publish_by_host(ctx, rows)
+    net = NetworkPublishResult(network_name="n", mirrors=results)
+    assert (net.linked, net.linked_meta, net.skipped_meta) == (20, 10, 0)

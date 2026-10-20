@@ -148,11 +148,13 @@ def _settle_row(status, added, repo_path, pool_path, size, kind, checksum,
     if status == "linked":
         result.linked += 1
         result.linked_bytes += size
+        result.linked_meta += not is_pkg
         if progress:
             progress(rel, "linked" if is_pkg else "linked-meta")
     elif status == "skipped":
         result.skipped += 1
         result.skipped_bytes += size
+        result.skipped_meta += not is_pkg
         if progress:
             progress(rel, "skipped" if is_pkg else "skipped-meta")
     else:  # "error"

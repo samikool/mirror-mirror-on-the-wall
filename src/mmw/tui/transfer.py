@@ -415,6 +415,7 @@ class TransferView(Vertical):
             self._stopped_at_end = self.stop_event.is_set() if stopped is None else stopped
             self._transfer_done = True
             self._result = result
+            self._phase = ""            # the last step's line ends with the work
 
     def mark_error(self, msg: str) -> None:
         with self._lock:

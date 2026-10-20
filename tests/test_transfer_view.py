@@ -217,3 +217,15 @@ def test_transfer_view_renders_pypi_render_progress():
         assert view._phase == ""
         assert any("120 written" in line for line in view._log_pending)
     _run(check)
+
+
+def test_a_finished_publish_clears_the_phase_line():
+    """The last step's text ("saving the publish record…") must not stay up
+    beside a finished publish."""
+    async def check(app, view, pilot):
+        view.begin(1)
+        view.record("", "step:saving the publish record…")
+        assert view._phase
+        view.mark_done(SimpleNamespace(linked=1, skipped=0, errors=[]))
+        assert view._phase == ""
+    _run(check)

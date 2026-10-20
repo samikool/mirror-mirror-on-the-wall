@@ -218,8 +218,10 @@ def publish_by_host(ctx, rows) -> tuple[list, set[str]]:
         host_rows = by_host[host]
         if ctx.mirror_start_callback:
             # A host is no unit the pre-publish counts know by name, so
-            # its own count goes with it.
-            ctx.mirror_start_callback(host, idx + 1, len(by_host), count=len(host_rows))
+            # its own count goes with it — package files only, as the bar
+            # counts them (a `.metadata` beside each wheel is linked-meta).
+            ctx.mirror_start_callback(host, idx + 1, len(by_host),
+                                      count=sum(r[3] == KIND_PKG for r in host_rows))
         result = MirrorPublishResult(mirror_name=host)
         ordered = [r for r in host_rows if r[3] != KIND_RELEASE] + \
                   [r for r in host_rows if r[3] == KIND_RELEASE]

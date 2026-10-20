@@ -262,3 +262,27 @@ def test_publish_by_host_links_a_pypi_tree_in_whole_runs():
     publish_by_host(ctx, rows)
 
     assert sink.runs == [_LINK_CHUNK, _LINK_CHUNK, 6000 - 2 * _LINK_CHUNK]
+
+
+def test_publish_by_host_counts_the_files_the_bar_counts():
+    """The bar counts package files; a host's `.metadata` rows are
+    `linked-meta`. Counting them too left a full PyPI publish at 51 %."""
+    from types import SimpleNamespace
+
+    from mmw.core.publisher.links import publish_by_host
+
+    class Many:
+        errors: list = []
+
+        def link_many(self, items):
+            return iter([("linked", None)] * len(items))
+
+    rows = []
+    for i in range(10):
+        path = f"files.pythonhosted.org/packages/p-{i}-py3-none-any.whl"
+        rows += [(path, "/p", 1, KIND_PKG, "c"), (f"{path}.metadata", "/p", 1, KIND_META, "c")]
+    started = []
+    ctx = SimpleNamespace(sink=Many(), progress=None, stop_event=None, prune=False,
+                          mirror_start_callback=lambda *a, **kw: started.append(kw["count"]))
+    publish_by_host(ctx, rows)
+    assert started == [10]

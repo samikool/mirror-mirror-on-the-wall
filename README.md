@@ -1,8 +1,8 @@
 # mirror-mirror-on-the-wall (mmw)
 
-An APT repository mirror built for **airgapped networks**: `apt` (`dists/`
-hierarchy) and `apt-flat` (`Packages` at the root) repositories, mirrored
-*exactly*.
+A mirror built for **airgapped networks**: APT repositories (`dists/`
+hierarchies and flat `Packages` repos), PyPI and the VS Code Marketplace,
+mirrored *exactly* and served at their own hostnames.
 
 Metadata is copied byte-for-byte, so upstream GPG signatures stay valid. Files
 are published in the same URL hierarchy as upstream, so a client that resolves
@@ -15,7 +15,7 @@ would online.)
 > **Status: 1.0.** Everything below is exercised by an offline test suite and
 > has run against real upstreams. Bundling is tested end to end — a real bundle
 > is applied by `apply.py` and diffed against a directly published tree — but
-> report anything a physical airgap turns up. See [CHANGELOG.md](CHANGELOG.md).
+> report anything a physical airgap turns up. See [CHANGELOG.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/CHANGELOG.md).
 
 ## Highlights
 
@@ -34,7 +34,10 @@ would online.)
 - **VS Code too** — the Microsoft Marketplace (top N, chosen ids, or all),
   desktop installers and Remote-SSH server builds, served offline at
   Microsoft's own hostnames by nginx and a small gallery container. Same
-  pool, same networks, same bundles — see [docs/vscode.md](docs/vscode.md).
+  pool, same networks, same bundles — see [docs/vscode.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/vscode.md).
+- **PyPI too** — a requirements list resolved for every Python, OS and arch you
+  choose, or the whole index; stock `pip` and `uv` install from it with no
+  index flags — see [docs/pypi.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/pypi.md).
 - **Two frontends, one engine** — a full Textual TUI and cron-safe headless
   commands with meaningful exit codes.
 - **Defensive by default** — upstream-supplied paths are validated against
@@ -51,18 +54,20 @@ would online.)
 
 ## Install
 
+From PyPI (the command is `mmw`):
+
+```bash
+uv tool install mirror-mirror-on-the-wall      # or: pipx install mirror-mirror-on-the-wall
+mmw --help
+```
+
+Or from a checkout, to run the development version:
+
 ```bash
 git clone https://github.com/samikool/mirror-mirror-on-the-wall.git
 cd mirror-mirror-on-the-wall
 uv sync
 uv run mmw --help
-```
-
-Or install the CLI on its own, without a checkout:
-
-```bash
-uv tool install git+https://github.com/samikool/mirror-mirror-on-the-wall.git
-mmw --help
 ```
 
 Everything below uses `uv run mmw`; drop the `uv run` if you installed it as a
@@ -87,19 +92,19 @@ Already have the repositories written down? Skip the wizard:
 uv run mmw add -f /etc/apt/sources.list.d --keys-dir ./keyrings-from-that-box
 ```
 
-Next: **[Getting started](docs/getting-started.md)** walks the same path end to
+Next: **[Getting started](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/getting-started.md)** walks the same path end to
 end, from zero to a client running `apt update` against your mirror.
 
 ## Documentation
 
 | Document | What it covers |
 |----------|----------------|
-| [Getting started](docs/getting-started.md) | Zero → first sync → first published tree → served → verified from a real client |
-| [Airgapped operation](docs/airgap.md) | Bundle, transfer, `apply.py`, nginx, DNS, GPG import on the far side, troubleshooting |
-| [Configuration](docs/configuration.md) | Every `mmw.toml` key and default, generated from the models |
-| [CLI reference](docs/cli.md) | Every command and flag, generated from the CLI |
-| [VS Code](docs/vscode.md) | Mirror the VS Code Marketplace, installers and Remote-SSH server builds |
-| [PyPI](docs/pypi.md) | Mirror pypi.org: latest + dependencies per target, or a requirements list resolved together |
+| [Getting started](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/getting-started.md) | Zero → first sync → first published tree → served → verified from a real client |
+| [Airgapped operation](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md) | Bundle, transfer, `apply.py`, nginx, DNS, GPG import on the far side, troubleshooting |
+| [Configuration](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/configuration.md) | Every `mmw.toml` key and default, generated from the models |
+| [CLI reference](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/cli.md) | Every command and flag, generated from the CLI |
+| [VS Code](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/vscode.md) | Mirror the VS Code Marketplace, installers and Remote-SSH server builds |
+| [PyPI](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/pypi.md) | Mirror pypi.org: latest + dependencies per target, or a requirements list resolved together |
 
 ## How clients find the mirror
 
@@ -236,7 +241,7 @@ separately. `nginx = false` omits the container setup.
 Each server block has the real upstream hostname and `autoindex on`. A
 `dist_upgrade` network also serves `changelogs.ubuntu.com`; repository keys
 remain available at `/mmw-keys/{label}/`. See
-[Airgapped operation](docs/airgap.md#4-serve-it) for setup details.
+[Airgapped operation](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md#4-serve-it) for setup details.
 
 ### HTTPS
 
@@ -257,7 +262,7 @@ generated web root serves that directory. The same container config enables
 HTTPS when the certificate fits the key. A published tree can be copied
 directly to a drive and signed offline using its included `sign.py` and
 `apply.py --tls`, just like an applied bundle. Source key material is kept in
-`{mirror_dir}/certs/`. See [Airgapped operation](docs/airgap.md#https).
+`{mirror_dir}/certs/`. See [Airgapped operation](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md#https).
 
 ## Recommended operational order
 
@@ -317,7 +322,7 @@ frontend:
 
 Failures go to stderr and successes to stdout, so a cron job that mails only
 stderr tells you what broke and nothing else. See
-[the CLI reference](docs/cli.md#exit-codes) for what each code means.
+[the CLI reference](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/cli.md#exit-codes) for what each code means.
 
 ## Sizing
 
@@ -387,7 +392,7 @@ at, so the next delta applies. An interrupted plain extraction leaves a
 partial tree and no record of where it stopped.
 
 Full walkthrough, including the far side's nginx, DNS, GPG import and a
-troubleshooting table: **[docs/airgap.md](docs/airgap.md)**.
+troubleshooting table: **[docs/airgap.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md)**.
 
 If you copy a published tree by hand instead, **use `rsync -aH --delete`**. A
 published tree is entirely hardlinks into the pool — the same package appears
@@ -467,4 +472,4 @@ enforce it.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/LICENSE).

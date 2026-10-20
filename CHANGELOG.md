@@ -6,6 +6,12 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **On PyPI.** `uv tool install mirror-mirror-on-the-wall` (or `pipx install`)
+  installs the `mmw` command. Every release tag now uploads to PyPI the same
+  files the GitHub release carries, through trusted publishing (no token).
+
 ## [1.1.2]
 
 The check flags get one name each, and pool listings are faster. Upgrading

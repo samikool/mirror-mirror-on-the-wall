@@ -34,3 +34,8 @@ def fmt_eta(secs) -> str:
     if secs <= 0:
         return "..."
     return fmt_duration(secs)
+
+
+def fmt_timings(timings: dict[str, float]) -> str:
+    """`phase 1.23s · other 0.40s` — every result's timing line."""
+    return " · ".join(f"{phase} {seconds:.2f}s" for phase, seconds in timings.items())

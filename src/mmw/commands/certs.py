@@ -11,6 +11,7 @@ command and from `commands/publish.py`.
 
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.commands.common import eprint, interruptible, load_config_or_none
 from mmw.core.config import Config, NetworkConfig
 
@@ -85,7 +86,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         eprint("--ca and --ca-key go together: the CA certificate and its private key.")
         return 1
     for path in (ca, ca_key):
-        if path is not None and not Path(path).is_file():
+        if path is not None and not disk_io.ops.is_file(Path(path)):
             eprint(f"{path}: no such file")
             return 1
 
@@ -122,7 +123,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
         for net in networks:
             dest = cert_dir(net, cfg)
-            state = "refresh CSR (key exists)" if (dest / "mirror.key").exists() \
+            state = "refresh CSR (key exists)" if disk_io.ops.exists(dest / "mirror.key") \
                 else "generate key + CSR"
             if ca is not None:
                 state += f", then sign it with {ca}"

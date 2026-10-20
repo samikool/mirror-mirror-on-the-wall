@@ -24,6 +24,8 @@ import threading
 import time
 from pathlib import Path
 
+from mmw.core import disk_io
+
 # Frames in these files are runtime plumbing; the interesting answer is almost
 # always the nearest frame *outside* them.
 _FRAMEWORK_HINTS = ("/textual/", "/rich/", "/asyncio/", "/httpx/", "/httpcore/")
@@ -133,8 +135,8 @@ class SamplingProfiler:
             self._record_cpu()
             self._elapsed = now - self._started
             tmp = self._snapshot.with_suffix(".tmp")
-            tmp.write_text(self.report() + "\n")
-            tmp.replace(self._snapshot)      # never a half-written report
+            disk_io.ops.write_text(tmp, self.report() + "\n")
+            disk_io.ops.replace(tmp, self._snapshot)      # never a half-written report
         except Exception:
             pass                              # a profiler must not break the run
 
@@ -182,7 +184,7 @@ class SamplingProfiler:
         return "\n".join(out)
 
     def write(self, path: Path) -> Path:
-        path.write_text(self.report() + "\n")
+        disk_io.ops.write_text(path, self.report() + "\n")
         return path
 
 

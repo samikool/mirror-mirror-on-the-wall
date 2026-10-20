@@ -93,6 +93,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                 else f"full → {result.created}")
         print(f"{net.name}  {span}  →  {result.out_path}")
         print(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
+        if result.timings:
+            print(f"    {result.timing_summary()}")
         # The checksum sidecar, when the pipeline produces one. `getattr`
         # rather than an attribute access: `BundleResult` gained this field
         # after this command existed, and a bundle written by an older

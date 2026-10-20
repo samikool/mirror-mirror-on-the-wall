@@ -8,17 +8,18 @@ whose referenced files exist.
 Writing itself goes through a `Sink` (`sinks.py`): this module owns
 enumeration, ordering and accounting, not filesystem writes.
 """
-import hashlib
-import os
 import posixpath
-import shutil
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core.config import MirrorConfig
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 
 from mmw.core.publisher.results import MirrorPublishResult
 from mmw.core.publisher.sinks import _prune_by_hash_dir  # noqa: F401 (re-export)
+from mmw.core.disk_io.ops import (  # noqa: F401 (re-export until callers move)
+    atomic_write, hardlink_or_copy, same_file, stage_path,
+)
 
 # Hardlinks are created in chunks so progress flows and stop is honored even
 # when the phase is seek-bound on a cold inode cache.
@@ -28,97 +29,6 @@ _LINK_CHUNK = 2000
 # refs whose repo_path starts with this are network-root-relative
 # (changelogs.ubuntu.com meta-release files), not part of the mirror_base tree.
 ROOT_RELATIVE_PREFIX = "changelogs.ubuntu.com/"
-
-
-def stage_path(tmp_dir: Path, dst: Path) -> Path:
-    """A collision-free staging name for `dst` inside `tmp_dir`.
-
-    Hashed rather than derived by substitution, for the same reason
-    `resources/apply.py:_tmp_path` hashes: a repo path can be arbitrarily
-    long and deep, and flattening it into one directory by replacing "/"
-    risks blowing a filesystem's max filename length.
-    """
-    digest = hashlib.sha256(str(dst).encode("utf-8", "surrogateescape")).hexdigest()
-    return tmp_dir / digest
-
-
-def atomic_write(dst: Path, data: bytes, tmp_dir: Path | None = None) -> None:
-    """Write `data` at `dst` so a reader never sees a partial file.
-
-    Same discipline as `hardlink_or_copy` below and for the same reason — a
-    published tree is live-served with `autoindex on`.
-    """
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if tmp_dir is None:
-        tmp_dir = dst.parent
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp = stage_path(tmp_dir, dst)
-    try:
-        tmp.write_bytes(data)
-        os.replace(tmp, dst)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-
-
-def same_file(a: Path, b: Path) -> bool:
-    """One inode — the device included. Inode numbers are per filesystem, so
-    on a destination that falls back to copying (another device) an inode
-    number alone could match the pool's by coincidence and skip a file that
-    needed replacing."""
-    sa, sb = a.stat(), b.stat()
-    return sa.st_ino == sb.st_ino and sa.st_dev == sb.st_dev
-
-
-def hardlink_or_copy(src: Path, dst: Path, tmp_dir: Path | None = None) -> None:
-    """Hardlink src → dst, falling back to copy on cross-device — atomically.
-
-    The whole pkg → meta → release ordering this module is built around
-    exists so a client mid-`apt update` never sees an inconsistent tree. That
-    guarantee was undercut one file at a time: replacing a CHANGED file used
-    to be `dst.unlink()` then `dst.hardlink_to(src)`, so every such file had a
-    window in which it 404'd, and the `shutil.copy2` fallback wrote in place,
-    so on a cross-device destination it had a window in which it was
-    *truncated and servable* — a client could fetch half a Packages.gz and
-    cache it. Ordering the file classes is pointless if each individual file
-    is non-atomic.
-
-    So the new content is built at a staging path and `os.replace`d onto the
-    destination: `dst` only ever transitions old-content → new-content, never
-    through absent or partial. `tmp_dir` should be a directory on the
-    destination's own filesystem that is never served — `TreeSink` passes
-    `{root}/.mmw/tmp/`, the same place `apply.py` stages on the far side, and
-    for the same reason (`{dst}.mmw-tmp` beside the real file was listed and
-    fetchable under `autoindex on`).
-    """
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        try:
-            if same_file(dst, src):
-                return
-        except OSError:
-            pass
-    if tmp_dir is None:
-        tmp_dir = dst.parent
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp = stage_path(tmp_dir, dst)
-    try:
-        if tmp.exists():
-            tmp.unlink()
-        try:
-            tmp.hardlink_to(src)
-        except OSError:
-            shutil.copy2(src, tmp)
-        os.replace(tmp, dst)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
 
 
 def is_package_file(rel: Path) -> bool:
@@ -177,28 +87,42 @@ def _link_rows(
 
     Returns False if interrupted by the stop event.
     """
-    many = getattr(sink, "link_many", None)
     for i in range(0, len(rows), _LINK_CHUNK):
         if stop_event and stop_event.is_set():
             return False
         for run in _trust_runs(rows[i:i + _LINK_CHUNK]):
-            if many is not None:
-                placed = many([(Path(r[1]), f"{base}/{r[0]}", r[2], r[4], r[3]) for r in run])
-            for repo_path, pool_path, size, kind, checksum in run:
-                rel = f"{base}/{repo_path}"
-                if many is not None:
-                    status, error = next(placed)
-                    added = [error] if error else []
-                else:
-                    # Capture the length before the call so an "error" status
-                    # can attribute exactly the entries THIS call added, not
-                    # just assume the last one is ours.
-                    before = len(sink.errors)
-                    status = sink.link(Path(pool_path), rel, size, checksum, kind)
-                    added = sink.errors[before:]
+            items = [(Path(r[1]), f"{base}/{r[0]}", r[2], r[4], r[3]) for r in run]
+            for (repo_path, pool_path, size, kind, checksum), (status, added) in zip(
+                    run, _place_run(sink, items, pooled=True)):
                 _settle_row(status, added, repo_path, pool_path, size, kind, checksum,
                             base, sink, result, progress, by_hash)
     return True
+
+
+def _place_run(sink, items, *, pooled: bool = False):
+    """(status, errors this item added) for each (src, rel, size, checksum,
+    kind) of one trust run, in order — `sink.link_many` when the sink has one
+    (its filesystem work on the job's write lane), else `sink.link` one at a
+    time. Fewer pairs than items means a stop ended the run. `pooled`: every
+    src is a pool blob (`mirror_files` rows), which a sink with `link_pooled`
+    records without asking the pool again."""
+    many = getattr(sink, "link_many", None)
+    if many is not None:
+        for status, error in many(items):
+            yield status, [error] if error else []
+        return
+    link = _linker(sink, pooled)
+    for src, rel, size, checksum, kind in items:
+        # Capture the length before the call so an "error" status can
+        # attribute exactly the entries THIS call added, not just assume the
+        # last one is ours.
+        before = len(sink.errors)
+        status = link(src, rel, size, checksum, kind)
+        yield status, sink.errors[before:]
+
+
+def _linker(sink, pooled: bool):
+    return getattr(sink, "link_pooled", sink.link) if pooled else sink.link
 
 
 def _trust_runs(rows):
@@ -241,8 +165,8 @@ def _settle_row(status, added, repo_path, pool_path, size, kind, checksum,
     if by_hash and _wants_by_hash(repo_path, kind):
         parent = str(Path(repo_path).parent)
         bh_base = f"{base}/{parent}" if parent != "." else base
-        sink.link(Path(pool_path), f"{bh_base}/by-hash/SHA256/{checksum}",
-                  size, checksum, kind)
+        _linker(sink, pooled=True)(Path(pool_path), f"{bh_base}/by-hash/SHA256/{checksum}",
+                                   size, checksum, kind)
 
 
 def _dedup_rows(rows) -> list[tuple]:
@@ -402,14 +326,7 @@ def file_checksum(path: Path) -> str:
     beside it verifiable — was exactly what the far side's integrity check
     could not detect.
     """
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        while True:
-            chunk = fh.read(1 << 20)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
+    return disk_io.hash_file(path)
 
 
 def _key_groups(mirrors: list[MirrorConfig]) -> set[str]:
@@ -440,17 +357,17 @@ def upstream_files(mirror_dir: Path, mirrors: list[MirrorConfig]) -> dict[str, P
     groups: set[str] = set()
     for m in mirrors:
         group = upstream.repository_group(m)
-        if not upstream.group_dir(mirror_dir, group).is_dir():
+        if not disk_io.ops.is_dir(upstream.group_dir(mirror_dir, group)):
             # Not synced since the directory name became unique: serve what
             # the old one holds rather than drop the files from the tree.
             group = upstream.legacy_group(m) or group
         groups.add(group)
     for group in sorted(groups):
         base = upstream.group_dir(mirror_dir, group)
-        if not base.is_dir():
+        if not disk_io.ops.is_dir(base):
             continue
-        for f in sorted(base.rglob("*")):
-            if f.is_file() and not f.is_symlink() and not f.name.endswith(".tmp"):
+        for f in sorted(disk_io.ops.rglob(base, "*")):
+            if disk_io.ops.is_file(f) and not disk_io.ops.is_symlink(f) and not f.name.endswith(".tmp"):
                 found.setdefault(f.relative_to(base).as_posix(), f)
     return found
 
@@ -499,7 +416,7 @@ def publish_upstream_files(sink, files: dict[str, Path]) -> list[str]:
         except OSError as e:
             errors.append(f"{rel}: {e}")
             continue
-        if sink.link(src, rel, src.stat().st_size, checksum, KIND_META) == "error":
+        if sink.link(src, rel, disk_io.ops.stat(src).st_size, checksum, KIND_META) == "error":
             added = sink.errors[before:]
             errors.extend(added if added else [f"{rel}: link error"])
     return errors
@@ -538,7 +455,7 @@ def publish_keys(sink, mirror_dir: Path,
     bug this function's docstring above already describes once.
     """
     keys_src = mirror_dir / "keys"
-    if not keys_src.is_dir():
+    if not disk_io.ops.is_dir(keys_src):
         return [], set()
 
     groups = _key_groups(mirrors)
@@ -546,10 +463,10 @@ def publish_keys(sink, mirror_dir: Path,
     published: set[str] = set()
     for group in sorted(groups):
         src_dir = keys_src / group
-        if not src_dir.is_dir():
+        if not disk_io.ops.is_dir(src_dir):
             continue
-        for f in sorted(src_dir.iterdir()):
-            if not f.is_file():
+        for f in sorted(disk_io.ops.iterdir(src_dir)):
+            if not disk_io.ops.is_file(f):
                 continue
             rel = f"keys/{group}/{f.name}"
             before = len(sink.errors)
@@ -558,7 +475,7 @@ def publish_keys(sink, mirror_dir: Path,
             except OSError as e:
                 errors.append(f"{rel}: {e}")
                 continue
-            status = sink.link(f, rel, f.stat().st_size, checksum, KIND_META)
+            status = sink.link(f, rel, disk_io.ops.stat(f).st_size, checksum, KIND_META)
             if status == "error":
                 added = sink.errors[before:]
                 errors.extend(added if added else [f"{rel}: link error"])

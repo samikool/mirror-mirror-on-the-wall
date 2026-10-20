@@ -107,7 +107,9 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
         eprint(f"Cannot open the pool in {mirror_dir}: {e.strerror or e}")
         return 1
     try:
-        removed, freed = pool.prune_orphans(configured, dropped)
+        removed, freed = pool.prune_orphans(
+            configured, dropped,
+            progress=lambda done, total: print(f"  {done:,} of {total:,} blobs removed…", flush=True))
     except PoolBusy as e:
         # A sync is running. Until a mirror's refs are reconciled at the end of
         # its run, every blob it has downloaded is `packages − refs` — i.e.

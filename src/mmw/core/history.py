@@ -2,6 +2,9 @@
 state forward (VS Code keeps the previous two server commits; the upstream
 API only names the latest)."""
 
+from mmw.core import disk_io
+
+
 
 class UnitHistory:
     """Reads the unit's refs on first use — most units never ask."""
@@ -32,6 +35,6 @@ class UnitHistory:
             return None
         path = self._pool.resolve(self._name, repo_path)
         try:
-            return path.read_bytes() if path is not None else None
+            return disk_io.ops.read_bytes(path) if path is not None else None
         except OSError:
             return None

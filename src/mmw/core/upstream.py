@@ -15,9 +15,10 @@ The pool records no such files, so the directory's contents are the fact
 publish reads.
 """
 import posixpath
-import shutil
 from pathlib import Path
 from urllib.parse import urlparse
+
+from mmw.core import disk_io
 
 UPSTREAM_DIR = "upstream"
 
@@ -118,12 +119,12 @@ def store(mirror_dir: Path, group: str, url: str, raw: bytes) -> Path:
     if rel is None:
         raise ValueError(f"{url} has no path to mirror it at")
     dest = group_dir(mirror_dir, group) / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and dest.read_bytes() == raw:
+    disk_io.ops.mkdir(dest.parent, parents=True, exist_ok=True)
+    if disk_io.ops.exists(dest) and disk_io.ops.read_bytes(dest) == raw:
         return dest
     tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_bytes(raw)
-    tmp.replace(dest)
+    disk_io.ops.write_bytes(tmp, raw)
+    disk_io.ops.replace(tmp, dest)
     return dest
 
 
@@ -132,22 +133,22 @@ def prune(mirror_dir: Path, group: str, urls: list[str]) -> list[str]:
     named keeps its copy even if this sync's fetch failed — last good wins.
     Returns the removed `{host}/{path}`s."""
     base = group_dir(mirror_dir, group)
-    if not base.is_dir() or base.is_symlink():
+    if not disk_io.ops.is_dir(base) or disk_io.ops.is_symlink(base):
         return []
     wanted = {r for r in (upstream_rel(u) for u in urls) if r}
     removed: list[str] = []
-    for f in sorted(base.rglob("*")):
-        if f.is_file() and not f.is_symlink():
+    for f in sorted(disk_io.ops.rglob(base, "*")):
+        if disk_io.ops.is_file(f) and not disk_io.ops.is_symlink(f):
             rel = f.relative_to(base).as_posix()
             if rel not in wanted:
-                f.unlink()
+                disk_io.ops.unlink(f)
                 removed.append(rel)
-    for d in sorted((p for p in base.rglob("*") if p.is_dir()),
+    for d in sorted((p for p in disk_io.ops.rglob(base, "*") if disk_io.ops.is_dir(p)),
                     key=lambda p: len(p.parts), reverse=True):
         try:
-            d.rmdir()
+            disk_io.ops.rmdir(d)
         except OSError:
             pass
-    if not any(base.iterdir()):
-        shutil.rmtree(base, ignore_errors=True)
+    if not any(disk_io.ops.iterdir(base)):
+        disk_io.ops.rmtree(base, ignore_errors=True)
     return removed

@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from mmw.core import disk_io
+
 _MEMINFO = Path("/proc/meminfo")
 _CHUNK = 8 << 20
 
@@ -48,12 +50,12 @@ def resident_fraction(path: Path) -> float:
                               ctypes.c_int, ctypes.c_int, ctypes.c_long]
         libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
         libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
-        size = path.stat().st_size
+        size = disk_io.ops.stat(path).st_size
         if size == 0:
             return 1.0
         page = os.sysconf("SC_PAGE_SIZE")
         pages = (size + page - 1) // page
-        fd = os.open(path, os.O_RDONLY)
+        fd = disk_io.ops.open_fd(path, os.O_RDONLY)
         try:
             addr = libc.mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
             if addr in (None, ctypes.c_void_p(-1).value):
@@ -79,7 +81,7 @@ def warm_database(path: Path, *, stop_event=None, progress=None,
         return WarmResult(status, before, time.perf_counter() - started, message)
     path = Path(path)
     try:
-        size = path.stat().st_size
+        size = disk_io.ops.stat(path).st_size
     except OSError:
         return done("unavailable", 0.0, "")      # a first sync: nothing to warm, nothing to say
     before = resident_fraction(path)
@@ -94,14 +96,9 @@ def warm_database(path: Path, *, stop_event=None, progress=None,
                     f"memory ({available >> 20:,} MiB) — warming skipped")
     if progress:
         progress(f"warming the pool database ({size >> 20:,} MiB)…")
-    buf = bytearray(_CHUNK)
     try:
-        with open(path, "rb", buffering=0) as f:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    return done("stopped", before, "warming stopped")
-                if not f.readinto(buf):
-                    break
+        if not disk_io.ops.read_through(path, _CHUNK, stop_event):
+            return done("stopped", before, "warming stopped")
     except OSError as e:
         return done("unavailable", before, f"could not read the database ({e}) — warming skipped")
     return done("warmed", before,

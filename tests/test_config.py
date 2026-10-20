@@ -440,3 +440,33 @@ def test_publish_refuses_a_root_that_holds_the_pool_even_via_root_override(tmp_p
         publish_network(net.model_copy(update={"root": link}), cfg, m)
     with pytest.raises(ValueError, match="holds the mirror directory"):
         publish_snapshot(net, cfg, m, "x", root=m)
+
+
+def test_disk_settings_round_trip(tmp_path):
+    import tomllib
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "pool", disk_write_threads=2,
+                                                 disk_read_threads=1, disk_readahead=0))
+    config.save(cfg, tmp_path)
+    s = config.load(tmp_path).settings
+    assert (s.disk_write_threads, s.disk_read_threads, s.disk_readahead) == (2, 1, 0)
+
+    config.save(config.Config(settings=config.Settings(mirror_dir=tmp_path / "pool")), tmp_path)
+    written = tomllib.loads(config.config_path(tmp_path).read_text())["settings"]
+    assert not {"disk_write_threads", "disk_read_threads", "disk_readahead"} & set(written)
+
+
+def test_disk_settings_reject_zero_threads(tmp_path):
+    from pydantic import ValidationError
+    for key in ("disk_write_threads", "disk_read_threads"):
+        with pytest.raises(ValidationError):
+            config.Settings(mirror_dir=tmp_path, **{key: 0})
+    assert config.Settings(mirror_dir=tmp_path, disk_readahead=0).disk_readahead == 0
+
+
+def test_load_configures_disk_io(tmp_path, monkeypatch):
+    from mmw.core import disk_io
+    monkeypatch.setattr(disk_io, "_pinned", False)
+    config.save(config.Config(settings=config.Settings(mirror_dir=tmp_path / "pool",
+                                                       disk_read_threads=3)), tmp_path)
+    config.load(tmp_path)
+    assert disk_io.limits().read_threads == 3

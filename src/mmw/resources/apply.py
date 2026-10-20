@@ -426,14 +426,16 @@ DERIVED = (("pypi-data/render.py", "pypi.org", ("PYPI.md",)),)
 RENDERED_MARK = ".mmw-rendered"
 
 
-def render_derived(root, say=None):
+def render_derived(root, say=None, **io):
     """Run each shipped renderer; with none left, remove the directory it
-    owned (only if it carries the renderer's mark — never someone else's)."""
+    owned (only if it carries the renderer's mark — never someone else's).
+    `io` (`write_pages`, `stop`) is mmw's own disk layer on the near side;
+    the far side runs the renderer's stdlib defaults."""
     import runpy
     for script, owned, companions in DERIVED:
         renderer = os.path.join(root, script)
         if os.path.isfile(renderer):
-            runpy.run_path(renderer, run_name="mmw_render")["render"](root, say=say)
+            runpy.run_path(renderer, run_name="mmw_render")["render"](root, say=say, **io)
         elif os.path.isdir(os.path.join(root, owned, RENDERED_MARK)):
             shutil.rmtree(os.path.join(root, owned))
             for name in companions:          # its far-side notes go with it

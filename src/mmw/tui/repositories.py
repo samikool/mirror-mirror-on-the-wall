@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
+from mmw.core import disk_io
 from mmw.core import config, pool as pool_mod
 from mmw.core.resolve import available_mirrors, pooled_mirrors, resolve_sources
 from mmw.providers import get_provider
@@ -223,7 +224,7 @@ def replace_source(cfg: config.Config, original_identity: str,
 def pool_scale(mirror_dir: Path) -> tuple[int, int] | None:
     """(packages, bytes) in the pool, or None when it cannot be read.
     **Blocking** — opens SQLite on the pool's disk."""
-    if not (mirror_dir / ".pool").exists():
+    if not disk_io.ops.exists(mirror_dir / ".pool"):
         return None
     try:
         pool = pool_mod.Pool(mirror_dir, read_only=True)
@@ -243,12 +244,12 @@ def pool_scale(mirror_dir: Path) -> tuple[int, int] | None:
 
 def pool_busy(mirror_dir: Path) -> bool:
     """True when a sync holds the pool. **Blocking** (takes and drops a lock)."""
-    if not mirror_dir.exists():
+    if not disk_io.ops.exists(mirror_dir):
         return False
     return pool_mod.pool_is_busy(mirror_dir)
 
 
-def prune_pool(cfg: "config.Config") -> tuple[int, int]:
+def prune_pool(cfg: "config.Config", progress=None) -> tuple[int, int]:
     """(removed, freed bytes). **Blocking.** Raises `pool.PoolBusy` while a
     sync runs: everything it has downloaded so far is unreferenced until its
     reconcile lands, so pruning now would delete the sync's own work — and
@@ -258,7 +259,7 @@ def prune_pool(cfg: "config.Config") -> tuple[int, int]:
     pool = pool_mod.Pool(cfg.settings.mirror_dir)
     try:
         return pool.prune_orphans([s.identity for s in cfg.sources],
-                                  uncovered_mirror_names(cfg, pool))
+                                  uncovered_mirror_names(cfg, pool), progress=progress)
     finally:
         pool.close()
 

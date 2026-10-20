@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mmw.core.format import fmt_timings
+
 
 class _FoldedErrors:
     """`errors` as a field you can still pass to `__init__`, but which reads
@@ -95,6 +97,11 @@ class NetworkPublishResult:
     # Set by a dry run: the totals below then count shared files once
     # instead of summing the per-mirror estimates.
     totals: NetworkTotals | None = None
+    # Seconds per phase worth reporting (`disk <route>` from the job's lanes).
+    timings: dict[str, float] = field(default_factory=dict)
+
+    def timing_summary(self) -> str:
+        return fmt_timings(self.timings)
 
     @property
     def linked(self) -> int:
@@ -167,6 +174,10 @@ class BundleResult:
     errors: list[str] = _FoldedErrors()
     dist_upgrade_warnings: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    timings: dict[str, float] = field(default_factory=dict)
+
+    def timing_summary(self) -> str:
+        return fmt_timings(self.timings)
 
     @property
     def own_errors(self) -> list[str]:

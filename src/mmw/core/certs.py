@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from mmw.core import disk_io
 from mmw.core.config import NETWORK_NAME_RE, Config, NetworkConfig
 from mmw.core.resolve import network_mirrors
 
@@ -87,7 +88,7 @@ subjectAltName = @alt_names
 {alt_names}
 """
     cnf_path = out_dir / "mirror.cnf"
-    cnf_path.write_text(content)
+    disk_io.ops.write_text(cnf_path, content)
     return cnf_path
 
 
@@ -101,15 +102,15 @@ def generate_key_and_csr(hostnames: list[str], out_dir: Path) -> tuple[Path, Pat
 
     Returns (key_path, cnf_path, csr_path).  Key is written 0600; others world-readable.
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
+    disk_io.ops.mkdir(out_dir, parents=True, exist_ok=True)
 
     key_path = out_dir / "mirror.key"
-    if key_path.exists():
-        key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    if disk_io.ops.exists(key_path):
+        key = serialization.load_pem_private_key(disk_io.ops.read_bytes(key_path), password=None)
         # Unconditional, not only on the write path: a key created before this
         # (or restored from a backup, or copied with `cp`) keeps whatever mode
         # the umask gave it forever, and nothing else ever revisits the file.
-        key_path.chmod(0o600)
+        disk_io.ops.chmod(key_path, 0o600)
     else:
         key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
         pem = key.private_bytes(
@@ -122,19 +123,19 @@ def generate_key_and_csr(hostnames: list[str], out_dir: Path) -> tuple[Path, Pat
         # generating RSA-4096 means that window is not instantaneous. Create it
         # 0600 in the first place, and O_EXCL so a concurrent generator cannot
         # be the one that made it.
-        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = disk_io.ops.open_fd(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(pem)
-        key_path.chmod(0o600)          # defeat a permissive umask on some platforms
+        disk_io.ops.chmod(key_path, 0o600)          # defeat a permissive umask on some platforms
 
     cnf_path = write_cnf(hostnames, out_dir)
 
     san_list = [x509.DNSName(h) for h in hostnames]
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0])])
     csr_path = out_dir / "mirror.csr"
-    if csr_path.exists():
+    if disk_io.ops.exists(csr_path):
         try:
-            existing = x509.load_pem_x509_csr(csr_path.read_bytes())
+            existing = x509.load_pem_x509_csr(disk_io.ops.read_bytes(csr_path))
             san = existing.extensions.get_extension_for_class(x509.SubjectAlternativeName)
             encoding = (serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
             if (existing.is_signature_valid and existing.subject == subject
@@ -150,7 +151,7 @@ def generate_key_and_csr(hostnames: list[str], out_dir: Path) -> tuple[Path, Pat
         .add_extension(x509.SubjectAlternativeName(san_list), critical=False)
         .sign(key, hashes.SHA256())
     )
-    csr_path.write_bytes(csr.public_bytes(serialization.Encoding.PEM))
+    disk_io.ops.write_bytes(csr_path, csr.public_bytes(serialization.Encoding.PEM))
 
     return key_path, cnf_path, csr_path
 
@@ -249,7 +250,7 @@ Then sign it again (see **Sign it** above).
 """
 
     md_path = out_dir / "CERTS.md"
-    md_path.write_text(content)
+    disk_io.ops.write_text(md_path, content)
     return md_path
 
 
@@ -275,10 +276,10 @@ class CAKeyEncrypted(ValueError):
 
 
 def _load_ca(ca_cert_path: Path, ca_key_path: Path, password: bytes | None):
-    ca_cert = x509.load_pem_x509_certificate(Path(ca_cert_path).read_bytes())
+    ca_cert = x509.load_pem_x509_certificate(disk_io.ops.read_bytes(Path(ca_cert_path)))
     try:
         ca_key = serialization.load_pem_private_key(
-            Path(ca_key_path).read_bytes(), password=password)
+            disk_io.ops.read_bytes(Path(ca_key_path)), password=password)
     except TypeError as e:
         # cryptography raises TypeError both for "encrypted, no password" and
         # "password given, key not encrypted" — only the first is worth a
@@ -315,7 +316,7 @@ def sign_csr(csr_path: Path, ca_cert_path: Path, ca_key_path: Path, *,
     certificate.
     """
     csr_path = Path(csr_path)
-    csr = x509.load_pem_x509_csr(csr_path.read_bytes())
+    csr = x509.load_pem_x509_csr(disk_io.ops.read_bytes(csr_path))
     if not csr.is_signature_valid:
         raise ValueError(f"{csr_path}: CSR signature does not verify")
     ca_cert, ca_key = _load_ca(ca_cert_path, ca_key_path, password)
@@ -357,17 +358,17 @@ def sign_csr(csr_path: Path, ca_cert_path: Path, ca_key_path: Path, *,
 
     out = csr_path.parent / "mirror.crt"
     tmp = out.with_suffix(".crt.tmp")
-    tmp.write_bytes(pem)
-    tmp.chmod(0o644)
-    tmp.replace(out)
+    disk_io.ops.write_bytes(tmp, pem)
+    disk_io.ops.chmod(tmp, 0o644)
+    disk_io.ops.replace(tmp, out)
     return out
 
 
 def _key_matches(out_dir: Path) -> bool:
     """Whether `mirror.crt` (its leaf) is for `mirror.key`. nginx refuses to
     start on a mismatched pair — not just that site, the whole server."""
-    leaf = x509.load_pem_x509_certificates((out_dir / "mirror.crt").read_bytes())[0]
-    key = serialization.load_pem_private_key((out_dir / "mirror.key").read_bytes(),
+    leaf = x509.load_pem_x509_certificates(disk_io.ops.read_bytes(out_dir / "mirror.crt"))[0]
+    key = serialization.load_pem_private_key(disk_io.ops.read_bytes(out_dir / "mirror.key"),
                                              password=None)
     fmt = (serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     return key.public_key().public_bytes(*fmt) == leaf.public_key().public_bytes(*fmt)
@@ -383,12 +384,12 @@ def check_cert(out_dir: Path, hostnames: list[str]) -> list[str]:
     """
     out_dir = Path(out_dir)
     crt_path = out_dir / "mirror.crt"
-    if not crt_path.exists():
+    if not disk_io.ops.exists(crt_path):
         return ["not signed yet (no mirror.crt)"]
-    leaf = x509.load_pem_x509_certificates(crt_path.read_bytes())[0]
+    leaf = x509.load_pem_x509_certificates(disk_io.ops.read_bytes(crt_path))[0]
     problems: list[str] = []
 
-    if (out_dir / "mirror.key").exists() and not _key_matches(out_dir):
+    if disk_io.ops.exists(out_dir / "mirror.key") and not _key_matches(out_dir):
         problems.append("certificate is for a different key than mirror.key — re-sign")
 
     try:
@@ -415,12 +416,12 @@ def bundle_tls_files(network: NetworkConfig, cfg: Config) -> dict[str, bytes]:
     when one was signed on this side. **Blocking** (a first key is RSA-4096)."""
     from mmw.resources import ca_script_bytes, sign_script_bytes
     _, key, cnf, csr, _ = generate_certs(network, cfg)
-    files = {"mirror.key": key.read_bytes(), "mirror.csr": csr.read_bytes(),
-             "mirror.cnf": cnf.read_bytes(), "sign.py": sign_script_bytes(),
+    files = {"mirror.key": disk_io.ops.read_bytes(key), "mirror.csr": disk_io.ops.read_bytes(csr),
+             "mirror.cnf": disk_io.ops.read_bytes(cnf), "sign.py": sign_script_bytes(),
              "make-ca.py": ca_script_bytes()}
     paths = servable_paths(network, cfg)
     if paths is not None:
-        files["mirror.crt"] = paths[0].read_bytes()
+        files["mirror.crt"] = disk_io.ops.read_bytes(paths[0])
     return files
 
 
@@ -431,7 +432,7 @@ def signed_paths(network: NetworkConfig, cfg: Config) -> tuple[Path, Path] | Non
         return None
     d = cert_dir(network, cfg)
     crt, key = d / "mirror.crt", d / "mirror.key"
-    return (crt, key) if crt.exists() and key.exists() else None
+    return (crt, key) if disk_io.ops.exists(crt) and disk_io.ops.exists(key) else None
 
 
 def servable_paths(network: NetworkConfig, cfg: Config) -> tuple[Path, Path] | None:

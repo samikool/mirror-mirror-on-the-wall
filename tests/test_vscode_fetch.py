@@ -211,7 +211,7 @@ def test_verify_witness_batches_lookups_and_detects_missing_package_rows(tmp_pat
         r = get_provider("vscode").verify_witness(unit, pool)
     assert (r.total, r.present, r.missing_count) == (asset_count, asset_count - 1, 1)
     assert len([q for q in queries if q.lstrip().upper().startswith("SELECT")]) == 2
-    assert set(r.timings) == {"lookup", "metadata", "assets"}
+    assert set(r.timings) == {"lookup", "metadata", "assets", "disk read-meta"}
 
 
 @pytest.mark.parametrize("damage", ["missing-row", "missing-file", "invalid-json"])
@@ -237,7 +237,7 @@ def test_witness_and_catalog_read_the_metadata_with_reads_in_flight(tmp_path, mo
     # 120k metadata JSONs one at a time is a seek each on a spinning disk.
     import threading
     import time
-    from mmw.core import bulk_read
+    from mmw.core import disk_io
     from mmw.core.pool import KIND_META, Pool
     from mmw.providers.vscode import publish as vpub
     _, unit = _unit("extensions")
@@ -250,7 +250,7 @@ def test_witness_and_catalog_read_the_metadata_with_reads_in_flight(tmp_path, mo
             pool.add(body, cs, "sha256", f"e{i}.json", len(body))
             rows.append((cs, f".vscode-meta/extensions/linux-x64/p.e{i}.json", KIND_META))
         pool.reconcile_refs(unit.name, rows)
-    real, lock, live, peak = bulk_read._read_bytes, threading.Lock(), [0], [0]
+    real, lock, live, peak = disk_io.ops.read_bytes, threading.Lock(), [0], [0]
 
     def tracked(path):
         with lock:
@@ -260,7 +260,8 @@ def test_witness_and_catalog_read_the_metadata_with_reads_in_flight(tmp_path, mo
         with lock:
             live[0] -= 1
         return real(path)
-    monkeypatch.setattr(bulk_read, "_read_bytes", tracked)
+    monkeypatch.setattr(disk_io.ops, "read_bytes", tracked)
+    monkeypatch.setattr(disk_io, "_limits", disk_io.Limits(read_threads=16))
     with Pool(tmp_path, read_only=True) as pool:
         r = get_provider("vscode").verify_witness(unit, pool)
         assert not r.error and peak[0] > 1
@@ -297,9 +298,15 @@ def _metas(pool, unit, n, start=0):
 
 @pytest.fixture
 def reads(monkeypatch):
-    from mmw.core import bulk_read
-    seen, real = [], bulk_read._read_bytes
-    monkeypatch.setattr(bulk_read, "_read_bytes", lambda p: (seen.append(p), real(p))[1])
+    from mmw.core import disk_io
+    seen, real = [], disk_io.ops.read_bytes
+
+    def read(p):
+        if "/.pool/packages/" in str(p):        # pool blobs, not the caches beside them
+            seen.append(p)
+        return real(p)
+
+    monkeypatch.setattr(disk_io.ops, "read_bytes", read)
     return seen
 
 
@@ -396,3 +403,43 @@ def test_the_catalog_takes_statistics_from_their_own_file(tmp_path):
         cached = json.loads(vpub.catalog_files(pool, [unit], tmp_path / "cache")[0])
         assert [e.get("statistics") for e in cached] == [e.get("statistics") for e in built.values()]
         assert get_provider("vscode").verify_witness(unit, pool).complete
+
+
+def test_the_witness_stops_and_reports_progress(tmp_path, monkeypatch):
+    import threading
+    from mmw.core import disk_io
+    from mmw.core.pool import Pool
+    monkeypatch.setattr(disk_io, "_READ_REPORT_EVERY", 3)
+    _, unit = _unit("extensions")
+    with Pool(tmp_path) as pool:
+        pool.reconcile_refs(unit.name, _metas(pool, unit, 8))
+    stop, steps = threading.Event(), []
+
+    def say(text):
+        steps.append(text)
+        if text.startswith("read 3/"):
+            stop.set()
+
+    with Pool(tmp_path, read_only=True) as pool:
+        r = get_provider("vscode").verify_witness(unit, pool, say=say, stop_event=stop)
+    assert "read 3/8 descriptions…" in steps
+    assert r.error == "stopped"
+
+
+def test_a_stopped_catalog_build_is_never_cached(tmp_path, monkeypatch):
+    import threading
+    from mmw.core import disk_io
+    from mmw.core.pool import Pool
+    from mmw.providers.vscode import publish as vpub
+    monkeypatch.setattr(disk_io, "_READ_REPORT_EVERY", 3)
+    _, unit = _unit("extensions")
+    with Pool(tmp_path) as pool:
+        pool.reconcile_refs(unit.name, _metas(pool, unit, 8))
+    stop = threading.Event()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    with Pool(tmp_path, read_only=True) as pool:
+        with pytest.raises(InterruptedError):
+            vpub.catalog_files(pool, [unit], cache, say=lambda t: t.startswith("read 3/") and stop.set(),
+                               stop_event=stop)
+    assert not list(cache.glob("catalog-*"))

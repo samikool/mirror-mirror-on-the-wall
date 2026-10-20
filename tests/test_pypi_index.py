@@ -249,3 +249,82 @@ def test_metadata_order_is_storage_order(tmp_path):
     shas = [index.sha256(b).hexdigest() for b in bodies]
     order = cache.metadata_order([*reversed(shas), "f" * 64])
     assert sorted(order, key=order.get) == shas
+
+
+def test_fetch_metadata_bounds_in_flight(tmp_path):
+    """The first request is held: with 4 threads, no more than 4 x 4 requests
+    may start before its result is taken — never all 100 up front."""
+    import time
+
+    class Gated(FakePyPI):
+        def __init__(self):
+            super().__init__()
+            self.lock, self.started, self.at_first = threading.Lock(), 0, None
+
+        def __call__(self, request):
+            if str(request.url).endswith(".metadata"):
+                with self.lock:
+                    self.started += 1
+                    first = self.started == 1
+                if first:
+                    time.sleep(0.3)
+                    self.at_first = self.started
+            return super().__call__(request)
+
+    fake = Gated()
+    fake.add("a", [file_entry(f"a-{i}.0-py3-none-any.whl", metadata=metadata_text("a", f"{i}.0"))
+                   for i in range(100)])
+    cache = IndexCache(tmp_path)
+    refresh(cache, fake.client, threads=1)
+    assert fetch_metadata(cache, cache.files("a"), fake.client, threads=4) == []
+    assert fake.at_first is not None and fake.at_first <= 16
+    assert all(cache.metadata(f.metadata_sha256) for f in cache.files("a"))
+
+
+def test_refresh_keeps_fetching_while_rows_commit(tmp_path, monkeypatch):
+    """A slow commit no longer stalls the page fetches: rows go to the cache's
+    writer thread while refresh keeps requesting."""
+    fake = _fake(6)
+    all_requested, timed_out = threading.Event(), []
+    real_call = fake.__class__.__call__
+
+    def handler(self, request):
+        response = real_call(self, request)
+        if len(self.project_requests()) >= 6:
+            all_requested.set()
+        return response
+
+    monkeypatch.setattr(fake.__class__, "__call__", handler)
+    cache = IndexCache(tmp_path)
+    real_commit = cache._commit
+
+    def slow_commit(items):
+        timed_out.append(not all_requested.wait(5))
+        real_commit(items)
+
+    monkeypatch.setattr(cache, "_commit", slow_commit)
+    r = refresh(cache, fake.client, threads=1, batch=2)
+    assert r.fetched == 6 and timed_out and not any(timed_out)
+    assert sorted(cache.names()) == [f"p{i}" for i in range(6)]
+
+
+def test_index_writer_waits_for_every_row_and_pushes_back(tmp_path, monkeypatch):
+    """`writing()` stops only once every row is committed (no timeout), and
+    its queue is bounded so a slow commit slows the fetchers."""
+    from mmw.core.disk_io import writer as writer_mod
+    seen = {}
+    real_init, real_stop = writer_mod.BatchWriter.__init__, writer_mod.BatchWriter.stop
+
+    def init(self, *a, **k):
+        seen["maxsize"] = k.get("maxsize")
+        real_init(self, *a, **k)
+
+    def stop(self, timeout=60.0):
+        seen["timeout"] = timeout
+        return real_stop(self, timeout)
+
+    monkeypatch.setattr(writer_mod.BatchWriter, "__init__", init)
+    monkeypatch.setattr(writer_mod.BatchWriter, "stop", stop)
+    with IndexCache(tmp_path).writing():
+        pass
+    assert seen["timeout"] is None and seen["maxsize"]

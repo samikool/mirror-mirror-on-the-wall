@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal, Union
 from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
+from mmw.core import disk_io
+
 CONFIG_FILENAME = "mmw.toml"
 
 class _StrictModel(BaseModel):
@@ -721,7 +723,7 @@ class PypiSource(_StrictModel):
             if not path.is_absolute():
                 path = (config_dir or self._config_dir or Path.cwd()) / path
             try:
-                text = path.read_text(encoding="utf-8-sig")   # Windows editors add a BOM
+                text = disk_io.ops.read_text(path, encoding="utf-8-sig")   # Windows editors add a BOM
             except FileNotFoundError:
                 raise FileNotFoundError(f"requirements_file not found: {path}") from None
             lines += [kept for kept in (check_requirement_line(line) for line in text.splitlines()) if kept]
@@ -782,6 +784,12 @@ class Settings(_StrictModel):
     # At least one: 0 built an `asyncio.Semaphore(0)` every download waited on
     # forever, and a `ThreadPoolExecutor(0)` that refused to start.
     max_connections: int = Field(default=os.cpu_count() or 10, ge=1)
+    # Disk lanes, per job (`mmw.core.disk_io`). Defaults measured on one HDD —
+    # see docs/internals/superpowers/specs/2026-10-20-disk-io-layer-design.md;
+    # 1 / 1 / 0 is exactly the serial behaviour mmw had before.
+    disk_write_threads: int = Field(default=8, ge=1)   # link / unlink / rename on a cold cache
+    disk_read_threads: int = Field(default=16, ge=1)   # stat / open / small reads on a cold cache
+    disk_readahead: int = Field(default=16, ge=0)      # files opened ahead of a stream; 0 = off
     theme: str = DEFAULT_THEME
     # The pool database file. Default: where it has always been, inside the
     # pool. A fast disk here keeps listings off a slow pool disk; `.pool/tmp`
@@ -804,6 +812,9 @@ class Settings(_StrictModel):
         if database == default_database(self.mirror_dir):
             database = default_database(mirror_dir)
         return self.model_copy(update={"mirror_dir": mirror_dir, "database": database})
+
+
+_DISK_KEYS = ("disk_write_threads", "disk_read_threads", "disk_readahead")
 
 
 class NetworkSelect(_StrictModel):
@@ -1270,9 +1281,9 @@ def config_path(directory: Path = Path(".")) -> Path:
 
 def load(directory: Path = Path(".")) -> Config:
     path = config_path(directory)
-    if not path.exists():
+    if not disk_io.ops.exists(path):
         raise FileNotFoundError(f"No config found at {path}. Run `mmw init` first.")
-    with open(path, "rb") as f:
+    with disk_io.ops.open_file(path, "rb") as f:
         data = tomllib.load(f)
     cfg = Config.model_validate(data)
     for source in cfg.sources:
@@ -1280,11 +1291,12 @@ def load(directory: Path = Path(".")) -> Config:
             source._config_dir = Path(directory).resolve()
     from mmw.core.pool import register_database
     register_database(cfg.settings.mirror_dir, cfg.settings.database)
+    disk_io.configure(cfg.settings)
     return cfg
 
 
 def delete(directory: Path = Path(".")) -> None:
-    config_path(directory).unlink(missing_ok=True)
+    disk_io.ops.unlink(config_path(directory), missing_ok=True)
 
 
 def _select_to_dict(sel: NetworkSelect) -> dict:
@@ -1362,7 +1374,7 @@ def rename_network_state(mirror_dir: Path, old: str, new: str) -> list[str]:
     """
     problems: list[str] = []
     from mmw.core.pool import database_path
-    if database_path(mirror_dir).exists():
+    if disk_io.ops.exists(database_path(mirror_dir)):
         from mmw.core.pool import Pool
         try:
             with Pool(mirror_dir) as pool:
@@ -1373,13 +1385,13 @@ def rename_network_state(mirror_dir: Path, old: str, new: str) -> list[str]:
             problems.append(problem)
     for kind in ("certs", "bundles"):
         src, dst = mirror_dir / kind / old, mirror_dir / kind / new
-        if not src.exists():
+        if not disk_io.ops.exists(src):
             continue
-        if dst.exists():
+        if disk_io.ops.exists(dst):
             problems.append(f"{dst} already exists — {src} was left where it is")
             continue
         try:
-            src.rename(dst)
+            disk_io.ops.rename(src, dst)
         except OSError as e:
             problems.append(f"could not move {src} to {dst}: {e}")
     return problems
@@ -1426,6 +1438,8 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             # hand-edited file should only say what was actually chosen.
             **({"theme": cfg.settings.theme}
                if cfg.settings.theme != DEFAULT_THEME else {}),
+            **{key: getattr(cfg.settings, key) for key in _DISK_KEYS
+               if getattr(cfg.settings, key) != Settings.model_fields[key].default},
         },
         **({"sources": sources_data} if sources_data else {}),
         **({"networks": networks_data} if networks_data else {}),
@@ -1452,14 +1466,14 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
     # file is hand-edited, so there is often no other copy. The target is
     # resolved first so a symlinked mmw.toml is replaced at its real location
     # rather than turned into a regular file.
-    target = path.resolve() if path.is_symlink() else path
+    target = path.resolve() if disk_io.ops.is_symlink(path) else path
     tmp = target.with_name(target.name + ".tmp")
     try:
-        with open(tmp, "wb") as f:
+        with disk_io.ops.open_file(tmp, "wb") as f:
             tomli_w.dump(data, f)
-        if target.exists():
-            os.chmod(tmp, target.stat().st_mode & 0o7777)
-        os.replace(tmp, target)
+        if disk_io.ops.exists(target):
+            disk_io.ops.chmod(tmp, disk_io.ops.stat(target).st_mode & 0o7777)
+        disk_io.ops.replace(tmp, target)
     finally:
-        tmp.unlink(missing_ok=True)
+        disk_io.ops.unlink(tmp, missing_ok=True)
     return path

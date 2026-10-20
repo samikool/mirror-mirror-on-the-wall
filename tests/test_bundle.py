@@ -620,3 +620,22 @@ def test_without_certs_a_bundle_is_http_only_and_carries_no_key(seeded, tmp_path
     _extract(result.out_path, applied)
     assert "443" not in (applied / "nginx" / "mirror.conf").read_text()
     assert not (applied / ".mmw" / "tls").exists()
+
+
+def test_bundle_stopped_in_preflight_records_nothing(seeded, tmp_path):
+    """A stop during the pre-flight stat writes no tar and no ledger entry."""
+    import threading
+    from mmw.core.pool import Pool
+    mirror_dir, cfg = seeded
+    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
+    stop = threading.Event()
+
+    def progress(rel, status):
+        if status.startswith("preflight:"):
+            stop.set()
+
+    result = bundle_network(net, cfg, mirror_dir, progress=progress, stop_event=stop)
+    assert result.own_errors == ["stopped before the bundle was written"]
+    assert not list((tmp_path / "out").glob("*.tar"))
+    with Pool(mirror_dir, read_only=True) as pool:
+        assert pool.bundles("lab") == []

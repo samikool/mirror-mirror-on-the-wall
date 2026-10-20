@@ -134,8 +134,10 @@ class MmwApp(ThemedApp):
             return
         await asyncio.to_thread(config.save, candidate, self.cfg_dir)
         self.cfg = candidate
+        from mmw.core import disk_io
         from mmw.core.pool import register_database
         register_database(candidate.settings.mirror_dir, candidate.settings.database)
+        disk_io.configure(candidate.settings)
 
     async def _write_settings(self, **changes: object) -> None:
         """Caller holds `_save_lock`."""

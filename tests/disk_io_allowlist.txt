@@ -1,0 +1,5 @@
+# Raw filesystem calls allowed outside mmw.core.disk_io — see tests/test_disk_io_guard.py.
+# Shrink-only: a line goes when its function stops making the call. Only reads
+# that are not disk (/proc) belong here.
+core/db_warm.py:_available_bytes  # permanent: /proc/meminfo, not disk
+core/profiler.py:_thread_cpu_ticks  # permanent: /proc reads, not disk

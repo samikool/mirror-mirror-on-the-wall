@@ -1,11 +1,8 @@
 import fcntl
-import hashlib
 import heapq
 import json
 import os
-import queue
 import re
-import shutil
 import sqlite3
 import threading
 import time
@@ -15,6 +12,9 @@ from dataclasses import dataclass
 from itertools import islice
 from operator import itemgetter
 from pathlib import Path
+
+from mmw.core import disk_io
+from mmw.core.disk_io.writer import BatchWriter
 
 
 # A blob's filesystem name is `{checksum[:2]}/{checksum}-{filename}`, so both
@@ -41,6 +41,8 @@ def is_safe_checksum(checksum: str) -> bool:
     """
     return bool(_HEX_DIGEST_RE.match(checksum))
 
+
+_PRUNE_REPORT_EVERY = 5000   # prune progress cadence, in blobs unlinked
 
 NAME_MAX = 255  # bytes in one path component, on every filesystem a pool lives on
 
@@ -337,8 +339,8 @@ def acquire_sync_lock(mirror_dir: Path) -> None:
         fh = None
         try:
             path = _lock_path(mirror_dir)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fh = open(path, "a+")
+            disk_io.ops.mkdir(path.parent, parents=True, exist_ok=True)
+            fh = disk_io.ops.open_file(path, "a+")
             # Blocking on purpose: if a prune or wipe holds the pool, the right
             # thing is to wait for it rather than race it. The mutex is held
             # across this, so concurrent callers queue behind the first — which
@@ -389,7 +391,7 @@ def holds_shared_pool_lock(job):
 
     @functools.wraps(job)
     def run(network, cfg, mirror_dir, *args, **kwargs):
-        if not (Path(mirror_dir) / ".pool").is_dir():
+        if not disk_io.ops.is_dir(Path(mirror_dir) / ".pool"):
             # No pool, nothing to protect — and taking the lock would create
             # `.pool/` for its lock file as a side effect.
             return job(network, cfg, mirror_dir, *args, **kwargs)
@@ -423,8 +425,8 @@ def exclusive_pool_lock(mirror_dir: Path, what: str = "operation"):
     path = _lock_path(mirror_dir)
     fh = None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(path, "a+")
+        disk_io.ops.mkdir(path.parent, parents=True, exist_ok=True)
+        fh = disk_io.ops.open_file(path, "a+")
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         if fh is not None:
@@ -461,7 +463,7 @@ def _write_download_sources(conn: sqlite3.Connection, rows: list[tuple]) -> None
     )
 
 
-class _DeferredWriter:
+class _DeferredWriter(BatchWriter):
     """Drains package-table rows on one thread, committing in batches.
 
     **Why this exists.** `Pool.add()` used to INSERT + `commit()` inline, under
@@ -482,46 +484,26 @@ class _DeferredWriter:
     structural half: the network stops waiting on the database at all.
     """
 
-    _SENTINEL = object()
-
-    class _Task:
-        """A unit of work that must run *after* queued rows are committed —
-        `reconcile_refs`, whose refs are joined against those rows."""
-
-        __slots__ = ("fn", "done")
-
-        def __init__(self, fn, done):
-            self.fn = fn
-            self.done = done
-
     def __init__(self, pool: "Pool", batch: int = 500, interval: float = 0.5,
                  checkpoint_interval: float = 5.0):
         self._pool = pool
-        self._batch = batch
-        self._interval = interval
         self._checkpoint_interval = checkpoint_interval
         self._last_checkpoint = time.monotonic()
-        self._q: queue.Queue = queue.Queue()
         # Checksums queued but not yet committed. Reads consult this so a blob
         # that is already hardlinked on disk is never re-downloaded just because
         # its row has not landed yet.
         self._pending: set[str] = set()
         self._pending_sources: dict[tuple[str, str], str] = {}
         self._pending_lock = threading.Lock()
-        self._errors: list[str] = []
-        self._idle = threading.Event()
-        self._idle.set()
-        self._thread = threading.Thread(
-            target=self._run, name="mmw-pool-writer", daemon=True)
-        self._thread.start()
+        super().__init__(self._commit_rows, name="mmw-pool-writer", batch=batch,
+                         interval=interval)
 
     def submit(self, row: tuple) -> None:
         with self._pending_lock:
             self._pending.add(row[0])
             if len(row) > 5 and row[5]:
                 self._pending_sources[(row[5], row[1].lower())] = row[0]
-        self._idle.clear()
-        self._q.put(row)
+        super().submit(row)
 
     def pending(self) -> set[str]:
         with self._pending_lock:
@@ -535,70 +517,18 @@ class _DeferredWriter:
         with self._pending_lock:
             return {key: self._pending_sources[key] for key in sources if key in self._pending_sources}
 
-    def submit_task(self, fn, done) -> None:
-        """Run `fn()` on the writer thread once pending rows are committed.
+    def _on_tick(self, now: float) -> None:
+        if now - self._last_checkpoint >= self._checkpoint_interval:
+            self._checkpoint("PASSIVE")
+            self._last_checkpoint = now
 
-        `done(error_or_None)` is called afterwards, on the writer thread.
-        """
-        self._idle.clear()
-        self._q.put(self._Task(fn, done))
+    def _on_stop(self) -> None:
+        # No more writes are coming on this pool: reclaim the WAL fully rather
+        # than leave whatever PASSIVE couldn't fold in sitting on disk between
+        # sync runs.
+        self._checkpoint("TRUNCATE")
 
-    def _run(self) -> None:
-        pending: list[tuple] = []
-        last = time.monotonic()
-        while True:
-            try:
-                item = self._q.get(timeout=self._interval)
-            except queue.Empty:
-                item = None
-            stopping = item is self._SENTINEL
-            task = item if isinstance(item, self._Task) else None
-            if item is not None and not stopping and task is None:
-                pending.append(item)
-            if task is not None and pending:
-                self._commit(pending)          # the task must see these rows
-                pending = []
-                last = time.monotonic()
-            if task is not None:
-                error = None
-                try:
-                    task.fn()
-                except Exception as e:
-                    error = e
-                    self._errors.append(str(e))
-                try:
-                    task.done(error)
-                except Exception:
-                    pass
-            now = time.monotonic()
-            if pending and (stopping or len(pending) >= self._batch
-                            or now - last >= self._interval):
-                self._commit(pending)
-                pending = []
-                last = now
-            if now - self._last_checkpoint >= self._checkpoint_interval:
-                self._checkpoint("PASSIVE")
-                self._last_checkpoint = now
-            if not pending and self._q.empty():
-                # Under `_pending_lock`, re-checking the queue: a producer can
-                # run `_idle.clear()` + `put()` between the `empty()` test and
-                # the `set()`, which would let a `flush()` return with a row
-                # still queued. Harmless for today's callers (a reconcile runs
-                # *on* this thread, where FIFO order already guarantees its
-                # rows are committed) but load-bearing for any future caller
-                # that flushes for correctness rather than for freshness.
-                with self._pending_lock:
-                    if self._q.empty():
-                        self._idle.set()
-            if stopping:
-                # No more writes are coming on this pool: reclaim the WAL fully
-                # rather than leave whatever PASSIVE couldn't fold in sitting on
-                # disk between sync runs.
-                self._checkpoint("TRUNCATE")
-                self._idle.set()
-                return
-
-    def _commit(self, rows: list[tuple]) -> None:
+    def _commit_rows(self, rows: list[tuple]) -> None:
         try:
             with self._pool._lock:
                 self._pool._conn.executemany(
@@ -641,29 +571,6 @@ class _DeferredWriter:
                 self._pool._conn.execute(f"PRAGMA wal_checkpoint({mode})")
         except Exception as e:
             self._errors.append(f"wal_checkpoint({mode}): {e}")
-
-    def flush(self, timeout: float = 60.0) -> list[str]:
-        """Block until every queued row is committed. Returns any errors.
-
-        Called *from* the writer thread this is a no-op rather than a deadlock:
-        a queued task already had its rows committed before it ran, and waiting
-        on `_idle` there would wait for a thread that is us.
-
-        Callers that must *see* the rows — `reconcile_refs`, `close` — flush
-        first. A queued row is invisible to `contains()`, which would at worst
-        cost a redundant download, never corruption: the blob is already
-        hardlinked into place before the row is queued.
-        """
-        if threading.current_thread() is self._thread:
-            return list(self._errors)
-        self._idle.wait(timeout)
-        return list(self._errors)
-
-    def stop(self, timeout: float = 60.0) -> list[str]:
-        self._q.put(self._SENTINEL)
-        self._thread.join(timeout)
-        return list(self._errors)
-
 
 @dataclass(frozen=True)
 class BundleInfo:
@@ -756,21 +663,21 @@ class Pool:
         self._lock = threading.Lock()
         db_path = database_path(mirror_dir)
         self.db_path = db_path
-        if not db_path.exists() and next(self._packages_dir.glob("*/*"), None) is not None:
+        if not disk_io.ops.exists(db_path) and next(disk_io.ops.glob(self._packages_dir, "*/*"), None) is not None:
             raise PoolDatabaseMissing(
                 f"the pool database is not at {db_path}, but {self._packages_dir} holds "
                 "blobs — move the database there, or point settings.database at it")
         if read_only:
-            if db_path.exists():
+            if disk_io.ops.exists(db_path):
                 self._conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
             else:
                 # Nothing synced yet — empty in-memory DB answers every query with "no".
                 self._conn = sqlite3.connect(":memory:", check_same_thread=False)
                 self._conn.executescript(SCHEMA)
         else:
-            self._packages_dir.mkdir(parents=True, exist_ok=True)
-            self._tmp_dir.mkdir(parents=True, exist_ok=True)
-            db_path.parent.mkdir(parents=True, exist_ok=True)
+            disk_io.ops.mkdir(self._packages_dir, parents=True, exist_ok=True)
+            disk_io.ops.mkdir(self._tmp_dir, parents=True, exist_ok=True)
+            disk_io.ops.mkdir(db_path.parent, parents=True, exist_ok=True)
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(SCHEMA)
@@ -845,7 +752,7 @@ class Pool:
         self._writer: "_DeferredWriter | None" = None
         self._rlock = threading.Lock()
         self._rconn: "sqlite3.Connection | None" = None
-        if db_path.exists():
+        if disk_io.ops.exists(db_path):
             self._rconn = sqlite3.connect(
                 f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
             _tune_reads(self._rconn)
@@ -884,16 +791,7 @@ class Pool:
     def _reap_stale_tmp(self) -> None:
         """Remove crash leftovers from .pool/tmp — but never fresh files that a
         concurrently running sync may still be writing."""
-        cutoff = time.time() - _TMP_MAX_AGE
-        try:
-            for f in self._tmp_dir.iterdir():
-                try:
-                    if f.is_file() and f.stat().st_mtime < cutoff:
-                        f.unlink()
-                except OSError:
-                    pass
-        except OSError:
-            pass
+        disk_io.ops.reap_older_than(self._tmp_dir, time.time() - _TMP_MAX_AGE)
 
     @contextmanager
     def _read(self):
@@ -1025,20 +923,20 @@ class Pool:
         """
         _validate_blob_name(checksum, filename)
         pool_dest = self._packages_dir / checksum[:2] / fit_name(f"{checksum}-{filename}")
-        pool_dest.parent.mkdir(parents=True, exist_ok=True)
+        disk_io.ops.mkdir(pool_dest.parent, parents=True, exist_ok=True)
 
         if isinstance(source, bytes):
             tmp = self._tmp_dir / fit_name(f"{os.getpid()}-{threading.get_ident()}-{filename}")
-            tmp.write_bytes(source)
+            disk_io.ops.write_bytes(tmp, source)
         else:
             tmp = source
 
         try:
-            os.link(tmp, pool_dest)
-        except FileExistsError:
-            pass  # same checksum added concurrently or already present — reuse
+            # False: the same checksum was added concurrently or is already
+            # present — reuse it.
+            disk_io.ops.link_into(tmp, pool_dest)
         finally:
-            tmp.unlink(missing_ok=True)
+            disk_io.ops.unlink(tmp, missing_ok=True)
 
         row = (checksum, checksum_type, filename, size, str(pool_dest), source_url)
         if self._writer is not None:
@@ -1071,7 +969,7 @@ class Pool:
     def take_write_errors(self) -> list[str]:
         """Drain and return deferred-writer errors seen since the last call.
 
-        `_DeferredWriter._commit` catches everything so a bad batch cannot kill
+        `_DeferredWriter._commit_rows` catches everything so a bad batch cannot kill
         the writer thread and strand the sync — but the resulting list had no
         reader anywhere in the codebase, so ENOSPC, `database is locked` or a
         corrupt DB silently dropped up to 500 package rows per failed batch.
@@ -1489,9 +1387,9 @@ class Pool:
         """`add` a COPY of `src` — `add` moves the file it is given, which is
         right for a download's tmp file and wrong for anything that stays
         where it is (a key, a mirrored upstream file)."""
-        self._tmp_dir.mkdir(parents=True, exist_ok=True)
+        disk_io.ops.mkdir(self._tmp_dir, parents=True, exist_ok=True)
         tmp = self._tmp_dir / fit_name(f"copy-{os.getpid()}-{threading.get_ident()}-{filename}")
-        shutil.copyfile(src, tmp)
+        disk_io.ops.copy_file(src, tmp)
         return self.add(tmp, checksum, "sha256", filename, size)
 
     # ── snapshots ────────────────────────────────────────────────────────────
@@ -1734,7 +1632,8 @@ class Pool:
         return row[0] if row else 0
 
     def prune_orphans(self, configured_sources: list[str],
-                      dropped_mirrors: "list[str] | tuple[str, ...]" = ()) -> tuple[int, int]:
+                      dropped_mirrors: "list[str] | tuple[str, ...]" = (), *,
+                      stop_event=None, progress=None) -> tuple[int, int]:
         """DB-driven prune: GC refs of unconfigured repositories and of
         `dropped_mirrors`, then delete pool files no remaining ref and no
         snapshot wants. Returns (files_removed, bytes_freed).
@@ -1772,7 +1671,8 @@ class Pool:
                 "refusing to prune against no configured repositories: every ref in "
                 "the pool would look unwanted and prune would empty the whole pool")
         with exclusive_pool_lock(self.pool_dir.parent, "prune the pool"):
-            return self._prune_orphans_locked(configured_sources, list(dropped_mirrors))
+            return self._prune_orphans_locked(configured_sources, list(dropped_mirrors),
+                                              stop_event=stop_event, progress=progress)
 
     def _orphans_sql(self, ref_filter: str = "1",
                      columns: str = "checksum, pool_path, size") -> str:
@@ -1822,7 +1722,8 @@ class Pool:
         return (int(row[0]), int(row[1])) if row else (0, 0)
 
     def _prune_orphans_locked(self, configured_sources: list[str],
-                              dropped_mirrors: list[str]) -> tuple[int, int]:
+                              dropped_mirrors: list[str], *, stop_event=None,
+                              progress=None) -> tuple[int, int]:
         with self._lock:
             ph = ",".join("?" * len(configured_sources))
             self._conn.execute(
@@ -1847,14 +1748,19 @@ class Pool:
         removed = 0
         freed = 0
         deleted_checksums: list[str] = []
-        for checksum, pool_path, size in orphans:
-            try:
-                Path(pool_path).unlink(missing_ok=True)
+        # Unlinks on the job's write lane; a stop leaves the rest — files and
+        # rows both — for the next prune. A blob already gone counts as
+        # removed: its row is what is left to drop.
+        with disk_io.DiskJob("prune", stop_event=stop_event) as job:
+            for (checksum, _pool_path, size), result in job.meta_map(
+                    lambda row: disk_io.ops.remove(row[1]), orphans):
+                if isinstance(result, Exception):
+                    continue
                 removed += 1
                 freed += size
                 deleted_checksums.append(checksum)
-            except OSError:
-                pass
+                if progress and removed % _PRUNE_REPORT_EVERY == 0:
+                    progress(removed, len(orphans))
 
         if deleted_checksums:
             with self._lock:
@@ -1865,10 +1771,10 @@ class Pool:
                 self._conn.commit()
 
         # Clean up empty shard directories
-        for d in sorted(self._packages_dir.iterdir(), reverse=True):
-            if d.is_dir():
+        for d in sorted(disk_io.ops.iterdir(self._packages_dir), reverse=True):
+            if disk_io.ops.is_dir(d):
                 try:
-                    d.rmdir()
+                    disk_io.ops.rmdir(d)
                 except OSError:
                     pass
 
@@ -1897,8 +1803,10 @@ class Pool:
                     rows += self._conn.execute(
                         f"SELECT checksum, pool_path, size FROM packages "
                         f"WHERE checksum IN ({','.join('?' * len(chunk))})", chunk).fetchall()
-            for _checksum, pool_path, _size in rows:
-                Path(pool_path).unlink(missing_ok=True)
+            with disk_io.DiskJob("repair") as job:
+                for _path, result in job.remove(Path(r[1]) for r in rows):
+                    if isinstance(result, Exception):
+                        raise result        # a blob that will not go keeps its row
             with self._lock:
                 for i in range(0, len(rows), _CHUNK):
                     chunk = [r[0] for r in rows[i:i + _CHUNK]]
@@ -1938,7 +1846,7 @@ class Pool:
         """Rows of one query from a short-lived read-only connection, closed
         when the iteration ends (or the generator is dropped)."""
         db_path = self.db_path
-        if not db_path.exists():
+        if not disk_io.ops.exists(db_path):
             return
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
         _tune_reads(conn)
@@ -1955,7 +1863,7 @@ class Pool:
         expensive aggregates all need it.
         """
         db_path = self.db_path
-        if not db_path.exists():
+        if not disk_io.ops.exists(db_path):
             return None
         # Read-only URI: a plain connect would CREATE an empty db file if the
         # pool doesn't exist yet.
@@ -2002,7 +1910,7 @@ class Pool:
         if not mirror_names:
             return 0, 0
         db_path = self.db_path
-        if not db_path.exists():
+        if not disk_io.ops.exists(db_path):
             return 0, 0
         placeholders = ",".join("?" * len(mirror_names))
         # Read-only URI: a plain connect would CREATE an empty db file if the
@@ -2047,16 +1955,12 @@ def wipe(mirror_dir: Path) -> None:
     with exclusive_pool_lock(mirror_dir, "wipe the pool"):
         pool_dir = mirror_dir / ".pool"
         db = database_path(mirror_dir)
-        shutil.rmtree(pool_dir, ignore_errors=True)
+        disk_io.ops.rmtree(pool_dir, ignore_errors=True)
         # A database placed elsewhere (settings.database) goes with its pool:
         # left behind, it would describe blobs that no longer exist.
         for suffix in ("", "-wal", "-shm"):
-            Path(f"{db}{suffix}").unlink(missing_ok=True)
+            disk_io.ops.unlink(Path(f"{db}{suffix}"), missing_ok=True)
 
 
 def verify_checksum(path: Path, expected: str, algo: str) -> bool:
-    h = hashlib.new(algo)
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest() == expected
+    return disk_io.hash_file(path, algo) == expected

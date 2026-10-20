@@ -127,3 +127,35 @@ def test_snapshot_records_mirrors_in_the_pre_seam_shape(two_mirrors):  # noqa: F
     for m in recorded:
         assert set(m) == _PRE_SEAM_MIRROR_FIELDS, set(m) ^ _PRE_SEAM_MIRROR_FIELDS
         assert MirrorConfig.model_validate(m).name == m["name"]
+
+
+def test_snapshot_never_checks_contains_for_pool_rows(two_mirrors, monkeypatch):  # noqa: F811
+    """Pool rows are pooled by construction: only keys, upstream files and
+    generated writes ask the pool whether it already holds them."""
+    from mmw.core import snapshots
+    cfg, net, mirror_dir = two_mirrors
+    _key(mirror_dir)
+    calls = {"contains": 0, "link": 0, "pooled": 0}
+    writes: list[str] = []
+    real_contains = Pool.contains
+    Sink = snapshots.RecordingSink
+    real_link, real_write, real_pooled = Sink.link, Sink.write, Sink.link_pooled
+
+    def counting(name, real):
+        def wrapped(*a, **k):
+            calls[name] += 1
+            return real(*a, **k)
+        return wrapped
+
+    def write(self, rel, data):
+        writes.append(rel)
+        return real_write(self, rel, data)
+
+    monkeypatch.setattr(Pool, "contains", counting("contains", real_contains))
+    monkeypatch.setattr(Sink, "link", counting("link", real_link))
+    monkeypatch.setattr(Sink, "link_pooled", counting("pooled", real_pooled))
+    monkeypatch.setattr(Sink, "write", write)
+    take_snapshot(net, cfg, mirror_dir)
+    assert calls["pooled"] > 0
+    recorded_writes = [rel for rel in writes if not rel.startswith("nginx/")]
+    assert calls["contains"] == calls["link"] + len(recorded_writes)

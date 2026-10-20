@@ -45,6 +45,23 @@ class SettingsPage(Page):
                 id="settings-max-connections", integer_min=1,
                 hint="Simultaneous downloads across all mirrors.",
             ),
+            TextField(
+                "Disk link threads", str(s.disk_write_threads),
+                id="settings-disk-write-threads", integer_min=1,
+                hint="Hardlinks and deletes in flight per job. 8 measured best on one HDD; "
+                     "1 is one at a time.",
+            ),
+            TextField(
+                "Disk read threads", str(s.disk_read_threads),
+                id="settings-disk-read-threads", integer_min=1,
+                hint="Stats and small reads in flight per job. 16 measured best on one HDD; "
+                     "1 is one at a time.",
+            ),
+            TextField(
+                "Disk read-ahead (files)", str(s.disk_readahead),
+                id="settings-disk-readahead", integer_min=0,
+                hint="Files opened ahead of a bundle or hash stream. 0 turns it off.",
+            ),
             ChoiceField(
                 "Theme", [(n, n) for n in names], self.app.theme, id="settings-theme",
                 hint="Applies and saves at once. Custom themes: themes/*.toml beside mmw.toml "
@@ -73,6 +90,8 @@ class SettingsPage(Page):
         s = self.app.cfg.settings
         self.query_one("#settings-mirror-dir", Input).value = str(s.mirror_dir)
         self.query_one("#settings-max-connections", Input).value = str(s.max_connections)
+        for key in ("disk_write_threads", "disk_read_threads", "disk_readahead"):
+            self.query_one(f"#settings-{key.replace('_', '-')}", Input).value = str(getattr(s, key))
         self.set_status("Reverted to the saved values.")
 
     @on(Button.Pressed, "#btn-settings-save")
@@ -90,6 +109,9 @@ class SettingsPage(Page):
             await self.app.save_settings(
                 mirror_dir=mirror_dir,
                 max_connections=v["settings-max-connections"],
+                disk_write_threads=v["settings-disk-write-threads"],
+                disk_read_threads=v["settings-disk-read-threads"],
+                disk_readahead=v["settings-disk-readahead"],
                 theme=self.app.theme,
             )
         except Exception as e:  # noqa: BLE001 — reported on the page

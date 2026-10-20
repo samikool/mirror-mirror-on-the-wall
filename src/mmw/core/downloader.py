@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 import httpx
 
+from mmw.core import disk_io
+from mmw.core.format import fmt_timings
 from mmw.core.http import request_scope, retrying_client
 
 from mmw.core.pool import (
@@ -99,7 +101,7 @@ class MirrorSummary:
     metadata_resnapshotted: bool = False
     key_errors: list[str] = field(default_factory=list)  # GPG key sync failures
     # Deferred-writer failures (ENOSPC, `database is locked`, a corrupt DB).
-    # `_DeferredWriter._commit` swallows these so one bad batch cannot kill the
+    # `_DeferredWriter._commit_rows` swallows these so one bad batch cannot kill the
     # writer thread mid-sync, and for a long time nothing read the list it put
     # them in — so up to 500 package rows per failed batch vanished, refs
     # pointed at packages the `refs ⋈ packages` join could not find, publish
@@ -110,7 +112,7 @@ class MirrorSummary:
     timings: dict[str, float] = field(default_factory=dict)
 
     def timing_summary(self) -> str:
-        return " · ".join(f"{phase} {seconds:.2f}s" for phase, seconds in self.timings.items())
+        return fmt_timings(self.timings)
 
     @property
     def ok(self) -> bool:
@@ -412,17 +414,16 @@ def _download_sync(
     tmp = partial if partial is not None else _partial_path(pool, pkg)
 
     offset = 0
-    if resume and tmp.exists():
+    if resume and disk_io.ops.exists(tmp):
         try:
-            with open(tmp, "rb") as f:
-                for block in iter(lambda: f.read(1 << 20), b""):
-                    h.update(block)
-                    offset += len(block)
+            for block in disk_io.ops.iter_chunks(tmp):
+                h.update(block)
+                offset += len(block)
         except OSError:
             offset = 0
             h = hashlib.new(pkg.checksum_type)
     if offset == 0:
-        tmp.unlink(missing_ok=True)
+        disk_io.ops.unlink(tmp, missing_ok=True)
 
     bytes_written = offset
     headers = {"Range": f"bytes={offset}-"} if offset else None
@@ -437,7 +438,7 @@ def _download_sync(
                 bytes_written = 0
                 offset = 0
             resp.raise_for_status()
-            with open(tmp, "ab" if offset else "wb") as f:
+            with disk_io.ops.open_append(tmp, offset) as f:
                 for chunk in resp.iter_bytes(65536):
                     if stop_event and stop_event.is_set():
                         raise InterruptedError("sync stopped")
@@ -448,7 +449,7 @@ def _download_sync(
                         chunk_callback(len(chunk))
         checksum = h.hexdigest()
         if pkg.checksum_known and checksum != pkg.checksum:
-            tmp.unlink(missing_ok=True)   # a resumed partial may be the culprit
+            disk_io.ops.unlink(tmp, missing_ok=True)   # a resumed partial may be the culprit
             return DownloadResult(status=Status.FAILED, path=tmp, error="checksum mismatch")
         pool_path = pool.add(tmp, checksum, pkg.checksum_type, pkg.filename, bytes_written,
                              source_url=pkg.url if not pkg.checksum_known else "")
@@ -457,7 +458,7 @@ def _download_sync(
             bytes_transferred=bytes_written, checksum=checksum,
         )
     except (PermanentFetchError, InterruptedError):
-        tmp.unlink(missing_ok=True)
+        disk_io.ops.unlink(tmp, missing_ok=True)
         raise
     except Exception:
         # Deliberately NOT unlinked: whatever landed is what the next attempt

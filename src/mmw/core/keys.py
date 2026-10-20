@@ -6,6 +6,8 @@ from pathlib import Path
 
 import httpx
 
+from mmw.core import disk_io
+
 KEYS_DIR = "keys"
 
 # Key URLs that name nothing: two repositories sharing a `label` would
@@ -154,7 +156,7 @@ def _armour_bytes(raw: bytes) -> str:
 
 def read_key(path: Path) -> str:
     """Read a key file in either encoding and return it armoured."""
-    return _armour_bytes(path.read_bytes())
+    return _armour_bytes(disk_io.ops.read_bytes(path))
 
 
 def fetch_key_bytes(url: str, client: httpx.Client) -> bytes:
@@ -186,8 +188,8 @@ def find_keys(directory: Path) -> dict[str, Path]:
     """
     found: dict[str, Path] = {}
     try:
-        for path in sorted(directory.rglob("*")):
-            if path.is_file() and path.suffix.lower() in (".gpg", ".asc", ".key", ".pub"):
+        for path in sorted(disk_io.ops.rglob(directory, "*")):
+            if disk_io.ops.is_file(path) and path.suffix.lower() in (".gpg", ".asc", ".key", ".pub"):
                 found.setdefault(path.name, path)
     except OSError:
         pass
@@ -208,7 +210,7 @@ def write_key(mirror_name: str, armour: str, mirror_dir: Path,
     file a client expects is the file it gets.
     """
     dest_dir = mirror_dir / KEYS_DIR / mirror_name
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    disk_io.ops.mkdir(dest_dir, parents=True, exist_ok=True)
     result = KeySyncResult(dest_dir=dest_dir)
 
     stem = (stem or mirror_name).rsplit(".", 1)[0]
@@ -222,19 +224,19 @@ def write_key(mirror_name: str, armour: str, mirror_dir: Path,
     for dest, payload in ((dest_dir / f"{stem}.asc", body.encode()),
                           (dest_dir / f"{stem}.gpg", binary)):
         try:
-            if dest.exists() and dest.read_bytes() == payload:
+            if disk_io.ops.exists(dest) and disk_io.ops.read_bytes(dest) == payload:
                 result.skipped += 1
                 continue
             tmp = dest.with_name(dest.name + ".tmp")
-            tmp.write_bytes(payload)
-            tmp.replace(dest)          # never leave a half-written key
+            disk_io.ops.write_bytes(tmp, payload)
+            disk_io.ops.replace(tmp, dest)          # never leave a half-written key
             result.fetched += 1
         except OSError as e:
             result.failed.append(f"{dest.name}: {e}")
 
     readme = dest_dir / "IMPORT.md"
-    if not readme.exists():
-        readme.write_text(_IMPORT_README)
+    if not disk_io.ops.exists(readme):
+        disk_io.ops.write_text(readme, _IMPORT_README)
     return result
 
 
@@ -276,12 +278,12 @@ def sync_custom_key(mirror_name: str, key_url: str, mirror_dir: Path,
         armour = _armour_bytes(raw)
     except Exception as e:
         dest_dir = mirror_dir / KEYS_DIR / mirror_name
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        disk_io.ops.mkdir(dest_dir, parents=True, exist_ok=True)
         result = KeySyncResult(dest_dir=dest_dir)
         result.failed.append(f"{stem}: {e}")
         readme = dest_dir / "IMPORT.md"
-        if not readme.exists():
-            readme.write_text(_IMPORT_README)
+        if not disk_io.ops.exists(readme):
+            disk_io.ops.write_text(readme, _IMPORT_README)
         return result
     result = write_key(mirror_name, armour, mirror_dir, stem)
     result.raw = raw

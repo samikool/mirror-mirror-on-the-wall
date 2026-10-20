@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core.container_image import ImageResult, container_image
 from mmw.core.pool import KIND_PKG
 from mmw.core.publisher.results import MirrorPublishResult
@@ -39,7 +40,7 @@ def publish_image(mirror_dir, sink, result, *, progress=None, stop_event=None) -
         return set()
     rel = f"nginx/{TAR_NAME}"
     before = len(sink.errors)
-    if sink.link(image.path, rel, image.path.stat().st_size, image.checksum, KIND_PKG) == "error":
+    if sink.link(image.path, rel, disk_io.ops.stat(image.path).st_size, image.checksum, KIND_PKG) == "error":
         result.mirrors.append(MirrorPublishResult(
             mirror_name="nginx image", errors=sink.errors[before:] or [f"could not publish {rel}"],
         ))

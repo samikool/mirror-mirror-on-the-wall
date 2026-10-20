@@ -18,6 +18,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+from mmw.core import disk_io
+
 TS_FORMAT = "%Y%m%dT%H%M%SZ"
 MANIFEST_SUFFIX = ".manifest.jsonl"
 _LEGACY_SUFFIX = ".manifest.jsonl.zst"      # ledger files from before plain manifests
@@ -31,7 +33,7 @@ def is_manifest(name: str) -> bool:
 def _open_text(path: Path):
     """The manifest's text, streamed — through zstd for a legacy ledger file."""
     import io
-    raw = open(path, "rb")
+    raw = disk_io.ops.open_file(path, "rb")
     if raw.read(4) != _ZSTD_MAGIC:
         raw.seek(0)
         return io.TextIOWrapper(raw, encoding="utf-8")
@@ -92,20 +94,20 @@ def write_manifest(path: Path, header: ManifestHeader,
 
     Streams: `files` may be a generator over millions of rows.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    disk_io.ops.mkdir(path.parent, parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        with open(tmp, "w", encoding="utf-8") as out:
+        with disk_io.ops.open_file(tmp, "w", encoding="utf-8") as out:
             out.write(json.dumps(asdict(header), sort_keys=True) + "\n")
             for rel, checksum in files:
                 out.write(json.dumps({"p": rel, "c": checksum}) + "\n")
-        tmp.replace(path)
+        disk_io.ops.replace(tmp, path)
     finally:
         # A no-op after a successful replace() — tmp no longer exists there,
         # so this only cleans up the partial file left by a `files` generator
         # that raised mid-stream (a real path: a DB error while walking pool
         # rows).
-        tmp.unlink(missing_ok=True)
+        disk_io.ops.unlink(tmp, missing_ok=True)
 
 
 def read_manifest(path: Path) -> tuple[ManifestHeader, dict[str, str]]:
@@ -138,9 +140,9 @@ def iter_manifest(path: Path):
 def latest_manifest_path(mirror_dir: Path, network: str) -> Path | None:
     """Newest manifest by timestamp, or None if this network was never bundled."""
     d = ledger_dir(mirror_dir, network)
-    if not d.is_dir():
+    if not disk_io.ops.is_dir(d):
         return None
-    stamps = sorted(p for p in d.iterdir() if is_manifest(p.name))
+    stamps = sorted(p for p in disk_io.ops.iterdir(d) if is_manifest(p.name))
     return stamps[-1] if stamps else None
 
 

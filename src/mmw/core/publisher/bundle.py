@@ -17,6 +17,7 @@ month later carries what changed since the last one and nothing else.
 import hashlib
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool, holds_shared_pool_lock
 
@@ -49,7 +50,7 @@ def is_explicit_file_out(out: Path | None) -> bool:
       Callers iterating networks must refuse that up front; this is the
       predicate to refuse on.
     """
-    return out is not None and bool(out.suffix) and not out.is_dir()
+    return out is not None and bool(out.suffix) and not disk_io.ops.is_dir(out)
 
 
 def bundle_output_path(network: NetworkConfig, created: str,
@@ -66,8 +67,6 @@ def bundle_output_path(network: NetworkConfig, created: str,
     return network.bundle_dir / name
 
 
-_CHECKSUM_CHUNK = 1 << 20
-
 
 def _write_checksum_file(target: Path) -> Path:
     """Write `{target}.sha256` beside the bundle, in `sha256sum -c` format.
@@ -81,14 +80,11 @@ def _write_checksum_file(target: Path) -> Path:
     Written tmp-then-rename for the same reason the tarball and the manifest
     are: a half-written checksum file that happens to parse is worse than none.
     """
-    h = hashlib.sha256()
-    with target.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(_CHECKSUM_CHUNK), b""):
-            h.update(chunk)
+    digest = disk_io.hash_file(target)
     dest = target.with_name(target.name + ".sha256")
     tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(f"{h.hexdigest()}  {target.name}\n")
-    tmp.replace(dest)
+    disk_io.ops.write_text(tmp, f"{digest}  {target.name}\n")
+    disk_io.ops.replace(tmp, dest)
     return dest
 
 
@@ -124,13 +120,13 @@ def _resolve_from(pool: Pool, network: str, from_ref):
 def _free_target(network, name: str, out_path) -> Path:
     target = bundle_output_path(network, name, out_path)
     if is_explicit_file_out(out_path):
-        if target.exists():
+        if disk_io.ops.exists(target):
             raise ValueError(
                 f"{target} already exists — refusing to overwrite an explicit --out target. "
                 f"Remove it, or pass a directory to --out and let mmw name the bundle.")
         return target
     n = 2
-    while target.exists():                      # the same pair bundled twice
+    while disk_io.ops.exists(target):                      # the same pair bundled twice
         target = bundle_output_path(network, f"{name}.{n}", out_path)
         n += 1
     return target
@@ -224,7 +220,7 @@ def bundle_network(
                         prev[rel] = ""
         sink = BundleSink(target, header, prev, apply_script_bytes(),
                           prune=network.prune, full=start is None,
-                          progress=progress, tls_files=tls_files)
+                          progress=progress, tls_files=tls_files, stop_event=stop_event)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
         current_base, seen_bases = None, 0
@@ -268,16 +264,22 @@ def bundle_network(
             sink.deleted = sorted(set(gone))
 
     before_close = len(sink.errors)
-    sink.close()
+    try:
+        sink.close()
+    except InterruptedError:
+        result.own_errors.append("stopped before the bundle was written")
+        return result
+    finally:
+        result.timings.update(sink.job.stats.timings())
     result.own_errors.extend(sink.errors[before_close:])
 
     # The exact manifest shipped, kept beside the ledger's history.
     manifest_path = ledger_dir(mirror_dir, network.name) / f"{dest.stamp}{MANIFEST_SUFFIX}"
     write_manifest(manifest_path, sink.written_header or header, sink.manifest_rows)
-    (target.parent / "apply.py").write_bytes(apply_script_bytes())
+    disk_io.ops.write_bytes(target.parent / "apply.py", apply_script_bytes())
     if network.certs:
         for script in ("sign.py", "make-ca.py"):
-            (target.parent / script).write_bytes(tls_files[script])
+            disk_io.ops.write_bytes(target.parent / script, tls_files[script])
     result.checksum_path = _write_checksum_file(target)
     result.manifest_path = manifest_path
     result.sent = sink.sent

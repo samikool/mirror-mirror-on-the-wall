@@ -9,6 +9,7 @@ Public API:
 """
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool, holds_shared_pool_lock
 
@@ -20,8 +21,9 @@ from mmw.core.publisher.dist_upgrade import (
     write_upgrade_md,
 )
 from mmw.core.publisher.links import (
+    _LINK_CHUNK,
     ROOT_RELATIVE_PREFIX,
-    hardlink_or_copy,
+    _place_run,
     is_package_file,
     publish_group,
     publish_keys,
@@ -115,13 +117,14 @@ def publish_network(
                          progress=progress, stop_event=stop_event,
                          mirror_start_callback=mirror_start_callback)
             if not (stop_event and stop_event.is_set()):
-                _render_derived(network.root, progress)
+                _render_derived(network.root, progress, stop_event)
                 prepare_tree(network.root, network, cfg)
                 if network.prune and not network.certs:
                     for script in ("sign.py", "make-ca.py"):
-                        (network.root / script).unlink(missing_ok=True)
+                        disk_io.ops.unlink(network.root / script, missing_ok=True)
         finally:
             sink.close()
+            result.timings.update(sink.job.stats.timings())
     if not (stop_event and stop_event.is_set()):
         _write_record(network.root, network.name, sink, result, recheck, network.prune, progress)
         _record_published(mirror_dir, network.root, network.name, "live")
@@ -129,12 +132,29 @@ def publish_network(
     return result
 
 
-def _render_derived(root: Path, progress=None) -> None:
+def _render_derived(root: Path, progress=None, stop_event=None) -> None:
     """The derived pages (PyPI's) from the tree's shards — the same rule
-    apply.py runs on the far side."""
+    apply.py runs on the far side, its page writes on this job's write lane
+    (a full index is millions of small files)."""
     from mmw.resources.apply import render_derived
-    render_derived(str(root), say=(lambda message: progress("pypi.org", f"render:{message}"))
-                   if progress else None)
+
+    with disk_io.DiskJob("render", stop_event=stop_event) as job:
+        def write_pages(pages):
+            written = 0
+            for _pair, result in job.meta_map(lambda pair: _page_written(*pair), pages):
+                if isinstance(result, Exception):
+                    raise result            # as the stdlib loop would: the publish reports it
+                written += result
+            return written
+        render_derived(str(root),
+                       say=(lambda message: progress("pypi.org", f"render:{message}"))
+                       if progress else None,
+                       write_pages=write_pages,
+                       stop=lambda: bool(stop_event and stop_event.is_set()))
+
+
+def _page_written(path: str, data: bytes) -> bool:
+    return disk_io.ops.write_if_changed(Path(path), data)
 
 
 def warm_for_publish(mirror_dir: Path, progress=None, stop_event=None) -> None:
@@ -152,7 +172,7 @@ def _open_record(root: Path, network: str) -> "dict[str, str] | None":
     tree), never one claiming files a half-done prune already removed."""
     from mmw.core.publisher.manifest import RECORD_PATH, read_record
     prev = read_record(root, network)
-    (Path(root) / RECORD_PATH).unlink(missing_ok=True)
+    disk_io.ops.unlink(Path(root) / RECORD_PATH, missing_ok=True)
     return prev
 
 
@@ -280,11 +300,9 @@ def publish_snapshot(
         sink = TreeSink(root, progress=progress, stop_event=stop_event,
                         prev=_open_record(root, network.name), recheck=recheck)
         try:
-            def place(row, base):
-                rel, checksum, pool_path, size = row
+            def settle(row, base, status, added):
+                rel, _checksum, _pool_path, size = row
                 r = per_base[base] if base else other
-                before = len(sink.errors)
-                status = sink.link(Path(pool_path), rel, size, checksum, KIND_PKG)
                 if status == "linked":
                     r.linked += 1
                     r.linked_bytes += size
@@ -292,14 +310,27 @@ def publish_snapshot(
                     r.skipped += 1
                     r.skipped_bytes += size
                 else:
-                    r.errors.extend(sink.errors[before:] or [f"{rel}: link error"])
+                    r.errors.extend(added or [f"{rel}: link error"])
                 if progress:
                     progress(rel, status)
 
+            def place(batch):
+                """One trust run through the publish link loop: on the
+                sink's write lane, settled here in row order."""
+                items = [(Path(pool_path), rel, size, checksum, KIND_PKG)
+                         for (rel, checksum, pool_path, size), _base in batch]
+                for (row, base), (status, added) in zip(batch, _place_run(sink, items)):
+                    settle(row, base, status, added)
+                batch.clear()
+
+            def stopped():
+                return stop_event is not None and stop_event.is_set()
+
             # Packages as the rows stream past; indexes and release files after.
             current = None
+            pkgs: list = []
             for i, row in enumerate(pool.snapshot_blob_rows(snap.id)):
-                if stop_event is not None and i % 1000 == 0 and stop_event.is_set():
+                if i % 1000 == 0 and stopped():
                     break
                 rel = row[0]
                 base = next((b for b in bases if rel.startswith(b + "/")), None)
@@ -309,16 +340,21 @@ def publish_snapshot(
                     mirror_start_callback(base, sorted(bases).index(base) + 1, len(bases))
                 kind = replay_kind(rel, base)
                 if kind == KIND_PKG:
-                    place(row, base)
+                    pkgs.append((row, base))
+                    if len(pkgs) >= _LINK_CHUNK:
+                        place(pkgs)
                 else:
                     if base is not None:
                         live[base].add(row[1])
                     deferred[kind].append((row, base))
+            if not stopped():
+                place(pkgs)
             for kind in (KIND_META, KIND_RELEASE):
-                for i, (row, base) in enumerate(deferred[kind]):
-                    if stop_event is not None and i % 1000 == 0 and stop_event.is_set():
+                rows = deferred[kind]
+                for i in range(0, len(rows), _LINK_CHUNK):
+                    if stopped():
                         break
-                    place(row, base)
+                    place(rows[i:i + _LINK_CHUNK])
 
             if not (stop_event and stop_event.is_set()):
                 nginx_rels = {rel for rel in keep[None] if rel.startswith("nginx/")}
@@ -347,16 +383,17 @@ def publish_snapshot(
                     reconcile_extra_prefix(sink, "nginx", nginx_rels)
                     for generated in ("UPGRADE.md", "PYPI.md"):
                         if generated not in extra:
-                            (Path(root) / generated).unlink(missing_ok=True)
+                            disk_io.ops.unlink(Path(root) / generated, missing_ok=True)
                     upstream = {p: None for p in extra
                                 if not p.startswith(("keys/", CHANGELOGS_DIR + "/",
                                                      "vscode-gallery/", "pypi-data/"))}
                     sink.prune_stale_bases(set(bases) | upstream_file_live_dirs(
                         upstream, set(bases)))
             if not (stop_event and stop_event.is_set()):
-                _render_derived(root, progress)
+                _render_derived(root, progress, stop_event)
         finally:
             sink.close()
+            result.timings.update(sink.job.stats.timings())
 
     result.mirrors.extend(per_base.values())
     if other.total_files or other.errors:

@@ -17,6 +17,7 @@ from textual.containers import Horizontal
 from textual.markup import escape
 from textual.widgets import DirectoryTree, Input, Label
 
+from mmw.core import disk_io
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
@@ -35,7 +36,7 @@ class _FilteredTree(DirectoryTree):
             if p.name.startswith("."):
                 continue        # dotfiles are noise here, never the target
             try:
-                if p.is_dir():
+                if disk_io.ops.is_dir(p):
                     out.append(p)
                 elif not self._dirs_only and (
                     not self._suffixes or p.suffix.lower() in self._suffixes
@@ -110,13 +111,13 @@ class PathPickPage(Page):
         if not raw:
             return
         path = Path(raw).expanduser()
-        if not path.exists():
+        if not disk_io.ops.exists(path):
             self.query_one("#path-status", Label).update(
                 f"[$mmw-error]✗ {escape(str(path))} does not exist[/]"
             )
             return
         self.query_one("#path-status", Label).update("")
-        self._reroot(path if path.is_dir() else path.parent)
+        self._reroot(path if disk_io.ops.is_dir(path) else path.parent)
         self._set_selected(path)
 
     @on(Button.Pressed, "#btn-up")
@@ -142,12 +143,12 @@ class PathPickPage(Page):
         event.stop()
         raw = self.query_one("#path-input", Input).value.strip()
         path = Path(raw).expanduser() if raw else self._selected
-        if not path.exists():
+        if not disk_io.ops.exists(path):
             self.query_one("#path-status", Label).update(
                 f"[$mmw-error]✗ {escape(str(path))} does not exist[/]"
             )
             return
-        if self._dirs_only and not path.is_dir():
+        if self._dirs_only and not disk_io.ops.is_dir(path):
             path = path.parent
         self.dismiss(str(path))
 
@@ -159,6 +160,6 @@ def _resolve_start(start: str) -> "tuple[Path, Path]":
     the working directory beats an empty tree with no way forward.
     """
     path = Path(start).expanduser() if start.strip() else Path.cwd()
-    if not path.exists():
+    if not disk_io.ops.exists(path):
         path = Path.cwd()
-    return (path, path) if path.is_dir() else (path.parent, path)
+    return (path, path) if disk_io.ops.is_dir(path) else (path.parent, path)

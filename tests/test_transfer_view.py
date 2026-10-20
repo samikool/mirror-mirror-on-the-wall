@@ -193,3 +193,27 @@ def test_a_finished_panel_leaves_no_bar_bouncing():
         bars = list(view.query(ProgressBar))
         assert bars and all(b.total is not None and b.percentage == 1 for b in bars)
     _run(check)
+
+
+def test_transfer_view_renders_preflight():
+    async def check(app, view, pilot):
+        view.begin(1)
+        view.record("", "preflight:5000:12000")
+        assert view._phase == "checking pool blobs · 5,000 of 12,000"
+        view.record("", "preflight:12000:12000")
+        assert view._phase == ""
+    _run(check, kind=BUNDLE)
+
+
+def test_transfer_view_renders_pypi_render_progress():
+    """After the files land, a PyPI publish renders every project's pages —
+    minutes on a full index. That step must show, not leave a full count
+    under a bar that still says publishing."""
+    async def check(app, view, pilot):
+        view.begin(1)
+        view.record("pypi.org", "render:PyPI pages: 16/256 shards rendered")
+        assert view._phase == "PyPI pages: 16/256 shards rendered"
+        view.record("pypi.org", "render:PyPI pages: 120 written, 0 projects removed")
+        assert view._phase == ""
+        assert any("120 written" in line for line in view._log_pending)
+    _run(check)

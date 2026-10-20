@@ -291,3 +291,64 @@ def test_concurrent_reconcile_and_read(pool):
     t1.join()
     t2.join()
     assert errors == []
+
+
+def _gate_first_unlink(monkeypatch):
+    """Serial-fails gate: the first os.unlink waits until a second one starts."""
+    import os
+    import threading
+    lock, calls, second, timed_out, real = threading.Lock(), [0], threading.Event(), [], os.unlink
+
+    def unlink(path, *a, **k):
+        with lock:
+            calls[0] += 1
+            n = calls[0]
+        if n == 1:
+            timed_out.append(not second.wait(5))
+        else:
+            second.set()
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    return timed_out
+
+
+def test_prune_orphans_unlinks_concurrently(pool, monkeypatch):
+    from mmw.core import disk_io
+    keep = _add(pool, b"keep", "keep.deb")
+    pool.reconcile_refs("m1", [(keep, "pool/keep.deb", KIND_PKG)], KEPT)
+    for i in range(6):
+        _add(pool, f"old {i}".encode(), f"old{i}.deb")
+    pool.flush_writes()
+    monkeypatch.setattr(disk_io, "_limits", disk_io.Limits(8, 8, 0))
+    timed_out = _gate_first_unlink(monkeypatch)
+    assert pool.prune_orphans([KEPT])[0] == 6
+    assert timed_out == [False]
+
+
+def test_prune_orphans_stop_keeps_rows_for_unremoved(pool, monkeypatch):
+    import threading
+    keep = _add(pool, b"keep", "keep.deb")
+    pool.reconcile_refs("m1", [(keep, "pool/keep.deb", KIND_PKG)], KEPT)
+    olds = [_add(pool, f"old {i}".encode(), f"old{i}.deb") for i in range(12)]
+    pool.flush_writes()
+    stop, seen = threading.Event(), []
+
+    def progress(done, total):
+        seen.append((done, total))
+        stop.set()
+
+    from mmw.core import pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_PRUNE_REPORT_EVERY", 5)
+    removed, _ = pool.prune_orphans([KEPT], stop_event=stop, progress=progress)
+    assert seen[0] == (5, 12) and removed < 12
+    for cs in olds:
+        on_disk = any(pool.pool_dir.joinpath("packages", cs[:2]).glob(f"{cs}-*"))
+        assert pool.contains(cs) == on_disk, "a row stays exactly for each blob still on disk"
+
+
+def test_forget_blobs_missing_file_still_drops_row(pool):
+    cs = _add(pool, b"gone", "gone.deb")
+    next(pool.pool_dir.joinpath("packages", cs[:2]).glob(f"{cs}-*")).unlink()
+    assert pool.forget_blobs([cs]) == (1, 4)
+    assert not pool.contains(cs)

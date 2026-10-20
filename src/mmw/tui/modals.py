@@ -1,6 +1,5 @@
 """DeleteProgressModal — the progress modal a delete runs behind."""
 import asyncio
-import os
 import threading
 from pathlib import Path
 
@@ -11,6 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, ProgressBar
 
+from mmw.core import disk_io
 from mmw.tui.ui.hit_test import LiveHitTest
 from mmw.tui.ui.widgets import Button
 
@@ -21,7 +21,7 @@ class DeleteProgressModal(LiveHitTest, ModalScreen[None]):
     def __init__(self, title: str, dirs: list[Path]):
         super().__init__()
         self._title = title
-        self._dirs = [d for d in dirs if d.exists()]
+        self._dirs = [d for d in dirs if disk_io.ops.exists(d)]
         self._deleted = 0
         self._total = 0
         self._done = False
@@ -56,24 +56,23 @@ class DeleteProgressModal(LiveHitTest, ModalScreen[None]):
 
     def _count_files(self) -> int:
         return sum(
-            sum(len(files) for _, _, files in os.walk(d))
+            sum(len(files) for _, _, files in disk_io.ops.walk(d))
             for d in self._dirs
         )
 
     def _delete_files(self) -> None:
-        for d in self._dirs:
-            for dirpath, _, filenames in os.walk(d, topdown=False):
-                for f in filenames:
-                    try:
-                        Path(dirpath, f).unlink()
-                    except OSError:
-                        pass
+        with disk_io.DiskJob("delete") as job:
+            for d in self._dirs:
+                walked = list(disk_io.ops.walk(d, topdown=False))      # deepest directories first
+                files = (Path(dirpath, f) for dirpath, _, filenames in walked for f in filenames)
+                for _path, _result in job.remove(files):
                     with self._lock:
                         self._deleted += 1
-                try:
-                    Path(dirpath).rmdir()
-                except OSError:
-                    pass
+                for dirpath, _, _ in walked:
+                    try:
+                        disk_io.ops.rmdir(Path(dirpath))
+                    except OSError:
+                        pass
 
     def _tick(self) -> None:
         with self._lock:

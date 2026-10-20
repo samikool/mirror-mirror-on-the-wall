@@ -19,6 +19,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import BundleInfo, Pool, SnapshotInfo, shared_pool_lock
 from mmw.core.publisher.manifest import (
@@ -44,6 +45,12 @@ class RecordingSink:
             except (OSError, ValueError) as e:
                 self.errors.append(f"{rel}: {e}")
                 return "error"
+        self.rows[rel] = checksum
+        return "linked"
+
+    def link_pooled(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
+        """`link` for a `mirror_files` row: pooled by construction, so no
+        `contains` — 515k rows cost 4.4 s of per-row lookups (measured)."""
         self.rows[rel] = checksum
         return "linked"
 
@@ -247,11 +254,11 @@ def import_ledger(pool: Pool, mirror_dir: Path, network: str) -> int:
     False` — a starting point, never a destination. Idempotent; returns how
     many were imported."""
     d = ledger_dir(mirror_dir, network)
-    if not d.is_dir():
+    if not disk_io.ops.is_dir(d):
         return 0
     have = {s.stamp for s in pool.snapshots(network)}
     imported = 0
-    for path in sorted(d.iterdir()):
+    for path in sorted(disk_io.ops.iterdir(d)):
         if not is_manifest(path.name):
             continue
         header, rows = iter_manifest(path)

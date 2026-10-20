@@ -102,3 +102,65 @@ def test_without_a_renderer_pypi_md_goes_too(tmp_path):
     (root / "PYPI.md").write_text("old")
     apply_mod.render_derived(str(root))
     assert not (root / "PYPI.md").exists()
+
+
+def test_live_publish_writes_pages_on_the_disk_layer(tmp_path, up, disk_limits, monkeypatch):
+    """The near side renders through `disk_io` (the write lane), the far side
+    with the stdlib loop — and the two make the same bytes."""
+    import threading
+    from mmw.core import disk_io
+    disk_limits(write_threads=4, read_threads=1, readahead=0)
+    threads, real = set(), disk_io.ops.write_if_changed
+
+    def spy(dst, data):
+        threads.add(threading.current_thread().name)
+        return real(dst, data)
+    monkeypatch.setattr(disk_io.ops, "write_if_changed", spy)
+    cfg = _cfg(tmp_path, _src())
+    _sync(cfg)
+    root = _publish(cfg)
+    assert threads and all(t.startswith("mmw-disk-render-write") for t in threads), threads
+    far = tmp_path / "far"
+    shutil.copytree(root / "pypi-data", far / "pypi-data")
+    runpy.run_path(str(far / "pypi-data" / "render.py"))["render"](far)
+    assert pages(far) == pages(root)
+
+
+def test_stopped_render_redoes_what_it_did_not_finish(tmp_path, up):
+    """A stop lands between shards; the shard it interrupted and every one
+    after it render on the next run, and the pages come out whole."""
+    import json
+    cfg = _cfg(tmp_path, _src())
+    _sync(cfg)
+    root = _publish(cfg)
+    live = pages(root)
+    shutil.rmtree(root / "pypi.org")
+    render = runpy.run_path(str(root / "pypi-data" / "render.py"))["render"]
+    calls = []
+
+    def write_pages(batch):
+        calls.append(len(batch))
+        return 0                                   # wrote nothing: stopped mid-shard
+    render(root, write_pages=write_pages, stop=lambda: bool(calls))
+    assert len(calls) == 1
+    state = json.loads((root / "pypi.org" / ".mmw-rendered" / "shards.json").read_text())
+    assert [entry[0] for entry in state.values()] == [""]     # marked unfinished
+    render(root)
+    assert pages(root) == live
+
+
+def test_a_failed_page_write_fails_the_render(tmp_path, up, disk_limits, monkeypatch):
+    import pytest
+    from mmw.core import disk_io
+    from mmw.core.publisher import _render_derived
+    disk_limits(write_threads=4, read_threads=1, readahead=0)
+    cfg = _cfg(tmp_path, _src())
+    _sync(cfg)
+    root = _publish(cfg)
+    shutil.rmtree(root / "pypi.org")
+
+    def broken(dst, data):
+        raise PermissionError(13, "denied", str(dst))
+    monkeypatch.setattr(disk_io.ops, "write_if_changed", broken)
+    with pytest.raises(PermissionError):
+        _render_derived(root)

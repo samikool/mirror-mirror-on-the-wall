@@ -462,6 +462,21 @@ class TransferView(Vertical):
                 phase = status.split(":", 1)[1]
                 self._phase = "" if phase == "done" else f"Gallery image · {IMAGE} · {phase}"
                 self._log_pending.append(f"  [dim]Gallery image · {IMAGE} · {escape(phase)}[/]")
+            elif status.startswith("preflight:"):
+                # The bundle's pre-flight stat of every blob it will send.
+                _, done, total = status.split(":")
+                self._phase = ("" if done == total else
+                               f"checking pool blobs · {int(done):,} of {int(total):,}")
+            elif status.startswith("render:"):
+                # Derived pages (PyPI's) after the files land — minutes on a
+                # full index. Progress lines show on the phase; the closing
+                # tally ("… written, … removed") goes to the log.
+                message = status.split(":", 1)[1]
+                if " written, " in message:
+                    self._phase = ""
+                    self._log_pending.append(f"  [dim]# {escape(message)}[/]")
+                else:
+                    self._phase = message
             elif status.startswith("verify:"):
                 # Many mirrors verify at once: the line shows the latest step,
                 # and the log keeps only each mirror's ✓/✗ line.

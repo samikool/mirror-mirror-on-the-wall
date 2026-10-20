@@ -5,6 +5,7 @@ metadata indexes already present at the publish destination.
 """
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core.config import Config, MirrorConfig, NetworkConfig
 from mmw.core.pool import Pool
 
@@ -85,7 +86,7 @@ def dry_run_mirror(
     dst_root = publish_base(network, mirror)
     already_files = 0
     already_bytes = 0
-    if dst_root.exists():
+    if disk_io.ops.exists(dst_root):
         pkgs = dst_packages(dst_root, mirror)
         already_files, already_bytes = len(pkgs), sum(p.size for p in pkgs)
         if published is not None:

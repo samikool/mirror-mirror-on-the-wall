@@ -18,19 +18,17 @@ consumer, `TransferView.record` (`tui/transfer.py`), expects a
 import hashlib
 import io
 import os
-import shutil
+from stat import S_ISREG
 import tarfile
 import time
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
+from mmw.core import disk_io
 from mmw.core.publisher.manifest import ManifestHeader, unchanged, write_manifest
 from mmw.core.publisher.nginx import ROOT_PLACEHOLDER
-
-# More measured slower on the HDD (32: 0.4x of 8); see `TreeSink.link_many`.
-LINK_THREADS = 8
 
 _SCAN_REPORT_EVERY = 5000
 _BY_HASH_KEEP_STALE = 2
@@ -196,6 +194,8 @@ class TreeSink:
     def __init__(self, root: Path, progress=None, stop_event=None, *,
                  prev: dict[str, str] | None = None, recheck: bool = False):
         self.root = root
+        # The filesystem work runs on this job's lanes, closed with the sink.
+        self.job = disk_io.DiskJob("publish", stop_event=stop_event)
         self._progress = progress
         self._stop_event = stop_event
         self.pruned = 0
@@ -212,7 +212,6 @@ class TreeSink:
         # finalizes once per publisher host, tens of thousands of groups.
         self._prev_sorted = sorted(self._prev) if self._prev is not None else []
         self._bh_dirs: set[str] = set()      # by-hash dirs this run placed into
-        self._links: ThreadPoolExecutor | None = None   # link_many's, made on first use
 
     @property
     def recheck(self) -> bool:
@@ -238,20 +237,16 @@ class TreeSink:
 
     def link_many(self, items):
         """`link` for each (src, rel, size, checksum, kind), the filesystem
-        work on LINK_THREADS threads. A cold publish waits on inode and
-        directory reads, one at a time; several in flight let the disk order
-        them (2.5x on the HDD, measured). Yields (status, error or None) per
-        item, in item order, as soon as that item is done — collecting the
-        whole run first made progress arrive in bursts of a run. The record
-        and `errors` are settled here, on the caller's thread."""
+        work on the job's write lane (`disk_write_threads`). A cold publish
+        waits on inode and directory reads, one at a time; several in flight
+        let the disk order them (2.5x on the HDD, measured). Yields (status,
+        error or None) per item, in item order, as soon as that item is done
+        — collecting the whole run first made progress arrive in bursts of a
+        run. The record and `errors` are settled here, on the caller's
+        thread. A stop ends the run after the rows already placed."""
         work = [(src, rel) for src, rel, _size, checksum, _kind in items
                 if not unchanged(self._prev, rel, checksum, self._recheck)]
-        if len(work) > 1:
-            if self._links is None:
-                self._links = ThreadPoolExecutor(LINK_THREADS, thread_name_prefix="publish-link")
-            placed = self._links.map(lambda w: self._place(*w), work)
-        else:
-            placed = (self._place(*w) for w in work)
+        placed = (outcome for _w, outcome in self.job.meta_map(lambda w: self._place(*w), work))
         for _src, rel, _size, checksum, _kind in items:
             if "/by-hash/" in f"/{rel}":
                 self._bh_dirs.add(rel.rsplit("/", 1)[0])
@@ -259,18 +254,18 @@ class TreeSink:
                 self._rows[rel] = checksum
                 yield "skipped", None
                 continue
-            status = self._settle(rel, checksum, next(placed))
+            outcome = next(placed, None)
+            if outcome is None:
+                return                      # stopped: the rest were never placed
+            if isinstance(outcome, Exception) and not isinstance(outcome, OSError):
+                raise outcome               # a bug, not a filesystem failure: as before the lane
+            status = self._settle(rel, checksum, outcome)
             yield status, (self.errors[-1] if status == "error" else None)
 
     def _place(self, src: Path, rel: str) -> "str | OSError":
         """The filesystem half of `link` — safe on any thread."""
-        from mmw.core.publisher.links import hardlink_or_copy, same_file
-        dst = self.root / rel
         try:
-            if dst.exists() and same_file(dst, src):
-                return "skipped"
-            hardlink_or_copy(src, dst, tmp_dir=self.tmp_dir)
-            return "linked"
+            return disk_io.ops.place(src, self.root / rel, self.tmp_dir)
         except OSError as e:
             return e
 
@@ -294,7 +289,6 @@ class TreeSink:
                 f"{rel}: unsubstituted {ROOT_PLACEHOLDER} would have been "
                 "written to a live-served destination"
             )
-        from mmw.core.publisher.links import atomic_write
         checksum = hashlib.sha256(data).hexdigest()
         self._rows[rel] = checksum
         if unchanged(self._prev, rel, checksum, self._recheck):
@@ -302,14 +296,14 @@ class TreeSink:
         # Staged-then-renamed like every other write into a live-served tree:
         # a client fetching nginx/mirror.conf or UPGRADE.md mid-publish gets
         # the old file or the new one, never a half-written one.
-        atomic_write(self.root / rel, data, tmp_dir=self.tmp_dir)
+        self.job.atomic_write(self.root / rel, data, tmp_dir=self.tmp_dir)
 
     def finalize_group(self, base: str, keep: set[str],
                        live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
         if self._prev is not None:
             return self._finalize_from_record(base, keep, live_checksums, exclude)
         dst_root = self.root / base if base else self.root
-        if not dst_root.exists():
+        if not disk_io.ops.exists(dst_root):
             return 0, 0
         group_pruned = 0
         group_pruned_bytes = 0
@@ -324,7 +318,8 @@ class TreeSink:
         # majority — cost no stat at all, and whole subtrees are skipped by
         # pruning dirnames instead of testing every file under them.
         seen_dirs: list[Path] = []
-        for dirpath, dirnames, filenames in os.walk(dst_root):
+        stale: list[str] = []
+        for dirpath, dirnames, filenames in disk_io.ops.walk(dst_root):
             if self._stop_event and self._stop_event.is_set():
                 break
             here = Path(dirpath)
@@ -342,21 +337,19 @@ class TreeSink:
                 if self._progress and checked % _SCAN_REPORT_EVERY == 0:
                     self._progress(rel_dir, f"prune-scan-progress:{checked}")
                 rel = f"{rel_dir}/{fname}" if rel_dir != "." else fname
-                if rel in keep:
-                    continue
-                target = here / fname
-                try:
-                    size = target.stat().st_size
-                    target.unlink()
-                    group_pruned += 1
-                    group_pruned_bytes += size
-                    if self._progress:
-                        self._progress(rel, "pruned")
-                except OSError:
-                    pass
+                if rel not in keep:
+                    stale.append(rel)
+        # The walk only lists; the unlinks go through the job's write lane,
+        # settled here in walk order.
+        for rel, size in self.job.meta_map(lambda r: disk_io.ops.remove(self.root / r), stale):
+            if isinstance(size, int):
+                group_pruned += 1
+                group_pruned_bytes += size
+                if self._progress:
+                    self._progress(rel, "pruned")
         bh_pruned = 0
         for bh_dir in bh_dirs:
-            bh_pruned += _prune_by_hash_dir(bh_dir, live_checksums)
+            bh_pruned += _prune_by_hash_dir(bh_dir, live_checksums, self.job)
         _rmdir_empty(seen_dirs, keep_root=dst_root)
         # Cumulative totals across every group a shared sink processes — handy
         # for a caller tracking overall progress — are kept separately from
@@ -382,6 +375,7 @@ class TreeSink:
         emptied: set[Path] = set()
         records = self._prev_sorted
         start = bisect.bisect_left(records, prefix)
+        stale: list[str] = []
         for i in range(start, len(records)):
             rel = records[i]
             if not rel.startswith(prefix):
@@ -391,13 +385,13 @@ class TreeSink:
             if "/by-hash/" in f"/{rel}":
                 bh_dirs.add((self.root / rel).parent)
                 continue
-            target = self.root / rel
-            try:
-                size = target.stat().st_size
-                target.unlink()
-            except FileNotFoundError:
+            stale.append(rel)
+        done = 0
+        for rel, size in self.job.meta_map(lambda r: disk_io.ops.remove(self.root / r), stale):
+            done += 1
+            if size is None:
                 continue                  # already gone: nothing to record
-            except OSError:
+            if isinstance(size, Exception):
                 # Still there (permissions, a busy mount): keep it in the
                 # record so the next publish tries again, rather than losing
                 # sight of it and serving it forever.
@@ -405,18 +399,21 @@ class TreeSink:
                 continue
             pruned += 1
             pruned_bytes += size
-            emptied.add(target.parent)
+            emptied.add((self.root / rel).parent)
             if self._progress:
                 self._progress(rel, "pruned")
+        for rel in stale[done:]:          # stopped before these: still served
+            self._rows[rel] = self._prev[rel]
         for rel_dir in self._bh_dirs:
             if (rel_dir + "/").startswith(prefix) and not (skip and (rel_dir + "/").startswith(skip)):
                 bh_dirs.add(self.root / rel_dir)
-        bh_pruned = sum(_prune_by_hash_dir(d, live_checksums) for d in bh_dirs if d.is_dir())
+        bh_pruned = sum(_prune_by_hash_dir(d, live_checksums, self.job)
+                        for d in bh_dirs if disk_io.ops.is_dir(d))
         stop = self.root / base if base else self.root
         for d in sorted(emptied, key=lambda p: len(p.parts), reverse=True):
             while d != stop and stop in d.parents:
                 try:
-                    d.rmdir()
+                    disk_io.ops.rmdir(d)
                 except OSError:
                     break
                 d = d.parent
@@ -431,7 +428,7 @@ class TreeSink:
         if dst == self.root:
             return
         try:
-            dst.rmdir()
+            disk_io.ops.rmdir(dst)
         except OSError:
             pass                        # not empty, or already gone
 
@@ -439,7 +436,7 @@ class TreeSink:
         """See the Sink protocol. Walks down from the root only as far as the
         live bases' own ancestors, so a whole dropped repository costs one
         `rmtree` and a healthy tree costs a handful of `scandir` calls."""
-        if not self.root.is_dir():
+        if not disk_io.ops.is_dir(self.root):
             return 0, 0
         ancestors = base_ancestors(live_bases)
         removed = 0
@@ -449,14 +446,14 @@ class TreeSink:
             rel_dir = stack.pop()
             here = self.root / rel_dir if rel_dir else self.root
             try:
-                entries = list(here.iterdir())
+                entries = list(disk_io.ops.iterdir(here))
             except OSError:
                 continue
             for entry in entries:
                 # A symlink is never something publish created, and following
                 # one out of the tree with rmtree is exactly the mistake a
                 # destructive sweep must not be capable of making.
-                if entry.is_symlink() or not entry.is_dir():
+                if disk_io.ops.is_symlink(entry) or not disk_io.ops.is_dir(entry):
                     continue
                 rel = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
                 if not rel_dir and (entry.name in NON_BASE_DIRS
@@ -467,14 +464,17 @@ class TreeSink:
                     continue
                 if not _is_stale_base(rel, live_bases, ancestors):
                     continue
-                for f in entry.rglob("*"):
-                    try:
-                        if f.is_file() and not f.is_symlink():
-                            removed_bytes += f.stat().st_size
-                            removed += 1
-                    except OSError:
-                        pass
-                shutil.rmtree(entry, ignore_errors=True)
+                stop = self.job.stop_event
+                if stop is not None and stop.is_set():
+                    stack.clear()
+                    break               # stopped: no base goes half-counted
+                # The size sum's lstats go through the job's read lane; the
+                # removal itself stays one rmtree per dropped base.
+                for _f, st in self.job.read_map(disk_io.ops.lstat, disk_io.ops.rglob(entry, "*")):
+                    if isinstance(st, os.stat_result) and S_ISREG(st.st_mode):
+                        removed_bytes += st.st_size
+                        removed += 1
+                disk_io.ops.rmtree(entry, ignore_errors=True)
                 if self._progress:
                     self._progress(rel, "pruned-base")
         self.pruned += removed
@@ -482,20 +482,31 @@ class TreeSink:
         return removed, removed_bytes
 
     def close(self) -> None:
-        if self._links is not None:
-            self._links.shutdown()
-            self._links = None
+        self.job.close()
         # Debris from a killed publish: not servable (nothing under
         # `{root}/.mmw/` is inside any mirror_base, so no nginx site roots
         # reach it), but it would accumulate forever otherwise. One listdir.
         try:
-            for entry in self.tmp_dir.iterdir():
+            for entry in disk_io.ops.iterdir(self.tmp_dir):
                 try:
-                    entry.unlink()
+                    disk_io.ops.unlink(entry)
                 except OSError:
                     pass
         except OSError:
             pass
+
+
+def _next_open(opened, job: "disk_io.DiskJob"):
+    """The next blob's handle from a `stream_open`. Its open failing is the
+    blob vanishing mid-bundle — raised, so the bundle aborts; the stream
+    ending early is a stop."""
+    try:
+        _path, fh = next(opened)
+    except StopIteration:
+        raise InterruptedError("bundle stopped — nothing was written") from None
+    if isinstance(fh, Exception):
+        raise fh
+    return fh
 
 
 def _rmdir_empty(dirs: list[Path], keep_root: Path) -> int:
@@ -513,37 +524,28 @@ def _rmdir_empty(dirs: list[Path], keep_root: Path) -> int:
         if d == keep_root:
             continue
         try:
-            d.rmdir()
+            disk_io.ops.rmdir(d)
             removed += 1
         except OSError:
             pass
     return removed
 
 
-def _prune_by_hash_dir(bh_dir: Path, live_checksums: set[str]) -> int:
+def _prune_by_hash_dir(bh_dir: Path, live_checksums: set[str], job: "disk_io.DiskJob") -> int:
     """Retire stale by-hash generations, keeping the newest few for in-flight
     clients. An entry's name IS its checksum, so staleness is exact: not in
     the current refs set. (nlink can't be used here — the pool keeps old
-    blobs' link counts above 1.)"""
-    stale = []
+    blobs' link counts above 1.) One listing; the stats and unlinks go
+    through `job`'s lanes."""
     try:
-        for e in bh_dir.iterdir():
-            try:
-                if e.is_file() and e.name not in live_checksums:
-                    stale.append((e.stat().st_mtime, e))
-            except OSError:
-                pass
+        names = [e for e in disk_io.ops.iterdir(bh_dir) if e.name not in live_checksums]
     except OSError:
         return 0
+    stale = [(st.st_mtime, e) for e, st in job.stat(names)
+             if isinstance(st, os.stat_result) and S_ISREG(st.st_mode)]
     stale.sort(reverse=True)
-    pruned = 0
-    for _, e in stale[_BY_HASH_KEEP_STALE:]:
-        try:
-            e.unlink()
-            pruned += 1
-        except OSError:
-            pass
-    return pruned
+    return sum(1 for _e, size in job.remove([e for _, e in stale[_BY_HASH_KEEP_STALE:]])
+               if isinstance(size, int))
 
 
 class BundleSink:
@@ -561,8 +563,9 @@ class BundleSink:
     def __init__(self, out_path: Path, header: ManifestHeader, prev: dict[str, str],
                 apply_script: bytes, prune: bool = True,
                 full: bool = False, progress=None,
-                tls_files: dict[str, bytes] | None = None):
+                tls_files: dict[str, bytes] | None = None, stop_event=None):
         self.out_path = out_path
+        self.job = disk_io.DiskJob("bundle", stop_event=stop_event)
         # name → bytes, written as `{TLS_DIR}/{name}`; a name ending `.key`
         # goes in 0600. Empty unless the network has certs on.
         self._tls_files = dict(tls_files or {})
@@ -745,7 +748,13 @@ class BundleSink:
         return added, 0
 
     def close(self) -> None:
-        self.out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._close()
+        finally:
+            self.job.close()
+
+    def _close(self) -> None:
+        disk_io.ops.mkdir(self.out_path.parent, parents=True, exist_ok=True)
         # ── Pre-flight: every pool blob must be exactly what was recorded,
         # or NOTHING is written. Not one row dropped and the rest shipped:
         # that was tried, on the theory that a manifest no longer naming the
@@ -755,19 +764,27 @@ class BundleSink:
         # the file for good, with every later `apply.py --verify` failing on
         # it. A missing or wrong-sized blob is a damaged pool: the fix is
         # `mmw verify --repair` and a sync, then the same bundle again.
+        #
+        # Checked BEFORE any tar write: TarFile.addfile() writes the entry's
+        # header (and whatever chunks it manages to read) straight to the
+        # stream before a short read can raise, so a failure mid-loop would
+        # leave a misaligned archive. The stats run on the job's read lane —
+        # the same helper `mmw verify --stat` uses — with progress, since on
+        # a cold pool this is minutes that otherwise read as a lock-up.
+        from mmw.core.verify import blob_stats
+        total = len(self._send)
+        report = ((lambda done: self._progress("", f"preflight:{done}:{total}"))
+                  if self._progress else None)
         bad: list[str] = []
-        for rel, src, size, _checksum in self._send:
-            # Checked BEFORE any tar write: TarFile.addfile() writes the
-            # entry's header (and whatever chunks it manages to read)
-            # straight to the stream before a short read can raise, so a
-            # failure mid-loop would leave a misaligned archive.
-            try:
-                actual_size = src.stat().st_size
-            except OSError as e:
-                bad.append(f"{rel}: {e}")
-                continue
-            if actual_size != size:
-                bad.append(f"{rel}: pool blob is {actual_size} bytes, expected {size}")
+        for (rel, _src, size, _checksum), st in blob_stats(
+                self._send, self.job, path_of=lambda r: r[1], on_progress=report):
+            if isinstance(st, OSError):
+                bad.append(f"{rel}: {st}")
+            elif st.st_size != size:
+                bad.append(f"{rel}: pool blob is {st.st_size} bytes, expected {size}")
+        stop = self.job.stop_event
+        if stop is not None and stop.is_set():
+            raise InterruptedError("bundle stopped — nothing was written")
         if bad:
             self.errors.extend(bad)
             raise ValueError(
@@ -808,9 +825,9 @@ class BundleSink:
 
         tmp_out = self.out_path.with_suffix(self.out_path.suffix + ".tmp")
         try:
-            with open(tmp_out, "wb") as raw_fh:
+            with disk_io.ops.open_file(tmp_out, "wb") as raw_fh, ExitStack() as stack:
                 with tarfile.open(fileobj=raw_fh, mode="w|") as tar:
-                    manifest_bytes = tmp_manifest.read_bytes()
+                    manifest_bytes = disk_io.ops.read_bytes(tmp_manifest)
                     self._add_file(tar, ".mmw/manifest.jsonl", manifest_bytes)
                     files_written += 1
                     raw_written += len(manifest_bytes)
@@ -834,6 +851,18 @@ class BundleSink:
                         self._add_file(tar, rel, data)
                         files_written += 1
                         raw_written += len(data)
+                    # The rows that carry payload — the first of each
+                    # checksum; a repeat is a hardlink entry — have their
+                    # blobs opened ahead on the job's read lane while this
+                    # thread writes the tar in order (`disk_readahead`).
+                    seen: set[str] = set()
+                    payload = []
+                    for _rel, src, _size, checksum in send:
+                        if not checksum or checksum not in seen:
+                            payload.append(src)
+                            seen.add(checksum)
+                    opened = self.job.stream_open(payload)
+                    stack.callback(opened.close)        # handles opened ahead close on abort
                     by_checksum: dict[str, str] = {}
                     for rel, src, size, checksum in send:
                         first = by_checksum.get(checksum) if checksum else None
@@ -862,7 +891,7 @@ class BundleSink:
                         # exception propagates, `tmp_out` is discarded by
                         # the `finally` below, and `bundle_network` never
                         # reaches the ledger write.
-                        fh = open(src, "rb")
+                        fh = _next_open(opened, self.job)
                         ti = tarfile.TarInfo(rel)
                         ti.size = size
                         ti.mode = 0o644
@@ -894,8 +923,8 @@ class BundleSink:
                 self._progress("", f"archive-done:{files_written}:{raw_written}")
             tmp_out.replace(self.out_path)
         finally:
-            tmp_manifest.unlink(missing_ok=True)
-            tmp_out.unlink(missing_ok=True)
+            disk_io.ops.unlink(tmp_manifest, missing_ok=True)
+            disk_io.ops.unlink(tmp_out, missing_ok=True)
 
     def _maybe_report_archive_progress(
         self, rel: str, files_written: int, raw_written: int) -> None:

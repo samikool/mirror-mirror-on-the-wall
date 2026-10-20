@@ -20,6 +20,9 @@ EDITORS = {
     ("Settings", "max_connections"): ("sections/settings.py", "settings-max-connections"),
     ("Settings", "theme"): ("sections/settings.py", "settings-theme"),
     ("Settings", "database"): ("sections/settings.py", "settings-database"),
+    ("Settings", "disk_write_threads"): ("sections/settings.py", "settings-disk-write-threads"),
+    ("Settings", "disk_read_threads"): ("sections/settings.py", "settings-disk-read-threads"),
+    ("Settings", "disk_readahead"): ("sections/settings.py", "settings-disk-readahead"),
 
     ("SourceConfig", "url"): ("source_screens.py", "edit-source-url"),
     ("SourceConfig", "provider"): ("source_screens.py", "edit-source-provider"),

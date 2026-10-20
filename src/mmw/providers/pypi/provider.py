@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 
+from mmw.core import disk_io
 from mmw.core.format import fmt_size
 from mmw.core.history import UnitHistory
 from mmw.providers.base import (BaseProvider, Dimension, MetadataFile, PackageInfo, ProgressUnit,
@@ -389,7 +390,7 @@ class PypiProvider(BaseProvider):
             reconcile_extra_prefix(ctx.sink, "pypi-data", set())
             ctx.sink.drop_if_empty("pypi-data")
             if getattr(ctx.sink, "root", None) is not None:
-                (ctx.sink.root / "PYPI.md").unlink(missing_ok=True)
+                disk_io.ops.unlink(ctx.sink.root / "PYPI.md", missing_ok=True)
 
     def preview(self, network, cfg, pool, mirror_dir, result) -> None:
         """Dry-run: what this network publishes only because of its retention."""

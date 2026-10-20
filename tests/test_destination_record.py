@@ -15,7 +15,8 @@ import pytest
 
 from mmw.core.config import NetworkConfig
 from mmw.core.pool import KIND_PKG, Pool
-from mmw.core.publisher import links, publish_network, publish_snapshot
+from mmw.core import disk_io
+from mmw.core.publisher import publish_network, publish_snapshot
 from mmw.core.publisher.manifest import RECORD_PATH, iter_manifest
 from mmw.core.snapshots import take_snapshot
 from test_bundle import seeded  # noqa: F401
@@ -48,7 +49,7 @@ def _set_refs(mirror_dir, extra: list[tuple[str, bytes]] = (), drop: str | None 
 @pytest.fixture
 def counted(monkeypatch):
     calls = {"link": 0, "same": 0, "walk": 0}
-    real_link, real_same, real_walk = links.hardlink_or_copy, links.same_file, os.walk
+    real_link, real_same, real_walk = disk_io.ops.hardlink_or_copy, disk_io.ops.same_file, os.walk
 
     def link(*a, **kw):
         calls["link"] += 1
@@ -61,8 +62,8 @@ def counted(monkeypatch):
     def walk(*a, **kw):
         calls["walk"] += 1
         return real_walk(*a, **kw)
-    monkeypatch.setattr(links, "hardlink_or_copy", link)
-    monkeypatch.setattr(links, "same_file", same)
+    monkeypatch.setattr(disk_io.ops, "hardlink_or_copy", link)
+    monkeypatch.setattr(disk_io.ops, "same_file", same)
     monkeypatch.setattr("mmw.core.publisher.sinks.os.walk", walk)
     return calls
 
@@ -162,7 +163,7 @@ def test_a_publish_with_errors_leaves_no_record(seeded, tmp_path, monkeypatch):
 
     def fail(src, dst, tmp_dir=None):
         raise OSError("disk full")
-    monkeypatch.setattr(links, "hardlink_or_copy", fail)
+    monkeypatch.setattr(disk_io.ops, "hardlink_or_copy", fail)
     result = publish_network(net, cfg, mirror_dir)
     assert result.errors
     assert not (net.root / RECORD_PATH).exists()

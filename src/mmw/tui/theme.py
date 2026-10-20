@@ -22,6 +22,7 @@ from pathlib import Path
 from textual.color import Color
 from textual.theme import Theme
 
+from mmw.core import disk_io
 from mmw.core.config import DEFAULT_THEME
 
 THEMES_DIRNAME = "themes"
@@ -86,11 +87,11 @@ def load_custom_themes(directory: Path) -> tuple[list[Theme], list[str]]:
     """
     themes: list[Theme] = []
     problems: list[str] = []
-    if not directory.is_dir():
+    if not disk_io.ops.is_dir(directory):
         return themes, problems
-    for path in sorted(directory.glob("*.toml")):
+    for path in sorted(disk_io.ops.glob(directory, "*.toml")):
         try:
-            data = tomllib.loads(path.read_text())
+            data = tomllib.loads(disk_io.ops.read_text(path))
             variables = {str(k): str(v) for k, v in data.pop("variables", {}).items()}
             data.setdefault("name", path.stem)
             theme = Theme(**data, variables=variables)

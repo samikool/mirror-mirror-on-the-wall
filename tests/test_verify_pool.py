@@ -102,3 +102,86 @@ def test_rehash_finds_a_blob_rewritten_at_the_same_size(pool, mirror_dir):
     m = _mirror("apt-flat")
     assert verify_mirror(m, mirror_dir, pool, stat_blobs=True).corrupt == []
     assert verify_mirror(m, mirror_dir, pool, hash_blobs=True).corrupt_checksums == [cs]
+
+
+def _twelve_blobs(pool):
+    entries = []
+    for i in range(12):
+        cs = _seed(pool, f"blob {i}".encode(), f"{i}.deb")
+        entries.append((cs, f"pool/{i}.deb", KIND_PKG))
+    pool.reconcile_refs("m", entries)
+    return entries
+
+
+def test_blob_stat_is_concurrent(pool, mirror_dir, monkeypatch, disk_limits):
+    """Serial-fails: the stat of row 0 waits on an event only row 5's stat sets."""
+    import threading
+    from mmw.core import disk_io
+    _twelve_blobs(pool)
+    rows = pool.mirror_files(["m"])
+    first, sixth = rows[0][1], rows[5][1]
+    row5, timed_out, real = threading.Event(), [], disk_io.ops.stat
+
+    def stat(path):
+        if str(path) == first:
+            timed_out.append(not row5.wait(5))
+        if str(path) == sixth:
+            row5.set()
+        return real(path)
+
+    monkeypatch.setattr(disk_io.ops, "stat", stat)
+    disk_limits(read_threads=8)
+    r = verify_mirror(_mirror("apt-flat"), mirror_dir, pool, stat_blobs=True)
+    assert timed_out == [False]
+    assert r.checked_blobs == 12 and r.corrupt == []
+    assert r.timings["disk read-meta"] > 0
+
+
+def test_blob_stat_reports_progress(pool, mirror_dir, monkeypatch):
+    from mmw.core import verify
+    monkeypatch.setattr(verify, "_STAT_REPORT_EVERY", 5)
+    _twelve_blobs(pool)
+    said = []
+    verify_mirror(_mirror("apt-flat"), mirror_dir, pool, stat_blobs=True, say=said.append)
+    assert [s for s in said if s.startswith("stat ")] == [
+        "stat 5/12 blobs…", "stat 10/12 blobs…", "stat 12/12 blobs…"]
+
+
+def test_verify_stops_mid_blob_check(pool, mirror_dir, monkeypatch):
+    import threading
+    from mmw.core import verify
+    monkeypatch.setattr(verify, "_STAT_REPORT_EVERY", 5)
+    _twelve_blobs(pool)
+    stop = threading.Event()
+
+    def say(text):
+        if text.startswith("stat 5/"):
+            stop.set()
+
+    r = verify_mirror(_mirror("apt-flat"), mirror_dir, pool, stat_blobs=True, say=say,
+                      stop_event=stop)
+    assert r.error == "stopped"
+    assert r.checked_blobs < 12
+
+
+def test_verify_hash_detects_rewritten_blob_with_threads(pool, mirror_dir, disk_limits):
+    entries = _twelve_blobs(pool)
+    bad = entries[4][0]
+    (pool.pool_dir / "packages" / bad[:2] / f"{bad}-4.deb").write_bytes(b"blob X")  # same size
+    m = _mirror("apt-flat")
+    serial = verify_mirror(m, mirror_dir, pool, hash_blobs=True)
+    disk_limits(read_threads=8, readahead=4)
+    threaded = verify_mirror(m, mirror_dir, pool, hash_blobs=True)
+    assert "disk stream" in threaded.timings
+    assert serial.corrupt_checksums == threaded.corrupt_checksums == [bad]
+    assert serial.corrupt == threaded.corrupt
+
+
+def test_verify_hash_reports_progress(pool, mirror_dir, monkeypatch):
+    from mmw.core import verify
+    monkeypatch.setattr(verify, "_STAT_REPORT_EVERY", 5)
+    _twelve_blobs(pool)
+    said = []
+    verify_mirror(_mirror("apt-flat"), mirror_dir, pool, hash_blobs=True, say=said.append)
+    assert [s for s in said if s.startswith("hash ")] == [
+        "hash 5/12 blobs…", "hash 10/12 blobs…", "hash 12/12 blobs…"]

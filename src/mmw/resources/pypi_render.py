@@ -116,9 +116,20 @@ def _remove_project(out, name):
         shutil.rmtree(os.path.join(out, rel, name), ignore_errors=True)
 
 
-def render(root, say=None):
+def write_pages(pages):
+    """The far side's writer: [(path, bytes)] one at a time → pages written.
+    mmw passes its own (`disk_io`'s write lane) on the near side; the bytes
+    are the same either way."""
+    return sum(_write(path, data) for path, data in pages)
+
+
+def render(root, say=None, write_pages=write_pages, stop=None):
     """Bring `root/pypi.org/` in line with `root/pypi-data/shards/`. Returns
-    (pages written, projects removed)."""
+    (pages written, projects removed).
+
+    `stop()` is asked after each shard. Once true, the shard just written is
+    recorded as unfinished (it re-renders next time, its old project names
+    kept so vanished ones still go) and nothing after it is touched."""
     root = str(root)
     out = os.path.join(root, OUT)
     state_dir = os.path.join(out, STATE)
@@ -141,9 +152,16 @@ def render(root, say=None):
         else:
             changed = True
             projects = json.loads(gzip.decompress(blob))["projects"]
-            for entry in projects.values():
-                for rel, data in project_pages(entry).items():
-                    written += _write(os.path.join(out, rel), data)
+            written += write_pages([(os.path.join(out, rel), data)
+                                    for entry in projects.values()
+                                    for rel, data in project_pages(entry).items()])
+            if stop and stop():
+                current[shard] = ["", sorted(set(projects) | set(known[1] if known else []))]
+                for rest in names[i:]:
+                    if rest in previous:
+                        current[rest] = previous[rest]
+                _save_state(state_dir, state_path, current)
+                return written, removed
             for gone in set(known[1] if known else []) - set(projects):
                 _remove_project(out, gone)
                 removed += 1
@@ -157,13 +175,16 @@ def render(root, say=None):
         changed = True
     if changed or not os.path.exists(os.path.join(out, "simple", "index.html")):
         everyone = [n for _digest, projects in current.values() for n in projects]
-        for rel, data in root_pages(everyone).items():
-            written += _write(os.path.join(out, rel), data)
-    os.makedirs(state_dir, exist_ok=True)
-    _write(state_path, json.dumps(current, sort_keys=True).encode())
+        written += write_pages([(os.path.join(out, rel), data) for rel, data in root_pages(everyone).items()])
+    _save_state(state_dir, state_path, current)
     if say:
         say("PyPI pages: %d written, %d projects removed" % (written, removed))
     return written, removed
+
+
+def _save_state(state_dir, state_path, current):
+    os.makedirs(state_dir, exist_ok=True)
+    _write(state_path, json.dumps(current, sort_keys=True).encode())
 
 
 if __name__ == "__main__":

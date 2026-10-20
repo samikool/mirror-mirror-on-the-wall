@@ -138,9 +138,9 @@ def test_snapshot_publish_per_base_counts_unchanged(states, tmp_path):  # noqa: 
     counts = lambda r: [(m.mirror_name, m.linked, m.skipped, m.linked_bytes, m.skipped_bytes,  # noqa: E731
                          len(m.errors)) for m in r.mirrors]
     assert counts(publish_snapshot(net, cfg, mirror_dir, "s1")) == [
-        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0), ("keys and extra files", 1, 0, 38605, 0, 0)]
+        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0), ("keys and extra files", 1, 0, 38746, 0, 0)]
     assert counts(publish_snapshot(net, cfg, mirror_dir, "s2")) == [
-        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0), ("keys and extra files", 0, 1, 0, 38605, 0)]
+        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0), ("keys and extra files", 0, 1, 0, 38746, 0)]
 
 
 def test_snapshot_publish_links_concurrently(states, tmp_path, monkeypatch, disk_limits):  # noqa: F811

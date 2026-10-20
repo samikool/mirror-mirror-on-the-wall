@@ -96,3 +96,14 @@ def test_hash_files_missing_yields_error(tmp_path):
         got = dict(job.hash_files([paths[0], tmp_path / "missing", paths[1]]))
     assert isinstance(got[tmp_path / "missing"], OSError)
     assert got[paths[1]] == hashlib.sha256(paths[1].read_bytes()).hexdigest()
+
+
+def test_write_if_changed_writes_only_new_bytes(tmp_path):
+    dst = tmp_path / "a" / "b" / "page.html"
+    assert disk_io.ops.write_if_changed(dst, b"one") is True
+    mtime = dst.stat().st_mtime_ns
+    assert disk_io.ops.write_if_changed(dst, b"one") is False
+    assert dst.stat().st_mtime_ns == mtime            # unchanged page keeps its mtime
+    assert disk_io.ops.write_if_changed(dst, b"two") is True
+    assert dst.read_bytes() == b"two"
+    assert sorted(p.name for p in dst.parent.iterdir()) == ["page.html"]   # no staging left

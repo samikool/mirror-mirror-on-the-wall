@@ -117,7 +117,7 @@ def publish_network(
                          progress=progress, stop_event=stop_event,
                          mirror_start_callback=mirror_start_callback)
             if not (stop_event and stop_event.is_set()):
-                _render_derived(network.root, progress)
+                _render_derived(network.root, progress, stop_event)
                 prepare_tree(network.root, network, cfg)
                 if network.prune and not network.certs:
                     for script in ("sign.py", "make-ca.py"):
@@ -132,12 +132,29 @@ def publish_network(
     return result
 
 
-def _render_derived(root: Path, progress=None) -> None:
+def _render_derived(root: Path, progress=None, stop_event=None) -> None:
     """The derived pages (PyPI's) from the tree's shards — the same rule
-    apply.py runs on the far side."""
+    apply.py runs on the far side, its page writes on this job's write lane
+    (a full index is millions of small files)."""
     from mmw.resources.apply import render_derived
-    render_derived(str(root), say=(lambda message: progress("pypi.org", f"render:{message}"))
-                   if progress else None)
+
+    with disk_io.DiskJob("render", stop_event=stop_event) as job:
+        def write_pages(pages):
+            written = 0
+            for _pair, result in job.meta_map(lambda pair: _page_written(*pair), pages):
+                if isinstance(result, Exception):
+                    raise result            # as the stdlib loop would: the publish reports it
+                written += result
+            return written
+        render_derived(str(root),
+                       say=(lambda message: progress("pypi.org", f"render:{message}"))
+                       if progress else None,
+                       write_pages=write_pages,
+                       stop=lambda: bool(stop_event and stop_event.is_set()))
+
+
+def _page_written(path: str, data: bytes) -> bool:
+    return disk_io.ops.write_if_changed(Path(path), data)
 
 
 def warm_for_publish(mirror_dir: Path, progress=None, stop_event=None) -> None:
@@ -373,7 +390,7 @@ def publish_snapshot(
                     sink.prune_stale_bases(set(bases) | upstream_file_live_dirs(
                         upstream, set(bases)))
             if not (stop_event and stop_event.is_set()):
-                _render_derived(root, progress)
+                _render_derived(root, progress, stop_event)
         finally:
             sink.close()
             result.timings.update(sink.job.stats.timings())

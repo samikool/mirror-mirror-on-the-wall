@@ -41,6 +41,19 @@ def atomic_write(dst: Path, data: bytes, tmp_dir: Path | None = None) -> None:
                 pass
 
 
+def write_if_changed(dst: Path, data: bytes) -> bool:
+    """`atomic_write` unless `dst` already holds exactly `data` — an
+    unchanged page keeps its mtime. True when written."""
+    dst = Path(dst)
+    try:
+        if dst.read_bytes() == data:
+            return False
+    except OSError:
+        pass
+    atomic_write(dst, data)
+    return True
+
+
 def same_file(a: Path, b: Path) -> bool:
     """One inode — the device included. Inode numbers are per filesystem, so
     on a destination that falls back to copying (another device) an inode

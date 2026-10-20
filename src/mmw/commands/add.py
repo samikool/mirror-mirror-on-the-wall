@@ -9,6 +9,7 @@ from pathlib import Path
 
 import tomli_w
 
+from mmw.core import disk_io
 from mmw.commands.common import ConfigError, eprint, load_config
 from mmw.core import config, discover, keys
 from mmw.providers import get_provider
@@ -52,16 +53,16 @@ def read_input(files: "list[Path] | Path | None", url: str | None) -> str:
 
     expanded: list[Path] = []
     for p in paths:
-        if p.is_dir():
-            expanded.extend(sorted(q for q in p.iterdir()
-                                   if q.is_file() and q.suffix in (".sources", ".list")))
+        if disk_io.ops.is_dir(p):
+            expanded.extend(sorted(q for q in disk_io.ops.iterdir(p)
+                                   if disk_io.ops.is_file(q) and q.suffix in (".sources", ".list")))
         else:
             expanded.append(p)
     if not expanded:
         raise FileNotFoundError(
             f"no .sources or .list files under {', '.join(str(p) for p in paths)}"
         )
-    return "\n\n".join(p.read_text().strip() for p in expanded) + "\n"
+    return "\n\n".join(disk_io.ops.read_text(p).strip() for p in expanded) + "\n"
 
 
 def attach_keys(sources: list[config.SourceConfig], keys_dir: Path) -> tuple[int, int]:

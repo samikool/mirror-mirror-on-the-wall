@@ -193,3 +193,13 @@ def test_a_finished_panel_leaves_no_bar_bouncing():
         bars = list(view.query(ProgressBar))
         assert bars and all(b.total is not None and b.percentage == 1 for b in bars)
     _run(check)
+
+
+def test_transfer_view_renders_preflight():
+    async def check(app, view, pilot):
+        view.begin(1)
+        view.record("", "preflight:5000:12000")
+        assert view._phase == "checking pool blobs · 5,000 of 12,000"
+        view.record("", "preflight:12000:12000")
+        assert view._phase == ""
+    _run(check, kind=BUNDLE)

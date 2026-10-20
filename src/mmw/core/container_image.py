@@ -4,6 +4,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mmw.core import disk_io
+
 
 @dataclass
 class ImageResult:
@@ -21,19 +23,19 @@ def _run(docker: str, *args: str, timeout: float = 900) -> str:
 
 def _checksum(tar: Path) -> str:
     side = tar.with_name(tar.name + ".sha256")
-    if side.exists():
-        return side.read_text().strip()
+    if disk_io.ops.exists(side):
+        return disk_io.ops.read_text(side).strip()
     h = hashlib.sha256()
-    with tar.open("rb") as f:
+    with disk_io.ops.open_file(tar, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
-    side.write_text(h.hexdigest())
+    disk_io.ops.write_text(side, h.hexdigest())
     return h.hexdigest()
 
 
 def _newest(cache: Path) -> Path | None:
-    tars = sorted(cache.glob("*.tar"), key=lambda p: p.stat().st_mtime, reverse=True) \
-        if cache.is_dir() else []
+    tars = sorted(disk_io.ops.glob(cache, "*.tar"), key=lambda p: disk_io.ops.stat(p).st_mtime, reverse=True) \
+        if disk_io.ops.is_dir(cache) else []
     return tars[0] if tars else None
 
 
@@ -87,25 +89,25 @@ def _container_image(cache: Path, say, image: str, platform: str, docker: str) -
         return _use_cache(cache, notes, f"the local {image} is {actual_platform}, not {platform}",
                           f"the local {image} is {actual_platform}, not {platform} — run "
                           f"`docker pull --platform {platform} {image}` here", say)
-    cache.mkdir(parents=True, exist_ok=True)
+    disk_io.ops.mkdir(cache, parents=True, exist_ok=True)
     target = cache / f"{image_id.replace(':', '-')}.tar"
-    if not target.exists():
+    if not disk_io.ops.exists(target):
         say("saving")
         tmp = target.with_name(target.name + ".part")
         try:
             _run(docker, "save", "-o", str(tmp), image)
             say(None)  # Stop during Docker save must not replace the cached image.
         except _Stopped:
-            tmp.unlink(missing_ok=True)
+            disk_io.ops.unlink(tmp, missing_ok=True)
             raise
         except (OSError, subprocess.SubprocessError) as e:
-            tmp.unlink(missing_ok=True)
+            disk_io.ops.unlink(tmp, missing_ok=True)
             return ImageResult(None, error=f"docker save {image} failed: {e}")
-        tmp.rename(target)
+        disk_io.ops.rename(tmp, target)
     else:
         say("cached")
-    for old in cache.glob("*.tar"):
+    for old in disk_io.ops.glob(cache, "*.tar"):
         if old != target:
-            old.unlink(missing_ok=True)
-            old.with_name(old.name + ".sha256").unlink(missing_ok=True)
+            disk_io.ops.unlink(old, missing_ok=True)
+            disk_io.ops.unlink(old.with_name(old.name + ".sha256"), missing_ok=True)
     return ImageResult(target, _checksum(target), notes)

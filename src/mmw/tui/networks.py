@@ -6,9 +6,9 @@ A network is a noun — a named downselect of the mirror; `root` and
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core import config
 from mmw.core.pool import Pool
 from mmw.core.publisher.manifest import ledger_dir
@@ -82,16 +82,16 @@ def clear_ledger(mirror_dir: Path, name: str) -> str | None:
     like."""
     problems = []
     from mmw.core.pool import database_path
-    if database_path(mirror_dir).exists():
+    if disk_io.ops.exists(database_path(mirror_dir)):
         try:
             with Pool(mirror_dir) as pool:
                 pool.forget_network(name)
         except Exception as e:  # noqa: BLE001 — reported, never fatal to the removal
             problems.append(f"Could not remove the snapshots of '{name}': {e}")
     ledger = ledger_dir(mirror_dir, name)
-    if ledger.exists():
+    if disk_io.ops.exists(ledger):
         try:
-            shutil.rmtree(ledger)
+            disk_io.ops.rmtree(ledger)
         except OSError as e:
             problems.append(f"Could not remove bundle history for '{name}': {e}")
     return "; ".join(problems) or None
@@ -121,7 +121,7 @@ def exclusive_publish_dirs(
     dirs = [
         net.root / b
         for b in sorted(removed_bases - kept_bases)
-        if (net.root / b).exists()
+        if disk_io.ops.exists(net.root / b)
     ]
     return dirs, sorted(removed_bases & kept_bases)
 

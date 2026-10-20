@@ -1,6 +1,5 @@
 """PyPI authoring: the shared provider form, a live summary, and Check —
 resolve the requirements list per target without saving anything."""
-import shutil
 import tempfile
 import threading
 from pathlib import Path
@@ -10,7 +9,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Label, Static
 
-from mmw.core import config
+from mmw.core import config, disk_io
 from mmw.providers import get_provider
 from mmw.providers.pypi import uv as uvmod
 from mmw.providers.pypi.targets import targets
@@ -104,7 +103,7 @@ class PypiEditor(Vertical):
         self._check_gen += 1
         if self._scratch is not None:
             # Off the event loop: removing a uv cache is disk work.
-            threading.Thread(target=shutil.rmtree, args=(self._scratch,), kwargs={"ignore_errors": True},
+            threading.Thread(target=disk_io.ops.rmtree, args=(self._scratch,), kwargs={"ignore_errors": True},
                              daemon=True).start()
 
     @on(Button.Pressed, "#btn-pypi-check")

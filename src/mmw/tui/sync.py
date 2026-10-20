@@ -12,6 +12,7 @@ from textual.markup import escape
 from textual.message import Message
 from textual.widgets import Label, ProgressBar, Static
 
+from mmw.core import disk_io
 from mmw.core import config
 from mmw.core.format import (
     STALLED as _ETA_STALLED,
@@ -648,7 +649,7 @@ class SyncView(Vertical):
         mirror_dir = self._cfg.settings.mirror_dir
 
         def _open() -> Pool:
-            mirror_dir.mkdir(parents=True, exist_ok=True)
+            disk_io.ops.mkdir(mirror_dir, parents=True, exist_ok=True)
             from mmw.core.db_warm import warm_for_job
             warmed = warm_for_job(mirror_dir)
             if warmed.status in ("warmed", "too-big"):

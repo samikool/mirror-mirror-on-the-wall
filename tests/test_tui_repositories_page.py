@@ -261,7 +261,7 @@ def test_wipe_refused_while_the_pool_is_busy_deletes_nothing(tmp_path, monkeypat
 
 
 def test_prune_reports_what_it_freed(tmp_path, monkeypatch):
-    monkeypatch.setattr(R, "prune_pool", lambda cfg: (12, 4096))
+    monkeypatch.setattr(R, "prune_pool", lambda cfg, progress=None: (12, 4096))
 
     async def check(app, pilot):
         await pilot.press("p")
@@ -304,7 +304,7 @@ def test_a_second_action_is_refused_instead_of_cancelling_the_first(tmp_path, mo
     # rightly allowed).
     running, release = threading.Event(), threading.Event()
 
-    def held_prune(cfg):
+    def held_prune(cfg, progress=None):
         running.set()
         release.wait(30)
         return (3, 1024)
@@ -346,3 +346,26 @@ def test_the_section_is_called_sources():
     first = SECTIONS[0]
     assert (first.mode, first.label, first.key) == ("repositories", "Sources", "1")
     assert RepositoriesPage.TITLE == "Sources"
+
+
+def test_prune_shows_its_progress(tmp_path, monkeypatch):
+    import threading
+    running, release = threading.Event(), threading.Event()
+
+    def reporting_prune(cfg, progress=None):
+        progress(5000, 12000)
+        running.set()
+        release.wait(30)
+        return (12000, 4096)
+    monkeypatch.setattr(R, "prune_pool", reporting_prune)
+
+    async def check(app, pilot):
+        await pilot.press("p")
+        await until(pilot, lambda: app.screen.query("#confirm"))
+        app.screen.query_one("#confirm").press()
+        await until(pilot, running.is_set)
+        await until(pilot, lambda: "5,000 of 12,000" in _status(app))
+        release.set()
+        await _done(app, pilot)
+        await until(pilot, lambda: "Removed 12,000" in _status(app))
+    _run(tmp_path, check)

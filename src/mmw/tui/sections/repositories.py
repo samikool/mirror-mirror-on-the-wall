@@ -426,7 +426,10 @@ class RepositoriesPage(Page):
             return
         self.set_status("Pruning…")
         try:
-            removed, freed = await asyncio.to_thread(repositories.prune_pool, self.app.cfg)
+            def progress(done: int, total: int) -> None:
+                self.app.call_from_thread(
+                    self.set_status, f"Pruning… {done:,} of {total:,} orphaned packages removed")
+            removed, freed = await asyncio.to_thread(repositories.prune_pool, self.app.cfg, progress)
         except (pool_mod.PoolBusy, ValueError) as e:
             # A running sync's downloads are unreferenced until it reconciles,
             # and with nothing configured every blob looks unwanted: either

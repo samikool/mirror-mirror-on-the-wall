@@ -2,12 +2,13 @@
 gallery's data (catalog, update index), its script, and the DNS / TLS guide —
 all under `vscode-gallery/` in the network root. The gallery container itself
 is a service in the network's `nginx/compose.yaml`."""
-import gzip
 import hashlib
 import json
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from mmw.core import disk_io
 
 GALLERY_DIR = "vscode-gallery"
 META_CACHE = "vscode-meta-cache"     # under mirror_dir: what is derived from the metadata
@@ -25,7 +26,7 @@ _NUMBERS = dict(enumerate(("no", "one", "two", "three", "four", "five", "six", "
 def _read_json(pool, unit_name: str, rel: str):
     path = pool.resolve(unit_name, rel)
     try:
-        return json.loads(path.read_bytes()) if path is not None else None
+        return json.loads(disk_io.ops.read_bytes(path)) if path is not None else None
     except (OSError, ValueError):
         return None
 
@@ -65,7 +66,7 @@ def _read_statistics(rows) -> dict:
     merged: dict = {}
     for _, _, path, _ in rows:
         try:
-            merged.update(json.loads(Path(path).read_bytes()))
+            merged.update(json.loads(disk_io.ops.read_bytes(Path(path))))
         except (OSError, ValueError):
             continue                # a description's own statistics stand in
     return merged
@@ -96,16 +97,15 @@ def _catalog_from(rows, bodies, statistics=None) -> list[dict]:
 def catalog(pool, units) -> list[dict]:
     """One gallery object per extension: the universal unit's builds plus every
     selected platform's, newest first, each (version, platform) once."""
-    from mmw.core.bulk_read import read_all
     rows = _extension_meta(pool, units)
-    return _catalog_from(rows, read_all(path for _, _, path, _ in rows),
+    return _catalog_from(rows, disk_io.read_files(path for _, _, path, _ in rows),
                          _read_statistics(_statistics_rows(pool, units)))
 
 
 # A catalog is a function of its metadata's checksums and of this file's code,
 # so one built before is reused while neither changed — a mirror of 120k
 # extensions otherwise reads every JSON again on each publish.
-_CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+_CODE = hashlib.sha256(disk_io.ops.read_bytes(Path(__file__))).hexdigest()
 CATALOGS_KEPT = 2           # networks selecting different extensions alternate
 DESCRIPTIONS = "descriptions.gz"    # checksum → that metadata JSON's bytes
 
@@ -115,7 +115,7 @@ def _load_descriptions(path: Path) -> dict[str, bytes]:
     one cannot exist; anything unreadable is simply read from the pool again."""
     found: dict[str, bytes] = {}
     try:
-        with gzip.open(path, "rb") as f:
+        with disk_io.ops.gzip_open(path, "rb") as f:
             while header := f.readline():
                 checksum, size = header.split()
                 body = f.read(int(size))
@@ -129,18 +129,19 @@ def _load_descriptions(path: Path) -> dict[str, bytes]:
 
 def _save_descriptions(path: Path, bodies: dict[str, bytes]) -> None:
     tmp = path.with_suffix(".tmp")
-    with gzip.open(tmp, "wb", compresslevel=1) as f:
+    with disk_io.ops.gzip_open(tmp, "wb", compresslevel=1) as f:
         for checksum, body in bodies.items():
             f.write(b"%s %d\n" % (checksum.encode(), len(body)))
             f.write(body)
-    tmp.replace(path)
+    disk_io.ops.replace(tmp, path)
 
 
 def catalog_files(pool, units, cache_dir: Path, *, recheck: bool = False,
-                  say=None) -> tuple[bytes, list[str]]:
+                  say=None, stop_event=None) -> tuple[bytes, list[str]]:
     """catalog.json's bytes and the publisher hosts it names — rebuilt only
-    when the metadata changed (or `recheck`), else the copy in `cache_dir`."""
-    from mmw.core.bulk_read import read_all
+    when the metadata changed (or `recheck`), else the copy in `cache_dir`.
+    Raises InterruptedError when stopped while reading: a catalog built from
+    part of its descriptions must be neither cached nor published."""
     if say:
         say("checking the extension catalog…")
     rows = _extension_meta(pool, units)
@@ -150,11 +151,11 @@ def catalog_files(pool, units, cache_dir: Path, *, recheck: bool = False,
         digest.update(f"{unit_name}\0{rel}\0{checksum}\n".encode())
     key = digest.hexdigest()[:32]
     data_path, hosts_path = cache_dir / f"catalog-{key}.json", cache_dir / f"catalog-{key}.hosts"
-    if not recheck and data_path.exists() and hosts_path.exists():
+    if not recheck and disk_io.ops.exists(data_path) and disk_io.ops.exists(hosts_path):
         if say:
             say(f"extension catalog unchanged ({len(rows):,} descriptions) — reusing it…")
         try:
-            return data_path.read_bytes(), hosts_path.read_text().split()
+            return disk_io.ops.read_bytes(data_path), disk_io.ops.read_text(hosts_path).split()
         except OSError:
             pass
     # A sync that updates one extension changes the key above, so the bodies
@@ -164,7 +165,11 @@ def catalog_files(pool, units, cache_dir: Path, *, recheck: bool = False,
     unread = [path for _, _, path, checksum in rows if checksum not in known]
     if say:
         say(f"reading {len(unread):,} of {len(rows):,} extension descriptions…")
-    bodies = read_all(unread)
+    with disk_io.DiskJob("catalog", stop_event=stop_event) as job:
+        bodies = disk_io.read_files(unread, job=job, on_progress=(
+            (lambda done, total: say(f"read {done:,}/{total:,} descriptions…")) if say else None))
+    if stop_event is not None and stop_event.is_set():
+        raise InterruptedError("stopped while reading the extension descriptions")
     by_checksum = {}
     for _, _, path, checksum in rows:
         body = known.get(checksum, bodies.get(path))
@@ -175,18 +180,18 @@ def catalog_files(pool, units, cache_dir: Path, *, recheck: bool = False,
                               _read_statistics(stats_rows))
     data, hosts = json.dumps(catalogue, sort_keys=True).encode(), publisher_hosts(catalogue)
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        disk_io.ops.mkdir(cache_dir, parents=True, exist_ok=True)
         if unread or len(by_checksum) != len(known):
             _save_descriptions(cache_dir / DESCRIPTIONS, by_checksum)
         for path, body in ((data_path, data), (hosts_path, "\n".join(hosts).encode())):
             tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_bytes(body)
-            tmp.replace(path)
-        kept = sorted(cache_dir.glob("catalog-*.json"), key=lambda p: p.stat().st_mtime,
+            disk_io.ops.write_bytes(tmp, body)
+            disk_io.ops.replace(tmp, path)
+        kept = sorted(disk_io.ops.glob(cache_dir, "catalog-*.json"), key=lambda p: disk_io.ops.stat(p).st_mtime,
                       reverse=True)
         for old in kept[CATALOGS_KEPT:]:
-            old.unlink(missing_ok=True)
-            old.with_suffix(".hosts").unlink(missing_ok=True)
+            disk_io.ops.unlink(old, missing_ok=True)
+            disk_io.ops.unlink(old.with_suffix(".hosts"), missing_ok=True)
     except OSError:
         pass                    # the cache is an optimisation; the catalog stands
     return data, hosts

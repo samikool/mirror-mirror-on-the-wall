@@ -129,3 +129,41 @@ def test_cli_publish_snapshot_and_delete_guards(states, tmp_path, monkeypatch): 
              "--root", str(other), "--allow-incomplete")   # fixture indexes are fake
     assert r.exit_code == 0, r.output
     assert _split(_tree(other))[0] == _split(published[3])[0]
+
+
+def test_snapshot_publish_per_base_counts_unchanged(states, tmp_path):  # noqa: F811
+    """Pinned from before the shared link loop: per-base accounting is the same."""
+    cfg, net, mirror_dir, snaps, published = states
+    net = net.model_copy(update={"root": tmp_path / "p"})
+    counts = lambda r: [(m.mirror_name, m.linked, m.skipped, m.linked_bytes, m.skipped_bytes,  # noqa: E731
+                         len(m.errors)) for m in r.mirrors]
+    assert counts(publish_snapshot(net, cfg, mirror_dir, "s1")) == [
+        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0), ("keys and extra files", 1, 0, 38605, 0, 0)]
+    assert counts(publish_snapshot(net, cfg, mirror_dir, "s2")) == [
+        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0), ("keys and extra files", 0, 1, 0, 38605, 0)]
+
+
+def test_snapshot_publish_links_concurrently(states, tmp_path, monkeypatch, disk_limits):  # noqa: F811
+    """Serial-fails: the first placement waits until a second one has started."""
+    import threading
+    from mmw.core.publisher.sinks import TreeSink
+    cfg, net, mirror_dir, snaps, published = states
+    lock, calls, second, timed_out = threading.Lock(), [0], threading.Event(), []
+    real = TreeSink._place
+
+    def place(self, src, rel):
+        with lock:
+            calls[0] += 1
+            n = calls[0]
+        if n == 1:
+            timed_out.append(not second.wait(5))
+        else:
+            second.set()
+        return real(self, src, rel)
+
+    monkeypatch.setattr(TreeSink, "_place", place)
+    disk_limits(write_threads=8)
+    publish_snapshot(net.model_copy(update={"root": tmp_path / "p"}), cfg, mirror_dir, "s1")
+    assert timed_out == [False]
+    files, _ = _split(_tree(tmp_path / "p"))
+    assert files == _split(published[1])[0]

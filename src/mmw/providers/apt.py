@@ -4,6 +4,7 @@ from pathlib import PurePosixPath
 
 import httpx
 
+from mmw.core import disk_io
 from mmw.core.compress import decompress as _decompress
 from mmw.core.config import KNOWN_ARCHES
 from mmw.providers.base import BaseProvider, Dimension, MetadataFile, PackageInfo, SourceDescription
@@ -200,7 +201,7 @@ def _parse_packages_flat(text: str, base_url: str) -> list[PackageInfo]:
 
 
 def _parse_apt_sha256(path) -> list[str]:
-    text = _decompress(path.read_bytes(), path.name).decode("utf-8", errors="replace")
+    text = _decompress(disk_io.ops.read_bytes(path), path.name).decode("utf-8", errors="replace")
     return [line[8:].strip() for line in text.splitlines() if line.startswith("SHA256: ")]
 
 
@@ -258,7 +259,7 @@ class _AptCommon(BaseProvider):
         base = self._index_base(dst_root, unit)
         for suffix in (".xz", ".gz", ""):
             p = base.with_name(base.name + suffix)
-            if p.exists():
+            if disk_io.ops.exists(p):
                 return p
         return None
 
@@ -267,7 +268,7 @@ class _AptCommon(BaseProvider):
 
     def published_packages(self, index) -> list[PackageInfo]:
         try:
-            text = _decompress(index.read_bytes(), index.name).decode("utf-8", errors="replace")
+            text = _decompress(disk_io.ops.read_bytes(index), index.name).decode("utf-8", errors="replace")
             return self._parse_index(text)
         except Exception:
             return []
@@ -299,7 +300,7 @@ class AptFlatProvider(_AptCommon):
     def _parse_index(self, text: str) -> list[PackageInfo]:
         return _parse_packages_flat(text, "")
 
-    def verify_witness(self, unit, pool, say=None):
+    def verify_witness(self, unit, pool, say=None, stop_event=None):
         from mmw.core.verify import VerifyResult, _check_checksums, _resolve_first
         result = VerifyResult(unit.name, unit.provider)
         pkg_file = _resolve_first(pool, unit.name, ["Packages.xz", "Packages.gz", "Packages"])
@@ -552,7 +553,7 @@ class AptProvider(_AptCommon):
         write_upgrade_md(ctx.sink, ctx.network, ctx.pool, paths,
                          ctx.result.dist_upgrade_warnings, mirrors=ctx.units)
 
-    def verify_witness(self, unit, pool, say=None):
+    def verify_witness(self, unit, pool, say=None, stop_event=None):
         from mmw.core.verify import VerifyResult, _check_checksums, _resolve_first
         result = VerifyResult(unit.name, unit.provider)
         suite = unit.suite or ""
@@ -571,7 +572,7 @@ class AptProvider(_AptCommon):
         if pkg_file is None:
             release = _resolve_first(pool, unit.name, [f"dists/{suite}/InRelease", f"dists/{suite}/Release"])
             if release is not None:
-                entries = _parse_release_files(release.read_text())
+                entries = _parse_release_files(disk_io.ops.read_text(release))
                 if entries and not any(path.startswith(component + "/") for _, path, _ in entries):
                     return result  # successfully synced metadata-only skeleton
             result.error = "Packages index not in pool — has this mirror been synced?"

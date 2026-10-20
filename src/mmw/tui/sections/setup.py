@@ -136,4 +136,6 @@ class SetupPage(Wizard):
             self.set_status(message, "error")
             self.notify(message, severity="error", timeout=20)
             return
+        from mmw.core import disk_io
+        disk_io.configure(cfg.settings)
         await self.app.finish_setup(cfg)

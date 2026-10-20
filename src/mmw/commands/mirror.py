@@ -8,6 +8,7 @@ from pathlib import Path
 
 import typer
 
+from mmw.core import disk_io
 from mmw.commands.common import eprint, interruptible, load_config_or_none
 from mmw.core import config
 from mmw.core.downloader import DownloadResult, MirrorSummary, Status
@@ -103,7 +104,7 @@ async def _mirror_all(cfg: config.Config) -> int:
 
 async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor) -> int:
     try:
-        mirror_dir.mkdir(parents=True, exist_ok=True)
+        disk_io.ops.mkdir(mirror_dir, parents=True, exist_ok=True)
     except OSError as e:
         # The single most likely real-world misconfiguration (NFS not mounted,
         # wrong uid). It already exited 1; it did so via a 121-line traceback.

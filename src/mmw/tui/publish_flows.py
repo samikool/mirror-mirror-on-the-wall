@@ -20,9 +20,11 @@ from mmw.tui.publish_modals import CertsPage
 # Verify and dry-run are per-mirror, read-only, and independent. Run a few at a
 # time: the expensive parts (lzma/gzip decompress, SQLite) release the GIL, so
 # they genuinely overlap, and the modal advances as each lands instead of
-# sitting still for the seconds one big index takes. Bounded low on purpose —
-# every one of these hits the pool's single shared connection, so more workers
-# would just queue on that lock.
+# sitting still for the seconds one big index takes. This bounds mirrors run
+# at once, not disk operations — each mirror's disk work runs on its own job's
+# lanes (`disk_read_threads`). Bounded low because every one of these reads
+# the pool through its one tuned reader (more read connections measured
+# slower), so more workers would just queue there.
 _PREPARE_WORKERS = 4
 
 
@@ -139,7 +141,7 @@ class PublishFlows:
                     # its steps show beside the count.
                     say = ((lambda text: record("", f"verify:{m.name}: {text}"))
                            if record else None)
-                    return verify_mirror(m, mirror_dir, pool, say=say)
+                    return verify_mirror(m, mirror_dir, pool, say=say, stop_event=stop)
 
                 verify_results = await _run_per_mirror(
                     selected_mirrors, _verify, _report_verify, stop,

@@ -355,7 +355,7 @@ def test_a_long_check_shows_its_step_beside_the_count(two_mirrors, monkeypatch):
     cfg, net, mirror_dir = two_mirrors
     gate = threading.Event()
 
-    def stepping_verify(m, d, p, say=None):
+    def stepping_verify(m, d, p, say=None, **_):
         say(f"reading 3 new descriptions ({m.name})…")
         gate.wait(5)
         return verify.VerifyResult(m.name, m.provider, total=1, present=1)

@@ -45,6 +45,28 @@ def _no_download_backoff(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _serial_disk_io(monkeypatch):
+    """Every disk lane runs inline at 1 / 1 / 0 — today's serial behaviour —
+    so outcome tests stay deterministic. A test of concurrency sets its own
+    with the `disk_limits` fixture; loading a config cannot unpin this
+    (`disk_io.configure` is a no-op while pinned)."""
+    from mmw.core import disk_io
+    monkeypatch.setattr(disk_io, "_limits", disk_io.Limits(1, 1, 0))
+    monkeypatch.setattr(disk_io, "_pinned", True)
+
+
+@pytest.fixture
+def disk_limits(monkeypatch):
+    """`disk_limits(write_threads=8, …)`: the lanes every job made from now on
+    in this test get — how a concurrency test leaves the 1 / 1 / 0 pin."""
+    from mmw.core import disk_io
+
+    def set_limits(**kw):
+        monkeypatch.setattr(disk_io, "_limits", disk_io.Limits(**kw))
+    return set_limits
+
+
+@pytest.fixture(autouse=True)
 def _no_paste_debounce(monkeypatch):
     """Collapse the paste-box debounce for the whole suite.
 

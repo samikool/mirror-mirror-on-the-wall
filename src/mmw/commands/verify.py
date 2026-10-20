@@ -51,7 +51,11 @@ def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
     warm_for_job(mirror_dir, say=lambda message: print(f"  {message}"))
     pool = Pool(mirror_dir, read_only=True)
     try:
-        return [verify_mirror(m, mirror_dir, pool, stat_blobs=stat_blobs, hash_blobs=hash_blobs) for m in mirrors]
+        # A blob scan is minutes on a big pool: name its steps and progress.
+        say = (lambda text: print(f"    {text}", flush=True)) if stat_blobs or hash_blobs else None
+        return [verify_mirror(m, mirror_dir, pool, stat_blobs=stat_blobs, hash_blobs=hash_blobs,
+                              say=say)
+                for m in mirrors]
     finally:
         pool.close()
 

@@ -227,3 +227,34 @@ def test_the_pool_directory_hint_tells_the_truth_about_the_database(tmp_path):
         assert "empty pool" not in hint
         assert "database" in hint.lower()
     _run(tmp_path, check)
+
+
+def test_settings_page_saves_disk_threads(tmp_path):
+    async def check(app, pilot):
+        app.screen.query_one("#settings-disk-read-threads", Input).value = "4"
+        app.screen.query_one("#settings-disk-write-threads", Input).value = "2"
+        app.screen.query_one("#settings-disk-readahead", Input).value = "0"
+        await _save(app, pilot)
+        s = app.cfg.settings
+        assert (s.disk_read_threads, s.disk_write_threads, s.disk_readahead) == (4, 2, 0)
+        assert config.load(tmp_path).settings == s
+    _run(tmp_path, check)
+
+
+def test_settings_page_refuses_zero_disk_threads(tmp_path):
+    async def check(app, pilot):
+        before = config.config_path(tmp_path).read_text()
+        app.screen.query_one("#settings-disk-read-threads", Input).value = "0"
+        await _save(app, pilot)
+        assert "1 or more" in _status(app)
+        assert config.config_path(tmp_path).read_text() == before
+    _run(tmp_path, check)
+
+
+def test_revert_restores_disk_settings(tmp_path):
+    async def check(app, pilot):
+        app.screen.query_one("#settings-disk-readahead", Input).value = "3"
+        app.screen.query_one("#btn-settings-revert", Button).press()
+        await _settle(pilot)
+        assert app.screen.query_one("#settings-disk-readahead", Input).value == "16"
+    _run(tmp_path, check)

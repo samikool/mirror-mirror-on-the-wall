@@ -3,13 +3,14 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from mmw.core import disk_io
 from mmw.commands.common import eprint, write_single_source
 from mmw.core import config
 
 
 def _read_ids(path: Path) -> list[str]:
     ids = []
-    for line in path.read_text().splitlines():
+    for line in disk_io.ops.read_text(path).splitlines():
         line = line.split("#", 1)[0].strip()
         if line:
             ids.append(line)

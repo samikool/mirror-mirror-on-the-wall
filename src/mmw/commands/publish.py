@@ -163,5 +163,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
             f"{result.skipped} already current{sizes}"
             + (f", {len(result.errors)} error(s)" if result.errors else "")
         )
+        if result.timings:
+            print(f"    {result.timing_summary()}")
 
     return 0 if ok else 1

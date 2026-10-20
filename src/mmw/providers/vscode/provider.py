@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from mmw.core import disk_io
 from mmw.core.http import retrying_client
 
 from mmw.core.config import ExtensionSelection
@@ -45,7 +46,7 @@ IMAGE_CACHE = "vscode-gallery-image"      # under mirror_dir: the saved python i
 
 
 # The witness memo is a function of this file's code as well as of checksums.
-_WITNESS_CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+_WITNESS_CODE = hashlib.sha256(disk_io.ops.read_bytes(Path(__file__))).hexdigest()
 
 
 def _named_assets(path: str, data) -> list[str]:
@@ -62,7 +63,7 @@ def _named_assets(path: str, data) -> list[str]:
 
 def _load_witness_memo(path: Path) -> dict[str, list[str]]:
     try:
-        saved = json.loads(gzip.decompress(path.read_bytes()))
+        saved = json.loads(gzip.decompress(disk_io.ops.read_bytes(path)))
     except (OSError, ValueError, EOFError):
         return {}
     return saved.get("named", {}) if saved.get("code") == _WITNESS_CODE else {}
@@ -70,11 +71,11 @@ def _load_witness_memo(path: Path) -> dict[str, list[str]]:
 
 def _save_witness_memo(path: Path, named: dict[str, list[str]]) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        disk_io.ops.mkdir(path.parent, parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(gzip.compress(json.dumps(
+        disk_io.ops.write_bytes(tmp, gzip.compress(json.dumps(
             {"code": _WITNESS_CODE, "named": named}).encode(), 1))
-        tmp.replace(path)
+        disk_io.ops.replace(tmp, path)
     except OSError:
         pass                    # an optimisation; the check stands without it
 
@@ -348,8 +349,12 @@ class VscodeProvider(BaseProvider):
         d = vpub.GALLERY_DIR
         say = (lambda message: ctx.progress(d, f"gallery:{message}")) if ctx.progress else None
         updates = vpub.updates(ctx.pool, units)
-        catalog_json, hosts = vpub.catalog_files(
-            ctx.pool, units, ctx.mirror_dir / vpub.META_CACHE, recheck=ctx.recheck, say=say)
+        try:
+            catalog_json, hosts = vpub.catalog_files(
+                ctx.pool, units, ctx.mirror_dir / vpub.META_CACHE, recheck=ctx.recheck, say=say,
+                stop_event=ctx.stop_event)
+        except InterruptedError:
+            return                      # stopped: nothing half-built reaches the tree
         files = {
             f"{d}/catalog.json": catalog_json,
             f"{d}/updates.json": json.dumps(updates, sort_keys=True).encode(),
@@ -375,7 +380,7 @@ class VscodeProvider(BaseProvider):
                 f"needs {gallery_image.IMAGE} ({gallery_image.PLATFORM}) loaded some other way")
         else:
             rel = f"{d}/{gallery_image.TAR_NAME}"
-            if ctx.sink.link(img.path, rel, img.path.stat().st_size, img.checksum,
+            if ctx.sink.link(img.path, rel, disk_io.ops.stat(img.path).st_size, img.checksum,
                              KIND_PKG) == "error":
                 problems.errors.append(f"{rel}: could not be placed")
             else:
@@ -568,7 +573,7 @@ class VscodeProvider(BaseProvider):
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("retry discovery stopped")
             try:
-                data = json.loads(Path(held[path]).read_bytes())
+                data = json.loads(disk_io.ops.read_bytes(Path(held[path])))
                 if not isinstance(data, dict):
                     raise ValueError("expected a JSON object")
                 if path.startswith(".vscode-meta/extensions/"):
@@ -593,10 +598,9 @@ class VscodeProvider(BaseProvider):
                 raise RuntimeError(f"cannot repair from {path}: {exc}") from exc
         return list(packages.values()), witness
 
-    def verify_witness(self, unit, pool, say=None):
+    def verify_witness(self, unit, pool, say=None, stop_event=None):
         """Re-read the unit's pooled JSON and check the pool holds every file it
         names — an independent second opinion on the refs."""
-        from mmw.core.bulk_read import read_all
         from mmw.core.verify import VerifyResult
         result = VerifyResult(unit.name, unit.provider)
         started = perf_counter()
@@ -620,7 +624,13 @@ class VscodeProvider(BaseProvider):
         unread = [held[p] for p in metas if p in held and refs[p] not in memo]
         if say:
             say(f"reading {len(unread):,} new descriptions ({len(metas):,} in all)…")
-        bodies = read_all(unread)
+        with disk_io.DiskJob("witness", stop_event=stop_event) as job:
+            bodies = disk_io.read_files(unread, job=job, on_progress=(
+                (lambda done, total: say(f"read {done:,}/{total:,} descriptions…")) if say else None))
+        result.timings.update(job.stats.timings())
+        if stop_event is not None and stop_event.is_set():
+            result.error = "stopped"
+            return result
         named_by: dict[str, list[str]] = {}
         for path in metas:
             checksum = refs[path]

@@ -2,6 +2,7 @@
 and the generated UPGRADE.md."""
 from pathlib import Path  # noqa: F401  (used in a quoted annotation)
 
+from mmw.core import disk_io
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import KIND_META, Pool
 from mmw.core.resolve import network_mirrors
@@ -16,11 +17,11 @@ def parse_meta_release_lts(pool: Pool) -> list[tuple[str, str]]:
     Returns [] if the file hasn't been synced yet.
     """
     path = pool.find_blob("changelogs.ubuntu.com/meta-release-lts")
-    if path is None or not path.exists():
+    if path is None or not disk_io.ops.exists(path):
         return []
     releases: list[tuple[str, str]] = []
     dist = version = ""
-    for line in path.read_text(errors="replace").splitlines():
+    for line in disk_io.ops.read_text(path, errors="replace").splitlines():
         if line.startswith("Dist:"):
             dist = line.split(":", 1)[1].strip()
             version = ""
@@ -91,13 +92,13 @@ def publish_changelogs(sink, pool: Pool, result: NetworkPublishResult) -> None:
 
     for name in ("meta-release", "meta-release-lts"):
         src = pool.find_blob(f"changelogs.ubuntu.com/{name}")
-        if src is None or not src.exists():
+        if src is None or not disk_io.ops.exists(src):
             result.dist_upgrade_warnings.append(
                 f"{name} not synced yet — run `mmw sync` for a Ubuntu main mirror first"
             )
             continue
         before = len(sink.errors)
-        status = sink.link(src, f"changelogs.ubuntu.com/{name}", src.stat().st_size,
+        status = sink.link(src, f"changelogs.ubuntu.com/{name}", disk_io.ops.stat(src).st_size,
                            file_checksum(src), KIND_META)
         if status == "error":
             added = sink.errors[before:]

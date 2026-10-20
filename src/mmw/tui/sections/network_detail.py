@@ -22,6 +22,7 @@ from textual.markup import escape
 from textual.widget import Widget
 from textual.widgets import Label
 
+from mmw.core import disk_io
 from mmw.core import config
 from mmw.core.format import fmt_size
 from mmw.core.resolve import network_mirrors
@@ -80,11 +81,11 @@ def stat_tree(net, mirror_map, should_stop=None, progress=None) -> tuple:
         if should_stop is not None and should_stop():
             raise _Superseded
         dst_root = publish_base(net, mirror)
-        if not dst_root.exists():
+        if not disk_io.ops.exists(dst_root):
             per_mirror.append((name, 0, 0, None, False))
         else:
             try:
-                mtime = dst_root.stat().st_mtime
+                mtime = disk_io.ops.stat(dst_root).st_mtime
             except OSError:
                 mtime = None
             pkgs = pub_stats.dst_packages(dst_root, mirror)
@@ -107,7 +108,7 @@ def _signature(net, mirror_map) -> tuple:
     for name, mirror in mirror_map.items():
         path = dst_index_path(publish_base(net, mirror), mirror)
         try:
-            st = path.stat() if path is not None else None
+            st = disk_io.ops.stat(path) if path is not None else None
         except OSError:
             st = None
         sig.append((name, str(path), st.st_mtime_ns if st else 0, st.st_size if st else 0))
@@ -257,7 +258,7 @@ class NetworkDetail(Widget):
             else:
                 path = latest_manifest_path(mirror_dir, net.name)
                 if path is not None:
-                    mtime = path.stat().st_mtime
+                    mtime = disk_io.ops.stat(path).st_mtime
         except Exception:  # noqa: BLE001 — an unreadable pool: no age, not a crash
             pass
         self.app.call_from_thread(self._on_history, gen, mtime, line)

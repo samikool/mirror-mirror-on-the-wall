@@ -12,6 +12,7 @@ from mmw.core.publisher import sinks as sinks_mod
 from mmw.core.publisher.manifest import ManifestHeader, delta
 from mmw.core.publisher.nginx import ROOT_PLACEHOLDER
 from mmw.core.publisher.sinks import BundleSink, TreeSink
+from mmw.core.disk_io import DiskJob, Limits
 
 
 @pytest.fixture
@@ -59,7 +60,8 @@ def test_tree_sink_link_many_settles_like_link_in_item_order(pool, tmp_path):
     sink.close()
 
 
-def test_tree_sink_link_many_yields_each_row_before_the_run_is_done(pool, tmp_path, monkeypatch):
+def test_tree_sink_link_many_yields_each_row_before_the_run_is_done(pool, tmp_path, monkeypatch, disk_limits):
+    disk_limits(write_threads=8)
     seeded = [_seed(pool, f"blob {i}".encode(), f"{i}.whl") for i in range(20)]
     sink = TreeSink(tmp_path / "pub")
     gate, place, timed_out = threading.Event(), sink._place, []
@@ -76,6 +78,67 @@ def test_tree_sink_link_many_yields_each_row_before_the_run_is_done(pool, tmp_pa
     gate.set()
     assert [status for status, _ in results] == ["linked"] * 19
     assert timed_out == [False]                          # nobody waited for row 19 to report row 0
+    sink.close()
+
+
+def test_link_many_runs_concurrently_at_8(pool, tmp_path, monkeypatch, disk_limits):
+    """Serial-fails: row 0's placement waits on something only row 5's sets."""
+    disk_limits(write_threads=8)
+    seeded = [_seed(pool, f"blob {i}".encode(), f"{i}.whl") for i in range(10)]
+    sink = TreeSink(tmp_path / "pub")
+    row5, place, timed_out = threading.Event(), sink._place, []
+
+    def held(src, rel):
+        if rel.endswith("/0.whl"):
+            timed_out.append(not row5.wait(5))
+        if rel.endswith("/5.whl"):
+            row5.set()
+        return place(src, rel)
+
+    monkeypatch.setattr(sink, "_place", held)
+    items = [(src, f"host/p/{i}.whl", 6, cs, KIND_PKG) for i, (cs, src) in enumerate(seeded)]
+    assert [status for status, _ in sink.link_many(items)] == ["linked"] * 10
+    assert timed_out == [False]
+    sink.close()
+
+
+def test_link_many_at_one_thread_is_inline(pool, tmp_path, monkeypatch, disk_limits):
+    disk_limits(write_threads=1)
+    seeded = [_seed(pool, f"blob {i}".encode(), f"{i}.whl") for i in range(5)]
+    sink = TreeSink(tmp_path / "pub")
+    place, threads = sink._place, []
+    monkeypatch.setattr(sink, "_place",
+                        lambda src, rel: (threads.append(threading.current_thread()), place(src, rel))[1])
+    items = [(src, f"host/p/{i}.whl", 6, cs, KIND_PKG) for i, (cs, src) in enumerate(seeded)]
+    assert [status for status, _ in sink.link_many(items)] == ["linked"] * 5
+    assert threads == [threading.main_thread()] * 5
+    sink.close()
+
+
+def test_link_many_stop_records_only_settled_rows(pool, tmp_path, disk_limits):
+    disk_limits(write_threads=4)
+    seeded = [_seed(pool, f"blob {i}".encode(), f"{i}.whl") for i in range(40)]
+    stop = threading.Event()
+    sink = TreeSink(tmp_path / "pub", stop_event=stop)
+    items = [(src, f"host/p/{i}.whl", 6, cs, KIND_PKG) for i, (cs, src) in enumerate(seeded)]
+    yielded = []
+    for n, (status, _error) in enumerate(sink.link_many(items)):
+        yielded.append(items[n][1])
+        if n == 2:
+            stop.set()
+    assert 3 <= len(yielded) < 40
+    assert [rel for rel, _ in sink.manifest_rows] == yielded
+    # What the ruling is for: every file a stopped run put in the tree is in
+    # its record — nothing placed is left outside it.
+    on_disk = {p.relative_to(tmp_path / "pub").as_posix()
+               for p in (tmp_path / "pub" / "host").rglob("*") if p.is_file()}
+    assert on_disk == set(yielded)
+    sink.close()
+
+
+def test_tree_sink_owns_a_job_it_made(tmp_path):
+    sink = TreeSink(tmp_path / "pub")
+    assert sink.job.name == "publish"
     sink.close()
 
 
@@ -811,3 +874,228 @@ def test_bundle_sink_sent_bytes_counts_duplicate_content_once(pool, tmp_path):
     m = _members(out)
     assert m["archive.example/ubuntu/pool/all.deb"] == content
     assert m["ports.example/ubuntu/pool/all.deb"] == b"->archive.example/ubuntu/pool/all.deb"
+
+
+def _bundle_with(pool, tmp_path, n, **kw):
+    sink = BundleSink(tmp_path / "lab.tar", _hdr(), prev={}, apply_script=b"# apply\n", **kw)
+    for i in range(n):
+        cs, src = _seed(pool, f"blob {i}".encode(), f"{i}.deb")
+        sink.link(src, f"host/repo/pool/{i}.deb", len(f"blob {i}"), cs, KIND_PKG)
+    return sink
+
+
+def test_bundle_preflight_reports_progress(pool, tmp_path, monkeypatch):
+    from mmw.core import verify
+    monkeypatch.setattr(verify, "_STAT_REPORT_EVERY", 5)
+    calls = []
+    sink = _bundle_with(pool, tmp_path, 12, progress=lambda rel, status: calls.append((rel, status)))
+    sink.close()
+    pre = [c for c in calls if c[1].startswith("preflight:")]
+    assert pre == [("", "preflight:5:12"), ("", "preflight:10:12"), ("", "preflight:12:12")]
+
+
+def test_bundle_preflight_stop_writes_nothing(pool, tmp_path, monkeypatch):
+    from mmw.core import verify
+    monkeypatch.setattr(verify, "_STAT_REPORT_EVERY", 5)
+    stop = threading.Event()
+
+    def progress(rel, status):
+        if status.startswith("preflight:"):
+            stop.set()
+
+    sink = _bundle_with(pool, tmp_path, 12, progress=progress, stop_event=stop)
+    with pytest.raises(InterruptedError):
+        sink.close()
+    assert not (tmp_path / "lab.tar").exists()
+    assert not (tmp_path / "lab.tar.tmp").exists()
+
+
+def test_bundle_preflight_is_concurrent(pool, tmp_path, monkeypatch, disk_limits):
+    """Serial-fails: row 0's stat waits on an event only row 5's stat sets."""
+    disk_limits(read_threads=8)
+    from mmw.core import disk_io
+    sink = _bundle_with(pool, tmp_path, 10)
+    paths = [str(src) for _rel, src, _size, _cs in sink._send]
+    row5, timed_out, real = threading.Event(), [], disk_io.ops.stat
+
+    def stat(path):
+        if str(path) == paths[0]:
+            timed_out.append(not row5.wait(5))
+        if str(path) == paths[5]:
+            row5.set()
+        return real(path)
+
+    monkeypatch.setattr(disk_io.ops, "stat", stat)
+    sink.close()
+    assert timed_out == [False]
+    assert (tmp_path / "lab.tar").exists()
+
+
+def _stale_tree(root, n=10, base="host/repo"):
+    rels = []
+    for i in range(n):
+        rel = f"{base}/pool/d{i % 3}/f{i}"
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(b"x" * (i + 1))
+        rels.append(rel)
+    return rels
+
+
+def _gated_unlink(monkeypatch):
+    """Serial-fails gate: the first os.unlink waits until a second one starts."""
+    import os
+    lock, calls, second, timed_out, real = threading.Lock(), [0], threading.Event(), [], os.unlink
+
+    def unlink(path, *a, **k):
+        with lock:
+            calls[0] += 1
+            n = calls[0]
+        if n == 1:
+            timed_out.append(not second.wait(5))
+        else:
+            second.set()
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    return timed_out
+
+
+def test_finalize_from_record_unlinks_concurrently(tmp_path, monkeypatch, disk_limits):
+    disk_limits(write_threads=8)
+    root = tmp_path / "pub"
+    rels = _stale_tree(root)
+    sink = TreeSink(root, prev={r: "cs" for r in rels})
+    timed_out = _gated_unlink(monkeypatch)
+    assert sink.finalize_group("host/repo", keep=set(), live_checksums=set(), exclude=set()) == \
+        (10, sum(range(1, 11)))
+    assert timed_out == [False]
+    sink.close()
+
+
+def test_finalize_group_walk_unlinks_concurrently(tmp_path, monkeypatch, disk_limits):
+    disk_limits(write_threads=8)
+    root = tmp_path / "pub"
+    _stale_tree(root)
+    sink = TreeSink(root)
+    timed_out = _gated_unlink(monkeypatch)
+    assert sink.finalize_group("host/repo", keep=set(), live_checksums=set(), exclude=set()) == \
+        (10, sum(range(1, 11)))
+    assert timed_out == [False]
+    sink.close()
+
+
+def test_finalize_from_record_stops(tmp_path):
+    root = tmp_path / "pub"
+    rels = _stale_tree(root)
+    stop = threading.Event()
+
+    def progress(rel, status):
+        if status == "pruned":
+            stop.set()
+
+    sink = TreeSink(root, progress=progress, stop_event=stop, prev={r: "cs" for r in rels})
+    pruned, _ = sink.finalize_group("host/repo", keep=set(), live_checksums=set(), exclude=set())
+    assert 1 <= pruned < 10
+    still_there = {r for r in rels if (root / r).exists()}
+    assert still_there and still_there <= {rel for rel, _ in sink.manifest_rows}
+    sink.close()
+
+
+def test_finalize_progress_in_row_order(tmp_path, disk_limits):
+    disk_limits(write_threads=8)
+    root = tmp_path / "pub"
+    rels = _stale_tree(root, n=30)
+    seen = []
+    sink = TreeSink(root, progress=lambda rel, status: status == "pruned" and seen.append(rel),
+                    prev={r: "cs" for r in rels})
+    sink.finalize_group("host/repo", keep=set(), live_checksums=set(), exclude=set())
+    assert seen == sorted(rels)
+    sink.close()
+
+
+def test_prune_by_hash_dir_on_the_lane_keeps_newest_stale(tmp_path, monkeypatch):
+    import os
+    bh = tmp_path / "by-hash" / "SHA256"
+    bh.mkdir(parents=True)
+    for i, name in enumerate(["live", "s1", "s2", "s3", "s4", "s5", "s6"]):
+        (bh / name).write_bytes(b"x")
+        os.utime(bh / name, (1000 + i, 1000 + i))
+    timed_out = _gated_unlink(monkeypatch)
+    with DiskJob("t", limits=Limits(write_threads=8, read_threads=8)) as job:
+        assert sinks_mod._prune_by_hash_dir(bh, {"live"}, job) == 4
+    assert sorted(p.name for p in bh.iterdir()) == ["live", "s5", "s6"]
+    assert timed_out == [False]
+
+
+def test_prune_stale_bases_counts_files_and_bytes(tmp_path, disk_limits):
+    disk_limits(read_threads=4)
+    root = tmp_path / "pub"
+    (root / "live.example/repo/a").mkdir(parents=True)
+    (root / "live.example/repo/a/f").write_bytes(b"keep")
+    for rel, body in [("gone.example/repo/x", b"12345"), ("gone.example/repo/d/y", b"123")]:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(body)
+    (root / "gone.example/repo/link").symlink_to(root / "live.example/repo/a/f")
+    sink = TreeSink(root)
+    assert sink.prune_stale_bases({"live.example/repo"}) == (2, 8)
+    assert not (root / "gone.example").exists() and (root / "live.example/repo/a/f").exists()
+    sink.close()
+
+
+def _plan(pool, sink, n=12):
+    for i in range(n):
+        cs, src = _seed(pool, f"payload {i}".encode() * 50, f"{i}.deb")
+        sink.link(src, f"host/repo/pool/{i}.deb", len(f"payload {i}") * 50, cs, KIND_PKG)
+        if i % 4 == 0:                       # a repeat: a hardlink entry, no payload
+            sink.link(src, f"host/ports/pool/{i}.deb", len(f"payload {i}") * 50, cs, KIND_PKG)
+
+
+def test_bundle_tar_identical_with_and_without_readahead(pool, tmp_path, disk_limits):
+    outs = []
+    for readahead in (0, 16):
+        disk_limits(read_threads=8, readahead=readahead)
+        out = tmp_path / f"lab-{readahead}.tar"
+        sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n")
+        _plan(pool, sink)
+        sink.close()
+        outs.append(out.read_bytes())
+    assert outs[0] == outs[1]
+
+
+def test_bundle_vanished_blob_aborts_with_readahead(pool, tmp_path, monkeypatch, disk_limits):
+    disk_limits(read_threads=8, readahead=16)
+    from mmw.core import disk_io, verify
+    out = tmp_path / "lab.tar"
+    sink = BundleSink(out, _hdr(), prev={}, apply_script=b"# apply\n")
+    _plan(pool, sink)
+    victim = sink._send[6][1]
+    real_stats, real_open, handles = verify.blob_stats, disk_io.ops.open_rb, []
+
+    def stats_then_vanish(*a, **k):
+        yield from real_stats(*a, **k)
+        victim.unlink()                      # gone after the pre-flight passed
+
+    def open_rb(path):
+        fh = real_open(path)
+        handles.append(fh)
+        return fh
+
+    monkeypatch.setattr(verify, "blob_stats", stats_then_vanish)
+    monkeypatch.setattr(disk_io.ops, "open_rb", open_rb)
+    with pytest.raises(OSError):
+        sink.close()
+    assert not out.exists() and not out.with_suffix(".tar.tmp").exists()
+    assert handles and all(fh.closed for fh in handles)
+
+
+def test_prune_stale_bases_after_a_stop_deletes_nothing(tmp_path):
+    root = tmp_path / "pub"
+    (root / "live.example/repo").mkdir(parents=True)
+    (root / "gone.example/repo/x").parent.mkdir(parents=True)
+    (root / "gone.example/repo/x").write_bytes(b"12345")
+    stop = threading.Event()
+    stop.set()
+    sink = TreeSink(root, stop_event=stop)
+    assert sink.prune_stale_bases({"live.example/repo"}) == (0, 0)
+    assert (root / "gone.example/repo/x").exists()
+    sink.close()

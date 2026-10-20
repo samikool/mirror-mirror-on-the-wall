@@ -6,6 +6,7 @@ records. Nothing reads the live index cache, so a snapshot replays exactly.
 """
 from datetime import date
 
+from mmw.core import disk_io
 from mmw.core.config import retention_days
 from mmw.core.publisher.links import _dedup_rows
 from mmw.providers.pypi import history as hist
@@ -18,7 +19,7 @@ META_PREFIX = ".pypi-meta/"
 def _read(pool, unit_name: str, rel: str) -> bytes | None:
     path = pool.resolve(unit_name, rel)
     try:
-        return path.read_bytes() if path is not None else None
+        return disk_io.ops.read_bytes(path) if path is not None else None
     except OSError:
         return None
 

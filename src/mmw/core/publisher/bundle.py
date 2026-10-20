@@ -277,7 +277,7 @@ def bundle_network(
     manifest_path = ledger_dir(mirror_dir, network.name) / f"{dest.stamp}{MANIFEST_SUFFIX}"
     write_manifest(manifest_path, sink.written_header or header, sink.manifest_rows)
     disk_io.ops.write_bytes(target.parent / "apply.py", apply_script_bytes())
-    if network.certs:
+    if tls_files:
         for script in ("sign.py", "make-ca.py"):
             disk_io.ops.write_bytes(target.parent / script, tls_files[script])
     result.checksum_path = _write_checksum_file(target)

@@ -278,7 +278,7 @@ def test_edit_persists_every_networkconfig_field(tmp_path):
     edited = config.NetworkConfig(
         name="renamed", root=tmp_path / "srv", bundle_dir=tmp_path / "usb",
         select=[config.NetworkSelect(source="https://deb.example.com/debian")],
-        prune=False, dist_upgrade=True, certs=True,
+        prune=False, dist_upgrade=True, certs=False,
         nginx=False, retention="30d",
     )
     defaults = config.NetworkConfig(name="x")
@@ -344,9 +344,10 @@ def test_certs_switch_is_saved_and_says_bundles_carry_the_key():
         field = next(f for f in screen.query("ToggleField")
                      if f.query("#certs-switch"))
         assert "private key" in field.hint and "bundle" in field.hint.lower()
-        screen.query_one("#certs-switch", Checkbox).value = True
+        assert screen.query_one("#certs-switch", Checkbox).value     # on by default
+        screen.query_one("#certs-switch", Checkbox).value = False    # and can be turned off
     net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
-    assert _edit_network(net, act).certs
+    assert not _edit_network(net, act).certs
 
 
 def test_rename_moves_certs_and_ledger(tmp_path):

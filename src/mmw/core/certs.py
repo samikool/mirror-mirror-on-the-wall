@@ -413,8 +413,13 @@ def bundle_tls_files(network: NetworkConfig, cfg: Config) -> dict[str, bytes]:
     """What both deployment paths carry to `{root}/.mmw/tls/`: the key,
     the signing request and its OpenSSL config (refreshed for the current
     hostnames first), the far side's CA and signing scripts, and the certificate
-    when one was signed on this side. **Blocking** (a first key is RSA-4096)."""
+    when one was signed on this side. **Blocking** (a first key is RSA-4096).
+
+    Nothing for a network that serves no hostname yet (every source dropped):
+    TLS is on by default, and an empty network has nothing to certify."""
     from mmw.resources import ca_script_bytes, sign_script_bytes
+    if not collect_hostnames(network, cfg):
+        return {}
     _, key, cnf, csr, _ = generate_certs(network, cfg)
     files = {"mirror.key": disk_io.ops.read_bytes(key), "mirror.csr": disk_io.ops.read_bytes(csr),
              "mirror.cnf": disk_io.ops.read_bytes(cnf), "sign.py": sign_script_bytes(),

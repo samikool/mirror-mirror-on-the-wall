@@ -21,6 +21,7 @@ from mmw.core.format import fmt_size
 from mmw.core.publisher import dry_run_network, publish_network, publish_snapshot
 from mmw.core.snapshots import take_snapshot as make_snapshot
 from mmw.commands.certs import generate_for
+from mmw.core.certs import collect_hostnames
 
 
 @interruptible
@@ -153,7 +154,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         # it at all, so the same config produced a cert from the TUI and none
         # from cron. Skipped on a dry run: generating real key material is
         # exactly the kind of write a dry run promises not to make.
-        if net.certs and not dry_run:
+        if net.certs and not dry_run and collect_hostnames(net, cfg):
             generate_for(net, cfg)
 
         sizes = (f" ({fmt_size(result.linked_bytes)} of {fmt_size(result.total_bytes)}; "

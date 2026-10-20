@@ -132,11 +132,27 @@ def test_publish_calls_generate_for_when_certs_true(cfg_dir, monkeypatch):
                          lambda *a, **k: NetworkPublishResult(network_name="lab"))
     calls = []
     monkeypatch.setattr(publish_cmd, "generate_for", lambda net, cfg: calls.append(net.name))
+    monkeypatch.setattr(publish_cmd, "collect_hostnames", lambda net, cfg: ["deb.example.com"])
 
     code = publish_cmd.run(cfg_dir)
 
     assert code == 0
     assert calls == ["lab"]
+
+
+def test_publish_skips_certs_for_a_network_serving_nothing(cfg_dir, monkeypatch):
+    """TLS is on by default; a network whose sources were all dropped has no
+    hostname to certify, and its publish says nothing about certs."""
+    net = config.NetworkConfig(name="lab", root=Path("/srv/lab"))
+    monkeypatch.setattr(config, "load", lambda cfg_dir: _cfg(net))
+    monkeypatch.setattr(publish_cmd, "publish_network",
+                         lambda *a, **k: NetworkPublishResult(network_name="lab"))
+    calls = []
+    monkeypatch.setattr(publish_cmd, "generate_for", lambda net, cfg: calls.append(net.name))
+    monkeypatch.setattr(publish_cmd, "collect_hostnames", lambda net, cfg: [])
+
+    assert publish_cmd.run(cfg_dir) == 0
+    assert not calls
 
 
 def test_publish_does_not_call_generate_for_when_certs_false(cfg_dir, monkeypatch):
@@ -180,6 +196,7 @@ def test_publish_survives_certs_failure_and_still_reports_publish_result(cfg_dir
         print(f"Certs for network '{net.name}' failed: boom", file=__import__("sys").stderr)
         return []
     monkeypatch.setattr(publish_cmd, "generate_for", failing_generate_for)
+    monkeypatch.setattr(publish_cmd, "collect_hostnames", lambda net, cfg: ["deb.example.com"])
 
     code = publish_cmd.run(cfg_dir)
 

@@ -40,7 +40,7 @@ codes — see [airgap.md](airgap.md#exit-codes).
 |---------|--------------|
 | [`mmw add`](#mmw-add) | Add sources from a sources.list or deb822 .sources file — or the VS Code source |
 | [`mmw bundle`](#mmw-bundle) | Write a network's mirrors to a transferable bundle — between any two snapshots (see `mmw snapshot list`) |
-| [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
+| [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for TLS networks (the default), and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
 | [`mmw init`](#mmw-init) | Setup wizard |
 | [`mmw manage`](#mmw-manage) | Manage configured mirrors (add, remove) |
@@ -106,7 +106,7 @@ bundle went, to a new snapshot of now.
 
 ### `mmw certs`
 
-Generate (or refresh) TLS key/CSR material for `certs = true` networks,
+Generate (or refresh) TLS key/CSR material for TLS networks (every network unless `certs = false`),
 and sign it with your CA.
 
   mmw certs                                  # key + CSR, and check any signed cert

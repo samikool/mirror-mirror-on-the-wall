@@ -43,7 +43,7 @@ def _run_tui(app):
 
 app = typer.Typer(
     name="mmw",
-    help="Mirror Mirror on the Wall — APT repository mirror for airgapped networks.",
+    help="Mirror Mirror on the Wall — APT, PyPI and VS Code mirrors for airgapped networks.",
     no_args_is_help=True,
 )
 
@@ -92,7 +92,7 @@ def _main(
         help="Directory holding mmw.toml (default: the working directory).",
     ),
 ) -> None:
-    """Mirror Mirror on the Wall — APT repository mirror for airgapped networks.
+    """Mirror Mirror on the Wall — APT, PyPI and VS Code mirrors for airgapped networks.
 
     `--version` matters more here than for most tools: the machine that hits a
     bug is often on the far side of an airgap, with no `git log`, no network

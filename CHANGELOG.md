@@ -6,11 +6,76 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0]
+
+PyPI joins APT and VS Code: mirror the whole index or a requirements list for
+the Pythons, OSes and arches you choose, and stock `pip` and `uv` install from
+it at pypi.org with no index flags. mmw itself is now on PyPI, every disk
+operation goes through one layer that makes verify and publish markedly
+faster, and TLS is on for every network by default.
+
+Upgrading from 1.1.2: a network that never set `certs` now has TLS on. Its
+next publish writes a TLS key and signing request into the tree, and its
+bundles carry the private key. If transfer media must not carry a key, set
+`certs = false` on that network (or turn TLS off on its Edit page) before
+publishing or bundling.
+
 ### Added
 
+- **PyPI mirroring.** A `pypi` source mirrors pypi.org filtered to targets
+  (Python × platform × arch, with glibc/musl/macOS floors): either the whole
+  index — every project's latest release a client at the floor can install,
+  plus the older releases its dependencies require — or a requirements list
+  (`requirements` inline or `requirements_file`), resolved together per
+  target by the bundled uv, with build tools mirrored for anything that has
+  to build from source. Anything that cannot be guaranteed lands in a
+  per-unit report instead of going missing. See [docs/pypi.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/pypi.md).
+- **PyPI served at its own hostnames.** Publish lays out
+  files.pythonhosted.org and pypi.org with PEP 503 HTML and PEP 691/700 JSON
+  simple pages (negotiated by `Accept`), PEP 658 metadata and
+  `/pypi/<name>/json`. Pages are rendered from ≤256 shards after a publish, a
+  snapshot replay, or `apply.py` on the far side, so snapshots and bundles
+  never carry millions of pages.
+- **Network `retention`** (`current`, `forever` or `<N>d`, default `90d`):
+  how long a release that left the keep set stays published.
+- **PyPI in `mmw manage`:** add and edit a source, and **Check** resolves the
+  unsaved requirements list for each target, showing uv's own explanation of
+  any conflict. `mmw add pypi` on the command line.
 - **On PyPI.** `uv tool install mirror-mirror-on-the-wall` (or `pipx install`)
-  installs the `mmw` command. Every release tag now uploads to PyPI the same
-  files the GitHub release carries, through trusted publishing (no token).
+  installs the `mmw` command. Every release tag uploads to PyPI the same
+  files the GitHub release carries, through trusted publishing; 0.9.0–1.1.2
+  are there too.
+- Settings `disk_write_threads`, `disk_read_threads` and `disk_readahead`
+  (8 / 16 / 16, tuned on one spinning disk; 1 / 1 / 0 is the old serial
+  behaviour), editable on the Settings page.
+
+### Changed
+
+- **TLS is on by default** for every network (see the upgrade note above).
+  An unsigned network still serves plain HTTP; `certs = false` opts out.
+- **One disk I/O layer.** Linking, pruning, stats, small reads, hashing and
+  the bundle archive all go through it. Measured cold on a real pool:
+  `verify --stat` 2.2× and snapshot publish 1.8× faster. The bundle
+  pre-flight, verify, pool prune and the VS Code reads now show progress
+  and honour Stop.
+- PyPI pages render on that layer's write threads, and the publish screen
+  shows "PyPI pages: N/256 shards rendered" while they do. A stopped render
+  finishes the interrupted shard on the next publish.
+- The publish summary counts packages, as the progress bar does, with
+  metadata files after: "691,244 linked, 0 already current (+ 674,243
+  metadata files)". The CLI and the publish record keep the full totals.
+- Faster all-of-PyPI resolve and metadata sync: parsed dependencies are
+  cached per metadata body, and metadata is fetched and pooled a slice at
+  a time.
+
+### Fixed
+
+- A PyPI or VS Code publish ended at about 51 % on the publish screen: each
+  host's total counted its metadata files, the bar did not.
+- The last step's line ("saving the publish record…") stayed on screen after
+  a publish finished.
+- A network whose sources were all dropped failed its publish with "No
+  hostnames found" once TLS was on; it now skips the TLS files.
 
 ## [1.1.2]
 

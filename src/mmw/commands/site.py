@@ -122,3 +122,62 @@ def hold(repo: str, home: Path | None = None, break_lock: bool = False) -> int:
         return 1
     print(f"{label} is held: bundles store its new versions without serving them")
     return 0
+
+
+def space(home: Path | None = None) -> int:
+    from mmw.core.format import fmt_size
+    from mmw.site import ops
+    try:
+        rep = ops.space(_home(home, False))
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    for repo, rows in rep.repos.items():
+        print(rep.labels[repo])
+        for v in rows:
+            tag = "serving" if v.serving else f"frees {fmt_size(v.frees)}"
+            label = f" {v.snap_label}" if v.snap_label else ""
+            print(f"  v{v.number:<4} {v.stamp}{label}  {fmt_size(v.total):>10}  {tag}")
+    print(f"root: {fmt_size(rep.used)} used, {fmt_size(rep.free)} free; "
+          f"old versions hold {fmt_size(rep.history_bytes)}")
+    return 0
+
+
+def delete(repo: str, version: str, home: Path | None = None, yes: bool = False,
+           break_lock: bool = False) -> int:
+    import sys
+    from mmw.core.format import fmt_size
+    from mmw.site import ops
+    from mmw.site.lock import LockHeld
+    try:
+        h = _home(home, break_lock)
+        if not yes:
+            if not sys.stdin.isatty():
+                eprint("pass --yes to delete it (no terminal to ask on)")
+                return 1
+            if input(f"Delete {repo} {version} from this site? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 1
+        freed = ops.delete_version(h, repo, _version_number(version))
+    except LockHeld as e:
+        eprint(str(e))
+        return 5
+    except (ValueError, LookupError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"deleted {repo} {version}; freed {fmt_size(freed)}")
+    return 0
+
+
+def settings(home: Path | None = None, keep: int | None = None, keep_all: bool = False) -> int:
+    try:
+        h = _home(home, False)
+        s = site_home.load_site(h)
+        if keep_all or keep is not None:
+            s = s.model_copy(update={"keep_versions": None if keep_all else keep})
+            site_home.save_settings(h, s)
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    kept = "every version" if s.keep_versions is None else f"the newest {s.keep_versions} per repository"
+    print(f"root {s.root}; keeps {kept}")
+    return 0

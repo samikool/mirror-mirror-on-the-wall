@@ -1,8 +1,9 @@
 """What an operator does to a site between bundles: serve any kept version
 of a repository, hold it where it is, move it forward."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core.repos import resolve_repo_refs
 from mmw.resources.apply import render_derived
 from mmw.site.db import SiteDB, VersionInfo
@@ -89,3 +90,79 @@ def hold(home: Path, ref: str) -> str:
         repo = resolve_repo(db, ref)
         db.set_held(repo, True)
         return db.repo_state(repo).label
+
+
+# ── space ────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class VersionSpace:
+    number: int
+    stamp: str
+    snap_label: str | None
+    total: int              # bytes its files take
+    frees: int              # bytes deleting it would free (used by no other version)
+    serving: bool
+
+
+@dataclass
+class SpaceReport:
+    repos: dict[str, list[VersionSpace]] = field(default_factory=dict)   # newest first
+    labels: dict[str, str] = field(default_factory=dict)
+    used: int = 0
+    free: int = 0
+    history_bytes: int = 0      # what deleting every unserved version would free
+
+
+def space(home: Path) -> SpaceReport:
+    root, _store = _open(home)
+    rep = SpaceReport()
+    with SiteDB(home) as db:
+        for st in db.repo_states():
+            rows = []
+            for v in db.versions(st.repo):
+                total, frees = db.version_sizes(v.id)
+                serving = st.serving is not None and st.serving.id == v.id
+                rows.append(VersionSpace(v.number, v.stamp, v.snap_label, total, frees, serving))
+                if not serving:
+                    rep.history_bytes += frees
+            rep.repos[st.repo], rep.labels[st.repo] = rows, st.label
+    usage = disk_io.ops.disk_usage(root)
+    rep.used, rep.free = usage.used, usage.free
+    return rep
+
+
+def _protected(db: SiteDB, repo: str, version: VersionInfo) -> str | None:
+    """Why a version cannot be deleted, or None."""
+    state = db.repo_state(repo)
+    if state.serving is not None and state.serving.id == version.id:
+        return f"v{version.number} is being served — serve another version first"
+    if state.held and db.versions(repo)[0].id == version.id:
+        return f"v{version.number} is the newest of a held repository — forward it, or delete it after"
+    return None
+
+
+def delete_version(home: Path, ref: str, number: int) -> int:
+    """Drop a kept version and the files nothing else uses; bytes freed."""
+    root, store = _open(home)
+    with SiteLock(home), SiteDB(home) as db:
+        repo = resolve_repo(db, ref)
+        version = _version(db, repo, number)
+        why = _protected(db, repo, version)
+        if why:
+            raise ValueError(why)
+        db.delete_version(version.id)
+        return store.gc(db.referenced_checksums())[1]
+
+
+def apply_retention(db: SiteDB, store: Store, keep: int) -> list[tuple[str, int]]:
+    """Per repository, delete the versions past the newest `keep` — never a
+    protected one. The (repository, number) pairs deleted."""
+    gone = []
+    for st in db.repo_states():
+        for v in db.versions(st.repo)[keep:]:
+            if _protected(db, st.repo, v) is None:
+                db.delete_version(v.id)
+                gone.append((st.repo, v.number))
+    if gone:
+        store.gc(db.referenced_checksums())
+    return gone

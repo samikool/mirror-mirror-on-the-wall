@@ -590,6 +590,33 @@ def cmd_site_hold(repo: str = typer.Argument(..., help="Repository (URL or name)
     raise typer.Exit(hold(repo, home, break_lock))
 
 
+@site_app.command("space")
+def cmd_site_space(home: Path = _SITE_HOME):
+    """What each kept version takes, and what deleting it would free."""
+    from mmw.commands.site import space
+    raise typer.Exit(space(home))
+
+
+@site_app.command("delete")
+def cmd_site_delete(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                    version: str = typer.Argument(..., help="Version: v3 or 3"),
+                    home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
+                    break_lock: bool = _BREAK_LOCK):
+    """Delete a kept version — never the one served, nor a held repository's newest."""
+    from mmw.commands.site import delete
+    raise typer.Exit(delete(repo, version, home, yes, break_lock))
+
+
+@site_app.command("settings")
+def cmd_site_settings(home: Path = _SITE_HOME,
+                      keep: int = typer.Option(None, "--keep", min=1,
+                                               help="Keep the newest N versions of each repository"),
+                      keep_all: bool = typer.Option(False, "--keep-all", help="Keep every version (default)")):
+    """Show or change what the site keeps."""
+    from mmw.commands.site import settings
+    raise typer.Exit(settings(home, keep, keep_all))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

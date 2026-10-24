@@ -51,6 +51,7 @@ EDITORS = {
     ("NetworkConfig", "certs"): ("network_screens.py", "certs-switch"),
     ("NetworkConfig", "nginx"): ("network_screens.py", "nginx-switch"),
     ("NetworkConfig", "retention"): ("network_screens.py", "inp-retention"),
+    ("NetworkConfig", "far_side"): ("network_screens.py", "far-side-pick"),
 
     ("NetworkSelect", "source"): ("network_screens.py", "repo-checklist"),
     # One list per provider dimension (suites/components/arches for apt),

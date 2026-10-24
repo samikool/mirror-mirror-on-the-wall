@@ -13,7 +13,8 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.markup import escape
-from textual.widgets import DataTable, Input, Label, Select
+from textual.widgets import DataTable, Input, Label, Select, SelectionList
+from textual.widgets.selection_list import Selection
 
 from mmw.core import config
 from mmw.core.format import fmt_size
@@ -23,7 +24,7 @@ from mmw.tui.publish_flows import BundleChoice, PublishChoice
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.form import ChoiceField, Form, PathField, TextField, ToggleField
 from mmw.tui.ui.page import Page
-from mmw.tui.ui.widgets import Button
+from mmw.tui.ui.widgets import Button, JumpSelectionList
 
 
 def load_status(mirror_dir: Path, net: config.NetworkConfig) -> SnapshotStatus:
@@ -119,9 +120,12 @@ class BundlePickPage(Page):
     """Where the far side is (From) and where to bring it (To), with what that
     sends. Dismisses with a `BundleChoice`, or None."""
 
-    def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, mirror_dir: Path):
+    def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, mirror_dir: Path,
+                 repos: dict[str, str] | None = None):
         super().__init__()
         self.TITLE = f"Bundle {net.name}"
+        # An mmw far side: key → label of the repositories to choose from.
+        self._repos = repos
         self._net = net
         self._status = status
         self._mirror_dir = mirror_dir
@@ -144,7 +148,15 @@ class BundlePickPage(Page):
                              "far side of unknown state."),
             ChoiceField("To", tos, "now", id="pick-to",
                         hint="Backwards is fine: the far side is brought to exactly that state."),
+            *([ChoiceField("As", [("bundle (.tar)", "bundle"), ("stage (directory of hardlinks)", "stage")],
+                           "bundle", id="pick-as",
+                           hint="A stage costs almost no disk; tar or rsync it across yourself.")]
+              if self._repos else []),
             id="pick-form")
+        if self._repos:
+            yield Label("[dim]Repositories · space toggles · ctrl+a toggles all[/]")
+            yield JumpSelectionList(*[Selection(label, key, True) for key, label in self._repos.items()],
+                                    id="pick-repos", compact=True)
         yield Label("", id="pick-estimate")
 
     def compose_actions(self) -> ComposeResult:
@@ -159,11 +171,22 @@ class BundlePickPage(Page):
         values = self.query_one(Form).values()
         return values["pick-from"], values["pick-to"]
 
+    def _picked_repos(self) -> tuple[str, ...] | None:
+        """The ticked repositories, or None when all are (or there is no list)."""
+        if not self._repos:
+            return None
+        picked = tuple(k for k in self._repos if k in self.query_one("#pick-repos", SelectionList).selected)
+        return None if len(picked) == len(self._repos) else picked
+
+    @on(SelectionList.SelectedChanged, "#pick-repos")
     @on(Select.Changed)
     def _estimate_now(self) -> None:
         start, dest = self._ends()
         start = self._last if start == "last" else start
         line = self.query_one("#pick-estimate", Label)
+        if self._picked_repos() is not None:
+            line.update("[dim]What it sends is worked out per repository when it runs.[/]")
+            return
         if dest == "now":
             line.update("[dim]What it sends is worked out once the snapshot is taken.[/]")
             return
@@ -198,9 +221,14 @@ class BundlePickPage(Page):
         if dest != "now" and (self._last if start == "last" else start) == dest:
             self.set_status("From and To are the same snapshot — nothing to send.", "error")
             return
+        picked = self._picked_repos()
+        if picked == ():
+            self.set_status("Tick at least one repository.", "error")
+            return
         self.dismiss(BundleChoice(from_last=start == "last",
                                   from_ref=None if start in ("last", "none") else start,
-                                  to_ref=dest))
+                                  to_ref=dest, repos=picked,
+                                  stage=bool(self._repos) and self.query_one(Form).values()["pick-as"] == "stage"))
 
 
 # ── the Snapshots page ───────────────────────────────────────────────────────
@@ -324,6 +352,7 @@ class SnapshotsPage(Page):
 
     def __init__(self, net: config.NetworkConfig):
         super().__init__()
+        self._changed: dict[str, str] = {}     # stamp → which repositories it changed
         self.TITLE = "Snapshots"
         self.subtitle = net.name
         self._net = net
@@ -362,6 +391,18 @@ class SnapshotsPage(Page):
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, f"Couldn't read snapshots: {e}", "error")
             return
+        # Which repositories each snapshot changed, for its note.
+        from mmw.core.repos import repository_label
+        changed = {}
+        with Pool(self._mirror_dir, read_only=True) as pool:
+            for snap in status.snapshots:
+                versions = pool.snapshot_repo_versions(snap.id).values()
+                if versions:
+                    new = sorted((repository_label(v.repo, self.app.cfg), v.number)
+                                 for v in versions if v.stamp == snap.stamp)
+                    changed[snap.stamp] = ("changed: " + ", ".join(f"{name} v{n}" for name, n in new)
+                                           if new else "no repository changed")
+        self._changed = changed
         self.app.call_from_thread(self._loaded, status)
         # What each alone holds: a query per snapshot — filled in after.
         holds = {}
@@ -378,6 +419,8 @@ class SnapshotsPage(Page):
             notes.append("last bundled")
         if not s.complete:
             notes.append("history only")
+        if s.stamp in self._changed:
+            notes.append(self._changed[s.stamp])
         return " · ".join(notes)
 
     def _loaded(self, status: SnapshotStatus) -> None:

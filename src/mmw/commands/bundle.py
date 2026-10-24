@@ -156,15 +156,10 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 def _repo_keys(net, cfg, mirror_dir, refs: list[str]) -> list[str] | None:
     """The repository keys `--repo` names on `net`, or None after saying why not."""
     from mmw.core.far_side import require_mmw
-    from mmw.core.repos import repository_key, repository_label, resolve_repo_refs
-    from mmw.core.resolve import network_mirrors
+    from mmw.core.repos import network_repos, resolve_repo_refs
     try:
         require_mmw(net, "partial bundles")
-        available = {}
-        for m in network_mirrors(net, cfg, mirror_dir):
-            key = repository_key(m)
-            available[key] = repository_label(key, cfg)
-        return resolve_repo_refs(refs, available)
+        return resolve_repo_refs(refs, network_repos(net, cfg, mirror_dir))
     except (ValueError, LookupError) as e:
         eprint(str(e).strip("'\""))
         return None

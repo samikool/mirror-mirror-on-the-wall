@@ -56,3 +56,10 @@ def resolve_repo_refs(refs: list[str], available: dict[str, str]) -> list[str]:
             raise LookupError(f"unknown repository {ref!r} — this network has: {names}")
         out.append(matches[0])
     return list(dict.fromkeys(out))
+
+
+def network_repos(network, cfg: Config, mirror_dir) -> dict[str, str]:
+    """Key → label of every repository `network` publishes, by label."""
+    from mmw.core.resolve import network_mirrors
+    keys = {repository_key(m) for m in network_mirrors(network, cfg, mirror_dir)}
+    return dict(sorted(((k, repository_label(k, cfg)) for k in keys), key=lambda kv: kv[1].lower()))

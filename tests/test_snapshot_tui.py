@@ -299,3 +299,62 @@ def test_publish_page_refuses_a_snapshot_first_of_a_snapshot(two_mirrors):  # no
             app.screen.query_one("#page-status").render()))
         assert type(app.screen).__name__ == "PublishPickPage"
     _run(cfg, mirror_dir.parent, check)
+
+
+def _mmw_net(two_mirrors, tmp_path):  # noqa: F811
+    cfg, net, mirror_dir = two_mirrors
+    net = net.model_copy(update={"far_side": "mmw", "bundle_dir": tmp_path / "usb"})
+    return cfg.model_copy(update={"networks": [net]}), net, mirror_dir
+
+
+def test_bundle_pick_mmw_has_repos_and_stage(two_mirrors, tmp_path):  # noqa: F811
+    from textual.widgets import SelectionList
+    cfg, net, mirror_dir = _mmw_net(two_mirrors, tmp_path)
+    key_b = next(s.identity for s in cfg.sources if s.name == "b")
+
+    async def check(app, pilot):
+        await pilot.press("b")
+        await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage"
+                    and app.screen.query("#pick-repos"))
+        repos = app.screen.query_one("#pick-repos", SelectionList)
+        assert set(repos.selected) == {s.identity for s in cfg.sources}           # all ticked
+        repos.deselect(key_b)
+        app.screen.query_one("#pick-as", Select).value = "stage"
+        await until(pilot, lambda: "per repository" in str(app.screen.query_one("#pick-estimate").render()))
+        await confirm_picker(app, pilot, "BundlePickPage")
+        await until(pilot, lambda: _finished(app))
+        assert app.active_transfer.outcome == "ok", app.notes
+    _run(cfg, mirror_dir.parent, check)
+    (staged,) = (tmp_path / "usb").iterdir()
+    assert staged.is_dir()
+    assert (staged / "example.com/a").is_dir() and not (staged / "example.com/b").exists()
+
+
+def test_bundle_pick_apply_unchanged(two_mirrors, tmp_path):  # noqa: F811
+    cfg, net, mirror_dir = two_mirrors
+    cfg = cfg.model_copy(update={"networks": [net.model_copy(update={"bundle_dir": tmp_path / "usb"})]})
+
+    async def check(app, pilot):
+        await pilot.press("b")
+        await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage"
+                    and app.screen.query("#pick-to"))
+        assert not app.screen.query("#pick-repos") and not app.screen.query("#pick-as")
+        app.screen.query_one("#btn-pick-cancel").press()
+    _run(cfg, mirror_dir.parent, check)
+
+
+def test_snapshots_page_shows_changed_repos(two_mirrors):  # noqa: F811
+    cfg, net, mirror_dir = two_mirrors
+    take_snapshot(net, cfg, mirror_dir)
+    _move_on(mirror_dir)
+    take_snapshot(net, cfg, mirror_dir)
+    take_snapshot(net, cfg, mirror_dir)
+
+    async def check(app, pilot):
+        await pilot.press("n")
+        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage" and len(_rows(app)) == 3)
+        notes = [r[5] for r in _rows(app)]
+        assert "no repository changed" in notes[0]
+        assert "changed: a v2" in notes[1]
+        assert "changed: a v1, b v1" in notes[2]
+    _run(cfg, mirror_dir.parent, check)

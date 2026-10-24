@@ -196,6 +196,7 @@ chmod = _path_method("chmod")
 is_symlink = _path_method("is_symlink")
 walk = os.walk
 rmtree = shutil.rmtree
+disk_usage = shutil.disk_usage
 open_file = open
 open_fd = os.open
 fsync = os.fsync

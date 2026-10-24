@@ -1,0 +1,84 @@
+"""Switch a repository's served tree from one version to another.
+
+Only the paths that differ are touched: new and changed files are placed —
+packages, then indexes, then release files — and files the target lacks are
+removed last, so an apt client mid-update never sees an index naming a file
+that is not there, nor a file vanish an index still lists. Every placement is
+staged and renamed in. A switch is recorded before it starts and cleared when
+it ends; one cut short is finished by `resume_switches`.
+"""
+from dataclasses import dataclass
+from pathlib import Path
+
+from mmw.core import disk_io
+from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE
+from mmw.core.publisher import replay_kind
+from mmw.resources.apply import _prune_empty_parents
+
+PHASES = (KIND_PKG, KIND_META, KIND_RELEASE)
+
+
+@dataclass(frozen=True)
+class SwitchResult:
+    placed: int
+    removed: int
+
+
+def _base(rel: str, bases: list[str]) -> str | None:
+    return max((b for b in bases if rel.startswith(b + "/")), key=len, default=None)
+
+
+def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, progress) -> SwitchResult:
+    if db.version_by_id(to_id) is None:
+        # Never diff against nothing: that would remove the repository's
+        # whole served tree.
+        db.end_switch(repo)
+        raise ValueError(f"version {to_id} of {repo} is no longer here — not switching to it")
+    state = db.repo_state(repo)
+    before = db.version_files(from_id) if from_id is not None else {}
+    after = db.version_files(to_id)
+    changed = {p: c for p, c in after.items() if before.get(p) != c}
+    by_kind: dict[str, list[str]] = {k: [] for k in PHASES}
+    for rel in sorted(changed):
+        by_kind[replay_kind(rel, _base(rel, state.bases))].append(rel)
+    placed = 0
+    for kind in PHASES:
+        db.switch_phase(repo, kind)
+        for rel in by_kind[kind]:
+            store.place(changed[rel], root / rel)
+            placed += 1
+            if progress:
+                progress(rel, kind)
+    db.switch_phase(repo, "delete")
+    removed = 0
+    for rel in sorted(set(before) - set(after)):
+        if disk_io.ops.remove(root / rel) is not None:
+            removed += 1
+            _prune_empty_parents(str(root), str((root / rel).parent))
+    newest = db.versions(repo)[0].id
+    db.set_serving(repo, to_id, held=to_id != newest)
+    db.end_switch(repo)
+    return SwitchResult(placed, removed)
+
+
+def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None) -> SwitchResult:
+    """Serve version `to_id` of `repo` at `root`. Held afterwards when it is
+    not the newest version here."""
+    if db.version_by_id(to_id) is None:
+        raise ValueError(f"version {to_id} of {repo} is not here")
+    state = db.repo_state(repo)
+    from_id = state.serving.id if state and state.serving else None
+    db.begin_switch(repo, from_id, to_id)
+    return _run(db, store, Path(root), repo, from_id, to_id, progress)
+
+
+def resume_switches(db, store, root: Path) -> list[str]:
+    """Finish every switch a killed run left halfway; the repositories."""
+    done = []
+    for repo, from_id, to_id, _phase in db.pending_switches():
+        try:
+            _run(db, store, Path(root), repo, from_id, to_id, None)
+        except ValueError:
+            continue                    # its target is gone; what it served stays
+        done.append(repo)
+    return done

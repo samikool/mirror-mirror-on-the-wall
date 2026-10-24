@@ -527,6 +527,121 @@ def cmd_stage(
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None))
 
 
+site_app = typer.Typer(
+    help="mmw on the far side of the airgap: apply bundles, serve any kept version.",
+    no_args_is_help=True,
+)
+app.add_typer(site_app, name="site")
+_SITE_HOME = typer.Option(None, "--home", help="The site's home (default: $MMW_SITE_HOME)")
+
+
+@site_app.command("init")
+def cmd_site_init(root: Path = typer.Option(..., "--root", help="The directory the site serves"),
+                  home: Path = typer.Option(None, "--home",
+                                            help="Where the site keeps its state (default: ROOT/.mmw/site)")):
+    """Make a site: a root to serve and a home for its state."""
+    from mmw.commands.site import init
+    raise typer.Exit(init(root, home))
+
+
+_BREAK_LOCK = typer.Option(False, "--break-lock", help="Clear a lock a dead run left behind")
+
+
+@site_app.command("apply")
+def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage directory, or - for stdin"),
+                   home: Path = _SITE_HOME,
+                   forward: list[str] = typer.Option(None, "--forward",
+                                                     help="Also move this held repository forward"),
+                   forward_all: bool = typer.Option(False, "--forward-all",
+                                                    help="Move every held repository forward"),
+                   dry_run: bool = typer.Option(False, "--dry-run", help="Check it; change nothing"),
+                   break_lock: bool = _BREAK_LOCK):
+    """Apply a bundle: everything is checked before anything served changes;
+    held repositories keep serving what they serve."""
+    from mmw.commands.site import apply
+    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock))
+
+
+@site_app.command("serve")
+def cmd_site_serve(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                   version: str = typer.Argument(..., help="Version to serve: v3 or 3"),
+                   home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
+                   break_lock: bool = _BREAK_LOCK):
+    """Serve any kept version of a repository — relinking, never copying.
+    Anything but the newest holds it there."""
+    from mmw.commands.site import serve
+    raise typer.Exit(serve(repo, version, home, yes, break_lock))
+
+
+@site_app.command("forward")
+def cmd_site_forward(repo: str = typer.Argument(None, help="Repository (URL or name)"),
+                     all_: bool = typer.Option(False, "--all", help="Every held repository"),
+                     home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+    """Serve the newest version kept here and clear the hold."""
+    from mmw.commands.site import forward
+    raise typer.Exit(forward(repo, home, all_, break_lock))
+
+
+@site_app.command("hold")
+def cmd_site_hold(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                  home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+    """Keep a repository where it is; bundles store its new versions unserved."""
+    from mmw.commands.site import hold
+    raise typer.Exit(hold(repo, home, break_lock))
+
+
+@site_app.command("space")
+def cmd_site_space(home: Path = _SITE_HOME):
+    """What each kept version takes, and what deleting it would free."""
+    from mmw.commands.site import space
+    raise typer.Exit(space(home))
+
+
+@site_app.command("delete")
+def cmd_site_delete(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                    version: str = typer.Argument(..., help="Version: v3 or 3"),
+                    home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
+                    break_lock: bool = _BREAK_LOCK):
+    """Delete a kept version — never the one served, nor a held repository's newest."""
+    from mmw.commands.site import delete
+    raise typer.Exit(delete(repo, version, home, yes, break_lock))
+
+
+@site_app.command("settings")
+def cmd_site_settings(home: Path = _SITE_HOME,
+                      keep: int = typer.Option(None, "--keep", min=1,
+                                               help="Keep the newest N versions of each repository"),
+                      keep_all: bool = typer.Option(False, "--keep-all", help="Keep every version (default)")):
+    """Show or change what the site keeps."""
+    from mmw.commands.site import settings
+    raise typer.Exit(settings(home, keep, keep_all))
+
+
+@site_app.command("status")
+def cmd_site_status(home: Path = _SITE_HOME):
+    """Every repository: the version it serves, the newest here, held or current."""
+    from mmw.commands.site import status
+    raise typer.Exit(status(home))
+
+
+@site_app.command("history")
+def cmd_site_history(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                     home: Path = _SITE_HOME):
+    """A repository's kept versions, with what each takes and would free."""
+    from mmw.commands.site import history
+    raise typer.Exit(history(repo, home))
+
+
+@site_app.command("verify")
+def cmd_site_verify(home: Path = _SITE_HOME,
+                    repair: bool = typer.Option(False, "--repair",
+                                                help="Put wrong or missing files back from the store first"),
+                    break_lock: bool = _BREAK_LOCK):
+    """Hash every served file against what the site says it serves."""
+    from mmw.commands.site import verify
+    raise typer.Exit(verify(home, repair, break_lock))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

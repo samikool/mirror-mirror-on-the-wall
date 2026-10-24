@@ -381,6 +381,7 @@ the last one, and `apply.py` refuses to apply bundles out of order.
 ```bash
 uv run mmw bundle -n lab                    # delta since the last bundle
 uv run mmw bundle -n lab --from none        # send everything
+ssh mirrorhost mmw bundle -n lab --out - > /media/drive/lab.tar   # straight onto a drive, no disk spent
 # ...carry lab-20260906T143000Z.tar across...
 tar -xf lab-20260906T143000Z.tar .mmw/apply.py   # every bundle carries its own applier
 python3 .mmw/apply.py lab-20260906T143000Z.tar --root /srv/www
@@ -390,6 +391,10 @@ Use `apply.py` rather than plain `tar -x`: it stages each file and renames it
 into place, refuses a truncated archive, and records which bundle the tree is
 at, so the next delta applies. An interrupted plain extraction leaves a
 partial tree and no record of where it stopped.
+
+A network whose far side will run mmw itself (`far_side = "mmw"`) can also
+bundle only some repositories (`--repo debian`), and `mmw stage` lays a bundle
+out as a directory of hardlinks to the pool, to tar or rsync across yourself.
 
 Full walkthrough, including the far side's nginx, DNS, GPG import and a
 troubleshooting table: **[docs/airgap.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md)**.

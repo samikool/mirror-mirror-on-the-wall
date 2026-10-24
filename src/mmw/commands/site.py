@@ -181,3 +181,56 @@ def settings(home: Path | None = None, keep: int | None = None, keep_all: bool =
     kept = "every version" if s.keep_versions is None else f"the newest {s.keep_versions} per repository"
     print(f"root {s.root}; keeps {kept}")
     return 0
+
+
+def status(home: Path | None = None) -> int:
+    from mmw.site import ops
+    try:
+        states = ops.status(_home(home, False))
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    if not states:
+        print("nothing applied yet — `mmw site apply BUNDLE`")
+        return 0
+    from mmw.site.db import SiteDB
+    with SiteDB(_home(home, False)) as db:
+        for s in states:
+            newest = db.versions(s.repo)[0].number
+            serving = (f"v{s.serving.number} · {s.serving.stamp}"
+                       f"{' ' + s.serving.snap_label if s.serving.snap_label else ''}") if s.serving else "nothing"
+            state = "held" if s.held else "current"
+            print(f"  {s.label:<36} {serving:<36} newest v{newest:<4} {state}")
+    return 0
+
+
+def history(repo: str, home: Path | None = None) -> int:
+    from mmw.core.format import fmt_size
+    from mmw.site import ops
+    try:
+        rows = ops.history(_home(home, False), repo)
+    except (ValueError, LookupError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    for v, total, frees, serving in rows:
+        mark = "▶" if serving else " "
+        label = f" {v.snap_label}" if v.snap_label else ""
+        tail = "serving" if serving else f"frees {fmt_size(frees)}"
+        print(f"{mark} v{v.number:<4} {v.stamp}{label}  {fmt_size(total):>10}  {tail}")
+    return 0
+
+
+def verify(home: Path | None = None) -> int:
+    from mmw.site import ops
+    try:
+        problems = ops.verify(_home(home, False))
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    for p in problems:
+        eprint(f"  ✗ {p}")
+    if problems:
+        eprint(f"{len(problems)} problem(s): `mmw site serve` the version again to put it right")
+        return 4
+    print("every served file is what the site says it serves")
+    return 0

@@ -166,3 +166,51 @@ def apply_retention(db: SiteDB, store: Store, keep: int) -> list[tuple[str, int]
     if gone:
         store.gc(db.referenced_checksums())
     return gone
+
+
+# ── status, history, verify ──────────────────────────────────────────────────
+
+def status(home: Path):
+    """Every repository's state, by label."""
+    with SiteDB(home) as db:
+        return db.repo_states()
+
+
+def history(home: Path, ref: str) -> list[tuple[VersionInfo, int, int, bool]]:
+    """A repository's kept versions, newest first: (version, total bytes,
+    bytes deleting it frees, serving)."""
+    with SiteDB(home) as db:
+        repo = resolve_repo(db, ref)
+        state = db.repo_state(repo)
+        out = []
+        for v in db.versions(repo):
+            total, frees = db.version_sizes(v.id)
+            out.append((v, total, frees, state.serving is not None and state.serving.id == v.id))
+        return out
+
+
+def verify(home: Path) -> list[str]:
+    """Every served file present and exactly what the site says it serves.
+    The problems found (none: the tree is right)."""
+    import hashlib
+    from mmw.resources.apply import ROOT_PLACEHOLDER, _nginx_root_config
+    root, store = _open(home)
+    problems = []
+    with SiteDB(home) as db:
+        expected: dict[str, str] = dict(db.network_files())
+        for st in db.repo_states():
+            if st.serving is not None:
+                expected.update(db.version_files(st.serving.id))
+    for rel, checksum in sorted(expected.items()):
+        path = root / rel
+        if not disk_io.ops.exists(path):
+            problems.append(f"{rel}: missing")
+            continue
+        if _nginx_root_config(rel) and store.has(checksum):
+            want = hashlib.sha256(disk_io.ops.read_bytes(store.path(checksum)).replace(
+                ROOT_PLACEHOLDER.encode(), str(root).encode())).hexdigest()
+        else:
+            want = checksum
+        if disk_io.hash_file(path) != want:
+            problems.append(f"{rel}: differs from what the site serves")
+    return problems

@@ -617,6 +617,28 @@ def cmd_site_settings(home: Path = _SITE_HOME,
     raise typer.Exit(settings(home, keep, keep_all))
 
 
+@site_app.command("status")
+def cmd_site_status(home: Path = _SITE_HOME):
+    """Every repository: the version it serves, the newest here, held or current."""
+    from mmw.commands.site import status
+    raise typer.Exit(status(home))
+
+
+@site_app.command("history")
+def cmd_site_history(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                     home: Path = _SITE_HOME):
+    """A repository's kept versions, with what each takes and would free."""
+    from mmw.commands.site import history
+    raise typer.Exit(history(repo, home))
+
+
+@site_app.command("verify")
+def cmd_site_verify(home: Path = _SITE_HOME):
+    """Hash every served file against what the site says it serves."""
+    from mmw.commands.site import verify
+    raise typer.Exit(verify(home))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

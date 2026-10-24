@@ -134,6 +134,9 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
             # far side track (`recorded_repos`).
             "repos": _group_repos(result.base_repos),
         }, sort_keys=True)
+        # Older snapshots first, so version numbers follow time even when a
+        # snapshot is the first thing taken after upgrading.
+        ensure_repo_versions(pool, network.name)
         stamp = _free_stamp(pool, network.name)
         rows = sorted(sink.rows.items())
         sid = pool.create_snapshot(network.name, stamp, kind=kind, label=label,

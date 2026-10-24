@@ -105,6 +105,16 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
         try:
             picked = {"repos": keys} if keys else {}
+            # A warning the run raises before its long part (a stage that will
+            # copy, not hardlink) is said then, while there is time to stop it.
+            told: list[str] = []
+
+            def progress(_rel, status, told=told):
+                if status.startswith("warning:"):
+                    told.append(status.split(":", 1)[1])
+                    eprint(f"    ⚠ {told[-1]}")
+            if stage:                       # only a stage warns before its long part
+                picked["progress"] = progress
             if stage:
                 result = stage_network(net, cfg, mirror_dir, out_dir=out,
                                        from_ref=start, to_ref=to_ref or "now", **picked)
@@ -136,7 +146,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         if sha_path:
             say(f"  sha256  {sha_path}")
         if result.stream_sha256:
-            say(f"sha256 {result.stream_sha256}  {net.name}-{result.created}.tar")
+            say(f"sha256 {result.stream_sha256}")
         # Reported, never dropped: the TUI surfaces these on the Bundle
         # result notification, and a dist-upgrade warning that is visible to
         # someone watching a modal but silent in cron is exactly the kind of
@@ -144,7 +154,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         # not failures, so they do not set `ok` — `mmw publish` treats the
         # same list the same way.
         for w in [*result.dist_upgrade_warnings, *result.warnings]:
-            eprint(f"    ⚠ {w}")
+            if w not in told:
+                eprint(f"    ⚠ {w}")
         if result.errors:
             ok = False
             for e in result.errors:

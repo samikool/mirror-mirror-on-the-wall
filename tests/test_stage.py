@@ -119,3 +119,31 @@ def test_cli_stage(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
     (staged,) = (tmp_path / "s").iterdir()
     assert staged.is_dir() and str(staged) in r.output and "  a  full → v1" in r.output
     assert run("--out", str(tmp_path / "s")).exit_code != 0                     # -n is required
+
+
+def test_cli_cross_filesystem_warning_comes_before_the_copy(two_mirrors, tmp_path, monkeypatch, capsys):  # noqa: F811
+    from mmw.commands import bundle as cmd
+    from mmw.core import config
+    from mmw.core.publisher import members
+    cfg, net, md = _mmw(two_mirrors)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    config.save(cfg, cfg_dir)
+    monkeypatch.setattr(bundle_mod, "_same_filesystem", lambda a, b: False)
+    seen_at_first_blob = []
+    real = members.DirMembers.add_blob
+
+    def spy(self, *a, **kw):
+        if not seen_at_first_blob:
+            seen_at_first_blob.append(capsys.readouterr().err)
+        return real(self, *a, **kw)
+    monkeypatch.setattr(members.DirMembers, "add_blob", spy)
+    assert cmd.run(cfg_dir, network=net.name, out=tmp_path / "s", allow_incomplete=True, stage=True) == 0
+    assert "another filesystem" in seen_at_first_blob[0]
+
+
+def test_transfer_view_logs_warnings():
+    from mmw.tui.transfer import BUNDLE, TransferView
+    view = TransferView(BUNDLE, "lab")
+    view.record("", "warning:/mnt/x is on another filesystem than the pool — 3 GB will be copied")
+    assert any("another filesystem" in line for line in view._log_pending)

@@ -454,7 +454,9 @@ class TransferView(Vertical):
         parts = dst.split("/")
         short = "/".join(parts[-4:]) if len(parts) >= 4 else dst
         with self._lock:
-            if status.startswith("db-warm:"):
+            if status.startswith("warning:"):
+                self._log_pending.append(f"  [$mmw-warn]⚠ {escape(status.split(':', 1)[1])}[/]")
+            elif status.startswith("db-warm:"):
                 message = status.split(":", 1)[1]
                 self._phase = message if message.endswith("…") else ""
                 self._log_pending.append(f"  [dim]# {escape(message)}[/]")

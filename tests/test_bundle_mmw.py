@@ -145,3 +145,15 @@ def test_command_prints_each_repository(two_mirrors, tmp_path, capsys):  # noqa:
     assert cmd.run(cfg_dir, network=net.name, out=tmp_path / "o", allow_incomplete=True, from_ref="none") == 0
     out = capsys.readouterr().out
     assert "  a  full → v1" in out and "  b  full → v1" in out
+
+
+def test_second_partial_to_the_same_snapshot(two_mirrors, tmp_path):  # noqa: F811
+    from mmw.core.snapshots import take_snapshot
+    cfg, net, md = _mmw(two_mirrors)
+    bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None)
+    _change_a(md)
+    _change_b(md)
+    s2 = take_snapshot(net, cfg, md)
+    bundle_network(net, cfg, md, out_path=tmp_path / "2", repos=[_key(cfg, "a")], to_ref=s2.stamp)
+    r = bundle_network(net, cfg, md, out_path=tmp_path / "3", repos=[_key(cfg, "b")], to_ref=s2.stamp)
+    assert [(d.repo, d.start.number, d.dest.number) for d in r.repos] == [(_key(cfg, "b"), 1, 2)]

@@ -224,7 +224,10 @@ def bundle_network(
         bundle_output_path(network, "x", out_path)   # destination check
         dest = take_snapshot(network, cfg, mirror_dir, kind="bundle", stop_event=stop_event,
                              warnings=snap_warnings)
-    if start is not None and start.id == dest.id:
+    # An mmw network's default start is per repository: the last bundle's
+    # snapshot may still hold repositories it did not carry, so "the same
+    # snapshot" is for the delta planner to judge, repository by repository.
+    if start is not None and start.id == dest.id and not (mmw_far_side and from_ref is _LAST):
         raise ValueError(f"from and to are the same snapshot ({dest.stamp}) — nothing to send")
 
     # A certs network's key and signing request ride every bundle; the CA

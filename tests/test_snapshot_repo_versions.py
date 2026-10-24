@@ -98,3 +98,20 @@ def test_snapshot_list_repos_flag(two_mirrors, monkeypatch):  # noqa: F811
     assert r.exit_code == 0, r.output
     newest = r.output.split("\n  20")[1]                # the first snapshot block, newest first
     assert "a v2 (changed)" in newest and "b v1" in newest and "b v1 (changed)" not in newest
+
+
+def test_take_backfills_older_snapshots_first(two_mirrors):  # noqa: F811
+    cfg, net, mirror_dir = two_mirrors
+    old1 = take_snapshot(net, cfg, mirror_dir)
+    _change_a(mirror_dir)
+    old2 = take_snapshot(net, cfg, mirror_dir)
+    with Pool(mirror_dir) as p:                       # both pre-upgrade: no versions yet
+        p._conn.execute("DELETE FROM snapshot_repos")
+        p._conn.execute("DELETE FROM repo_versions")
+        p._conn.commit()
+    new = take_snapshot(net, cfg, mirror_dir)         # the first thing done after upgrading
+    with Pool(mirror_dir) as p:
+        numbers = {s.stamp: p.snapshot_repo_versions(s.id)[_key(cfg, "a")].number for s in (old1, old2, new)}
+        b_first = p.snapshot_repo_versions(old1.id)[_key(cfg, "b")]
+    assert numbers == {old1.stamp: 1, old2.stamp: 2, new.stamp: 2}
+    assert b_first.stamp == old1.stamp                # b's one version was introduced by the oldest

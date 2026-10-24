@@ -190,7 +190,7 @@ class BundlePickPage(Page):
         if dest == "now":
             line.update("[dim]What it sends is worked out once the snapshot is taken.[/]")
             return
-        if start == dest:
+        if start == dest and not self._repos:
             line.update("[$mmw-warn]From and To are the same snapshot — nothing to send.[/]")
             return
         line.update("[dim]Estimating…[/]")
@@ -218,7 +218,10 @@ class BundlePickPage(Page):
     @on(Button.Pressed, "#btn-pick-go")
     def _go(self) -> None:
         start, dest = self._ends()
-        if dest != "now" and (self._last if start == "last" else start) == dest:
+        # mmw: from "last" is per repository, so the same snapshot can still
+        # send what the last bundle left out — the run says if nothing is left.
+        same = dest != "now" and (self._last if start == "last" else start) == dest
+        if same and not (self._repos and start == "last"):
             self.set_status("From and To are the same snapshot — nothing to send.", "error")
             return
         picked = self._picked_repos()

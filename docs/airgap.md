@@ -68,9 +68,13 @@ with the drive attached can pull it from the mirror host:
 ssh mirrorhost mmw bundle -n lab --out - > /media/drive/lab.tar
 ```
 
-Everything else mmw prints goes to stderr, ending with a
-`sha256 <digest>  <name>.tar` line: save it beside the tar as
-`lab.tar.sha256` (`sha256sum -c` format) to check the copy later. The
+Everything else mmw prints goes to stderr, ending with a `sha256 <digest>`
+line. Write it beside the tar under the name you chose, in `sha256sum -c`
+format, to check the copy later:
+
+```bash
+echo "<digest>  lab.tar" > /media/drive/lab.tar.sha256
+``` The
 bundle counts as sent only once the last byte is written: if the pipe
 breaks, nothing is recorded and the same command starts it again.
 Streaming runs at the disk's speed, about the same as `tar cf -` over the
@@ -89,10 +93,12 @@ whatever you like:
 
 ```bash
 mmw stage -n lab --out /srv/stage          # /srv/stage/lab-<stamp>/
-ssh mirrorhost tar cf - -C /srv/stage lab-<stamp> > /media/drive/lab.tar
+ssh mirrorhost tar cf - -C /srv/stage/lab-<stamp> . > /media/drive/lab.tar
 ```
 
-Any tar of it, in any order, is a valid bundle for the far-side mmw. Keep
+Tar the directory's contents (`-C …/lab-<stamp> .`), not the directory
+itself, so `.mmw/manifest.jsonl` sits at the top of the archive. Any such
+tar, in any order, is a valid bundle for the far-side mmw. Keep
 the stage directory on the pool's filesystem: elsewhere mmw warns and copies
 the files instead. It counts as sent once the directory is complete; delete
 it yourself when it has gone across.

@@ -466,6 +466,11 @@ def walk_network(
         started += len(group_results)
         result.mirrors.extend(group_results)
         all_bases |= bases
+        if provider.repository_scope == "provider":
+            result.base_repos.update(dict.fromkeys(bases, provider.name))
+        else:
+            by_base = {m.mirror_base: m.source for m in mine}
+            result.base_repos.update({b: by_base[b] for b in bases if b in by_base})
     result.bases = sorted(all_bases)
 
     if not (stop_event and stop_event.is_set()):

@@ -130,6 +130,9 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
             # Hosts providers serve beyond their units' own (changelogs.ubuntu.com
             # for dist-upgrade), so a snapshot's nginx is regenerated exactly.
             "extra_hosts": extra_hosts(network, mirrors),
+            # Which repository each base belongs to: what versions and the
+            # far side track (`recorded_repos`).
+            "repos": _group_repos(result.base_repos),
         }, sort_keys=True)
         stamp = _free_stamp(pool, network.name)
         sid = pool.create_snapshot(network.name, stamp, kind=kind, label=label,
@@ -148,6 +151,51 @@ def recorded_bases(settings: str) -> list[str]:
     if bases is None:
         bases = {MirrorConfig.model_validate(m).mirror_base for m in data.get("mirrors", [])}
     return sorted(set(bases), key=len, reverse=True)
+
+
+def _group_repos(base_repos: dict[str, str]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for base, repo in base_repos.items():
+        grouped.setdefault(repo, []).append(base)
+    return {repo: sorted(bases, key=len, reverse=True) for repo, bases in grouped.items()}
+
+
+def recorded_repos(settings: str) -> dict[str, list[str]]:
+    """Repository key → its bases (longest first) for a snapshot. Recorded
+    since repositories were versioned; derived for snapshots taken before:
+    an apt mirror's base is its source's, a base a "provider"-scope
+    provider claims is that provider's, and what is left goes to the one
+    such provider recorded that claimed nothing, if there is exactly one."""
+    from mmw.core.config import MirrorConfig
+    from mmw.providers import get_provider
+    data = json.loads(settings or "{}")
+    if "repos" in data:
+        return {r: list(b) for r, b in data["repos"].items()}
+    mirrors = [MirrorConfig.model_validate(m) for m in data.get("mirrors", [])]
+    scoped = []
+    base_repos: dict[str, str] = {}
+    for m in mirrors:
+        provider = get_provider(m.provider)
+        if provider.repository_scope == "provider":
+            if provider not in scoped:
+                scoped.append(provider)
+        else:
+            base_repos[m.mirror_base] = m.source
+    claimed_by: set[str] = set()
+    leftover = []
+    for base in recorded_bases(settings):
+        if base in base_repos:
+            continue
+        owner = next((p for p in scoped if p.claims_base(base)), None)
+        if owner is not None:
+            base_repos[base] = owner.name
+            claimed_by.add(owner.name)
+        else:
+            leftover.append(base)
+    rest = [p for p in scoped if p.name not in claimed_by]
+    if len(rest) == 1:
+        base_repos.update(dict.fromkeys(leftover, rest[0].name))
+    return _group_repos(base_repos)
 
 
 # ── finding, cleaning, importing ─────────────────────────────────────────────

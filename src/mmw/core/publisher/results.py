@@ -98,6 +98,9 @@ class NetworkPublishResult:
     # Every base the walk published (`BaseProvider.publish` decides them);
     # recorded in snapshots so replay and bundles need not re-derive them.
     bases: list[str] = field(default_factory=list)
+    # base → the repository it belongs to (`repos.repository_key`); a base
+    # no unit claims is left out.
+    base_repos: dict[str, str] = field(default_factory=dict)
     # Set by a dry run: the totals below then count shared files once
     # instead of summing the per-mirror estimates.
     totals: NetworkTotals | None = None

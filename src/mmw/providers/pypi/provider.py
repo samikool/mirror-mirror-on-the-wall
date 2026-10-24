@@ -128,6 +128,7 @@ def _package(f) -> PackageInfo:
 class PypiProvider(BaseProvider):
     name = "pypi"
     label = "PyPI"
+    repository_scope = "provider"
     description = "Python packages from pypi.org: latest + dependency closure per target"
     # The universal unit has no coordinates: every target filter passes it.
     dimensions = (
@@ -157,6 +158,10 @@ class PypiProvider(BaseProvider):
         SourceField("requirements_file", "Requirements file", "text",
                     hint="A requirements.txt-style file, relative to mmw.toml; re-read every sync."),
     )
+
+
+    def claims_base(self, base: str) -> bool:
+        return base.split("/", 1)[0] in pypub.HOSTS
 
     def __init__(self):
         self.catalog: dict[str, _Catalog] = {}

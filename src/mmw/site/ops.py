@@ -1,5 +1,6 @@
 """What an operator does to a site between bundles: serve any kept version
 of a repository, hold it where it is, move it forward."""
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,11 +52,19 @@ def _open(home: Path):
     return root, Store(root)
 
 
-def serve(home: Path, ref: str, number: int) -> SwitchResult:
-    """Serve version `number` of a repository; held unless it is the newest."""
+@contextmanager
+def _session(home: Path):
+    """Lock the site, open its database, and finish any switch a killed run
+    left halfway — before anything else looks at what is served."""
     root, store = _open(home)
     with SiteLock(home), SiteDB(home) as db:
         resume_switches(db, store, root)
+        yield db, store, root
+
+
+def serve(home: Path, ref: str, number: int) -> SwitchResult:
+    """Serve version `number` of a repository; held unless it is the newest."""
+    with _session(home) as (db, store, root):
         repo = resolve_repo(db, ref)
         result = switch_repo(db, store, root, repo, _version(db, repo, number).id)
         render_derived(str(root))
@@ -65,10 +74,8 @@ def serve(home: Path, ref: str, number: int) -> SwitchResult:
 def forward(home: Path, ref: str | None) -> list[str]:
     """Serve the newest version of one repository, or (None) of every held
     one, and clear the hold. The repositories moved."""
-    root, store = _open(home)
     moved = []
-    with SiteLock(home), SiteDB(home) as db:
-        resume_switches(db, store, root)
+    with _session(home) as (db, store, root):
         repos = [resolve_repo(db, ref)] if ref is not None else [s.repo for s in db.repo_states() if s.held]
         for repo in repos:
             newest = db.versions(repo)[0]
@@ -86,7 +93,7 @@ def forward(home: Path, ref: str | None) -> list[str]:
 def hold(home: Path, ref: str) -> str:
     """Keep a repository where it is: the next bundle stores its new version
     without serving it."""
-    with SiteLock(home), SiteDB(home) as db:
+    with _session(home) as (db, _store, _root):
         repo = resolve_repo(db, ref)
         db.set_held(repo, True)
         return db.repo_state(repo).label
@@ -138,13 +145,16 @@ def _protected(db: SiteDB, repo: str, version: VersionInfo) -> str | None:
         return f"v{version.number} is being served — serve another version first"
     if state.held and db.versions(repo)[0].id == version.id:
         return f"v{version.number} is the newest of a held repository — forward it, or delete it after"
+    if any(to_id == version.id for _r, _f, to_id, _p in db.pending_switches()):
+        return f"v{version.number} is what an unfinished switch is going to"
+    if len(db.versions(repo)) == 1:
+        return f"v{version.number} is the only version of {state.label} here"
     return None
 
 
 def delete_version(home: Path, ref: str, number: int) -> int:
     """Drop a kept version and the files nothing else uses; bytes freed."""
-    root, store = _open(home)
-    with SiteLock(home), SiteDB(home) as db:
+    with _session(home) as (db, store, _root):
         repo = resolve_repo(db, ref)
         version = _version(db, repo, number)
         why = _protected(db, repo, version)
@@ -189,22 +199,22 @@ def history(home: Path, ref: str) -> list[tuple[VersionInfo, int, int, bool]]:
         return out
 
 
-def verify(home: Path) -> list[str]:
-    """Every served file present and exactly what the site says it serves.
-    The problems found (none: the tree is right)."""
+def _expected(db: SiteDB) -> dict[str, str]:
+    expected: dict[str, str] = dict(db.network_files())
+    for st in db.repo_states():
+        if st.serving is not None:
+            expected.update(db.version_files(st.serving.id))
+    return expected
+
+
+def _wrong(root: Path, store: Store, expected: dict[str, str]):
+    """(rel, checksum, what is wrong) for every served file not as it should be."""
     import hashlib
     from mmw.resources.apply import ROOT_PLACEHOLDER, _nginx_root_config
-    root, store = _open(home)
-    problems = []
-    with SiteDB(home) as db:
-        expected: dict[str, str] = dict(db.network_files())
-        for st in db.repo_states():
-            if st.serving is not None:
-                expected.update(db.version_files(st.serving.id))
     for rel, checksum in sorted(expected.items()):
         path = root / rel
         if not disk_io.ops.exists(path):
-            problems.append(f"{rel}: missing")
+            yield rel, checksum, "missing"
             continue
         if _nginx_root_config(rel) and store.has(checksum):
             want = hashlib.sha256(disk_io.ops.read_bytes(store.path(checksum)).replace(
@@ -212,5 +222,27 @@ def verify(home: Path) -> list[str]:
         else:
             want = checksum
         if disk_io.hash_file(path) != want:
-            problems.append(f"{rel}: differs from what the site serves")
-    return problems
+            yield rel, checksum, "differs from what the site serves"
+
+
+def verify(home: Path) -> list[str]:
+    """Every served file present and exactly what the site says it serves.
+    The problems found (none: the tree is right)."""
+    root, store = _open(home)
+    with SiteDB(home) as db:
+        expected = _expected(db)
+    return [f"{rel}: {why}" for rel, _cs, why in _wrong(root, store, expected)]
+
+
+def repair(home: Path) -> int:
+    """Put every wrong or missing served file back from the store; how many."""
+    from mmw.site.apply import place_served_file
+    fixed = 0
+    with _session(home) as (db, store, root):
+        network = set(db.network_files())
+        for rel, checksum, _why in list(_wrong(root, store, _expected(db))):
+            if disk_io.ops.exists(root / rel):
+                disk_io.ops.remove(root / rel)        # never write through a damaged link
+            place_served_file(store, root, rel, checksum, network=rel in network)
+            fixed += 1
+    return fixed

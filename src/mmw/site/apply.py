@@ -7,6 +7,7 @@ the store. Only then are versions recorded and repositories switched — a
 held one keeps serving what it served, its new version stored for later.
 """
 import io
+import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,6 +66,8 @@ def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool):
                 got[m.name] = store.add_stream(m.fh)
     except SourceError as e:
         raise ApplyError(e.code, str(e)) from None
+    except (tarfile.ReadError, EOFError) as e:              # cut off inside a member
+        raise ApplyError(5, f"bundle is truncated ({e}) — copy it again") from None
     for name, target in links.items():
         if target not in got:
             raise ApplyError(2, f"bundle is malformed: {name!r} links to {target!r}, which it lacks")
@@ -74,18 +77,21 @@ def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool):
     return got, tls
 
 
-def _place_network_file(store: Store, root: Path, rel: str, checksum: str) -> None:
-    if _nginx_root_config(rel):
-        # A fresh file, never a hardlink: the root is substituted into it,
-        # and writing through a link would rewrite the stored blob.
+def place_served_file(store: Store, root: Path, rel: str, checksum: str, *, network: bool) -> None:
+    """Put one file in the served tree. nginx's text files are written fresh,
+    never hardlinked: the root is substituted into its configs, and an
+    operator editing one in place must not rewrite the stored copy behind
+    every other link. Everything else is a hardlink into the store."""
+    if network and rel.startswith("nginx/") and not rel.endswith(".tar"):
         data = disk_io.ops.read_bytes(store.path(checksum))
-        disk_io.ops.atomic_write(root / rel, data.replace(ROOT_PLACEHOLDER.encode(), str(root).encode()),
-                                 tmp_dir=store.place_tmp)
+        if _nginx_root_config(rel):
+            data = data.replace(ROOT_PLACEHOLDER.encode(), str(root).encode())
+        disk_io.ops.atomic_write(root / rel, data, tmp_dir=store.place_tmp)
     else:
         store.place(checksum, root / rel)
 
 
-def _size(store: Store, got: dict, checksum: str, sizes: dict[str, int]) -> int:
+def _size(store: Store, checksum: str, sizes: dict[str, int]) -> int:
     if checksum not in sizes:
         sizes[checksum] = disk_io.ops.stat(store.path(checksum)).st_size
     return sizes[checksum]
@@ -125,45 +131,59 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         have = store.has
         sizes = {cs: size for cs, size in got.values()}
 
-        # Each repository's new version: complete, or refused alone.
-        recorded: dict[str, int] = {}
+        # Check everything before writing anything: each repository's new
+        # version is complete (or refused alone), and so are the network files.
+        planned: dict[str, dict] = {}
         for repo, meta in sorted((header.repos or {}).items()):
             mine = [(p, c) for p, c, r in rows if r == repo]
             label = meta["label"]
             if repo_digests(mine, {repo: meta["bases"]})[repo] != meta["digest"]:
                 raise ApplyError(2, f"{label}: its files do not match the version the bundle names")
+            here = db.version(repo, meta["to"])
+            if here is not None and here.digest != meta["digest"]:
+                result.refused[repo] = (
+                    f"v{meta['to']} here is not the connected side's v{meta['to']} — its history no "
+                    f"longer matches this site. To follow it: mmw site delete '{label}' v{meta['to']} "
+                    "(and any later), then apply again")
+                continue
             if not all(have(c) or c in sizes for _p, c in mine):
                 result.refused[repo] = (f"needs v{meta['from']} here first — on the connected side: "
                                         f"mmw bundle -n {header.network} --repo '{label}' --from none")
                 continue
-            if dry_run:
-                recorded[repo] = -1
-                continue
-            recorded[repo] = db.add_version(
-                repo, label, meta["to"], meta["digest"], header.created, header.created_label,
-                meta["bases"], [(p, c, _size(store, got, c, sizes)) for p, c in mine])
-
+            planned[repo] = {"meta": meta, "rows": mine}
         network = {p: c for p, c, r in rows if r is None}
         missing = [p for p, c in network.items() if not (have(c) or c in sizes)]
         if missing:
             raise ApplyError(3, f"{len(missing)} network file(s) are not here (first: {missing[0]}) — "
-                                "bring a full bundle: mmw bundle --from none")
+                                f"bring a full bundle: mmw bundle -n {header.network} --from none")
         before = db.network_files()
         result.network_changed = any(
             (before.get(p) != network.get(p)) for p in set(before) | set(network) if p.startswith("nginx/"))
 
         if dry_run:
-            for repo in recorded:
-                result.lines.append(f"  {header.repos[repo]['label']}  would go to v{header.repos[repo]['to']}")
+            for repo, plan in planned.items():
+                result.lines.append(f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
             return result
+
+        recorded: dict[str, int] = {}
+        try:
+            for repo, plan in planned.items():
+                meta = plan["meta"]
+                recorded[repo] = db.add_version(
+                    repo, meta["label"], meta["to"], meta["digest"], header.created, header.created_label,
+                    meta["bases"], [(p, c, _size(store, c, sizes)) for p, c in plan["rows"]], commit=False)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
 
         for rel, checksum in sorted(network.items()):
             if before.get(rel) != checksum or not disk_io.ops.exists(root / rel):
-                _place_network_file(store, root, rel, checksum)
+                place_served_file(store, root, rel, checksum, network=True)
         for rel in sorted(set(before) - set(network)):
             if disk_io.ops.remove(root / rel) is not None:
                 _prune_empty_parents(str(root), str((root / rel).parent))
-        db.set_network_files(network, {c: _size(store, got, c, sizes) for c in network.values()})
+        db.set_network_files(network, {c: _size(store, c, sizes) for c in network.values()})
         for name, data in sorted(tls.items()):
             _install_tls(str(root), name, io.BytesIO(data))
 
@@ -171,6 +191,12 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         for repo, vid in recorded.items():
             meta, state = header.repos[repo], db.repo_state(repo)
             was = state.serving.number if state and state.serving else None
+            if was is not None and meta["to"] <= was:
+                # An older or already-applied bundle never moves what is served.
+                result.lines.append(f"  {meta['label']}  already at v{was}" if meta["to"] == was else
+                                    f"  {meta['label']}  keeps serving v{was} (this bundle brings v{meta['to']}, "
+                                    "older — stored)")
+                continue
             if state and state.held and not forward_all and repo not in forward:
                 result.stored_held.append(repo)
                 result.lines.append(f"  {meta['label']}  stored v{meta['to']}, still serving v{was} (held)")
@@ -183,11 +209,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
 
         render_derived(str(root), say=lambda m: say(f"  {m}"))
         db.record_applied(header.created, header.previous, "full" if header.full else "delta")
-        try:
+        if settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
-        except ImportError:
-            apply_retention = None
-        if apply_retention is not None and settings.keep_versions is not None:
             apply_retention(db, store, settings.keep_versions)
         if result.network_changed:
             result.actions.append("nginx config changed — recreate nginx on the serving host "

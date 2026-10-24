@@ -48,11 +48,14 @@ applied 20261024T101500Z
 ```
 
 Everything arrives in the store, and is checked against the bundle's
-manifest, **before anything served changes**: a damaged copy, a truncated
+manifest, **before anything served changes or is recorded**: a damaged copy, a truncated
 one, or a bundle missing files leaves the site exactly as it was — copy it
 again. A repository whose new version needs files this site never received
 (it missed an earlier bundle, or deleted that version) is refused on its
 own, with the connected-side command that fixes it; the rest still apply.
+
+An older bundle, or one already applied, never moves what a repository
+serves: its versions are stored, and `mmw site serve` can use them.
 
 Files arrive in any order: a stage directory tarred with
 `tar cf - -C …/oak-<stamp> .` is a bundle like any other.
@@ -94,7 +97,12 @@ share most of theirs.
 mmw site verify                 # hashes every served file; exit 4 on a mismatch
 ```
 
-Serve the version again to put a mismatch right.
+`mmw site verify --repair` puts wrong or missing files back from the store.
+
+Never edit a served file in place: most are hardlinks into the store, and
+an edit would change every copy. nginx's generated files are the exception
+(they are written fresh) but are still replaced by the next bundle — keep
+your own deployment copy outside the root, as [airgap.md](airgap.md) says.
 
 ## One operator at a time
 

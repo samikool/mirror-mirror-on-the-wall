@@ -220,17 +220,24 @@ def history(repo: str, home: Path | None = None) -> int:
     return 0
 
 
-def verify(home: Path | None = None) -> int:
+def verify(home: Path | None = None, repair: bool = False, break_lock: bool = False) -> int:
     from mmw.site import ops
+    from mmw.site.lock import LockHeld
     try:
+        if repair:
+            fixed = ops.repair(_home(home, break_lock))
+            print(f"put {fixed} file(s) back from the store")
         problems = ops.verify(_home(home, False))
+    except LockHeld as e:
+        eprint(str(e))
+        return 5
     except (ValueError, FileNotFoundError) as e:
         eprint(str(e))
         return 1
     for p in problems:
         eprint(f"  ✗ {p}")
     if problems:
-        eprint(f"{len(problems)} problem(s): `mmw site serve` the version again to put it right")
+        eprint(f"{len(problems)} problem(s): `mmw site verify --repair` puts them back from the store")
         return 4
     print("every served file is what the site says it serves")
     return 0

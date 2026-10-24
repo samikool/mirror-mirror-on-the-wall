@@ -139,7 +139,7 @@ the site take `--break-lock`. See [far-side.md](far-side.md).
 | `mmw site space` | Each version's size and what deleting it frees; the root's free space |
 | `mmw site delete REPO VERSION [--yes]` | Delete a kept version (never the served one, nor a held repository's newest) |
 | `mmw site settings [--keep N \| --keep-all]` | How many versions of each repository to keep |
-| `mmw site verify` | Hash every served file; exit 4 on a mismatch |
+| `mmw site verify [--repair]` | Hash every served file; exit 4 on a mismatch; `--repair` puts them back first |
 
 ### `mmw certs`
 

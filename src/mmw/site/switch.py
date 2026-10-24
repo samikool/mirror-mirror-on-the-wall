@@ -29,6 +29,11 @@ def _base(rel: str, bases: list[str]) -> str | None:
 
 
 def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, progress) -> SwitchResult:
+    if db.version_by_id(to_id) is None:
+        # Never diff against nothing: that would remove the repository's
+        # whole served tree.
+        db.end_switch(repo)
+        raise ValueError(f"version {to_id} of {repo} is no longer here — not switching to it")
     state = db.repo_state(repo)
     before = db.version_files(from_id) if from_id is not None else {}
     after = db.version_files(to_id)
@@ -59,6 +64,8 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
 def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None) -> SwitchResult:
     """Serve version `to_id` of `repo` at `root`. Held afterwards when it is
     not the newest version here."""
+    if db.version_by_id(to_id) is None:
+        raise ValueError(f"version {to_id} of {repo} is not here")
     state = db.repo_state(repo)
     from_id = state.serving.id if state and state.serving else None
     db.begin_switch(repo, from_id, to_id)
@@ -69,6 +76,9 @@ def resume_switches(db, store, root: Path) -> list[str]:
     """Finish every switch a killed run left halfway; the repositories."""
     done = []
     for repo, from_id, to_id, _phase in db.pending_switches():
-        _run(db, store, Path(root), repo, from_id, to_id, None)
+        try:
+            _run(db, store, Path(root), repo, from_id, to_id, None)
+        except ValueError:
+            continue                    # its target is gone; what it served stays
         done.append(repo)
     return done

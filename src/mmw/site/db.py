@@ -95,7 +95,7 @@ class SiteDB:
 
     def add_version(self, repo: str, label: str, number: int, digest: str, stamp: str,
                     snap_label: str | None, bases: list[str],
-                    rows: Iterable[tuple[str, str, int]]) -> int:
+                    rows: Iterable[tuple[str, str, int]], *, commit: bool = True) -> int:
         """Record a version and its (path, checksum, size) rows. The same
         repository and number with the same digest is the version already
         here; with a different one it is refused."""
@@ -114,11 +114,18 @@ class SiteDB:
             c.execute("INSERT INTO repos (repo, label, bases) VALUES (?, ?, ?) ON CONFLICT(repo) "
                       "DO UPDATE SET label = excluded.label, bases = excluded.bases",
                       (repo, label, json.dumps(bases)))
-            c.commit()
+            if commit:
+                c.commit()
         except BaseException:
             c.rollback()
             raise
         return vid
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
 
     def _version_rows(self, where: str, args: tuple) -> list[VersionInfo]:
         return [VersionInfo(*r) for r in self._conn.execute(

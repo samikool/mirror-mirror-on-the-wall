@@ -39,16 +39,23 @@ def _name(raw: str) -> str:
 
 def _from_tar(tar: tarfile.TarFile) -> Iterator[Member]:
     with tar:
-        for m in tar:
-            if m.isdir() or m.name in (".", "./"):
-                continue
-            name = _name(m.name)
-            if m.isreg():
-                yield Member(name, "file", tar.extractfile(m), None, m.size)
-            elif m.islnk():
-                yield Member(name, "link", None, _name(m.linkname), 0)
-            else:
-                raise SourceError(2, f"refusing {name!r}: only files and hardlinks belong in a bundle")
+        try:
+            yield from _members(tar)
+        except (tarfile.ReadError, EOFError) as e:
+            raise SourceError(5, f"bundle is truncated ({e}) — copy it again") from None
+
+
+def _members(tar: tarfile.TarFile) -> Iterator[Member]:
+    for m in tar:
+        if m.isdir() or m.name in (".", "./"):
+            continue
+        name = _name(m.name)
+        if m.isreg():
+            yield Member(name, "file", tar.extractfile(m), None, m.size)
+        elif m.islnk():
+            yield Member(name, "link", None, _name(m.linkname), 0)
+        else:
+            raise SourceError(2, f"refusing {name!r}: only files and hardlinks belong in a bundle")
 
 
 def _from_dir(root: Path) -> Iterator[Member]:
@@ -78,5 +85,5 @@ def open_source(src: str) -> Iterator[Member]:
     try:
         tar = tarfile.open(path, mode="r|")
     except tarfile.ReadError as e:
-        raise SourceError(5, f"{path} is not a tar: {e}") from None
+        raise SourceError(5, f"{path} is not a tar, or is truncated: {e} — copy it again") from None
     yield from _from_tar(tar)

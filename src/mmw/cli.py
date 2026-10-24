@@ -633,10 +633,13 @@ def cmd_site_history(repo: str = typer.Argument(..., help="Repository (URL or na
 
 
 @site_app.command("verify")
-def cmd_site_verify(home: Path = _SITE_HOME):
+def cmd_site_verify(home: Path = _SITE_HOME,
+                    repair: bool = typer.Option(False, "--repair",
+                                                help="Put wrong or missing files back from the store first"),
+                    break_lock: bool = _BREAK_LOCK):
     """Hash every served file against what the site says it serves."""
     from mmw.commands.site import verify
-    raise typer.Exit(verify(home))
+    raise typer.Exit(verify(home, repair, break_lock))
 
 
 snapshot_app = typer.Typer(

@@ -135,8 +135,11 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
             "repos": _group_repos(result.base_repos),
         }, sort_keys=True)
         stamp = _free_stamp(pool, network.name)
+        rows = sorted(sink.rows.items())
         sid = pool.create_snapshot(network.name, stamp, kind=kind, label=label,
-                                   rows=sorted(sink.rows.items()), settings=settings)
+                                   rows=rows, settings=settings)
+        pool.record_repo_versions(sid, network.name, stamp,
+                                  repo_digests(rows, recorded_repos(settings)))
         return next(s for s in pool.snapshots(network.name) if s.id == sid)
 
 
@@ -196,6 +199,46 @@ def recorded_repos(settings: str) -> dict[str, list[str]]:
     if len(rest) == 1:
         base_repos.update(dict.fromkeys(leftover, rest[0].name))
     return _group_repos(base_repos)
+
+
+def repo_digests(rows, repo_bases: dict[str, list[str]]) -> dict[str, str]:
+    """A digest per repository of its (path, checksum) rows — equal digests,
+    equal files. Every repository gets one, even with no files; rows under
+    no repository's base (network-level files) count for none."""
+    from mmw.core.repos import attribute
+    hashes = {repo: hashlib.sha256() for repo in repo_bases}
+    for path, checksum in sorted(rows):
+        repo = attribute(path, repo_bases)
+        if repo is not None:
+            hashes[repo].update(f"{path}\0{checksum}\n".encode())
+    return {repo: h.hexdigest() for repo, h in hashes.items()}
+
+
+def ensure_repo_versions(pool: Pool, network: str) -> int:
+    """Give every complete snapshot of `network` that has no repository
+    versions its versions, oldest first so the numbers follow time.
+    History-only (imported) snapshots get none. Returns how many."""
+    done = 0
+    for snap in reversed(pool.snapshots(network)):
+        if not snap.complete or pool.snapshot_repo_versions(snap.id):
+            continue
+        pool.record_repo_versions(snap.id, network, snap.stamp,
+                                  repo_digests(pool.snapshot_files(snap.id), recorded_repos(snap.settings)))
+        done += 1
+    return done
+
+
+def repo_version_files(pool: Pool, version):
+    """A repository version's (path, checksum) rows, from the newest
+    snapshot holding it; None once no snapshot does (its content is gone)."""
+    from mmw.core.repos import attribute
+    holders = pool.repo_version_snapshots(version.id)
+    if not holders:
+        return None
+    snap = next(s for s in pool.snapshots(version.network) if s.id == holders[0])
+    repo_bases = recorded_repos(snap.settings)
+    return ((path, checksum) for path, checksum in pool.snapshot_files(snap.id)
+            if attribute(path, repo_bases) == version.repo)
 
 
 # ── finding, cleaning, importing ─────────────────────────────────────────────

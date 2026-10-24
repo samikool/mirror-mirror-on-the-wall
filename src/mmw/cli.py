@@ -517,10 +517,12 @@ def cmd_snapshot_take(network: str = _SNAP_NET,
 
 
 @snapshot_app.command("list")
-def cmd_snapshot_list(network: str = _SNAP_NET):
+def cmd_snapshot_list(network: str = _SNAP_NET,
+                      repos: bool = typer.Option(False, "--repos",
+                                                 help="Also show each repository's version")):
     """List the network's snapshots, newest first, with the disk each alone holds."""
     from mmw.commands.snapshot import list_
-    raise typer.Exit(list_(_cfg_dir(), network))
+    raise typer.Exit(list_(_cfg_dir(), network, repos=repos))
 
 
 @snapshot_app.command("rename")

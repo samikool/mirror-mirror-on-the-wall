@@ -61,13 +61,15 @@ def take(cfg_dir: Path, network: str, label: str | None = None) -> int:
     return 0
 
 
-def list_(cfg_dir: Path, network: str) -> int:
+def list_(cfg_dir: Path, network: str, repos: bool = False) -> int:
     from mmw.core import snapshots
+    from mmw.core.repos import repository_label
     cfg, net = _network(cfg_dir, network, gone_ok=True)
     if net is None:
         return 1
     with Pool(cfg.settings.mirror_dir) as pool:
         snapshots.import_ledger(pool, cfg.settings.mirror_dir, net.name)
+        snapshots.ensure_repo_versions(pool, net.name)
         snaps = pool.snapshots(net.name)
         if not snaps:
             print(f"No snapshots of {net.name} yet — `mmw snapshot take -n {net.name}`.")
@@ -75,6 +77,12 @@ def list_(cfg_dir: Path, network: str) -> int:
         print(f"Snapshots of {net.name} (newest first):")
         for s in snaps:
             print(_row(s, pool.snapshot_exclusive_bytes(s.id), snapshots.served_by(pool, s)))
+            if repos:
+                versions = sorted(pool.snapshot_repo_versions(s.id).values(),
+                                  key=lambda v: repository_label(v.repo, cfg).lower())
+                for v in versions:
+                    changed = " (changed)" if v.stamp == s.stamp else ""
+                    print(f"      {repository_label(v.repo, cfg)} v{v.number}{changed}")
     return 0
 
 

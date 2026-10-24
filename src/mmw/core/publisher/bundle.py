@@ -162,13 +162,14 @@ def bundle_network(
     The nginx config and TLS files are regenerated for the far side.
     """
     from mmw.core.snapshots import (
-        find_snapshot, import_ledger, recorded_bases, take_snapshot,
+        ensure_repo_versions, find_snapshot, import_ledger, recorded_bases, take_snapshot,
     )
 
     from mmw.core.publisher import warm_for_publish
     warm_for_publish(mirror_dir, progress, stop_event)
     with Pool(mirror_dir) as pool:
         import_ledger(pool, mirror_dir, network.name)
+        ensure_repo_versions(pool, network.name)
         start = _resolve_from(pool, network.name, from_ref)
         if to_ref != "now":
             dest = find_snapshot(pool, network.name, to_ref)

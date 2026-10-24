@@ -544,6 +544,24 @@ def cmd_site_init(root: Path = typer.Option(..., "--root", help="The directory t
     raise typer.Exit(init(root, home))
 
 
+_BREAK_LOCK = typer.Option(False, "--break-lock", help="Clear a lock a dead run left behind")
+
+
+@site_app.command("apply")
+def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage directory, or - for stdin"),
+                   home: Path = _SITE_HOME,
+                   forward: list[str] = typer.Option(None, "--forward",
+                                                     help="Also move this held repository forward"),
+                   forward_all: bool = typer.Option(False, "--forward-all",
+                                                    help="Move every held repository forward"),
+                   dry_run: bool = typer.Option(False, "--dry-run", help="Check it; change nothing"),
+                   break_lock: bool = _BREAK_LOCK):
+    """Apply a bundle: everything is checked before anything served changes;
+    held repositories keep serving what they serve."""
+    from mmw.commands.site import apply
+    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

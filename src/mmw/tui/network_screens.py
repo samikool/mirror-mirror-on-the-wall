@@ -18,14 +18,14 @@ from textual import on
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.markup import escape
-from textual.widgets import Checkbox, Input, Label, SelectionList, Static
+from textual.widgets import Checkbox, Input, Label, Select, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
 from mmw.core import config
 from mmw.providers import all_providers, get_provider
 from mmw.providers.base import Dimension
 from mmw.tui import networks
-from mmw.tui.ui.form import Form, PathField, TextField, ToggleField
+from mmw.tui.ui.form import ChoiceField, Form, PathField, TextField, ToggleField
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.wizard import Wizard
 from mmw.tui.ui.widgets import Button, JumpSelectionList
@@ -212,6 +212,10 @@ class NetworkForm(Vertical):
                 ToggleField("nginx config", net.nginx if net else True, id="nginx-switch",
                             hint="nginx (and VS Code's gallery) in Docker: image, "
                                  "compose.yaml, mirror.conf."),
+                ChoiceField("Far side", [("apply.py (no mmw there)", "apply"), ("mmw", "mmw")],
+                            net.far_side if net else "apply", id="far-side-pick",
+                            hint="What runs on the airgapped side. mmw unlocks partial bundles, "
+                                 "mmw stage and far-side history."),
             )
 
     def on_mount(self) -> None:
@@ -327,6 +331,7 @@ class NetworkForm(Vertical):
             "certs": self._flag("certs-switch"),
             "nginx": self._flag("nginx-switch"),
             "retention": retention,
+            "far_side": self.query_one("#far-side-pick", Select).value,
         }), None, None
 
 

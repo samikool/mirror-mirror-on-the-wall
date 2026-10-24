@@ -473,3 +473,19 @@ def test_load_configures_disk_io(tmp_path, monkeypatch):
                                                        disk_read_threads=3)), tmp_path)
     config.load(tmp_path)
     assert disk_io.limits().read_threads == 3
+
+
+def test_far_side_round_trips_and_defaults(tmp_path):
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "pool"),
+                        networks=[config.NetworkConfig(name="a"),
+                                  config.NetworkConfig(name="b", far_side="mmw")])
+    config.save(cfg, tmp_path)
+    text = config.config_path(tmp_path).read_text()
+    assert text.count("far_side =") == 1 and 'far_side = "mmw"' in text
+    loaded = {n.name: n.far_side for n in config.load(tmp_path).networks}
+    assert loaded == {"a": "apply", "b": "mmw"}
+
+
+def test_far_side_rejects_unknown_value():
+    with pytest.raises(ValueError):
+        config.NetworkConfig(name="a", far_side="rsync")

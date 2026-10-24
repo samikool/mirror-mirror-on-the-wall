@@ -181,8 +181,39 @@ CREATE TABLE IF NOT EXISTS bundles (
     sent        INTEGER NOT NULL DEFAULT 0,
     sent_bytes  INTEGER NOT NULL DEFAULT 0,
     removed     INTEGER NOT NULL DEFAULT 0,      -- paths the far side deletes
-    made        TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now'))
+    made        TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now')),
+    kind        TEXT NOT NULL DEFAULT 'bundle'   -- 'bundle' | 'stream' | 'stage'
 );
+
+-- A repository's content at one moment, per network: what the far side
+-- reverts. A snapshot is a set of these; an unchanged repository keeps its
+-- version (same digest of its rows), so numbers count real changes. Rows
+-- outlive the snapshots that held them: the ledger may still name one.
+CREATE TABLE IF NOT EXISTS repo_versions (
+    id      INTEGER PRIMARY KEY,
+    network TEXT NOT NULL,
+    repo    TEXT NOT NULL,                    -- repos.repository_key
+    number  INTEGER NOT NULL,                 -- v1, v2, … per (network, repo)
+    digest  TEXT NOT NULL,
+    stamp   TEXT NOT NULL,                    -- the snapshot that introduced it
+    label   TEXT,
+    UNIQUE (network, repo, digest),
+    UNIQUE (network, repo, number)
+);
+CREATE TABLE IF NOT EXISTS snapshot_repos (
+    snapshot INTEGER NOT NULL,
+    version  INTEGER NOT NULL,                -- repo_versions.id
+    PRIMARY KEY (snapshot, version)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_snapshot_repos_version ON snapshot_repos(version, snapshot);
+-- Which version of each repository a bundle (or stream, or stage) sent.
+CREATE TABLE IF NOT EXISTS bundle_repos (
+    bundle       INTEGER NOT NULL,            -- bundles.id
+    repo         TEXT NOT NULL,
+    from_version INTEGER,                     -- NULL: sent in full
+    to_version   INTEGER NOT NULL,
+    PRIMARY KEY (bundle, repo)
+) WITHOUT ROWID;
 
 -- What each publish destination serves: 'live' (the network's current state)
 -- or a snapshot's stamp. A snapshot some root serves cannot be deleted.
@@ -583,6 +614,18 @@ class BundleInfo:
     sent_bytes: int
     removed: int
     made: str
+    kind: str = "bundle"
+
+
+@dataclass(frozen=True)
+class RepoVersionInfo:
+    id: int
+    network: str
+    repo: str
+    number: int
+    digest: str
+    stamp: str
+    label: str | None
 
 
 @dataclass(frozen=True)
@@ -707,6 +750,9 @@ class Pool:
                 "ON packages(checksum, size, filename)")
             # Pre-dims databases: add the column, then fill it from the
             # legacy columns once. Rows already carrying dims are untouched.
+            bcols = {r[1] for r in self._conn.execute("PRAGMA table_info(bundles)")}
+            if "kind" not in bcols:
+                self._conn.execute("ALTER TABLE bundles ADD COLUMN kind TEXT NOT NULL DEFAULT 'bundle'")
             mcols = {r[1] for r in self._conn.execute("PRAGMA table_info(mirrors)")}
             if "dims" not in mcols:
                 self._conn.execute("ALTER TABLE mirrors ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'")
@@ -1475,6 +1521,7 @@ class Pool:
         with self._lock:
             for sid in ids:
                 self._conn.execute("DELETE FROM snapshot_files WHERE snapshot = ?", (sid,))
+                self._conn.execute("DELETE FROM snapshot_repos WHERE snapshot = ?", (sid,))
                 self._conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
             # The shared tables hold exactly what some snapshot still lists —
             # prune reads `snapshot_blobs` as the set of held checksums.
@@ -1509,7 +1556,7 @@ class Pool:
             if clash:
                 return (f"snapshots or bundles of a network called '{new}' are already in "
                         f"the pool — '{old}''s were left under the old name")
-            for table in ("snapshots", "bundles", "published"):
+            for table in ("snapshots", "bundles", "published", "repo_versions"):
                 self._conn.execute(f"UPDATE {table} SET network = ? WHERE network = ?",
                                    (new, old))
             self._conn.commit()
@@ -1526,6 +1573,9 @@ class Pool:
         if ids:
             self._delete_snapshots(ids)
         with self._lock:
+            self._conn.execute("DELETE FROM bundle_repos WHERE bundle IN "
+                               "(SELECT id FROM bundles WHERE network = ?)", (network,))
+            self._conn.execute("DELETE FROM repo_versions WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM bundles WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM published WHERE network = ?", (network,))
             self._conn.commit()
@@ -1562,22 +1612,124 @@ class Pool:
             "JOIN snapshot_paths p ON p.id = f.path WHERE s.network = ?", (network,)))
 
     def record_bundle(self, network: str, from_stamp: str | None, to_stamp: str,
-                      out_path: str, sent: int, sent_bytes: int, removed: int) -> None:
+                      out_path: str, sent: int, sent_bytes: int, removed: int, *,
+                      kind: str = "bundle",
+                      repos: "dict[str, tuple[int | None, int]] | None" = None) -> int:
+        """Log one completed transfer and, per repository, which version it
+        took the far side from and to (ids; from None: in full)."""
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO bundles (network, from_stamp, to_stamp, out_path, sent, "
-                "sent_bytes, removed) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (network, from_stamp, to_stamp, out_path, sent, sent_bytes, removed))
-            self._conn.commit()
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO bundles (network, from_stamp, to_stamp, out_path, sent, "
+                    "sent_bytes, removed, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (network, from_stamp, to_stamp, out_path, sent, sent_bytes, removed, kind))
+                bid = cur.lastrowid
+                self._conn.executemany(
+                    "INSERT INTO bundle_repos (bundle, repo, from_version, to_version) VALUES (?, ?, ?, ?)",
+                    [(bid, repo, a, b) for repo, (a, b) in (repos or {}).items()])
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return bid
 
     def bundles(self, network: str) -> list[BundleInfo]:
         """Newest first."""
         with self._read() as c:
+            # A read-only open of a pool no newer mmw has opened yet has no
+            # `kind` column; every row it holds is a bundle.
+            cols = {r[1] for r in c.execute("PRAGMA table_info(bundles)")}
+            kind = "kind" if "kind" in cols else "'bundle'"
             rows = c.execute(
                 "SELECT id, network, from_stamp, to_stamp, out_path, sent, sent_bytes, "
-                "removed, made FROM bundles WHERE network = ? ORDER BY id DESC",
+                f"removed, made, {kind} FROM bundles WHERE network = ? ORDER BY id DESC",
                 (network,)).fetchall()
         return [BundleInfo(*r) for r in rows]
+
+    # ── repository versions ──────────────────────────────────────────────────
+
+    _VERSION_COLS = "v.id, v.network, v.repo, v.number, v.digest, v.stamp, v.label"
+
+    def _versions(self, sql: str, args: tuple) -> list[RepoVersionInfo]:
+        try:
+            with self._read() as c:
+                return [RepoVersionInfo(*r) for r in c.execute(sql, args).fetchall()]
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):        # read-only open of an older pool
+                return []
+            raise
+
+    def record_repo_versions(self, snapshot_id: int, network: str, stamp: str,
+                             digests: dict[str, str]) -> dict[str, RepoVersionInfo]:
+        """Attach each repository's version to a snapshot: the existing one
+        with the same digest, or a new one numbered after the last."""
+        self.flush_writes()
+        with self._lock:
+            try:
+                ids = {}
+                for repo, digest in sorted(digests.items()):
+                    row = self._conn.execute(
+                        "SELECT id FROM repo_versions WHERE network = ? AND repo = ? AND digest = ?",
+                        (network, repo, digest)).fetchone()
+                    if row is None:
+                        (top,) = self._conn.execute(
+                            "SELECT COALESCE(MAX(number), 0) FROM repo_versions "
+                            "WHERE network = ? AND repo = ?", (network, repo)).fetchone()
+                        row = (self._conn.execute(
+                            "INSERT INTO repo_versions (network, repo, number, digest, stamp) "
+                            "VALUES (?, ?, ?, ?, ?)", (network, repo, top + 1, digest, stamp)).lastrowid,)
+                    self._conn.execute("INSERT OR IGNORE INTO snapshot_repos (snapshot, version) VALUES (?, ?)",
+                                       (snapshot_id, row[0]))
+                    ids[repo] = row[0]
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return self.snapshot_repo_versions(snapshot_id)
+
+    def snapshot_repo_versions(self, snapshot_id: int) -> dict[str, RepoVersionInfo]:
+        return {v.repo: v for v in self._versions(
+            f"SELECT {self._VERSION_COLS} FROM snapshot_repos s JOIN repo_versions v ON v.id = s.version "
+            "WHERE s.snapshot = ?", (snapshot_id,))}
+
+    def repo_versions(self, network: str, repo: str | None = None) -> list[RepoVersionInfo]:
+        """Newest number first."""
+        where, args = ("AND v.repo = ?", (network, repo)) if repo is not None else ("", (network,))
+        return self._versions(
+            f"SELECT {self._VERSION_COLS} FROM repo_versions v WHERE v.network = ? {where} "
+            "ORDER BY v.repo, v.number DESC", args)
+
+    def repo_version(self, version_id: int) -> RepoVersionInfo:
+        found = self._versions(f"SELECT {self._VERSION_COLS} FROM repo_versions v WHERE v.id = ?",
+                               (version_id,))
+        if not found:
+            raise LookupError(f"no repository version {version_id}")
+        return found[0]
+
+    def repo_version_snapshots(self, version_id: int) -> list[int]:
+        """Ids of the snapshots holding a version, newest stamp first."""
+        try:
+            with self._read() as c:
+                return [r[0] for r in c.execute(
+                    "SELECT s.id FROM snapshot_repos r JOIN snapshots s ON s.id = r.snapshot "
+                    "WHERE r.version = ? ORDER BY s.stamp DESC", (version_id,)).fetchall()]
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return []
+            raise
+
+    def last_sent_versions(self, network: str) -> dict[str, int]:
+        """Repository → the version id the newest transfer naming it sent."""
+        try:
+            with self._read() as c:
+                rows = c.execute(
+                    "SELECT r.repo, r.to_version FROM bundle_repos r JOIN bundles b ON b.id = r.bundle "
+                    "WHERE b.network = ? ORDER BY b.id", (network,)).fetchall()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return {}
+            raise
+        return dict(rows)                       # later bundles overwrite earlier ones
 
     def snapshot_delta(self, from_id: int | None, to_id: int) -> tuple[int, int]:
         """(files, bytes) a bundle from `from_id` (None: full) to `to_id`

@@ -818,8 +818,8 @@ def test_large_file_reports_incremental_progress_while_compressing(pool, tmp_pat
     monkeypatch.setattr(sinks_mod, "_ANNOUNCE_LARGE_FILE_BYTES", 10)
     monkeypatch.setattr(sinks_mod, "_ARCHIVE_REPORT_INTERVAL", 0.0)  # report every chunk
 
-    payload = b"z" * 50_000  # large enough for tarfile's internal copy loop
-    # to call .read() several times, so "incremental" is actually exercised.
+    payload = b"z" * 3_000_000  # several of the tar writer's 1 MiB copy reads,
+    # so "incremental" is actually exercised.
     cs, src = _seed(pool, payload, "big.deb")
     out = tmp_path / "lab.tar"
     events: list[tuple[str, str]] = []

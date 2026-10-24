@@ -515,6 +515,12 @@ def apply(bundle, root, dry_run=False, verify=False):
             if name == MANIFEST_MEMBER:
                 manifest_blob = tar.extractfile(member).read()
                 header, manifest = read_manifest_bytes(manifest_blob)
+                if (header.get("format") or 1) >= 2:
+                    sys.stderr.write(
+                        "this bundle is for a far side running mmw (manifest format %d) — "
+                        "apply it with `mmw site apply`, or ask for an apply.py bundle\n"
+                        % header["format"])
+                    return EXIT_TOOLING
                 have = read_state(root)
                 want = header.get("previous")
                 if not header.get("full") and have != want:

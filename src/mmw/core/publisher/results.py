@@ -98,6 +98,9 @@ class NetworkPublishResult:
     # Every base the walk published (`BaseProvider.publish` decides them);
     # recorded in snapshots so replay and bundles need not re-derive them.
     bases: list[str] = field(default_factory=list)
+    # base → the repository it belongs to (`repos.repository_key`); a base
+    # no unit claims is left out.
+    base_repos: dict[str, str] = field(default_factory=dict)
     # Set by a dry run: the totals below then count shared files once
     # instead of summing the per-mirror estimates.
     totals: NetworkTotals | None = None
@@ -182,6 +185,11 @@ class BundleResult:
     deleted: int = 0
     manifest_path: Path | None = None
     checksum_path: Path | None = None
+    # A bundle streamed to stdout (`--out -`): the sha256 of every byte
+    # written, since there is no file beside it to hold a `.sha256`.
+    stream_sha256: str | None = None
+    # mmw far side: each repository this bundle carries (`repo_delta.RepoDelta`).
+    repos: list = field(default_factory=list)
     mirrors: list[MirrorPublishResult] = field(default_factory=list)
     errors: list[str] = _FoldedErrors()
     dist_upgrade_warnings: list[str] = field(default_factory=list)

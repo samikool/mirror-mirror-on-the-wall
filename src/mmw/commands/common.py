@@ -107,7 +107,7 @@ def incomplete_mirrors(net, cfg, mirror_dir: Path) -> list[str]:
 
 
 def preflight_ok(verb: str, net, cfg, mirror_dir: Path, allow_incomplete: bool,
-                 warn_only: bool = False) -> bool:
+                 warn_only: bool = False, *, stdout_is_payload: bool = False) -> bool:
     """False when `net` must not be published/bundled. Prints the reason.
 
     `--allow-incomplete` is an escape hatch, not a silence: it still says what
@@ -120,7 +120,9 @@ def preflight_ok(verb: str, net, cfg, mirror_dir: Path, allow_incomplete: bool,
     operator what to sync. It still prints every problem it found.
     """
     from mmw.core.db_warm import warm_for_job
-    warm_for_job(mirror_dir, say=lambda message: print(f"  {message}"))
+    # `--out -`: stdout is the bundle itself, so even progress goes to stderr.
+    say = eprint if stdout_is_payload else print
+    warm_for_job(mirror_dir, say=lambda message: say(f"  {message}"))
     try:
         problems = incomplete_mirrors(net, cfg, mirror_dir)
     except Exception as e:

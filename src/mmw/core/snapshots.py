@@ -130,10 +130,19 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
             # Hosts providers serve beyond their units' own (changelogs.ubuntu.com
             # for dist-upgrade), so a snapshot's nginx is regenerated exactly.
             "extra_hosts": extra_hosts(network, mirrors),
+            # Which repository each base belongs to: what versions and the
+            # far side track (`recorded_repos`).
+            "repos": _group_repos(result.base_repos),
         }, sort_keys=True)
+        # Older snapshots first, so version numbers follow time even when a
+        # snapshot is the first thing taken after upgrading.
+        ensure_repo_versions(pool, network.name)
         stamp = _free_stamp(pool, network.name)
+        rows = sorted(sink.rows.items())
         sid = pool.create_snapshot(network.name, stamp, kind=kind, label=label,
-                                   rows=sorted(sink.rows.items()), settings=settings)
+                                   rows=rows, settings=settings)
+        pool.record_repo_versions(sid, network.name, stamp,
+                                  repo_digests(rows, recorded_repos(settings)))
         return next(s for s in pool.snapshots(network.name) if s.id == sid)
 
 
@@ -148,6 +157,91 @@ def recorded_bases(settings: str) -> list[str]:
     if bases is None:
         bases = {MirrorConfig.model_validate(m).mirror_base for m in data.get("mirrors", [])}
     return sorted(set(bases), key=len, reverse=True)
+
+
+def _group_repos(base_repos: dict[str, str]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for base, repo in base_repos.items():
+        grouped.setdefault(repo, []).append(base)
+    return {repo: sorted(bases, key=len, reverse=True) for repo, bases in grouped.items()}
+
+
+def recorded_repos(settings: str) -> dict[str, list[str]]:
+    """Repository key → its bases (longest first) for a snapshot. Recorded
+    since repositories were versioned; derived for snapshots taken before:
+    an apt mirror's base is its source's, a base a "provider"-scope
+    provider claims is that provider's, and what is left goes to the one
+    such provider recorded that claimed nothing, if there is exactly one."""
+    from mmw.core.config import MirrorConfig
+    from mmw.providers import get_provider
+    data = json.loads(settings or "{}")
+    if "repos" in data:
+        return {r: list(b) for r, b in data["repos"].items()}
+    mirrors = [MirrorConfig.model_validate(m) for m in data.get("mirrors", [])]
+    scoped = []
+    base_repos: dict[str, str] = {}
+    for m in mirrors:
+        provider = get_provider(m.provider)
+        if provider.repository_scope == "provider":
+            if provider not in scoped:
+                scoped.append(provider)
+        else:
+            base_repos[m.mirror_base] = m.source
+    claimed_by: set[str] = set()
+    leftover = []
+    for base in recorded_bases(settings):
+        if base in base_repos:
+            continue
+        owner = next((p for p in scoped if p.claims_base(base)), None)
+        if owner is not None:
+            base_repos[base] = owner.name
+            claimed_by.add(owner.name)
+        else:
+            leftover.append(base)
+    rest = [p for p in scoped if p.name not in claimed_by]
+    if len(rest) == 1:
+        base_repos.update(dict.fromkeys(leftover, rest[0].name))
+    return _group_repos(base_repos)
+
+
+def repo_digests(rows, repo_bases: dict[str, list[str]]) -> dict[str, str]:
+    """A digest per repository of its (path, checksum) rows — equal digests,
+    equal files. Every repository gets one, even with no files; rows under
+    no repository's base (network-level files) count for none."""
+    from mmw.core.repos import attribute
+    hashes = {repo: hashlib.sha256() for repo in repo_bases}
+    for path, checksum in sorted(rows):
+        repo = attribute(path, repo_bases)
+        if repo is not None:
+            hashes[repo].update(f"{path}\0{checksum}\n".encode())
+    return {repo: h.hexdigest() for repo, h in hashes.items()}
+
+
+def ensure_repo_versions(pool: Pool, network: str) -> int:
+    """Give every complete snapshot of `network` that has no repository
+    versions its versions, oldest first so the numbers follow time.
+    History-only (imported) snapshots get none. Returns how many."""
+    done = 0
+    for snap in reversed(pool.snapshots(network)):
+        if not snap.complete or pool.snapshot_repo_versions(snap.id):
+            continue
+        pool.record_repo_versions(snap.id, network, snap.stamp,
+                                  repo_digests(pool.snapshot_files(snap.id), recorded_repos(snap.settings)))
+        done += 1
+    return done
+
+
+def repo_version_files(pool: Pool, version):
+    """A repository version's (path, checksum) rows, from the newest
+    snapshot holding it; None once no snapshot does (its content is gone)."""
+    from mmw.core.repos import attribute
+    holders = pool.repo_version_snapshots(version.id)
+    if not holders:
+        return None
+    snap = next(s for s in pool.snapshots(version.network) if s.id == holders[0])
+    repo_bases = recorded_repos(snap.settings)
+    return ((path, checksum) for path, checksum in pool.snapshot_files(snap.id)
+            if attribute(path, repo_bases) == version.repo)
 
 
 # ── finding, cleaning, importing ─────────────────────────────────────────────
@@ -225,18 +319,31 @@ class CleanPlan:
     kept: list[tuple[SnapshotInfo, str]]   # past `keep` but kept anyway, and why
 
 
-def clean_plan(pool: Pool, network: str, keep: int) -> CleanPlan:
+def clean_plan(pool: Pool, network: str, keep: int, cfg: Config | None = None) -> CleanPlan:
     """What "keep the newest `keep` snapshots" would delete, and free. A
     snapshot a directory serves, or the last bundle went to, is never
     cleaned — delete it by name if it really must go."""
     last = last_bundled_to(pool, network)
+    sent = set(pool.last_sent_versions(network).values())
     delete, kept = [], []
-    for s in pool.snapshots(network)[max(keep, 0):]:
+    candidates = pool.snapshots(network)[max(keep, 0):]
+    doomed = {s.id for s in candidates}
+    for s in candidates:
         roots = served_by(pool, s)
+        # A version the ledger says the far side has, which no snapshot
+        # outside this clean holds: the next delta of that repository
+        # starts from it.
+        only = [v for v in pool.snapshot_repo_versions(s.id).values()
+                if v.id in sent and set(pool.repo_version_snapshots(v.id)) <= doomed]
         if roots:
             kept.append((s, f"published at {', '.join(roots)}"))
         elif s.stamp == last:
             kept.append((s, "the last bundle went to it"))
+        elif only:
+            from mmw.core.repos import repository_label
+            names = ", ".join(sorted(repository_label(v.repo, cfg) if cfg else v.repo for v in only))
+            kept.append((s, f"holds the version last sent of {names}"))
+            doomed.discard(s.id)
         else:
             delete.append(s)
     return CleanPlan(delete, pool.snapshot_exclusive_bytes([s.id for s in delete]), kept)

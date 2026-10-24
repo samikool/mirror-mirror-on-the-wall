@@ -176,8 +176,12 @@ class NetworksPage(Page):
             from mmw.tui.snapshot_pages import BundlePickPage, PublishPickPage, load_status
             mirror_dir = self.app.cfg.settings.mirror_dir
             status = await asyncio.to_thread(load_status, mirror_dir, net)
+            repos = None
+            if verb == "bundle" and net.far_side == "mmw":
+                from mmw.core.repos import network_repos
+                repos = await asyncio.to_thread(network_repos, net, self.app.cfg, mirror_dir)
             page = (PublishPickPage(net, status) if verb == "publish"
-                    else BundlePickPage(net, status, mirror_dir))
+                    else BundlePickPage(net, status, mirror_dir, repos=repos))
             choice = await self.app.push_screen_wait(page)
             if choice is None:
                 return          # cancelled — never falls back to a default silently

@@ -121,6 +121,7 @@ def _selection_text(sel) -> str:
 class VscodeProvider(BaseProvider):
     name = "vscode"
     label = "VS Code"
+    repository_scope = "provider"
     description = "Extensions, desktop builds and server builds from the Microsoft Marketplace"
     # `platforms` passes a unit with no platform: the universal-extensions
     # unit belongs to every platform. `qualities` passes extension units.

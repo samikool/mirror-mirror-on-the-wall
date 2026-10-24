@@ -127,3 +127,25 @@ def test_a_legacy_zstd_ledger_file_is_still_read(tmp_path):
     header, rows = iter_manifest(legacy)
     assert header.created == "20260901T000000Z"
     assert list(rows) == [("a/b.deb", "aa" * 32)]
+
+
+def test_v1_header_bytes_unchanged(tmp_path):
+    from mmw.core.publisher.manifest import ManifestHeader, write_manifest
+    h = ManifestHeader(network="n", created="20261001T000000Z", previous=None, full=True)
+    write_manifest(tmp_path / "m", h, [("a/b", "c")])
+    data = (tmp_path / "m").read_bytes()
+    assert b"format" not in data and b"repos" not in data and b'"r"' not in data
+    assert data.splitlines()[1] == b'{"p": "a/b", "c": "c"}'
+
+
+def test_v2_round_trip(tmp_path):
+    from mmw.core.publisher.manifest import ManifestHeader, iter_manifest, iter_manifest_v2, write_manifest
+    repos = {"vscode": {"label": "VS Code", "from": 3, "to": 4, "digest": "d", "bases": ["h"]}}
+    h = ManifestHeader(network="n", created="20261001T000000Z", previous="20260901T000000Z", full=False,
+                       format=2, repos=repos)
+    write_manifest(tmp_path / "m", h, [("h/a", "1", "vscode"), ("keys/k", "2", None)])
+    header, rows = iter_manifest_v2(tmp_path / "m")
+    assert header.format == 2 and header.repos == repos
+    assert list(rows) == [("h/a", "1", "vscode"), ("keys/k", "2", None)]
+    _, plain = iter_manifest(tmp_path / "m")
+    assert list(plain) == [("h/a", "1"), ("keys/k", "2")]

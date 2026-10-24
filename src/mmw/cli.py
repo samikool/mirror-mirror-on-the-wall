@@ -476,7 +476,8 @@ def cmd_certs(
 def cmd_bundle(
     network: str = typer.Option(None, "--network", "-n", help="Bundle one network by name"),
     out: Path = typer.Option(None, "--out", "-o",
-                             help="Write here instead of the network's bundle_dir"),
+                             help="Write here instead of the network's bundle_dir. "
+                                  "'-' streams the tar to stdout (needs -n)."),
     allow_incomplete: bool = typer.Option(
         False, "--allow-incomplete",
         help="Bundle even if the pool cannot serve everything the indexes promise. "
@@ -489,6 +490,9 @@ def cmd_bundle(
     to_ref: str = typer.Option(
         None, "--to", help="Snapshot to bring it to (stamp, label or id). "
                            "Default: a new snapshot of now."),
+    repo: list[str] = typer.Option(
+        None, "--repo", help="Only this repository (URL or name; repeatable). Needs -n and "
+                             'far_side = "mmw".'),
 ):
     """Write a network's mirrors to a transferable bundle — between any two
     snapshots (see `mmw snapshot list`). By default: from where the last
@@ -496,7 +500,31 @@ def cmd_bundle(
     from mmw.commands.bundle import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out,
                          allow_incomplete=allow_incomplete,
-                         from_ref=from_ref, to_ref=to_ref))
+                         from_ref=from_ref, to_ref=to_ref, repos=repo or None))
+
+
+@app.command("stage")
+def cmd_stage(
+    network: str = typer.Option(..., "--network", "-n", help="The network to stage"),
+    out: Path = typer.Option(None, "--out", "-o",
+                             help="Directory to stage into instead of the network's bundle_dir"),
+    allow_incomplete: bool = typer.Option(
+        False, "--allow-incomplete",
+        help="Stage even if the pool cannot serve everything the indexes promise."),
+    from_ref: str = typer.Option(
+        None, "--from", help="Snapshot the far side is at (stamp, label or id), or 'none' "
+                             "for everything. Default: what was last sent of each repository."),
+    to_ref: str = typer.Option(
+        None, "--to", help="Snapshot to bring it to. Default: a new snapshot of now."),
+    repo: list[str] = typer.Option(
+        None, "--repo", help="Only this repository (URL or name; repeatable)."),
+):
+    """Lay a bundle out as a directory of hardlinks to the pool — the same
+    members as `mmw bundle`, almost no disk — to tar, rsync or inspect without
+    mmw. For networks whose far side runs mmw (far_side = "mmw")."""
+    from mmw.commands.stage import run
+    raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
+                         from_ref=from_ref, to_ref=to_ref, repos=repo or None))
 
 
 snapshot_app = typer.Typer(
@@ -517,10 +545,12 @@ def cmd_snapshot_take(network: str = _SNAP_NET,
 
 
 @snapshot_app.command("list")
-def cmd_snapshot_list(network: str = _SNAP_NET):
+def cmd_snapshot_list(network: str = _SNAP_NET,
+                      repos: bool = typer.Option(False, "--repos",
+                                                 help="Also show each repository's version")):
     """List the network's snapshots, newest first, with the disk each alone holds."""
     from mmw.commands.snapshot import list_
-    raise typer.Exit(list_(_cfg_dir(), network))
+    raise typer.Exit(list_(_cfg_dir(), network, repos=repos))
 
 
 @snapshot_app.command("rename")

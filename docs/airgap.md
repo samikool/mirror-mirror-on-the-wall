@@ -56,10 +56,52 @@ Useful flags:
 mmw bundle -n lab --from none         # send everything, not just the delta
 mmw bundle -n lab --out /media/usb    # write here instead of bundle_dir
 mmw bundle -n lab --allow-incomplete  # ship anyway, having been told what is missing
+mmw bundle -n lab --out -             # stream the tar to stdout (see below)
 ```
+
+### Straight onto a drive, over ssh
+
+`--out -` writes the bundle to stdout and nothing to disk, so a machine
+with the drive attached can pull it from the mirror host:
+
+```bash
+ssh mirrorhost mmw bundle -n lab --out - > /media/drive/lab.tar
+```
+
+Everything else mmw prints goes to stderr, ending with a `sha256 <digest>`
+line. Write it beside the tar under the name you chose, in `sha256sum -c`
+format, to check the copy later:
+
+```bash
+echo "<digest>  lab.tar" > /media/drive/lab.tar.sha256
+``` The
+bundle counts as sent only once the last byte is written: if the pipe
+breaks, nothing is recorded and the same command starts it again.
+Streaming runs at the disk's speed, about the same as `tar cf -` over the
+same files.
 
 `--from none` still computes deletions. It means "send every file", not "forget what
 the far side has".
+
+### Stage instead of bundle
+
+For a network whose far side runs mmw (`far_side = "mmw"`), `mmw stage`
+lays the bundle out as a directory instead of a tar: the same members,
+with every package hardlinked from the pool, so it costs almost no disk.
+It exists without mmw, so tar it over ssh, rsync it or look inside it with
+whatever you like:
+
+```bash
+mmw stage -n lab --out /srv/stage          # /srv/stage/lab-<stamp>/
+ssh mirrorhost tar cf - -C /srv/stage/lab-<stamp> . > /media/drive/lab.tar
+```
+
+Tar the directory's contents (`-C …/lab-<stamp> .`), not the directory
+itself, so `.mmw/manifest.jsonl` sits at the top of the archive. Any such
+tar, in any order, is a valid bundle for the far-side mmw. Keep
+the stage directory on the pool's filesystem: elsewhere mmw warns and copies
+the files instead. It counts as sent once the directory is complete; delete
+it yourself when it has gone across.
 
 ### Between any two snapshots
 

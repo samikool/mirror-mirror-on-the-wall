@@ -181,6 +181,10 @@ class BaseProvider(ABC):
     by_hash: bool = False   # publish index files under by-hash/SHA256/ too
     publishes: bool = True  # publish/bundle support
     carries_history: bool = False  # fetch_all reads `history`; refetches must pass it too
+    # What end users revert as one: "source" — each configured source is its
+    # own repository; "provider" — every source of this provider is one
+    # repository (all of VS Code moves together, all of PyPI).
+    repository_scope: str = "source"
     # Sync saves this provider's failed downloads, and `repair_packages`
     # retries them against the unit's saved `meta` refs (`mmw retry-failed`).
     retries_failures: bool = False
@@ -312,6 +316,11 @@ class BaseProvider(ABC):
     def published_packages(self, index: Path) -> list[PackageInfo]:
         """The packages a `published_index` file lists."""
         return []
+
+    def claims_base(self, base: str) -> bool:
+        """A "provider"-scope provider recognising one of its own bases, for
+        snapshots taken before bases were recorded per repository."""
+        return False
 
     def extra_hosts(self, network, units) -> list[str]:
         """Hostnames this provider serves beyond its units' own hosts (pure —

@@ -73,6 +73,8 @@ class BundleChoice:
     from_ref: str | None = None
     to_ref: str = "now"
     allow_incomplete: bool = False
+    repos: tuple[str, ...] | None = None    # mmw far side: only these (None: all)
+    stage: bool = False                     # mmw far side: a directory of hardlinks, not a tar
 
 
 class PublishFlows:
@@ -404,16 +406,19 @@ class PublishFlows:
 
     async def _execute_bundle(self, net: "config.NetworkConfig", view,
                               choice: BundleChoice | None = None) -> None:
-        from mmw.core.publisher.bundle import bundle_network
+        from mmw.core.publisher.bundle import bundle_network, stage_network
 
         choice = choice or BundleChoice()
         ends = {"to_ref": choice.to_ref}
         if not choice.from_last:
             ends["from_ref"] = choice.from_ref
+        if choice.repos is not None:
+            ends["repos"] = list(choice.repos)
+        verb = stage_network if choice.stage else bundle_network
         view.begin()
         try:
             result = await asyncio.to_thread(
-                lambda: bundle_network(
+                lambda: verb(
                     net, self.cfg(), self.cfg().settings.mirror_dir,
                     progress=view.record, stop_event=view.stop_event,
                     mirror_start_callback=view.notify_mirror_start, **ends))

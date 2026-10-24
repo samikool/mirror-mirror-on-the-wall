@@ -18,6 +18,7 @@ import hashlib
 from pathlib import Path
 
 from mmw.core import disk_io
+from mmw.core.format import fmt_size
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool, holds_shared_pool_lock
 
@@ -53,10 +54,20 @@ def is_explicit_file_out(out: Path | None) -> bool:
     return out is not None and bool(out.suffix) and not disk_io.ops.is_dir(out)
 
 
+STDOUT = Path("-")
+
+
+def is_stdout(out: Path | None) -> bool:
+    """`--out -`: the bundle goes to stdout, not a file."""
+    return out is not None and str(out) == "-"
+
+
 def bundle_output_path(network: NetworkConfig, created: str,
                        out: Path | None = None) -> Path:
     """Where this bundle lands. `out` may be a file or a directory."""
     name = f"{network.name}-{created}.tar"
+    if is_stdout(out):
+        return STDOUT
     if out is not None:
         return out if is_explicit_file_out(out) else out / name
     if network.bundle_dir is None:
@@ -99,7 +110,7 @@ def _far_nginx(settings: str, certs: bool, *, previous: bool = False) -> dict[st
     return recorded_nginx_files(settings, ROOT_PLACEHOLDER, tls_include=include, legacy=legacy)
 
 
-_LAST = object()        # from_ref default: where the last bundle of this network went
+from mmw.core.publisher.repo_delta import _LAST  # noqa: E402 — from_ref default: where the last bundle went
 
 
 def _resolve_from(pool: Pool, network: str, from_ref):
@@ -117,8 +128,30 @@ def _resolve_from(pool: Pool, network: str, from_ref):
     return find_snapshot(pool, network, from_ref)
 
 
+def _same_filesystem(a: Path, b: Path) -> bool:
+    """Whether hardlinks from `a` can land under `b` (the nearest existing
+    parent of `b` is what is checked)."""
+    while not disk_io.ops.exists(b) and b != b.parent:
+        b = b.parent
+    return disk_io.ops.stat(a).st_dev == disk_io.ops.stat(b).st_dev
+
+
+def _free_stage_dir(network, name: str, out_dir: Path | None) -> Path:
+    base = out_dir if out_dir is not None else network.bundle_dir
+    if base is None:
+        raise ValueError(f"network '{network.name}' has no bundle destination — "
+                         "set bundle_dir in mmw.toml or pass --out")
+    target, n = base / f"{network.name}-{name}", 2
+    while disk_io.ops.exists(target):
+        target = base / f"{network.name}-{name}.{n}"
+        n += 1
+    return target
+
+
 def _free_target(network, name: str, out_path) -> Path:
     target = bundle_output_path(network, name, out_path)
+    if is_stdout(out_path):
+        return target
     if is_explicit_file_out(out_path):
         if disk_io.ops.exists(target):
             raise ValueError(
@@ -144,6 +177,9 @@ def bundle_network(
     *,
     from_ref=_LAST,
     to_ref: str = "now",
+    stdout=None,
+    repos: list[str] | None = None,
+    stage: bool = False,
 ) -> BundleResult:
     """One `.tar` that takes a far side from snapshot `from_ref` to
     snapshot `to_ref` — any two, forwards or backwards.
@@ -162,13 +198,19 @@ def bundle_network(
     The nginx config and TLS files are regenerated for the far side.
     """
     from mmw.core.snapshots import (
-        find_snapshot, import_ledger, recorded_bases, take_snapshot,
+        ensure_repo_versions, find_snapshot, import_ledger, recorded_bases, take_snapshot,
     )
+
+    mmw_far_side = network.far_side == "mmw"
+    if repos is not None and not mmw_far_side:
+        from mmw.core.far_side import require_mmw
+        require_mmw(network, "partial bundles")
 
     from mmw.core.publisher import warm_for_publish
     warm_for_publish(mirror_dir, progress, stop_event)
     with Pool(mirror_dir) as pool:
         import_ledger(pool, mirror_dir, network.name)
+        ensure_repo_versions(pool, network.name)
         start = _resolve_from(pool, network.name, from_ref)
         if to_ref != "now":
             dest = find_snapshot(pool, network.name, to_ref)
@@ -182,7 +224,10 @@ def bundle_network(
         bundle_output_path(network, "x", out_path)   # destination check
         dest = take_snapshot(network, cfg, mirror_dir, kind="bundle", stop_event=stop_event,
                              warnings=snap_warnings)
-    if start is not None and start.id == dest.id:
+    # An mmw network's default start is per repository: the last bundle's
+    # snapshot may still hold repositories it did not carry, so "the same
+    # snapshot" is for the delta planner to judge, repository by repository.
+    if start is not None and start.id == dest.id and not (mmw_far_side and from_ref is _LAST):
         raise ValueError(f"from and to are the same snapshot ({dest.stamp}) — nothing to send")
 
     # A certs network's key and signing request ride every bundle; the CA
@@ -191,7 +236,7 @@ def bundle_network(
     tls_files = bundle_tls_files(network, cfg) if network.certs else {}
 
     name = dest.stamp if start is None else f"{start.stamp}-to-{dest.stamp}"
-    target = _free_target(network, name, out_path)
+    target = _free_stage_dir(network, name, out_path) if stage else _free_target(network, name, out_path)
     header = ManifestHeader(network=network.name, created=dest.stamp,
                             previous=start.stamp if start else None, full=start is None,
                             previous_label=start.label if start else None,
@@ -205,7 +250,34 @@ def bundle_network(
         if missing:
             raise ValueError(f"{missing} file(s) of snapshot {dest.stamp} are no longer in "
                              "the pool — it cannot be bundled to")
-        prev = dict(pool.snapshot_files(start.id)) if start else {}
+        deltas, included, dest_repo_bases = [], None, {}
+        if mmw_far_side:
+            from dataclasses import replace
+            from mmw.core.publisher.repo_delta import plan_repo_deltas
+            from mmw.core.repos import attribute
+            from mmw.core.snapshots import recorded_repos, repo_version_files
+            explicit = find_snapshot(pool, network.name, from_ref) if isinstance(from_ref, str) else from_ref
+            deltas, delta_warnings = plan_repo_deltas(pool, network, cfg, dest, repos=repos, from_ref=explicit)
+            result.warnings.extend(delta_warnings)
+            result.repos = deltas
+            included = {d.repo for d in deltas}
+            dest_repo_bases = recorded_repos(dest.settings)
+            header = replace(header, format=2, full=all(d.start is None for d in deltas), repos={
+                d.repo: {"label": d.label, "from": d.start.number if d.start else None,
+                         "to": d.dest.number, "digest": d.dest.digest, "bases": d.bases}
+                for d in deltas})
+            result.full = header.full
+            # What the far side has: the network-level files of where the
+            # last bundle went, and each repository's own starting version.
+            prev = {}
+            if start is not None:
+                start_bases = recorded_repos(start.settings)
+                prev = {p: c for p, c in pool.snapshot_files(start.id) if attribute(p, start_bases) is None}
+            for d in deltas:
+                if d.start is not None:
+                    prev.update(repo_version_files(pool, d.start))
+        else:
+            prev = dict(pool.snapshot_files(start.id)) if start else {}
         if start is not None:
             # Generated setup is reconstructed from the start's recorded
             # format, including the old host-root form during upgrades.
@@ -218,9 +290,28 @@ def bundle_network(
                 for rel in prev:
                     if rel.startswith("nginx/") and not rel.endswith(".tar"):
                         prev[rel] = ""
-        sink = BundleSink(target, header, prev, apply_script_bytes(),
-                          prune=network.prune, full=start is None,
-                          progress=progress, tls_files=tls_files, stop_event=stop_event)
+        streaming = is_stdout(out_path) and not stage
+        hashing = None
+        writer = None
+        staged = []                         # the DirMembers, once made
+        if stage:
+            from mmw.core.publisher.members import DirMembers
+
+            def writer():
+                staged.append(DirMembers(target))
+                return staged[-1]
+        if streaming:
+            import sys
+            from mmw.core.publisher.members import HashingWriter, TarMembers
+            hashing = HashingWriter(stdout if stdout is not None else sys.stdout.buffer)
+            writer = lambda: TarMembers(hashing)  # noqa: E731
+        row_repo = (lambda rel: attribute(rel, dest_repo_bases)) if mmw_far_side else None
+        sink = BundleSink(target if not streaming else Path(f"{network.name}-{name}.tar"), header, prev,
+                          apply_script_bytes(), prune=network.prune and not mmw_far_side,
+                          full=header.full if mmw_far_side else start is None, row_repo=row_repo,
+                          progress=progress, tls_files=tls_files, stop_event=stop_event,
+                          writer=writer,
+                          scratch_dir=ledger_dir(mirror_dir, network.name) if streaming or stage else None)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
         current_base, seen_bases = None, 0
@@ -236,6 +327,10 @@ def bundle_network(
             if base is not None and base != current_base and mirror_start_callback:
                 current_base, seen_bases = base, seen_bases + 1
                 mirror_start_callback(base, seen_bases, len(bases))
+            if included is not None:
+                repo = attribute(rel, dest_repo_bases)
+                if repo is not None and repo not in included:
+                    continue                    # not in this bundle: the far side keeps its own
             dest_paths.add(rel)
             kind = replay_kind(rel, base)
             if kind == KIND_PKG:
@@ -255,7 +350,7 @@ def bundle_network(
         from mmw.core.publisher.deployment import write_scripts
         dest_paths |= write_scripts(sink, network.certs, existing=dest_paths)
 
-        if network.prune:
+        if network.prune and not mmw_far_side:
             if start is not None:
                 gone = (p for p in prev if p not in dest_paths)
             else:
@@ -263,6 +358,12 @@ def bundle_network(
                         if p not in dest_paths)
             sink.deleted = sorted(set(gone))
 
+    if stage and not _same_filesystem(mirror_dir, target.parent):
+        warning = (f"{target.parent} is on another filesystem than the pool — "
+                   f"{fmt_size(sink.sent_bytes)} will be copied, not hardlinked")
+        result.warnings.append(warning)
+        if progress:
+            progress("", f"warning:{warning}")
     before_close = len(sink.errors)
     try:
         sink.close()
@@ -275,17 +376,48 @@ def bundle_network(
 
     # The exact manifest shipped, kept beside the ledger's history.
     manifest_path = ledger_dir(mirror_dir, network.name) / f"{dest.stamp}{MANIFEST_SUFFIX}"
-    write_manifest(manifest_path, sink.written_header or header, sink.manifest_rows)
-    disk_io.ops.write_bytes(target.parent / "apply.py", apply_script_bytes())
-    if tls_files:
-        for script in ("sign.py", "make-ca.py"):
-            disk_io.ops.write_bytes(target.parent / script, tls_files[script])
-    result.checksum_path = _write_checksum_file(target)
+    write_manifest(manifest_path, sink.written_header or header, sink.tagged_rows())
+    if streaming:
+        result.stream_sha256 = hashing.hexdigest()
+    elif stage:
+        copied = staged[-1] if staged else None
+        if copied is not None and copied.copied_files and not any("another filesystem" in w
+                                                                 for w in result.warnings):
+            result.warnings.append(f"{copied.copied_files} file(s) could not be hardlinked and were "
+                                   f"copied ({fmt_size(copied.copied_bytes)})")
+    else:
+        disk_io.ops.write_bytes(target.parent / "apply.py", apply_script_bytes())
+        if tls_files:
+            for script in ("sign.py", "make-ca.py"):
+                disk_io.ops.write_bytes(target.parent / script, tls_files[script])
+        result.checksum_path = _write_checksum_file(target)
     result.manifest_path = manifest_path
     result.sent = sink.sent
     result.sent_bytes = sink.sent_bytes
     result.deleted = len(sink.deleted)
     with Pool(mirror_dir) as pool:
+        # Per repository: the version the far side had (None: sent in full,
+        # or new to it) and the one it has now.
+        if mmw_far_side:
+            sent_repos = {d.repo: (d.start.id if d.start else None, d.dest.id) for d in deltas}
+        else:
+            before = pool.snapshot_repo_versions(start.id) if start is not None else {}
+            sent_repos = {repo: (before[repo].id if repo in before else None, v.id)
+                          for repo, v in pool.snapshot_repo_versions(dest.id).items()}
         pool.record_bundle(network.name, header.previous, dest.stamp, str(target),
-                           sink.sent, sink.sent_bytes, len(sink.deleted))
+                           sink.sent, sink.sent_bytes, len(sink.deleted),
+                           kind="stage" if stage else "stream" if streaming else "bundle",
+                           repos=sent_repos)
     return result
+
+
+def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir: Path | None = None,
+                  progress=None, stop_event=None, mirror_start_callback=None, *,
+                  from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None) -> BundleResult:
+    """`mmw stage`: the bundle `bundle_network` would write, laid out as a
+    directory `{out_dir or bundle_dir}/{network}-{name}/` of hardlinks to the
+    pool instead of a tar. For mmw networks only."""
+    from mmw.core.far_side import require_mmw
+    require_mmw(network, "mmw stage")
+    return bundle_network(network, cfg, mirror_dir, out_dir, progress, stop_event, mirror_start_callback,
+                          from_ref=from_ref, to_ref=to_ref, repos=repos, stage=True)

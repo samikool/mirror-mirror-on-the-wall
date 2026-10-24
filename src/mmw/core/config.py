@@ -939,6 +939,9 @@ class NetworkConfig(_StrictModel):
     # How long a release that left a provider's keep set stays published
     # (providers with version history — PyPI). Widening is not retroactive.
     retention: str = DEFAULT_RETENTION
+    # What runs on the airgapped side: `apply.py` alone, or mmw itself.
+    # Partial bundles and `mmw stage` need mmw there.
+    far_side: Literal["apply", "mmw"] = "apply"
 
     @field_validator("retention")
     @classmethod
@@ -1426,6 +1429,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": False} if not n.certs else {}),
             **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
+            **({"far_side": "mmw"} if n.far_side == "mmw" else {}),
         }
         for n in cfg.networks
     ]

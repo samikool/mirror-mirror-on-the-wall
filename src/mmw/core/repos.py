@@ -37,3 +37,22 @@ def attribute(path: str, repo_bases: dict[str, list[str]]) -> str | None:
             if len(base) > best_len and path.startswith(base + "/"):
                 best, best_len = repo, len(base)
     return best
+
+
+def resolve_repo_refs(refs: list[str], available: dict[str, str]) -> list[str]:
+    """Repository keys for what someone typed: each ref is a key exactly,
+    or a label, case-insensitively. `available` maps key → label."""
+    names = ", ".join(sorted(available.values(), key=str.lower))
+    out = []
+    for ref in refs:
+        if ref in available:
+            out.append(ref)
+            continue
+        matches = [k for k, label in available.items() if label.lower() == ref.lower()]
+        if len(matches) > 1:
+            raise LookupError(f"repository {ref!r} is ambiguous — use its URL: "
+                              + ", ".join(sorted(matches)))
+        if not matches:
+            raise LookupError(f"unknown repository {ref!r} — this network has: {names}")
+        out.append(matches[0])
+    return list(dict.fromkeys(out))

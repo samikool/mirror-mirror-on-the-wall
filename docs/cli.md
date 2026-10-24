@@ -104,6 +104,7 @@ bundle went, to a new snapshot of now.
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for a full bundle. Default: where the last bundle went. |
 | `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |
+| `--repo` |  | Only this repository (URL or name; repeatable). Needs `-n` and `far_side = "mmw"`. |
 
 ### `mmw stage`
 
@@ -118,6 +119,7 @@ networks whose far side runs mmw (`far_side = "mmw"`).
 | `--allow-incomplete` |  | Stage even if the pool cannot serve everything the indexes promise. |
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for everything. Default: what was last sent of each repository. |
 | `--to` |  | Snapshot to bring it to. Default: a new snapshot of now. |
+| `--repo` |  | Only this repository (URL or name; repeatable). |
 
 ### `mmw certs`
 

@@ -55,6 +55,10 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
     # On a stream, stdout is the tar: every other line goes to stderr.
     say = (lambda *a: print(*a, file=sys.stderr)) if streaming else print
 
+    if repos and not network:
+        eprint("--repo names repositories of one network — pass -n too.")
+        return 1
+
     if (from_ref or to_ref) and not network:
         eprint("--from / --to name a snapshot of one network — pass -n too.")
         return 1
@@ -81,6 +85,12 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                   f"(set bundle_dir in mmw.toml or pass --out)")
             continue
 
+        keys = None
+        if repos:
+            keys = _repo_keys(net, cfg, mirror_dir, repos)
+            if keys is None:
+                return 1
+
         # The same completeness gate `do_bundle` runs in the TUI, which the
         # headless door never had: a ref whose blob the pool lacks is
         # invisible to `pool.mirror_files()`, so it lands in neither the tar
@@ -94,12 +104,13 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             continue
 
         try:
+            picked = {"repos": keys} if keys else {}
             if stage:
                 result = stage_network(net, cfg, mirror_dir, out_dir=out,
-                                       from_ref=start, to_ref=to_ref or "now", repos=repos)
+                                       from_ref=start, to_ref=to_ref or "now", **picked)
             else:
                 result = bundle_network(net, cfg, mirror_dir, out_path=out,
-                                        from_ref=start, to_ref=to_ref or "now", repos=repos)
+                                        from_ref=start, to_ref=to_ref or "now", **picked)
         except BrokenPipeError:
             _quiet_stdout()
             eprint("stream to stdout broke — nothing recorded; run the bundle again")
@@ -140,6 +151,23 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                 eprint(f"    ✗ {e}")
 
     return 0 if ok else 1
+
+
+def _repo_keys(net, cfg, mirror_dir, refs: list[str]) -> list[str] | None:
+    """The repository keys `--repo` names on `net`, or None after saying why not."""
+    from mmw.core.far_side import require_mmw
+    from mmw.core.repos import repository_key, repository_label, resolve_repo_refs
+    from mmw.core.resolve import network_mirrors
+    try:
+        require_mmw(net, "partial bundles")
+        available = {}
+        for m in network_mirrors(net, cfg, mirror_dir):
+            key = repository_key(m)
+            available[key] = repository_label(key, cfg)
+        return resolve_repo_refs(refs, available)
+    except (ValueError, LookupError) as e:
+        eprint(str(e).strip("'\""))
+        return None
 
 
 def _quiet_stdout() -> None:

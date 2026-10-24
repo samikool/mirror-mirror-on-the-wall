@@ -66,3 +66,14 @@ def test_repository_label():
     assert repos.repository_label("vscode", cfg) == "VS Code"
     assert repos.repository_label("pypi", cfg) == "PyPI"
     assert repos.repository_label("https://gone.example/", cfg) == "https://gone.example/"
+
+
+def test_resolve_repo_refs():
+    available = {"https://example.com/a": "a", "vscode": "VS Code"}
+    assert repos.resolve_repo_refs(["vs code", "https://example.com/a"], available) == \
+        ["vscode", "https://example.com/a"]
+    import pytest
+    with pytest.raises(LookupError, match="this network has: a, VS Code"):
+        repos.resolve_repo_refs(["nope"], available)
+    with pytest.raises(LookupError, match="ambiguous"):
+        repos.resolve_repo_refs(["x"], {"k1": "X", "k2": "x"})

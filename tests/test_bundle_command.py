@@ -8,6 +8,7 @@ import pytest
 from mmw.commands import bundle as bundle_cmd
 from mmw.core import config
 from mmw.core.publisher.results import BundleResult
+from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
 
 
 @pytest.fixture
@@ -172,3 +173,40 @@ def test_out_option_overrides_missing_bundle_dir(cfg_dir, monkeypatch):
 
     assert code == 0
     assert calls == [Path("/tmp/explicit")]
+
+
+def _repo_cli(two_mirrors, tmp_path, monkeypatch, far_side):  # noqa: F811
+    from typer.testing import CliRunner
+    from mmw import cli
+    from mmw.core import config as _config
+    cfg, net, md = two_mirrors
+    net = net.model_copy(update={"far_side": far_side})
+    cfg = cfg.model_copy(update={"networks": [net]})
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    _config.save(cfg, cfg_dir)
+    monkeypatch.setattr(cli, "_CFG_DIR", cli._CFG_DIR)
+    return lambda *a: CliRunner().invoke(cli.app, ["--config", str(cfg_dir), *a])
+
+
+def test_cli_unknown_repo_lists_valid_names(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
+    run = _repo_cli(two_mirrors, tmp_path, monkeypatch, "mmw")
+    r = run("bundle", "-n", "oak", "--out", str(tmp_path / "o"), "--allow-incomplete", "--repo", "nope")
+    assert r.exit_code == 1 and "this network has: a, b" in r.output
+
+
+def test_cli_repo_on_apply_network_refused(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
+    run = _repo_cli(two_mirrors, tmp_path, monkeypatch, "apply")
+    r = run("bundle", "-n", "oak", "--out", str(tmp_path / "o"), "--allow-incomplete", "--repo", "a")
+    assert r.exit_code == 1 and 'far_side = "mmw"' in r.output
+
+
+def test_cli_repo_by_label(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
+    run = _repo_cli(two_mirrors, tmp_path, monkeypatch, "mmw")
+    r = run("bundle", "-n", "oak", "--out", str(tmp_path / "o"), "--allow-incomplete", "--repo", "A")
+    assert r.exit_code == 0, r.output
+    assert "  a  full → v1" in r.output and "  b " not in r.output
+    r = run("stage", "-n", "oak", "--out", str(tmp_path / "s"), "--allow-incomplete", "--repo", "b",
+            "--from", "none")
+    assert r.exit_code == 0, r.output
+    assert "  b  full → v1" in r.output

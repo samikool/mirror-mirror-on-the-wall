@@ -18,6 +18,7 @@ import hashlib
 from pathlib import Path
 
 from mmw.core import disk_io
+from mmw.core.format import fmt_size
 from mmw.core.config import Config, NetworkConfig
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool, holds_shared_pool_lock
 
@@ -127,6 +128,26 @@ def _resolve_from(pool: Pool, network: str, from_ref):
     return find_snapshot(pool, network, from_ref)
 
 
+def _same_filesystem(a: Path, b: Path) -> bool:
+    """Whether hardlinks from `a` can land under `b` (the nearest existing
+    parent of `b` is what is checked)."""
+    while not disk_io.ops.exists(b) and b != b.parent:
+        b = b.parent
+    return disk_io.ops.stat(a).st_dev == disk_io.ops.stat(b).st_dev
+
+
+def _free_stage_dir(network, name: str, out_dir: Path | None) -> Path:
+    base = out_dir if out_dir is not None else network.bundle_dir
+    if base is None:
+        raise ValueError(f"network '{network.name}' has no bundle destination — "
+                         "set bundle_dir in mmw.toml or pass --out")
+    target, n = base / f"{network.name}-{name}", 2
+    while disk_io.ops.exists(target):
+        target = base / f"{network.name}-{name}.{n}"
+        n += 1
+    return target
+
+
 def _free_target(network, name: str, out_path) -> Path:
     target = bundle_output_path(network, name, out_path)
     if is_stdout(out_path):
@@ -158,6 +179,7 @@ def bundle_network(
     to_ref: str = "now",
     stdout=None,
     repos: list[str] | None = None,
+    stage: bool = False,
 ) -> BundleResult:
     """One `.tar` that takes a far side from snapshot `from_ref` to
     snapshot `to_ref` — any two, forwards or backwards.
@@ -211,7 +233,7 @@ def bundle_network(
     tls_files = bundle_tls_files(network, cfg) if network.certs else {}
 
     name = dest.stamp if start is None else f"{start.stamp}-to-{dest.stamp}"
-    target = _free_target(network, name, out_path)
+    target = _free_stage_dir(network, name, out_path) if stage else _free_target(network, name, out_path)
     header = ManifestHeader(network=network.name, created=dest.stamp,
                             previous=start.stamp if start else None, full=start is None,
                             previous_label=start.label if start else None,
@@ -265,9 +287,16 @@ def bundle_network(
                 for rel in prev:
                     if rel.startswith("nginx/") and not rel.endswith(".tar"):
                         prev[rel] = ""
-        streaming = is_stdout(out_path)
+        streaming = is_stdout(out_path) and not stage
         hashing = None
         writer = None
+        staged = []                         # the DirMembers, once made
+        if stage:
+            from mmw.core.publisher.members import DirMembers
+
+            def writer():
+                staged.append(DirMembers(target))
+                return staged[-1]
         if streaming:
             import sys
             from mmw.core.publisher.members import HashingWriter, TarMembers
@@ -279,7 +308,7 @@ def bundle_network(
                           full=header.full if mmw_far_side else start is None, row_repo=row_repo,
                           progress=progress, tls_files=tls_files, stop_event=stop_event,
                           writer=writer,
-                          scratch_dir=ledger_dir(mirror_dir, network.name) if streaming else None)
+                          scratch_dir=ledger_dir(mirror_dir, network.name) if streaming or stage else None)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
         current_base, seen_bases = None, 0
@@ -326,6 +355,12 @@ def bundle_network(
                         if p not in dest_paths)
             sink.deleted = sorted(set(gone))
 
+    if stage and not _same_filesystem(mirror_dir, target.parent):
+        warning = (f"{target.parent} is on another filesystem than the pool — "
+                   f"{fmt_size(sink.sent_bytes)} will be copied, not hardlinked")
+        result.warnings.append(warning)
+        if progress:
+            progress("", f"warning:{warning}")
     before_close = len(sink.errors)
     try:
         sink.close()
@@ -341,6 +376,12 @@ def bundle_network(
     write_manifest(manifest_path, sink.written_header or header, sink.tagged_rows())
     if streaming:
         result.stream_sha256 = hashing.hexdigest()
+    elif stage:
+        copied = staged[-1] if staged else None
+        if copied is not None and copied.copied_files and not any("another filesystem" in w
+                                                                 for w in result.warnings):
+            result.warnings.append(f"{copied.copied_files} file(s) could not be hardlinked and were "
+                                   f"copied ({fmt_size(copied.copied_bytes)})")
     else:
         disk_io.ops.write_bytes(target.parent / "apply.py", apply_script_bytes())
         if tls_files:
@@ -362,5 +403,18 @@ def bundle_network(
                           for repo, v in pool.snapshot_repo_versions(dest.id).items()}
         pool.record_bundle(network.name, header.previous, dest.stamp, str(target),
                            sink.sent, sink.sent_bytes, len(sink.deleted),
-                           kind="stream" if streaming else "bundle", repos=sent_repos)
+                           kind="stage" if stage else "stream" if streaming else "bundle",
+                           repos=sent_repos)
     return result
+
+
+def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir: Path | None = None,
+                  progress=None, stop_event=None, mirror_start_callback=None, *,
+                  from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None) -> BundleResult:
+    """`mmw stage`: the bundle `bundle_network` would write, laid out as a
+    directory `{out_dir or bundle_dir}/{network}-{name}/` of hardlinks to the
+    pool instead of a tar. For mmw networks only."""
+    from mmw.core.far_side import require_mmw
+    require_mmw(network, "mmw stage")
+    return bundle_network(network, cfg, mirror_dir, out_dir, progress, stop_event, mirror_start_callback,
+                          from_ref=from_ref, to_ref=to_ref, repos=repos, stage=True)

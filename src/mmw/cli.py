@@ -500,6 +500,28 @@ def cmd_bundle(
                          from_ref=from_ref, to_ref=to_ref))
 
 
+@app.command("stage")
+def cmd_stage(
+    network: str = typer.Option(..., "--network", "-n", help="The network to stage"),
+    out: Path = typer.Option(None, "--out", "-o",
+                             help="Directory to stage into instead of the network's bundle_dir"),
+    allow_incomplete: bool = typer.Option(
+        False, "--allow-incomplete",
+        help="Stage even if the pool cannot serve everything the indexes promise."),
+    from_ref: str = typer.Option(
+        None, "--from", help="Snapshot the far side is at (stamp, label or id), or 'none' "
+                             "for everything. Default: what was last sent of each repository."),
+    to_ref: str = typer.Option(
+        None, "--to", help="Snapshot to bring it to. Default: a new snapshot of now."),
+):
+    """Lay a bundle out as a directory of hardlinks to the pool — the same
+    members as `mmw bundle`, almost no disk — to tar, rsync or inspect without
+    mmw. For networks whose far side runs mmw (far_side = "mmw")."""
+    from mmw.commands.stage import run
+    raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
+                         from_ref=from_ref, to_ref=to_ref))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

@@ -79,6 +79,24 @@ same files.
 `--from none` still computes deletions. It means "send every file", not "forget what
 the far side has".
 
+### Stage instead of bundle
+
+For a network whose far side runs mmw (`far_side = "mmw"`), `mmw stage`
+lays the bundle out as a directory instead of a tar: the same members,
+with every package hardlinked from the pool, so it costs almost no disk.
+It exists without mmw, so tar it over ssh, rsync it or look inside it with
+whatever you like:
+
+```bash
+mmw stage -n lab --out /srv/stage          # /srv/stage/lab-<stamp>/
+ssh mirrorhost tar cf - -C /srv/stage lab-<stamp> > /media/drive/lab.tar
+```
+
+Any tar of it, in any order, is a valid bundle for the far-side mmw. Keep
+the stage directory on the pool's filesystem: elsewhere mmw warns and copies
+the files instead. It counts as sent once the directory is complete; delete
+it yourself when it has gone across.
+
 ### Between any two snapshots
 
 Every bundle goes from one [snapshot](getting-started.md#snapshots-roll-a-network-back)

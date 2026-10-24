@@ -19,14 +19,14 @@ from mmw.core.format import fmt_size as _fmt_size
 # module attribute (`bundle.bundle_network = ...`), and an import inside the
 # function body would bind a fresh reference to the real one every call,
 # silently defeating the patch.
-from mmw.core.publisher.bundle import bundle_network
+from mmw.core.publisher.bundle import bundle_network, stage_network
 
 
 @interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None,
         out: Path | None = None,
         allow_incomplete: bool = False, from_ref: str | None = None,
-        to_ref: str | None = None) -> int:
+        to_ref: str | None = None, repos: list[str] | None = None, stage: bool = False) -> int:
     """Bundle one or all configured networks. Returns a process exit code.
 
     `from_ref` / `to_ref` name snapshots (stamp, label or id) of the one
@@ -94,8 +94,12 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             continue
 
         try:
-            result = bundle_network(net, cfg, mirror_dir, out_path=out,
-                                    from_ref=start, to_ref=to_ref or "now")
+            if stage:
+                result = stage_network(net, cfg, mirror_dir, out_dir=out,
+                                       from_ref=start, to_ref=to_ref or "now", repos=repos)
+            else:
+                result = bundle_network(net, cfg, mirror_dir, out_path=out,
+                                        from_ref=start, to_ref=to_ref or "now", repos=repos)
         except BrokenPipeError:
             _quiet_stdout()
             eprint("stream to stdout broke — nothing recorded; run the bundle again")

@@ -40,6 +40,7 @@ codes — see [airgap.md](airgap.md#exit-codes).
 |---------|--------------|
 | [`mmw add`](#mmw-add) | Add sources from a sources.list or deb822 .sources file — or the VS Code source |
 | [`mmw bundle`](#mmw-bundle) | Write a network's mirrors to a transferable bundle — between any two snapshots (see `mmw snapshot list`) |
+| [`mmw stage`](#mmw-stage) | Lay a bundle out as a directory of hardlinks, for networks whose far side runs mmw |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for TLS networks (the default), and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
 | [`mmw init`](#mmw-init) | Setup wizard |
@@ -103,6 +104,20 @@ bundle went, to a new snapshot of now.
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for a full bundle. Default: where the last bundle went. |
 | `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |
+
+### `mmw stage`
+
+Lay a bundle out as a directory of hardlinks to the pool — the same members
+as `mmw bundle`, almost no disk — to tar, rsync or inspect without mmw. For
+networks whose far side runs mmw (`far_side = "mmw"`).
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--network`, `-n` |  | The network to stage (required) |
+| `--out`, `-o` |  | Directory to stage into instead of the network's bundle_dir |
+| `--allow-incomplete` |  | Stage even if the pool cannot serve everything the indexes promise. |
+| `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for everything. Default: what was last sent of each repository. |
+| `--to` |  | Snapshot to bring it to. Default: a new snapshot of now. |
 
 ### `mmw certs`
 

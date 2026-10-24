@@ -562,11 +562,14 @@ class BundleSink:
                 apply_script: bytes, prune: bool = True,
                 full: bool = False, progress=None,
                 tls_files: dict[str, bytes] | None = None, stop_event=None,
-                writer=None):
+                writer=None, scratch_dir: Path | None = None):
         self.out_path = out_path
         # Where the members go (`members.MemberWriter` factory); by default
         # one plain tar at `out_path`, written beside it and renamed in.
         self._writer = writer
+        # Where the manifest is staged before it becomes the first member
+        # (tarfile needs its size up front): beside the bundle by default.
+        self._scratch_dir = scratch_dir
         self.job = disk_io.DiskJob("bundle", stop_event=stop_event)
         # name → bytes, written as `{TLS_DIR}/{name}`; a name ending `.key`
         # goes in 0600. Empty unless the network has certs on.
@@ -756,7 +759,8 @@ class BundleSink:
             self.job.close()
 
     def _close(self) -> None:
-        disk_io.ops.mkdir(self.out_path.parent, parents=True, exist_ok=True)
+        if self._writer is None:
+            disk_io.ops.mkdir(self.out_path.parent, parents=True, exist_ok=True)
         # ── Pre-flight: every pool blob must be exactly what was recorded,
         # or NOTHING is written. Not one row dropped and the rest shipped:
         # that was tried, on the theory that a manifest no longer naming the
@@ -810,7 +814,9 @@ class BundleSink:
         self.written_header = header
         # The manifest is written to a temp file first: it goes in as the
         # first tar member and tarfile needs its size up front.
-        tmp_manifest = self.out_path.parent / (self.out_path.name + ".manifest.tmp")
+        scratch = self._scratch_dir or self.out_path.parent
+        disk_io.ops.mkdir(scratch, parents=True, exist_ok=True)
+        tmp_manifest = scratch / (self.out_path.name + ".manifest.tmp")
         write_manifest(tmp_manifest, header, self.manifest_rows)
 
         # `sent`/`sent_bytes` are final the instant link()/write() stop being

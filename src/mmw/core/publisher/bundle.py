@@ -53,10 +53,20 @@ def is_explicit_file_out(out: Path | None) -> bool:
     return out is not None and bool(out.suffix) and not disk_io.ops.is_dir(out)
 
 
+STDOUT = Path("-")
+
+
+def is_stdout(out: Path | None) -> bool:
+    """`--out -`: the bundle goes to stdout, not a file."""
+    return out is not None and str(out) == "-"
+
+
 def bundle_output_path(network: NetworkConfig, created: str,
                        out: Path | None = None) -> Path:
     """Where this bundle lands. `out` may be a file or a directory."""
     name = f"{network.name}-{created}.tar"
+    if is_stdout(out):
+        return STDOUT
     if out is not None:
         return out if is_explicit_file_out(out) else out / name
     if network.bundle_dir is None:
@@ -119,6 +129,8 @@ def _resolve_from(pool: Pool, network: str, from_ref):
 
 def _free_target(network, name: str, out_path) -> Path:
     target = bundle_output_path(network, name, out_path)
+    if is_stdout(out_path):
+        return target
     if is_explicit_file_out(out_path):
         if disk_io.ops.exists(target):
             raise ValueError(
@@ -144,6 +156,7 @@ def bundle_network(
     *,
     from_ref=_LAST,
     to_ref: str = "now",
+    stdout=None,
 ) -> BundleResult:
     """One `.tar` that takes a far side from snapshot `from_ref` to
     snapshot `to_ref` — any two, forwards or backwards.
@@ -219,9 +232,19 @@ def bundle_network(
                 for rel in prev:
                     if rel.startswith("nginx/") and not rel.endswith(".tar"):
                         prev[rel] = ""
-        sink = BundleSink(target, header, prev, apply_script_bytes(),
-                          prune=network.prune, full=start is None,
-                          progress=progress, tls_files=tls_files, stop_event=stop_event)
+        streaming = is_stdout(out_path)
+        hashing = None
+        writer = None
+        if streaming:
+            import sys
+            from mmw.core.publisher.members import HashingWriter, TarMembers
+            hashing = HashingWriter(stdout if stdout is not None else sys.stdout.buffer)
+            writer = lambda: TarMembers(hashing)  # noqa: E731
+        sink = BundleSink(target if not streaming else Path(f"{network.name}-{name}.tar"), header, prev,
+                          apply_script_bytes(), prune=network.prune, full=start is None,
+                          progress=progress, tls_files=tls_files, stop_event=stop_event,
+                          writer=writer,
+                          scratch_dir=ledger_dir(mirror_dir, network.name) if streaming else None)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
         current_base, seen_bases = None, 0
@@ -277,11 +300,14 @@ def bundle_network(
     # The exact manifest shipped, kept beside the ledger's history.
     manifest_path = ledger_dir(mirror_dir, network.name) / f"{dest.stamp}{MANIFEST_SUFFIX}"
     write_manifest(manifest_path, sink.written_header or header, sink.manifest_rows)
-    disk_io.ops.write_bytes(target.parent / "apply.py", apply_script_bytes())
-    if tls_files:
-        for script in ("sign.py", "make-ca.py"):
-            disk_io.ops.write_bytes(target.parent / script, tls_files[script])
-    result.checksum_path = _write_checksum_file(target)
+    if streaming:
+        result.stream_sha256 = hashing.hexdigest()
+    else:
+        disk_io.ops.write_bytes(target.parent / "apply.py", apply_script_bytes())
+        if tls_files:
+            for script in ("sign.py", "make-ca.py"):
+                disk_io.ops.write_bytes(target.parent / script, tls_files[script])
+        result.checksum_path = _write_checksum_file(target)
     result.manifest_path = manifest_path
     result.sent = sink.sent
     result.sent_bytes = sink.sent_bytes
@@ -293,6 +319,7 @@ def bundle_network(
         after = pool.snapshot_repo_versions(dest.id)
         pool.record_bundle(network.name, header.previous, dest.stamp, str(target),
                            sink.sent, sink.sent_bytes, len(sink.deleted),
+                           kind="stream" if streaming else "bundle",
                            repos={repo: (before[repo].id if repo in before else None, v.id)
                                   for repo, v in after.items()})
     return result

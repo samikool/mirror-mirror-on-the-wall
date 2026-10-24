@@ -476,7 +476,8 @@ def cmd_certs(
 def cmd_bundle(
     network: str = typer.Option(None, "--network", "-n", help="Bundle one network by name"),
     out: Path = typer.Option(None, "--out", "-o",
-                             help="Write here instead of the network's bundle_dir"),
+                             help="Write here instead of the network's bundle_dir. "
+                                  "'-' streams the tar to stdout (needs -n)."),
     allow_incomplete: bool = typer.Option(
         False, "--allow-incomplete",
         help="Bundle even if the pool cannot serve everything the indexes promise. "

@@ -56,7 +56,25 @@ Useful flags:
 mmw bundle -n lab --from none         # send everything, not just the delta
 mmw bundle -n lab --out /media/usb    # write here instead of bundle_dir
 mmw bundle -n lab --allow-incomplete  # ship anyway, having been told what is missing
+mmw bundle -n lab --out -             # stream the tar to stdout (see below)
 ```
+
+### Straight onto a drive, over ssh
+
+`--out -` writes the bundle to stdout and nothing to disk, so a machine
+with the drive attached can pull it from the mirror host:
+
+```bash
+ssh mirrorhost mmw bundle -n lab --out - > /media/drive/lab.tar
+```
+
+Everything else mmw prints goes to stderr, ending with a
+`sha256 <digest>  <name>.tar` line: save it beside the tar as
+`lab.tar.sha256` (`sha256sum -c` format) to check the copy later. The
+bundle counts as sent only once the last byte is written: if the pipe
+breaks, nothing is recorded and the same command starts it again.
+Streaming runs at the disk's speed, about the same as `tar cf -` over the
+same files.
 
 `--from none` still computes deletions. It means "send every file", not "forget what
 the far side has".

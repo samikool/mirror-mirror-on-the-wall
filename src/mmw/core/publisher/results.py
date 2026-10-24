@@ -185,6 +185,9 @@ class BundleResult:
     deleted: int = 0
     manifest_path: Path | None = None
     checksum_path: Path | None = None
+    # A bundle streamed to stdout (`--out -`): the sha256 of every byte
+    # written, since there is no file beside it to hold a `.sha256`.
+    stream_sha256: str | None = None
     mirrors: list[MirrorPublishResult] = field(default_factory=list)
     errors: list[str] = _FoldedErrors()
     dist_upgrade_warnings: list[str] = field(default_factory=list)

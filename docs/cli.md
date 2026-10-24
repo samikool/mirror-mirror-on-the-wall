@@ -99,7 +99,7 @@ bundle went, to a new snapshot of now.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--network`, `-n` |  | Bundle one network by name |
-| `--out`, `-o` |  | Write here instead of the network's bundle_dir |
+| `--out`, `-o` |  | Write here instead of the network's bundle_dir. `-` streams the tar to stdout (needs `-n`). |
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for a full bundle. Default: where the last bundle went. |
 | `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |

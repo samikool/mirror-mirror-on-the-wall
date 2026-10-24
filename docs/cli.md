@@ -41,6 +41,7 @@ codes — see [airgap.md](airgap.md#exit-codes).
 | [`mmw add`](#mmw-add) | Add sources from a sources.list or deb822 .sources file — or the VS Code source |
 | [`mmw bundle`](#mmw-bundle) | Write a network's mirrors to a transferable bundle — between any two snapshots (see `mmw snapshot list`) |
 | [`mmw stage`](#mmw-stage) | Lay a bundle out as a directory of hardlinks, for networks whose far side runs mmw |
+| [`mmw site`](#mmw-site) | mmw on the far side: apply bundles, serve any kept version |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for TLS networks (the default), and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
 | [`mmw init`](#mmw-init) | Setup wizard |
@@ -120,6 +121,25 @@ networks whose far side runs mmw (`far_side = "mmw"`).
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for everything. Default: what was last sent of each repository. |
 | `--to` |  | Snapshot to bring it to. Default: a new snapshot of now. |
 | `--repo` |  | Only this repository (URL or name; repeatable). |
+
+### `mmw site`
+
+mmw on the far side of the airgap, for networks with `far_side = "mmw"`.
+Every command takes `--home` (default `$MMW_SITE_HOME`); the ones that change
+the site take `--break-lock`. See [far-side.md](far-side.md).
+
+| Command | What it does |
+|---|---|
+| `mmw site init --root DIR [--home DIR]` | Make a site: a root to serve, a home for its state (default `DIR/.mmw/site`) |
+| `mmw site apply SRC [--forward REPO]… [--forward-all] [--dry-run]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin) |
+| `mmw site status` | What each repository serves, the newest kept, held or current |
+| `mmw site history REPO` | A repository's kept versions, sizes, what each would free |
+| `mmw site serve REPO VERSION [--yes]` | Serve any kept version; anything but the newest holds it |
+| `mmw site hold REPO` / `mmw site forward [REPO] [--all]` | Hold a repository / move it to its newest version |
+| `mmw site space` | Each version's size and what deleting it frees; the root's free space |
+| `mmw site delete REPO VERSION [--yes]` | Delete a kept version (never the served one, nor a held repository's newest) |
+| `mmw site settings [--keep N \| --keep-all]` | How many versions of each repository to keep |
+| `mmw site verify` | Hash every served file; exit 4 on a mismatch |
 
 ### `mmw certs`
 

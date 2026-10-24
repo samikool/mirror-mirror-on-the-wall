@@ -3,6 +3,10 @@
 This is the far side, end to end: how a bundle is produced, carried across,
 applied, served, and verified — and what to do when one of those goes wrong.
 
+A network with `far_side = "mmw"` runs mmw on the far side instead, which
+keeps every version and can take one repository back without a new bundle:
+see [far-side.md](far-side.md). The rest of this page is the `apply.py` way.
+
 Nothing here needs `mmw` installed on the airgapped machine. The only thing
 that travels is a tarball, a small applier script, and (optionally) a checksum
 file.

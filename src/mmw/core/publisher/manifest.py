@@ -86,11 +86,18 @@ class ManifestHeader:
     # state file. Optional — older manifests and apply.py ignore them.
     previous_label: str | None = None
     created_label: str | None = None
+    # Format 2 (bundles for a far side running mmw): `format = 2` and, per
+    # repository key, {"label", "from", "to", "digest", "bases"} with
+    # version numbers. Written only when set, so an apply.py network's
+    # manifest stays byte-for-byte what it was.
+    format: int | None = None
+    repos: dict | None = None
 
 
 def write_manifest(path: Path, header: ManifestHeader,
                    files: Iterable[tuple[str, str]]) -> None:
-    """Write header + one {"p":…,"c":…} line per file.
+    """Write header + one {"p":…,"c":…} line per file — with "r", the
+    repository, for a (path, checksum, repo) row whose repo is set.
 
     Streams: `files` may be a generator over millions of rows.
     """
@@ -98,9 +105,16 @@ def write_manifest(path: Path, header: ManifestHeader,
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         with disk_io.ops.open_file(tmp, "w", encoding="utf-8") as out:
-            out.write(json.dumps(asdict(header), sort_keys=True) + "\n")
-            for rel, checksum in files:
-                out.write(json.dumps({"p": rel, "c": checksum}) + "\n")
+            fields = asdict(header)
+            for optional in ("format", "repos"):
+                if fields[optional] is None:
+                    del fields[optional]
+            out.write(json.dumps(fields, sort_keys=True) + "\n")
+            for row in files:
+                if len(row) == 3 and row[2] is not None:
+                    out.write(json.dumps({"p": row[0], "c": row[1], "r": row[2]}) + "\n")
+                else:
+                    out.write(json.dumps({"p": row[0], "c": row[1]}) + "\n")
         disk_io.ops.replace(tmp, path)
     finally:
         # A no-op after a successful replace() — tmp no longer exists there,
@@ -114,6 +128,26 @@ def read_manifest(path: Path) -> tuple[ManifestHeader, dict[str, str]]:
     """Load a manifest fully. (`iter_manifest` streams it.)"""
     header, rows = iter_manifest(path)
     return header, dict(rows)
+
+
+def iter_manifest_v2(path: Path):
+    """(header, rows) with rows (path, checksum, repository or None)."""
+    text = _open_text(path)
+    try:
+        header = ManifestHeader(**json.loads(text.readline()))
+    except BaseException:
+        text.close()
+        raise
+
+    def rows():
+        try:
+            for line in text:
+                if line.strip():
+                    row = json.loads(line)
+                    yield row["p"], row["c"], row.get("r")
+        finally:
+            text.close()
+    return header, rows()
 
 
 def iter_manifest(path: Path):

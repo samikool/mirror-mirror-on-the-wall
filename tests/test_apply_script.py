@@ -649,3 +649,22 @@ def test_deleting_the_last_file_prunes_the_empty_directory(tmp_path):
     # ...but never above the root, and never the tree that is still in use.
     assert (dest / "archive.ubuntu.com/ubuntu/dists/noble/InRelease").exists()
     assert dest.exists()
+
+
+def test_apply_refuses_format_2(tmp_path):
+    import io
+    import json
+    import tarfile
+    header = {"network": "n", "created": "20261001T000000Z", "previous": None, "full": True,
+              "format": 2, "repos": {}}
+    blob = (json.dumps(header) + "\n").encode()
+    bundle = tmp_path / "b.tar"
+    with tarfile.open(bundle, "w") as tar:
+        ti = tarfile.TarInfo(".mmw/manifest.jsonl")
+        ti.size = len(blob)
+        tar.addfile(ti, io.BytesIO(blob))
+    script = Path(__file__).parents[1] / "src/mmw/resources/apply.py"
+    proc = subprocess.run([sys.executable, str(script), str(bundle), "--root", str(tmp_path / "root")],
+                          capture_output=True, text=True)
+    assert proc.returncode == 5 and "mmw site apply" in proc.stderr, proc.stderr
+    assert not (tmp_path / "root" / ".mmw-state").exists()

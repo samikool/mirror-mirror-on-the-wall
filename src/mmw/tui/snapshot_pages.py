@@ -276,7 +276,7 @@ class CleanPage(Page):
     def _preview(self, keep: int) -> None:
         from mmw.core.snapshots import clean_plan
         with Pool(self._mirror_dir, read_only=True) as pool:
-            plan = clean_plan(pool, self._net.name, keep)
+            plan = clean_plan(pool, self._net.name, keep, self.app.cfg)
         self.app.call_from_thread(self._previewed, keep, plan)
 
     def _previewed(self, keep: int, plan) -> None:
@@ -512,7 +512,7 @@ class SnapshotsPage(Page):
 
         def clean() -> int:
             with Pool(self._mirror_dir) as pool:
-                plan = clean_plan(pool, self._net.name, keep)
+                plan = clean_plan(pool, self._net.name, keep, self.app.cfg)
                 delete_snapshots(pool, plan.delete)
                 return len(plan.delete)
         n = await asyncio.to_thread(clean)

@@ -153,7 +153,7 @@ def clean(cfg_dir: Path, network: str, keep: int, yes: bool = False) -> int:
     with Pool(cfg.settings.mirror_dir) as pool:
         if isinstance(net, SimpleNamespace) and keep == 0:
             return _forget(pool, net.name, yes)
-        plan = snapshots.clean_plan(pool, net.name, keep)
+        plan = snapshots.clean_plan(pool, net.name, keep, cfg)
         for snap, why in plan.kept:
             print(f"Keeping {snap.stamp}" + (f" ({snap.label})" if snap.label else "")
                   + f" — {why}.")

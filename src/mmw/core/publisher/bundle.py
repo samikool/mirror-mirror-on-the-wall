@@ -287,6 +287,12 @@ def bundle_network(
     result.sent_bytes = sink.sent_bytes
     result.deleted = len(sink.deleted)
     with Pool(mirror_dir) as pool:
+        # Per repository: the version the far side had (None: sent in full,
+        # or new to it) and the one it has now.
+        before = pool.snapshot_repo_versions(start.id) if start is not None else {}
+        after = pool.snapshot_repo_versions(dest.id)
         pool.record_bundle(network.name, header.previous, dest.stamp, str(target),
-                           sink.sent, sink.sent_bytes, len(sink.deleted))
+                           sink.sent, sink.sent_bytes, len(sink.deleted),
+                           repos={repo: (before[repo].id if repo in before else None, v.id)
+                                  for repo, v in after.items()})
     return result

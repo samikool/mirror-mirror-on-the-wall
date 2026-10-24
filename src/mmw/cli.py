@@ -562,6 +562,34 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
     raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock))
 
 
+@site_app.command("serve")
+def cmd_site_serve(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                   version: str = typer.Argument(..., help="Version to serve: v3 or 3"),
+                   home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
+                   break_lock: bool = _BREAK_LOCK):
+    """Serve any kept version of a repository — relinking, never copying.
+    Anything but the newest holds it there."""
+    from mmw.commands.site import serve
+    raise typer.Exit(serve(repo, version, home, yes, break_lock))
+
+
+@site_app.command("forward")
+def cmd_site_forward(repo: str = typer.Argument(None, help="Repository (URL or name)"),
+                     all_: bool = typer.Option(False, "--all", help="Every held repository"),
+                     home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+    """Serve the newest version kept here and clear the hold."""
+    from mmw.commands.site import forward
+    raise typer.Exit(forward(repo, home, all_, break_lock))
+
+
+@site_app.command("hold")
+def cmd_site_hold(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                  home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+    """Keep a repository where it is; bundles store its new versions unserved."""
+    from mmw.commands.site import hold
+    raise typer.Exit(hold(repo, home, break_lock))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

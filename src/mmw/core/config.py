@@ -1,6 +1,9 @@
 import os
 import re
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 import tomli_w
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union

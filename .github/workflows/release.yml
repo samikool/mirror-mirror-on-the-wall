@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 jobs:
-  # The whole CI pipeline — tests on 3.11–3.13, wheel install, apply.py on an
+  # The whole CI pipeline — tests on 3.10–3.13, wheel install, apply.py on an
   # old interpreter — exactly as it runs on dev, called rather than copied.
   ci:
     if: github.event_name == 'push'

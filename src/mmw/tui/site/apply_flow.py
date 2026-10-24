@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rich.text import Text
-from textual import on
+import threading
+import time
+
+from textual import on, work
 from textual.app import ComposeResult
-from textual.widgets import Label, SelectionList, Static
+from textual.widgets import Label, ProgressBar, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
 from mmw.core import disk_io
@@ -38,6 +41,8 @@ def remember(home: Path, path: str) -> None:
 class ApplyChoice:
     src: str
     only: frozenset[str]
+    total_bytes: int = 0
+    labels: tuple = ()          # (repo, label) of every repository the bundle changes
 
 
 class ApplyReviewPage(Page):
@@ -102,4 +107,127 @@ class ApplyReviewPage(Page):
 
     @on(Button.Pressed, "#btn-review-go")
     def _go(self) -> None:
-        self.dismiss(ApplyChoice(self._src, frozenset(self.query_one("#review-repos", SelectionList).selected)))
+        self.dismiss(ApplyChoice(self._src, frozenset(self.query_one("#review-repos", SelectionList).selected),
+                                 self._plan.bytes, tuple((r.repo, r.label) for r in self._changed)))
+
+
+class ApplyRunPage(Page):
+    """Steps 2 and 3: the bundle arriving, each repository switching, and
+    then what was done and what needs a person."""
+
+    TITLE = "Applying"
+    SCROLLS = True
+
+    def __init__(self, choice: ApplyChoice):
+        super().__init__()
+        self._choice = choice
+        self.subtitle = Path(choice.src).name
+        self._stop = threading.Event()
+        self.finished = False
+        self._read = 0
+        self._started = time.monotonic()
+        self._state = {repo: "waiting" for repo, _label in choice.labels}
+
+    def compose_body(self) -> ComposeResult:
+        yield ProgressBar(total=max(self._choice.total_bytes, 1), show_eta=False, id="run-bar")
+        yield Static("", id="run-rate")
+        yield Static(self._repo_lines(), id="run-repos")
+        yield Static("", id="run-done")
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Stop", id="btn-run-stop", variant="error", compact=True)
+        yield Button("Close", id="btn-run-close", variant="primary", compact=True, disabled=True)
+
+    def on_mount(self) -> None:
+        self.set_status("stopping keeps every repository already switched; the rest stay as they are")
+        self._run()
+
+    def _repo_lines(self) -> str:
+        labels = dict(self._choice.labels)
+        return "\n".join(f"  {labels[r]:<36} {state}" for r, state in self._state.items())
+
+    def _progress(self, event: str, **data) -> None:
+        self.app.call_from_thread(self._on_progress, event, data)
+
+    def _on_progress(self, event: str, data: dict) -> None:
+        if not self.is_attached:
+            return
+        if event == "receive":
+            self._read += data.get("bytes", 0)
+            self.query_one("#run-bar", ProgressBar).update(progress=self._read)
+            elapsed = max(time.monotonic() - self._started, 0.001)
+            rate = self._read / elapsed
+            left = (self._choice.total_bytes - self._read) / rate if rate else 0
+            self.query_one("#run-rate", Static).update(
+                f"reading at {fmt_size(int(rate))}/s · about {int(left // 60)} min {int(left % 60)} s left")
+        elif event == "check":
+            self.query_one("#run-rate", Static).update("checking everything against the manifest…")
+        elif event == "switch":
+            for repo in list(self._state):
+                if self._state[repo] == "switching":
+                    self._state[repo] = "updated"
+            self._state[data["repo"]] = "switching"
+            self.query_one("#run-repos", Static).update(self._repo_lines())
+
+    @work(thread=True, exclusive=True, group="site-apply", exit_on_error=False)
+    def _run(self) -> None:
+        from mmw.site.apply import ApplyError, apply_bundle
+        try:
+            result = apply_bundle(self.app.home, self._choice.src, only=set(self._choice.only),
+                                  progress=self._progress, stop_event=self._stop, say=lambda *a: None)
+        except ApplyError as e:
+            self.app.call_from_thread(self._failed, str(e))
+            return
+        except Exception as e:  # noqa: BLE001 — the lock, and the like
+            self.app.call_from_thread(self._failed, str(e))
+            return
+        self.app.call_from_thread(self._done, result)
+
+    def _finish(self) -> None:
+        self.finished = True
+        self.query_one("#btn-run-stop", Button).disabled = True
+        close = self.query_one("#btn-run-close", Button)
+        close.disabled = False
+        close.focus()
+
+    def _failed(self, message: str) -> None:
+        # A stop says what it left itself; any other failure happened before
+        # anything changed (apply checks everything first).
+        text = f"[b $error]✗ {escape_markup(message)}[/]"
+        if "stopped" not in message:
+            text += "\nthe site is unchanged"
+        self.query_one("#run-done", Static).update(text)
+        self.set_status("")
+        self._finish()
+
+    def _done(self, result) -> None:
+        for repo in result.updated:
+            self._state[repo] = "updated"
+        for repo in result.stored_held:
+            self._state[repo] = "stored · held"
+        for repo in result.refused:
+            self._state[repo] = "refused"
+        self.query_one("#run-repos", Static).update(self._repo_lines())
+        lines = [f"[b $success]✓ applied {result.created}[/]", *map(escape_markup, result.lines)]
+        lines += [f"[b $warning]! {escape_markup(a)}[/]" for a in result.actions]
+        self.query_one("#run-done", Static).update("\n".join(lines))
+        self.set_status("")
+        self._finish()
+
+    @on(Button.Pressed, "#btn-run-stop")
+    def _stop_pressed(self) -> None:
+        self._stop.set()
+        self.set_status("stopping…")
+
+    @on(Button.Pressed, "#btn-run-close")
+    def _close(self) -> None:
+        self.dismiss(None)
+
+    def action_back(self) -> None:
+        if self.finished:
+            self.dismiss(None)
+
+
+def escape_markup(text: str) -> str:
+    from textual.markup import escape
+    return escape(text)

@@ -486,3 +486,27 @@ def test_snapshot_site_apply_review(snap_compare):
     plan = ApplyPlan("20261024T101500Z", "oak", rows, 41, 28_900_000_000)
     assert snap_compare(_app(lambda: ApplyReviewPage(plan, "/media/usb/oak-20261024T101500Z.tar")),
                         terminal_size=SNAP_SIZE)
+
+
+def test_snapshot_site_apply_done(snap_compare):
+    from mmw.site.apply import ApplyResult
+    from mmw.tui.site.apply_flow import ApplyChoice, ApplyRunPage
+
+    class Shown(ApplyRunPage):
+        def _run(self):                 # no worker: the render shows a finished apply
+            pass
+    labels = (("u", "archive.ubuntu.com/ubuntu"), ("d", "deb.debian.org/debian"), ("v", "VS Code"))
+    choice = ApplyChoice("/media/usb/oak-20261024T101500Z.tar", frozenset({"u", "v"}), 28_900_000_000, labels)
+    result = ApplyResult(created="20261024T101500Z", updated=["u", "v"], stored_held=["d"],
+                         network_changed=True,
+                         actions=["nginx config changed — recreate nginx on the serving host "
+                                  "(docker compose … up -d --force-recreate)"],
+                         lines=["  archive.ubuntu.com/ubuntu  v14 → v15",
+                                "  deb.debian.org/debian  stored v10, still serving v6 (held)",
+                                "  VS Code  v11 → v12"])
+
+    async def done(pilot):
+        await until(pilot, lambda: type(pilot.app.screen).__name__ == "Shown")
+        pilot.app.screen.query_one("#run-bar").update(progress=28_900_000_000)
+        pilot.app.screen._done(result)
+    assert snap_compare(_app(lambda: Shown(choice)), terminal_size=SNAP_SIZE, run_before=done)

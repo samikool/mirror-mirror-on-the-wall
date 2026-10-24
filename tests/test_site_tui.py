@@ -193,3 +193,60 @@ def test_review_of_a_non_bundle_is_a_status(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
                     and "not a bundle" in str(app.screen.query_one("#page-status").render()))
     _run(home, check)
+
+
+async def _review_and_go(app, pilot, bundle):
+    await _choose(app, pilot, bundle)
+    app.screen.query_one("#btn-review-go").press()
+    await until(pilot, lambda: type(app.screen).__name__ == "ApplyRunPage")
+
+
+def test_apply_flow_end_to_end(env, tmp_path):  # noqa: F811
+    cfg, home, root, bundle = _delta_site(env, tmp_path)
+
+    async def check(app, pilot):
+        await _review_and_go(app, pilot, bundle)
+        await until(pilot, lambda: app.screen.finished)
+        done = str(app.screen.query_one("#run-done").render())
+        assert "a  v1 → v2" in done and "b  v1 → v2" in done
+        app.screen.query_one("#btn-run-close").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
+                    and all("v2" in r[1] for r in _rows(app, "site-repos")))
+    _run(home, check)
+
+
+def test_apply_flow_shows_a_failed_check(env, tmp_path):  # noqa: F811
+    from test_site_apply import _rewrite, _tree
+    cfg, home, root, bundle = _delta_site(env, tmp_path)
+    bad = _rewrite(bundle, tmp_path / "bad.tar", lambda m, d: d[:-1] + b"!" if m.name.endswith(".deb") else d)
+    before = _tree(root)
+
+    async def check(app, pilot):
+        await _review_and_go(app, pilot, bad)
+        await until(pilot, lambda: app.screen.finished)
+        done = str(app.screen.query_one("#run-done").render())
+        assert "damaged" in done and "the site is unchanged" in done
+    _run(home, check)
+    assert _tree(root) == before
+
+
+def test_apply_flow_stop_before_switch(env, tmp_path, monkeypatch):  # noqa: F811
+    from test_site_apply import _tree
+    from mmw.site import apply as apply_mod
+    cfg, home, root, bundle = _delta_site(env, tmp_path)
+    before = _tree(root)
+    real = apply_mod._receive
+
+    def slow(*a, **kw):                 # the stop lands while the bundle is still arriving
+        import time
+        time.sleep(1.0)
+        return real(*a, **kw)
+    monkeypatch.setattr(apply_mod, "_receive", slow)
+
+    async def check(app, pilot):
+        await _review_and_go(app, pilot, bundle)
+        app.screen.query_one("#btn-run-stop").press()
+        await until(pilot, lambda: app.screen.finished)
+        assert "stopped" in str(app.screen.query_one("#run-done").render())
+    _run(home, check)
+    assert _tree(root) == before

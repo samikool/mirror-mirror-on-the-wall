@@ -429,3 +429,41 @@ def test_snapshot_pypi_check(snap_compare, monkeypatch):
         await until(pilot, lambda: '✗' in str(pilot.app.screen.query_one('#pypi-check-status').render()))
     assert snap_compare(_app(lambda: pypi_source.EditPypiPage(source, existing_names=set(), existing_urls=set())),
                         terminal_size=(100, 32), run_before=check)
+
+
+def _site_demo(tmp_path, monkeypatch):
+    """A far-side site with a at v1–v3 (serving v2, held) and b at v1, at fixed stamps."""
+    import itertools
+    from mmw.core import snapshots as _snaps
+    from mmw.site import ops
+    from test_dry_run_totals import two_mirrors as _tm
+    from test_bundle_mmw import _mmw
+    from test_site_apply import _bundle
+    from test_site_ops import _bump
+    from test_snapshot_repo_versions import _change_a
+    from mmw.site import home as _h
+    from mmw.site.apply import apply_bundle
+    days = itertools.count(1)
+    monkeypatch.setattr(_snaps, "now_stamp", lambda: f"202610{next(days):02d}T120000Z")
+    cfg, net, md = _mmw(_tm.__wrapped__(tmp_path))
+    home = tmp_path / "site"
+    _h.init_site(home, tmp_path / "oak")
+    quiet = lambda *a: None  # noqa: E731
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
+    _change_a(md)
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
+    _bump(md)
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "3")), say=quiet)
+    ops.serve(home, "a", 2)
+    return home
+
+
+def test_snapshot_site_home(snap_compare, tmp_path, monkeypatch):
+    from mmw.tui.site.app import SiteApp
+    home = _site_demo(tmp_path, monkeypatch)
+
+    async def ready(pilot):
+        from textual.widgets import DataTable
+        await until(pilot, lambda: pilot.app.screen.query("#site-history")
+                    and pilot.app.screen.query_one("#site-history", DataTable).row_count == 3)
+    assert snap_compare(SiteApp(home), terminal_size=SNAP_SIZE, run_before=ready)

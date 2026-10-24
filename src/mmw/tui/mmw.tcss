@@ -387,3 +387,7 @@ VscodeEditor Label, VscodeCheckView Label, StepVscode Label {
 #vs-all-warning, #vs-check-warning { color: $warning; }
 #vs-lookup-status, #vs-check-status { margin-top: 1; }
 #vs-edit-check-slot { height: auto; }
+
+/* The far-side TUI's Deployed page: the list narrower than the history. */
+SiteHomePage ListDetail .list-pane { width: 45%; }
+#site-hold-note { color: $warning; height: auto; }

@@ -241,3 +241,15 @@ def verify(home: Path | None = None, repair: bool = False, break_lock: bool = Fa
         return 4
     print("every served file is what the site says it serves")
     return 0
+
+
+def manage(home: Path | None = None) -> int:
+    try:
+        h = site_home.resolve_home(home)
+        site_home.load_site(h)
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    from mmw.tui.site.app import SiteApp
+    SiteApp(h).run()
+    return 0

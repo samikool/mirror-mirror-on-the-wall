@@ -188,6 +188,8 @@ class BundleResult:
     # A bundle streamed to stdout (`--out -`): the sha256 of every byte
     # written, since there is no file beside it to hold a `.sha256`.
     stream_sha256: str | None = None
+    # mmw far side: each repository this bundle carries (`repo_delta.RepoDelta`).
+    repos: list = field(default_factory=list)
     mirrors: list[MirrorPublishResult] = field(default_factory=list)
     errors: list[str] = _FoldedErrors()
     dist_upgrade_warnings: list[str] = field(default_factory=list)

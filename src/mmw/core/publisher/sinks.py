@@ -562,7 +562,7 @@ class BundleSink:
                 apply_script: bytes, prune: bool = True,
                 full: bool = False, progress=None,
                 tls_files: dict[str, bytes] | None = None, stop_event=None,
-                writer=None, scratch_dir: Path | None = None):
+                writer=None, scratch_dir: Path | None = None, row_repo=None):
         self.out_path = out_path
         # Where the members go (`members.MemberWriter` factory); by default
         # one plain tar at `out_path`, written beside it and renamed in.
@@ -570,6 +570,9 @@ class BundleSink:
         # Where the manifest is staged before it becomes the first member
         # (tarfile needs its size up front): beside the bundle by default.
         self._scratch_dir = scratch_dir
+        # Format-2 manifests tag each row with its repository: path → key
+        # or None (network-level). None here: untagged rows, as always.
+        self.row_repo = row_repo
         self.job = disk_io.DiskJob("bundle", stop_event=stop_event)
         # name → bytes, written as `{TLS_DIR}/{name}`; a name ending `.key`
         # goes in 0600. Empty unless the network has certs on.
@@ -817,7 +820,7 @@ class BundleSink:
         scratch = self._scratch_dir or self.out_path.parent
         disk_io.ops.mkdir(scratch, parents=True, exist_ok=True)
         tmp_manifest = scratch / (self.out_path.name + ".manifest.tmp")
-        write_manifest(tmp_manifest, header, self.manifest_rows)
+        write_manifest(tmp_manifest, header, self.tagged_rows())
 
         # `sent`/`sent_bytes` are final the instant link()/write() stop being
         # called (both only ever append to in-memory lists), so the totals
@@ -927,6 +930,13 @@ class BundleSink:
             disk_io.ops.unlink(tmp_manifest, missing_ok=True)
             if not committed:
                 writer.abort()
+
+    def tagged_rows(self):
+        """The manifest rows as written: tagged with their repository when
+        `row_repo` is set."""
+        if self.row_repo is None:
+            return self.manifest_rows
+        return [(p, c, self.row_repo(p)) for p, c in self.manifest_rows]
 
     def _tar_writer(self):
         from mmw.core.publisher.members import TarMembers

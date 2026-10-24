@@ -11,6 +11,7 @@ import os
 import sys
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.commands.common import eprint, interruptible, load_config_or_none, preflight_ok
 from mmw.core.format import fmt_size as _fmt_size
 
@@ -108,6 +109,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                 else f"full → {result.created}")
         say(f"{net.name}  {span}  →  {'stdout' if streaming else result.out_path}")
         say(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
+        for d in result.repos:
+            say(f"  {d.label}  {f'v{d.start.number}' if d.start else 'full'} → v{d.dest.number}")
         if result.timings:
             say(f"    {result.timing_summary()}")
         # The checksum sidecar, when the pipeline produces one. `getattr`
@@ -139,7 +142,7 @@ def _quiet_stdout() -> None:
     """After a broken pipe: point stdout at /dev/null so the interpreter's
     final flush can't raise a second error on the way out."""
     try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
+        devnull = disk_io.ops.open_fd(os.devnull, os.O_WRONLY)
         os.dup2(devnull, sys.stdout.fileno())
     except OSError:
         pass

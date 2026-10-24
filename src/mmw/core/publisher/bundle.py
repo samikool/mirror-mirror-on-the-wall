@@ -109,7 +109,7 @@ def _far_nginx(settings: str, certs: bool, *, previous: bool = False) -> dict[st
     return recorded_nginx_files(settings, ROOT_PLACEHOLDER, tls_include=include, legacy=legacy)
 
 
-_LAST = object()        # from_ref default: where the last bundle of this network went
+from mmw.core.publisher.repo_delta import _LAST  # noqa: E402 — from_ref default: where the last bundle went
 
 
 def _resolve_from(pool: Pool, network: str, from_ref):
@@ -157,6 +157,7 @@ def bundle_network(
     from_ref=_LAST,
     to_ref: str = "now",
     stdout=None,
+    repos: list[str] | None = None,
 ) -> BundleResult:
     """One `.tar` that takes a far side from snapshot `from_ref` to
     snapshot `to_ref` — any two, forwards or backwards.
@@ -177,6 +178,11 @@ def bundle_network(
     from mmw.core.snapshots import (
         ensure_repo_versions, find_snapshot, import_ledger, recorded_bases, take_snapshot,
     )
+
+    mmw_far_side = network.far_side == "mmw"
+    if repos is not None and not mmw_far_side:
+        from mmw.core.far_side import require_mmw
+        require_mmw(network, "partial bundles")
 
     from mmw.core.publisher import warm_for_publish
     warm_for_publish(mirror_dir, progress, stop_event)
@@ -219,7 +225,34 @@ def bundle_network(
         if missing:
             raise ValueError(f"{missing} file(s) of snapshot {dest.stamp} are no longer in "
                              "the pool — it cannot be bundled to")
-        prev = dict(pool.snapshot_files(start.id)) if start else {}
+        deltas, included, dest_repo_bases = [], None, {}
+        if mmw_far_side:
+            from dataclasses import replace
+            from mmw.core.publisher.repo_delta import plan_repo_deltas
+            from mmw.core.repos import attribute
+            from mmw.core.snapshots import recorded_repos, repo_version_files
+            explicit = find_snapshot(pool, network.name, from_ref) if isinstance(from_ref, str) else from_ref
+            deltas, delta_warnings = plan_repo_deltas(pool, network, cfg, dest, repos=repos, from_ref=explicit)
+            result.warnings.extend(delta_warnings)
+            result.repos = deltas
+            included = {d.repo for d in deltas}
+            dest_repo_bases = recorded_repos(dest.settings)
+            header = replace(header, format=2, full=all(d.start is None for d in deltas), repos={
+                d.repo: {"label": d.label, "from": d.start.number if d.start else None,
+                         "to": d.dest.number, "digest": d.dest.digest, "bases": d.bases}
+                for d in deltas})
+            result.full = header.full
+            # What the far side has: the network-level files of where the
+            # last bundle went, and each repository's own starting version.
+            prev = {}
+            if start is not None:
+                start_bases = recorded_repos(start.settings)
+                prev = {p: c for p, c in pool.snapshot_files(start.id) if attribute(p, start_bases) is None}
+            for d in deltas:
+                if d.start is not None:
+                    prev.update(repo_version_files(pool, d.start))
+        else:
+            prev = dict(pool.snapshot_files(start.id)) if start else {}
         if start is not None:
             # Generated setup is reconstructed from the start's recorded
             # format, including the old host-root form during upgrades.
@@ -240,8 +273,10 @@ def bundle_network(
             from mmw.core.publisher.members import HashingWriter, TarMembers
             hashing = HashingWriter(stdout if stdout is not None else sys.stdout.buffer)
             writer = lambda: TarMembers(hashing)  # noqa: E731
+        row_repo = (lambda rel: attribute(rel, dest_repo_bases)) if mmw_far_side else None
         sink = BundleSink(target if not streaming else Path(f"{network.name}-{name}.tar"), header, prev,
-                          apply_script_bytes(), prune=network.prune, full=start is None,
+                          apply_script_bytes(), prune=network.prune and not mmw_far_side,
+                          full=header.full if mmw_far_side else start is None, row_repo=row_repo,
                           progress=progress, tls_files=tls_files, stop_event=stop_event,
                           writer=writer,
                           scratch_dir=ledger_dir(mirror_dir, network.name) if streaming else None)
@@ -260,6 +295,10 @@ def bundle_network(
             if base is not None and base != current_base and mirror_start_callback:
                 current_base, seen_bases = base, seen_bases + 1
                 mirror_start_callback(base, seen_bases, len(bases))
+            if included is not None:
+                repo = attribute(rel, dest_repo_bases)
+                if repo is not None and repo not in included:
+                    continue                    # not in this bundle: the far side keeps its own
             dest_paths.add(rel)
             kind = replay_kind(rel, base)
             if kind == KIND_PKG:
@@ -279,7 +318,7 @@ def bundle_network(
         from mmw.core.publisher.deployment import write_scripts
         dest_paths |= write_scripts(sink, network.certs, existing=dest_paths)
 
-        if network.prune:
+        if network.prune and not mmw_far_side:
             if start is not None:
                 gone = (p for p in prev if p not in dest_paths)
             else:
@@ -299,7 +338,7 @@ def bundle_network(
 
     # The exact manifest shipped, kept beside the ledger's history.
     manifest_path = ledger_dir(mirror_dir, network.name) / f"{dest.stamp}{MANIFEST_SUFFIX}"
-    write_manifest(manifest_path, sink.written_header or header, sink.manifest_rows)
+    write_manifest(manifest_path, sink.written_header or header, sink.tagged_rows())
     if streaming:
         result.stream_sha256 = hashing.hexdigest()
     else:
@@ -315,11 +354,13 @@ def bundle_network(
     with Pool(mirror_dir) as pool:
         # Per repository: the version the far side had (None: sent in full,
         # or new to it) and the one it has now.
-        before = pool.snapshot_repo_versions(start.id) if start is not None else {}
-        after = pool.snapshot_repo_versions(dest.id)
+        if mmw_far_side:
+            sent_repos = {d.repo: (d.start.id if d.start else None, d.dest.id) for d in deltas}
+        else:
+            before = pool.snapshot_repo_versions(start.id) if start is not None else {}
+            sent_repos = {repo: (before[repo].id if repo in before else None, v.id)
+                          for repo, v in pool.snapshot_repo_versions(dest.id).items()}
         pool.record_bundle(network.name, header.previous, dest.stamp, str(target),
                            sink.sent, sink.sent_bytes, len(sink.deleted),
-                           kind="stream" if streaming else "bundle",
-                           repos={repo: (before[repo].id if repo in before else None, v.id)
-                                  for repo, v in after.items()})
+                           kind="stream" if streaming else "bundle", repos=sent_repos)
     return result

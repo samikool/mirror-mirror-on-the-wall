@@ -35,9 +35,10 @@ class ObservedCoordinator(DownloadCoordinator):
 
 
 async def until(predicate):
-    async with asyncio.timeout(10):
+    async def poll():
         while not predicate():
             await asyncio.sleep(0.001)
+    await asyncio.wait_for(poll(), 10)
 
 
 def transport(monkeypatch, respond):

@@ -443,7 +443,10 @@ def test_publish_refuses_a_root_that_holds_the_pool_even_via_root_override(tmp_p
 
 
 def test_disk_settings_round_trip(tmp_path):
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
     cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "pool", disk_write_threads=2,
                                                  disk_read_threads=1, disk_readahead=0))
     config.save(cfg, tmp_path)

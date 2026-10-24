@@ -47,7 +47,7 @@ would online.)
 
 ## Requirements
 
-- Linux, Python **3.11+**, and [uv](https://docs.astral.sh/uv/).
+- Linux, Python **3.10+**, and [uv](https://docs.astral.sh/uv/).
 - A filesystem supporting **hardlinks**, with the pool and your publish roots
   ideally on the same one — otherwise publishing copies instead of linking.
 - Disk. A lot of it: read [Sizing](#sizing) before you start.

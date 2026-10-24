@@ -142,6 +142,81 @@ class SiteHomePage(Page):
         return self._history[min(t.cursor_row, len(self._history) - 1)][0].number
 
 
+    # ── acting on versions ───────────────────────────────────────────────────
+
+    @on(DataTable.RowSelected, "#site-history")
+    def _history_selected(self, _event) -> None:
+        self.action_serve()
+
+    def action_serve(self) -> None:
+        repo, number = self.selected_repo(), self.selected_version()
+        if repo is None or number is None:
+            self.set_status("Pick a version in the history first.", "error")
+            return
+        try:
+            p = ops.serve_preview(self.app.home, repo, number)
+        except Exception as e:  # noqa: BLE001
+            self.set_status(str(e), "error")
+            return
+        from mmw.tui.ui.dialog import ConfirmDialog
+        now = f"v{p.current.number} · {_date(p.current.stamp)}" if p.current else "nothing"
+        details = (f"now serving {now}\n"
+                   f"relinks {p.relinks:,} file(s) · nothing to copy · indexes switch last\n"
+                   + ("" if p.target.number == ops_newest(self._history) else
+                      f"{p.label} stays held at v{number} until you forward it"))
+        self.app.push_screen(
+            ConfirmDialog(f"Serve {p.label} v{number} ({_date(p.target.stamp)})?", "",
+                          confirm_label=f"Serve v{number}", confirm_variant="primary",
+                          cancel_variant="default", details=details),
+            lambda ok: ok and self._act(f"{p.label} serves v{number}", ops.serve, self.app.home, repo, number))
+
+    def action_forward(self) -> None:
+        repo = self.selected_repo()
+        if repo is not None:
+            self._act("moved forward", ops.forward, self.app.home, repo)
+
+    def action_hold(self) -> None:
+        repo = self.selected_repo()
+        if repo is not None:
+            self._act("held — bundles store its new versions without serving them",
+                      ops.hold, self.app.home, repo)
+
+    def action_delete(self) -> None:
+        repo, number = self.selected_repo(), self.selected_version()
+        if repo is None or number is None:
+            self.set_status("Pick a version in the history first.", "error")
+            return
+        from mmw.tui.ui.dialog import ConfirmDialog
+        label = next(s.label for s in self._states if s.repo == repo)
+        self.app.push_screen(
+            ConfirmDialog(f"Delete {label} v{number} from this site?",
+                          "Its files go too, unless another kept version uses them.",
+                          confirm_label="Delete"),
+            lambda ok: ok and self._act(f"deleted {label} v{number}", ops.delete_version,
+                                        self.app.home, repo, number))
+
+    @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
+    def _act(self, done: str, fn, *args) -> None:
+        self.app.call_from_thread(self.set_status, "working…")
+        try:
+            fn(*args)
+        except Exception as e:  # noqa: BLE001 — a refusal, the lock: said on the page
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(self._acted, done)
+
+    def _acted(self, done: str) -> None:
+        self._load()
+        self.set_status(done, "ok")
+
+    def action_apply(self) -> None:
+        self.set_status("Applying from here comes with the apply flow.", "error")
+
+
+def ops_newest(history) -> int | None:
+    return history[0][0].number if history else None
+
+
 class _HistoryPane(Static):
     """The selected repository's versions, and its hold."""
 

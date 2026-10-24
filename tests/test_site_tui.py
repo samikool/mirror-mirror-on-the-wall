@@ -50,3 +50,79 @@ def test_empty_site_says_apply(env):  # noqa: F811
     async def check(app, pilot):
         await until(pilot, lambda: "nothing applied yet" in str(app.screen.query_one("#page-status").render()))
     _run(home, check)
+
+
+async def _pick(app, pilot, repo_label, version=None):
+    t = app.screen.query_one("#site-repos", DataTable)
+    await until(pilot, lambda: t.row_count > 0)
+    t.move_cursor(row=[r[0] for r in _rows(app, "site-repos")].index(repo_label))
+    if version is not None:
+        h = app.screen.query_one("#site-history", DataTable)
+        await until(pilot, lambda: any(r[0].strip().lstrip("▶ ") == f"v{version}" for r in _rows(app, "site-history")))
+        h.move_cursor(row=[r[0].strip().lstrip("▶ ") for r in _rows(app, "site-history")].index(f"v{version}"))
+        h.focus()
+
+
+def test_serve_from_history_confirms_then_switches(env, tmp_path):  # noqa: F811
+    cfg, home, root, trees = _three(env, tmp_path)
+    from test_site_apply import _tree
+
+    async def check(app, pilot):
+        await _pick(app, pilot, "a", 1)
+        await pilot.press("enter")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        details = str(app.screen.query_one("#confirm-details Label").render())
+        assert "now serving v3" in details and "nothing to copy" in details and "indexes switch last" in details
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
+                    and any(r[0] == "a" and r[3] == "held" for r in _rows(app, "site-repos")))
+    _run(home, check)
+    assert _tree(root) == trees[0]
+
+
+def test_forward_and_hold_keys(env, tmp_path):  # noqa: F811
+    cfg, home, root, trees = _three(env, tmp_path)
+    ops.serve(home, "a", 1)
+
+    async def check(app, pilot):
+        await _pick(app, pilot, "a")
+        app.screen.query_one("#site-repos", DataTable).focus()
+        await pilot.press("f")
+        await until(pilot, lambda: any(r[0] == "a" and r[3] == "current" and "v3" in r[1]
+                                       for r in _rows(app, "site-repos")))
+        await pilot.press("h")
+        await until(pilot, lambda: any(r[0] == "a" and r[3] == "held" for r in _rows(app, "site-repos")))
+    _run(home, check)
+
+
+def test_delete_refusal_is_a_status(env, tmp_path):  # noqa: F811
+    cfg, home, root, trees = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await _pick(app, pilot, "a", 3)
+        await pilot.press("d")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
+                    and "being served" in str(app.screen.query_one("#page-status").render()))
+        await _pick(app, pilot, "a", 1)
+        await pilot.press("d")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
+                    and len(_rows(app, "site-history")) == 2)
+    _run(home, check)
+
+
+def test_lock_held_is_a_status(env, tmp_path):  # noqa: F811
+    from mmw.site.lock import SiteLock
+    cfg, home, root, trees = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await _pick(app, pilot, "a")
+        app.screen.query_one("#site-repos", DataTable).focus()
+        with SiteLock(home):
+            await pilot.press("h")
+            await until(pilot, lambda: "in use by" in str(app.screen.query_one("#page-status").render()))
+        assert all(r[3] == "current" for r in _rows(app, "site-repos"))
+    _run(home, check)

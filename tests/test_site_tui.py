@@ -126,3 +126,70 @@ def test_lock_held_is_a_status(env, tmp_path):  # noqa: F811
             await until(pilot, lambda: "in use by" in str(app.screen.query_one("#page-status").render()))
         assert all(r[3] == "current" for r in _rows(app, "site-repos"))
     _run(home, check)
+
+
+async def _choose(app, pilot, path):
+    from textual.widgets import Input
+    await pilot.press("a")
+    await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")
+    app.screen.query_one("#path-input", Input).value = str(path)
+    app.screen.query_one("#btn-use").press()
+    await until(pilot, lambda: type(app.screen).__name__ == "ApplyReviewPage")
+
+
+def _delta_site(env, tmp_path, hold_a=False):  # noqa: F811
+    from mmw.site.apply import apply_bundle
+    from test_site_apply import _bundle
+    from test_snapshot_repo_versions import _change_a
+    from test_bundle_mmw import _change_b
+    cfg, net, md, home, root = env
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
+    if hold_a:
+        ops.hold(home, "a")
+    _change_a(md)
+    _change_b(md)
+    return cfg, home, root, _bundle(cfg, net, md, tmp_path / "2")
+
+
+def test_review_ticks_all_but_held(env, tmp_path):  # noqa: F811
+    from textual.widgets import SelectionList
+    from test_snapshot_repo_versions import _key
+    cfg, home, root, bundle = _delta_site(env, tmp_path, hold_a=True)
+
+    async def check(app, pilot):
+        await _choose(app, pilot, bundle)
+        sl = app.screen.query_one("#review-repos", SelectionList)
+        assert set(sl.selected) == {_key(cfg, "b")}
+        notes = str(app.screen.query_one("#review-notes").render())
+        assert "held at v1" in notes and "stored either way" in notes
+        assert "always applied" in str(app.screen.query_one("#review-totals").render())
+    _run(home, check)
+
+
+def test_review_untick_note(env, tmp_path):  # noqa: F811
+    from textual.widgets import SelectionList
+    from test_snapshot_repo_versions import _key
+    cfg, home, root, bundle = _delta_site(env, tmp_path)
+
+    async def check(app, pilot):
+        await _choose(app, pilot, bundle)
+        sl = app.screen.query_one("#review-repos", SelectionList)
+        sl.deselect(_key(cfg, "a"))
+        await until(pilot, lambda: "stored and held" in str(app.screen.query_one("#review-notes").render()))
+    _run(home, check)
+
+
+def test_review_of_a_non_bundle_is_a_status(env, tmp_path):  # noqa: F811
+    from textual.widgets import Input
+    _cfg, _net, _md, home, _root = env
+    junk = tmp_path / "junk.tar"
+    junk.write_text("not a tar")
+
+    async def check(app, pilot):
+        await pilot.press("a")
+        await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")
+        app.screen.query_one("#path-input", Input).value = str(junk)
+        app.screen.query_one("#btn-use").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
+                    and "not a bundle" in str(app.screen.query_one("#page-status").render()))
+    _run(home, check)

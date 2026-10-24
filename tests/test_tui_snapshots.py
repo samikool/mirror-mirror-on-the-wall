@@ -467,3 +467,22 @@ def test_snapshot_site_home(snap_compare, tmp_path, monkeypatch):
         await until(pilot, lambda: pilot.app.screen.query("#site-history")
                     and pilot.app.screen.query_one("#site-history", DataTable).row_count == 3)
     assert snap_compare(SiteApp(home), terminal_size=SNAP_SIZE, run_before=ready)
+
+
+def test_snapshot_site_apply_review(snap_compare):
+    from pathlib import Path as P
+    from mmw.site.apply import ApplyPlan, PlanRow
+    from mmw.tui.site.apply_flow import ApplyReviewPage
+    rows = [
+        PlanRow("https://archive.ubuntu.com/ubuntu", "archive.ubuntu.com/ubuntu", 14, 15, 1804, 21_000_000_000,
+                14, False, False, P("/mnt/oak")),
+        PlanRow("https://deb.debian.org/debian", "deb.debian.org/debian", 9, 10, 388, 3_300_000_000,
+                6, True, False, P("/mnt/oak")),
+        PlanRow("vscode", "VS Code", 11, 12, 940, 3_900_000_000, 11, False, False, P("/mnt/oak")),
+        PlanRow("pypi", "PyPI", 8, 9, 2310, 600_000_000, 8, False, False, P("/mnt/pypi")),
+        PlanRow("https://developer.download.nvidia.com/x", "nvidia cuda ubuntu2404", 3, 3, 0, 0, 3, False, True,
+                P("/mnt/oak")),
+    ]
+    plan = ApplyPlan("20261024T101500Z", "oak", rows, 41, 28_900_000_000)
+    assert snap_compare(_app(lambda: ApplyReviewPage(plan, "/media/usb/oak-20261024T101500Z.tar")),
+                        terminal_size=SNAP_SIZE)

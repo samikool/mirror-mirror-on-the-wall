@@ -1,5 +1,7 @@
 """Deployed: every repository the site serves, and the selected one's
 history beside it (approved layouts A and B)."""
+from pathlib import Path
+
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
@@ -210,7 +212,44 @@ class SiteHomePage(Page):
         self.set_status(done, "ok")
 
     def action_apply(self) -> None:
-        self.set_status("Applying from here comes with the apply flow.", "error")
+        from mmw.tui.path_pick import PathPickPage
+        from mmw.tui.site.apply_flow import recent_paths
+        recent = recent_paths(self.app.home)
+        self.app.push_screen(
+            PathPickPage("Apply a bundle", "a bundle .tar, or a stage directory",
+                         recent[0] if recent else "", dirs_only=False, suffixes=(".tar",)),
+            lambda path: path and self._plan(path))
+
+    @work(thread=True, exclusive=True, group="site-plan", exit_on_error=False)
+    def _plan(self, path: str) -> None:
+        from mmw.site.apply import plan_apply
+        self.app.call_from_thread(self.set_status, f"reading {path}…")
+        try:
+            plan = plan_apply(self.app.home, path)
+        except Exception as e:  # noqa: BLE001 — not a bundle, and the like
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(self._review, plan, path)
+
+    def _review(self, plan, path: str) -> None:
+        from mmw.tui.site.apply_flow import ApplyReviewPage, remember
+        remember(self.app.home, path)
+        banner = self.query_one("#site-banner", Static)
+        banner.update(f"▶ {Path(path).name}: {plan.network} → {plan.created} · "
+                      f"{sum(1 for r in plan.rows if not r.unchanged)} repositories change")
+        banner.display = True
+        self.set_status("")
+        self.app.push_screen(ApplyReviewPage(plan, path), self._chosen)
+
+    def _chosen(self, choice) -> None:
+        if choice is None:
+            return
+        self.app.push_screen(_run_page(choice), lambda _r: self._load())
+
+
+def _run_page(choice):
+    from mmw.tui.site.apply_flow import ApplyRunPage
+    return ApplyRunPage(choice)
 
 
 def ops_newest(history) -> int | None:

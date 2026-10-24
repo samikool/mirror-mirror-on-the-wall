@@ -1,0 +1,114 @@
+[
+ {
+  "name": ".mmw/manifest.jsonl",
+  "type": "0",
+  "mode": 420,
+  "link": null,
+  "header_keys": [
+   "created",
+   "created_label",
+   "file_count",
+   "full",
+   "network",
+   "previous",
+   "previous_label"
+  ],
+  "rows": [
+   "{\"p\": \"apply.py\", \"c\": \"909fa05253ff2ea59df789e6acb74c6f0fac9d797a3a15fd0aa38017a9a1afdb\"}",
+   "{\"p\": \"archive.ubuntu.com/ubuntu/pool/main/h/hello/hello_1.0_amd64.deb\", \"c\": \"10e881b7bf8699c7985a6e35d88dd60f41ab90206dc2f0616a80641f7ace9f67\"}",
+   "{\"p\": \"archive.ubuntu.com/ubuntu/dists/noble/by-hash/SHA256/5d94b98b79e249b11edd3786689850c905ad3f353a6aa8226d3c53b54b94e478\", \"c\": \"5d94b98b79e249b11edd3786689850c905ad3f353a6aa8226d3c53b54b94e478\"}",
+   "{\"p\": \"archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/Packages.gz\", \"c\": \"6e1600355b67ed12bb3e641cbee0a5d378bc66428b146696a403a5c69d124e2a\"}",
+   "{\"p\": \"archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/by-hash/SHA256/6e1600355b67ed12bb3e641cbee0a5d378bc66428b146696a403a5c69d124e2a\", \"c\": \"6e1600355b67ed12bb3e641cbee0a5d378bc66428b146696a403a5c69d124e2a\"}",
+   "{\"p\": \"archive.ubuntu.com/ubuntu/dists/noble/InRelease\", \"c\": \"5d94b98b79e249b11edd3786689850c905ad3f353a6aa8226d3c53b54b94e478\"}",
+   "{\"p\": \"nginx/mirror.conf\", \"c\": \"d614582d90db0c1b63365a4b9262d5028b769c0dbcfecf41a9e6845ffeaac348\"}",
+   "{\"p\": \"nginx/compose.yaml\", \"c\": \"84ea5ba6ac84002c25fdae2ec7a4c9f02390849c235cb1fb532563cc4804cdb8\"}",
+   "{\"p\": \"nginx/README.md\", \"c\": \"f1f8e2356743bc82dd665436e798e2f089bd936600c774e776752d34c650cd06\"}"
+  ]
+ },
+ {
+  "name": ".mmw/delete.list",
+  "type": "0",
+  "mode": 420,
+  "size": 0,
+  "link": null,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ {
+  "name": ".mmw/apply.py",
+  "type": "0",
+  "mode": 493,
+  "size": 38746,
+  "link": null,
+  "sha256": "909fa05253ff2ea59df789e6acb74c6f0fac9d797a3a15fd0aa38017a9a1afdb"
+ },
+ {
+  "name": "nginx/mirror.conf",
+  "type": "0",
+  "mode": 420,
+  "size": 1059,
+  "link": null,
+  "sha256": "d614582d90db0c1b63365a4b9262d5028b769c0dbcfecf41a9e6845ffeaac348"
+ },
+ {
+  "name": "nginx/compose.yaml",
+  "type": "0",
+  "mode": 420,
+  "size": 504,
+  "link": null,
+  "sha256": "84ea5ba6ac84002c25fdae2ec7a4c9f02390849c235cb1fb532563cc4804cdb8"
+ },
+ {
+  "name": "nginx/README.md",
+  "type": "0",
+  "mode": 420,
+  "size": 2277,
+  "link": null,
+  "sha256": "f1f8e2356743bc82dd665436e798e2f089bd936600c774e776752d34c650cd06"
+ },
+ {
+  "name": "apply.py",
+  "type": "0",
+  "mode": 420,
+  "size": 38746,
+  "link": null,
+  "sha256": "909fa05253ff2ea59df789e6acb74c6f0fac9d797a3a15fd0aa38017a9a1afdb"
+ },
+ {
+  "name": "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello_1.0_amd64.deb",
+  "type": "0",
+  "mode": 420,
+  "size": 9,
+  "link": null,
+  "sha256": "10e881b7bf8699c7985a6e35d88dd60f41ab90206dc2f0616a80641f7ace9f67"
+ },
+ {
+  "name": "archive.ubuntu.com/ubuntu/dists/noble/by-hash/SHA256/5d94b98b79e249b11edd3786689850c905ad3f353a6aa8226d3c53b54b94e478",
+  "type": "0",
+  "mode": 420,
+  "size": 14,
+  "link": null,
+  "sha256": "5d94b98b79e249b11edd3786689850c905ad3f353a6aa8226d3c53b54b94e478"
+ },
+ {
+  "name": "archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/Packages.gz",
+  "type": "0",
+  "mode": 420,
+  "size": 9,
+  "link": null,
+  "sha256": "6e1600355b67ed12bb3e641cbee0a5d378bc66428b146696a403a5c69d124e2a"
+ },
+ {
+  "name": "archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/by-hash/SHA256/6e1600355b67ed12bb3e641cbee0a5d378bc66428b146696a403a5c69d124e2a",
+  "type": "1",
+  "mode": 420,
+  "size": 0,
+  "link": "archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/Packages.gz"
+ },
+ {
+  "name": "archive.ubuntu.com/ubuntu/dists/noble/InRelease",
+  "type": "1",
+  "mode": 420,
+  "size": 0,
+  "link": "archive.ubuntu.com/ubuntu/dists/noble/by-hash/SHA256/5d94b98b79e249b11edd3786689850c905ad3f353a6aa8226d3c53b54b94e478"
+ }
+]

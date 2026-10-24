@@ -527,6 +527,23 @@ def cmd_stage(
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None))
 
 
+site_app = typer.Typer(
+    help="mmw on the far side of the airgap: apply bundles, serve any kept version.",
+    no_args_is_help=True,
+)
+app.add_typer(site_app, name="site")
+_SITE_HOME = typer.Option(None, "--home", help="The site's home (default: $MMW_SITE_HOME)")
+
+
+@site_app.command("init")
+def cmd_site_init(root: Path = typer.Option(..., "--root", help="The directory the site serves"),
+                  home: Path = typer.Option(None, "--home",
+                                            help="Where the site keeps its state (default: ROOT/.mmw/site)")):
+    """Make a site: a root to serve and a home for its state."""
+    from mmw.commands.site import init
+    raise typer.Exit(init(root, home))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

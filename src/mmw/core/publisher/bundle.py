@@ -262,7 +262,8 @@ def bundle_network(
             result.repos = deltas
             included = {d.repo for d in deltas}
             dest_repo_bases = recorded_repos(dest.settings)
-            header = replace(header, format=2, full=all(d.start is None for d in deltas), repos={
+            header = replace(header, format=2, full=all(d.start is None for d in deltas),
+                             settings=dest.settings, repos={
                 d.repo: {"label": d.label, "from": d.start.number if d.start else None,
                          "to": d.dest.number, "digest": d.dest.digest, "bases": d.bases}
                 for d in deltas})

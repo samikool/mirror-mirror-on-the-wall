@@ -157,3 +157,12 @@ def test_second_partial_to_the_same_snapshot(two_mirrors, tmp_path):  # noqa: F8
     bundle_network(net, cfg, md, out_path=tmp_path / "2", repos=[_key(cfg, "a")], to_ref=s2.stamp)
     r = bundle_network(net, cfg, md, out_path=tmp_path / "3", repos=[_key(cfg, "b")], to_ref=s2.stamp)
     assert [(d.repo, d.start.number, d.dest.number) for d in r.repos] == [(_key(cfg, "b"), 1, 2)]
+
+
+def test_mmw_manifest_carries_settings(two_mirrors, tmp_path):  # noqa: F811
+    cfg, net, md = _mmw(two_mirrors)
+    r = bundle_network(net, cfg, md, out_path=tmp_path, from_ref=None)
+    header, *_ = _read(r.out_path)
+    with Pool(md) as p:
+        dest = p.snapshots(net.name)[0]
+    assert header["settings"] == dest.settings

@@ -145,3 +145,69 @@ def test_adding_another_mirrors_root_is_refused(hosts, tmp_path):  # noqa: F811
         await until(pilot, lambda: "elm" in page.status_text())
         assert str(other) not in page.roots_text()
     _place_page(open_set(), b, check)
+
+
+# ── the apply screen, one repository at a time ───────────────────────────────
+
+def test_rows_move_one_repository_at_a_time(tmp_path):
+    from mmw.tui.site.apply_flow import ApplyChoice, ApplyRunPage
+    from mmw.tui.ui.base import ThemedApp
+
+    class Quiet(ApplyRunPage):
+        def _run(self):
+            pass
+    choice = ApplyChoice("b.tar", frozenset({"ka", "kb"}), 300, (("ka", "a"), ("kb", "b")),
+                         sizes=(("ka", 100), ("kb", 200)))
+
+    async def go():
+        app = ThemedApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            page = Quiet(choice)
+            app.push_screen(page)
+            await until(pilot, lambda: page.query("#run-repos"))
+            text = lambda: str(page.query_one("#run-repos").render())  # noqa: E731
+            assert text().count("waiting") == 2
+            page._on_progress("repo", {"repo": "ka", "label": "a"})
+            page._on_progress("receive", {"bytes": 50, "name": "example.com/a/a.deb"})
+            assert text().count("▶") == 1 and "50%" in text()
+            assert "a.deb" in str(page.query_one("#run-file").render())
+            page._on_progress("repo", {"repo": "kb", "label": "b"})
+            assert text().count("▶") == 1 and "received" in text()
+            page._on_progress("switch", {"repo": "ka", "label": "a"})
+            page._on_progress("switch", {"repo": "kb", "label": "b"})
+            page._on_progress("done", {})
+            assert text().count("✓") == 2 and "▶" not in text()
+    asyncio.run(go())
+
+
+def test_stop_before_switch_changes_nothing(hosts, tmp_path, monkeypatch):  # noqa: F811
+    import time
+
+    from test_site_apply import _tree
+    from test_bundle_mmw import _change_b
+    from test_snapshot_repo_versions import _change_a
+    from mmw.site import apply as apply_mod
+    cfg, net, md, r1 = _applied(hosts, tmp_path)
+    _change_a(md)
+    _change_b(md)
+    b = str(_bundle(cfg, net, md, tmp_path / "2"))
+    before = _tree(r1)
+    real = apply_mod.members_of
+
+    def slow(*a, **kw):
+        time.sleep(1.0)
+        return real(*a, **kw)
+    monkeypatch.setattr(apply_mod, "members_of", slow)
+
+    async def check(app, pilot):
+        from mmw.tui.site.apply_flow import ApplyChoice, ApplyRunPage
+        await until(pilot, lambda: _name(app) == "SiteHomePage")
+        page = ApplyRunPage(ApplyChoice(b, frozenset(), 1, ()))
+        app.push_screen(page)
+        await until(pilot, lambda: page.query("#btn-run-stop"))
+        page.query_one("#btn-run-stop").press()
+        await until(pilot, lambda: page.finished, timeout=20)
+        assert "stopped" in str(page.query_one("#run-done").render())
+        assert "stored" in str(page.query_one("#run-done").render())
+    _run(open_set(), check)
+    assert _tree(r1) == before

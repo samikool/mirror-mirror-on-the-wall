@@ -226,7 +226,7 @@ def test_apply_flow_shows_a_failed_check(env, tmp_path):  # noqa: F811
         await _review_and_go(app, pilot, bad)
         await until(pilot, lambda: app.screen.finished)
         done = str(app.screen.query_one("#run-done").render())
-        assert "damaged" in done and "the site is unchanged" in done
+        assert "damaged" in done and "the mirror is unchanged" in done
     _run(home, check)
     assert _tree(root) == before
 

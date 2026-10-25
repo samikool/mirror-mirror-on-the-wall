@@ -156,4 +156,5 @@ class PlacePage(Page):
         only = frozenset(r for h in self.ticked for r in self._plan.hosts[h])
         labels = tuple((r, self._plan.labels[r]) for h in self._plan.hosts for r in self._plan.hosts[h])
         total = sum(self._plan.sizes.values()) + self._plan.network_bytes
-        self.dismiss(ApplyChoice(self._src, only, total, labels, frozenset(), place=place))
+        self.dismiss(ApplyChoice(self._src, only, total, labels, frozenset(), place=place,
+                                 sizes=tuple(self._plan.repo_sizes.items())))

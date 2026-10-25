@@ -877,7 +877,8 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         with _truncation():
             for m in gen:
                 if stop_event is not None and stop_event.is_set():
-                    raise ApplyError(5, "stopped before anything was applied")
+                    raise ApplyError(5, "stopped before anything was applied — what arrived is stored; "
+                                        "nothing served changed")
                 if progress:
                     progress("receive", name=m.name, bytes=m.size)
                 if m.name.startswith(TLS_PREFIX):

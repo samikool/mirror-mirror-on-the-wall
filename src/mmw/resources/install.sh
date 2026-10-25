@@ -1,45 +1,41 @@
 #!/bin/sh
-# Installs mmw on this machine from a bundle's runtime, offline.
+# Installs mmw on this machine from its installer, offline.
 #
-#   sh bootstrap.sh --home DIR [--from RUNTIME_DIR]
+#   tar -xf mmw-VERSION-ARCH.tar && sh mmw-VERSION/install.sh [--prefix DIR]
 #
-# RUNTIME_DIR (default: this script's directory) holds one directory per
-# architecture, each with uv, a standalone Python archive and mmw's wheels.
-# Everything goes under DIR: the interpreter and a virtualenv in
-# DIR/runtime/VERSION-pyPYTHON-BUILD-ARCH, and the launcher DIR/bin/mmw (it runs
-# this machine's architecture's install). DIR/runtime/CURRENT records
-# "VERSION PYTHON NAME". Nothing is downloaded, and the system Python is
-# never used.
+# Beside this script: one directory per architecture, each with uv, a
+# standalone Python archive and mmw's wheels. The interpreter and a
+# virtualenv go in PREFIX/share/mmw/VERSION-pyPYTHON-BUILD-ARCH, the
+# launcher in PREFIX/bin/mmw; PREFIX/share/mmw/CURRENT records
+# "VERSION PYTHON NAME". PREFIX defaults to ~/.local. Nothing is
+# downloaded, and the system Python is never used. mmw itself knows
+# nothing of mirrors until it is pointed at one.
 #
 # POSIX sh and utilities only (tar, gzip, uname, cksum, cp, mv).
 set -eu
 
 usage() {
-    echo "usage: sh bootstrap.sh --home DIR [--from RUNTIME_DIR]" >&2
+    echo "usage: sh install.sh [--prefix DIR]" >&2
     exit 64
 }
 
-home=
-from=
+prefix=
 while [ $# -gt 0 ]; do
     case $1 in
-        --home) [ $# -ge 2 ] || usage; home=$2; shift 2 ;;
-        --from) [ $# -ge 2 ] || usage; from=$2; shift 2 ;;
+        --prefix) [ $# -ge 2 ] || usage; prefix=$2; shift 2 ;;
         -h|--help) usage ;;
         *) echo "unknown option: $1" >&2; usage ;;
     esac
 done
-[ -n "$home" ] || usage
-if [ -z "$from" ]; then
-    case $0 in */*) from=${0%/*} ;; *) from=. ;; esac
-fi
-case $home in /*) ;; *) home=$(pwd)/$home ;; esac
-# The launcher holds DIR inside double quotes: refuse what would end them.
+[ -n "$prefix" ] || prefix=${HOME:?HOME is not set — pass --prefix DIR}/.local
+case $0 in */*) from=${0%/*} ;; *) from=. ;; esac
+case $prefix in /*) ;; *) prefix=$(pwd)/$prefix ;; esac
+# The launcher holds PREFIX inside double quotes: refuse what would end them.
 nl='
 '
-case $home in
+case $prefix in
     *[\"\$\`\\]*|*"$nl"*)
-        echo "--home $home: the launcher can't hold a path with \", \$, \`, \\ or a newline — pick another" >&2
+        echo "--prefix $prefix: the launcher can't hold a path with \", \$, \`, \\ or a newline — pick another" >&2
         exit 64 ;;
 esac
 case $from in /*) ;; *) from=$(pwd)/$from ;; esac
@@ -54,7 +50,7 @@ if [ ! -f "$rt/uv" ]; then
         d=${d%/}
         have="$have${have:+, }${d##*/}"
     done
-    echo "this bundle has runtimes for: ${have:-none} — this machine is $arch" >&2
+    echo "this installer is for: ${have:-none} — this machine is $arch" >&2
     exit 2
 fi
 
@@ -77,21 +73,18 @@ if [ -z "$archive" ]; then
     echo "$rt has no Python archive" >&2
     exit 1
 fi
-
 py=${archive##*/cpython-}
 py=${py%%[-+]*}
 py=${py%.*}
 
-# Keyed by architecture too: DIR may be on a share that machines of several
-# architectures mount, each running its own install through one launcher.
-# The build id (the mmw wheel's cksum — the same wheel for every
-# architecture) tells a rebuild of the same version apart, so it installs
-# beside the one in use instead of over it.
+share=$prefix/share/mmw
+# The build id (the mmw wheel's cksum) tells a rebuild of the same version
+# apart, so it installs beside the one in use instead of over it.
 build=$(cksum < "$wheel")
 build=${build%% *}
 name=$version-py$py-$build
-dest=$home/runtime/$name-$arch
-cache=$home/runtime/.uv-cache
+dest=$share/$name-$arch
+cache=$share/.uv-cache
 # The interpreter and the virtualenv record their absolute paths, so they are
 # built where they stay; `.complete` marks a finished install, and a failed
 # one is removed whole. The launcher changes only after it completes.
@@ -129,25 +122,26 @@ if [ ! -f "$dest/.complete" ]; then
     echo "$version" > "$dest/.complete"
 fi
 
-mkdir -p "$home/bin"
-launcher=$home/bin/mmw
+mkdir -p "$prefix/bin"
+launcher=$prefix/bin/mmw
 cat > "$launcher.tmp" <<EOF
 #!/bin/sh
-# mmw $version (Python $py), installed by bootstrap.sh. The site's home unless told otherwise.
-: "\${MMW_SITE_HOME:=$home}"
-export MMW_SITE_HOME
+# mmw $version (Python $py), installed by install.sh.
 arch=\$(uname -m)
 case \$arch in arm64) arch=aarch64 ;; esac
-mmw="$home/runtime/$name-\$arch/venv/bin/mmw"
+mmw="$share/$name-\$arch/venv/bin/mmw"
 if [ ! -x "\$mmw" ]; then
-    echo "mmw $version isn't installed here for \$arch — run bootstrap.sh from a bundle with an \$arch runtime:" >&2
-    echo "  sh .mmw/runtime/bootstrap.sh --home $home   (or sh $home/runtime/incoming/bootstrap.sh --home $home)" >&2
+    echo "mmw $version isn't installed here for \$arch — run install.sh from mmw-$version-\$arch.tar" >&2
     exit 2
 fi
 exec "\$mmw" "\$@"
 EOF
 chmod 755 "$launcher.tmp"
 mv -f "$launcher.tmp" "$launcher"
-echo "$version $py $name" > "$home/runtime/CURRENT.tmp"
-mv -f "$home/runtime/CURRENT.tmp" "$home/runtime/CURRENT"
-echo "mmw $version installed — $launcher (export PATH=$home/bin:\$PATH)"
+echo "$version $py $name" > "$share/CURRENT.tmp"
+mv -f "$share/CURRENT.tmp" "$share/CURRENT"
+echo "mmw $version installed — $launcher"
+case ":${PATH:-}:" in
+    *":$prefix/bin:"*) ;;
+    *) echo "add it to your PATH: export PATH=$prefix/bin:\$PATH" ;;
+esac

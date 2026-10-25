@@ -43,6 +43,7 @@ class ApplyChoice:
     only: frozenset[str]
     total_bytes: int = 0
     labels: tuple = ()          # (repo, label) of every repository the bundle changes
+    forward: frozenset[str] = frozenset()   # held repositories ticked: serve their new version
 
 
 class ApplyReviewPage(Page):
@@ -107,8 +108,10 @@ class ApplyReviewPage(Page):
 
     @on(Button.Pressed, "#btn-review-go")
     def _go(self) -> None:
-        self.dismiss(ApplyChoice(self._src, frozenset(self.query_one("#review-repos", SelectionList).selected),
-                                 self._plan.bytes, tuple((r.repo, r.label) for r in self._changed)))
+        picked = frozenset(self.query_one("#review-repos", SelectionList).selected)
+        held = {r.repo for r in self._changed if r.held}
+        self.dismiss(ApplyChoice(self._src, picked, self._plan.bytes,
+                                 tuple((r.repo, r.label) for r in self._changed), picked & held))
 
 
 class ApplyRunPage(Page):
@@ -127,6 +130,8 @@ class ApplyRunPage(Page):
         self._read = 0
         self._started = time.monotonic()
         self._state = {repo: "waiting" for repo, _label in choice.labels}
+        self._pending_bytes = 0
+        self._last_report = 0.0
 
     def compose_body(self) -> ComposeResult:
         yield ProgressBar(total=max(self._choice.total_bytes, 1), show_eta=False, id="run-bar")
@@ -139,7 +144,7 @@ class ApplyRunPage(Page):
         yield Button("Close", id="btn-run-close", variant="primary", compact=True, disabled=True)
 
     def on_mount(self) -> None:
-        self.set_status("stopping keeps every repository already switched; the rest stay as they are")
+        self.set_status("stopping keeps every repository already switched; the rest are stored and held")
         self._run()
 
     def _repo_lines(self) -> str:
@@ -147,6 +152,17 @@ class ApplyRunPage(Page):
         return "\n".join(f"  {labels[r]:<36} {state}" for r, state in self._state.items())
 
     def _progress(self, event: str, **data) -> None:
+        """From the worker. Arrivals are added up and handed over at most ten
+        times a second: one blocking hand-over per member cost about a
+        millisecond each — minutes on a big bundle."""
+        if event == "receive":
+            self._pending_bytes += data.get("bytes", 0)
+            now = time.monotonic()
+            if now - self._last_report < 0.1:
+                return
+            self._last_report = now
+            data = {"bytes": self._pending_bytes}
+            self._pending_bytes = 0
         self.app.call_from_thread(self._on_progress, event, data)
 
     def _on_progress(self, event: str, data: dict) -> None:
@@ -174,7 +190,8 @@ class ApplyRunPage(Page):
         from mmw.site.apply import ApplyError, apply_bundle
         try:
             result = apply_bundle(self.app.home, self._choice.src, only=set(self._choice.only),
-                                  progress=self._progress, stop_event=self._stop, say=lambda *a: None)
+                                  forward=set(self._choice.forward), progress=self._progress,
+                                  stop_event=self._stop, say=lambda *a: None)
         except ApplyError as e:
             self.app.call_from_thread(self._failed, str(e))
             return
@@ -207,6 +224,8 @@ class ApplyRunPage(Page):
             self._state[repo] = "stored · held"
         for repo in result.refused:
             self._state[repo] = "refused"
+        for repo in result.stopped:
+            self._state[repo] = "not switched (stopped) · held"
         self.query_one("#run-repos", Static).update(self._repo_lines())
         lines = [f"[b $success]✓ applied {result.created}[/]", *map(escape_markup, result.lines)]
         lines += [f"[b $warning]! {escape_markup(a)}[/]" for a in result.actions]

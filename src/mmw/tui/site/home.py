@@ -134,7 +134,8 @@ class SiteHomePage(Page):
         state = next((s for s in self._states if s.repo == repo), None)
         note = ""
         if state and state.held and rows:
-            note = f"held at v{state.serving.number} · f forward to v{rows[0][0].number}"
+            note = (f"held at v{state.serving.number} · f forward to v{rows[0][0].number}" if state.serving
+                    else f"held · nothing served · f serves v{rows[0][0].number}")
         self.query_one("#site-hold-note", Static).update(note)
 
     def selected_version(self) -> int | None:

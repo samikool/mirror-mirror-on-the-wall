@@ -41,6 +41,7 @@ class ApplyResult:
     network_changed: bool = False
     actions: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
+    stopped: list[str] = field(default_factory=list)    # stored and held: a stop came before their switch
 
 
 def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progress=None, stop_event=None):
@@ -106,8 +107,9 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
                  stop_event=None) -> ApplyResult:
     """Apply the bundle at `src`. `only`: the repositories to switch; the
     others in the bundle are stored and held. `progress(event, **data)`:
-    receive(name, bytes), check, switch(repo, label), done. `stop_event` is
-    honoured until the first repository switches."""
+    receive(name, bytes), check, switch(repo, label), done. `stop_event`:
+    before anything changes, a stop raises; once repositories are switching,
+    the ones not reached yet are stored and held."""
     settings = load_site(home)
     root = Path(settings.root)
     store = Store(root)
@@ -176,6 +178,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
                 result.lines.append(f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
             return result
 
+        if stop_event is not None and stop_event.is_set():
+            raise ApplyError(5, "stopped before anything changed — what arrived is stored")
         recorded: dict[str, int] = {}
         try:
             for repo, plan in planned.items():
@@ -198,8 +202,6 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         for name, data in sorted(tls.items()):
             _install_tls(str(root), name, io.BytesIO(data))
 
-        if stop_event is not None and stop_event.is_set():
-            raise ApplyError(5, "stopped before any repository switched — what arrived is stored")
         forward = set(forward or ())
         for repo, vid in recorded.items():
             meta, state = header.repos[repo], db.repo_state(repo)
@@ -209,6 +211,11 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
                 result.lines.append(f"  {meta['label']}  already at v{was}" if meta["to"] == was else
                                     f"  {meta['label']}  keeps serving v{was} (this bundle brings v{meta['to']}, "
                                     "older — stored)")
+                continue
+            if stop_event is not None and stop_event.is_set():
+                db.set_held(repo, True)
+                result.stopped.append(repo)
+                result.lines.append(f"  {meta['label']}  not switched (stopped) — stored v{meta['to']}, held")
                 continue
             if only is not None and repo not in only:
                 db.set_held(repo, True)

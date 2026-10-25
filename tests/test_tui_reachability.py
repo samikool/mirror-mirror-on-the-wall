@@ -90,7 +90,15 @@ def _pushed_pages(tmp_path):
             config.NetworkConfig(name="lab", select=[]), _net_mirrors()),
         "AddNetworkPage": lambda: AddNetworkPage(_net_mirrors()),
         "CertsPage": lambda: CertsPage("lab", [f"host{i}.example.com" for i in range(30)]),
+        "ApplyReviewPage": lambda: _review_page(tmp_path),
     }
+
+
+def _review_page(tmp_path):
+    from mmw.site.apply import ApplyPlan, PlanRow
+    from mmw.tui.site.apply_flow import ApplyReviewPage
+    rows = [PlanRow(f"r{i}", f"repo-{i}", 1, 2, 10, 1000, 1, i % 3 == 0, False, tmp_path) for i in range(12)]
+    return ApplyReviewPage(ApplyPlan("20261024T101500Z", "oak", rows, 4, 12000), str(tmp_path / "b.tar"))
 
 
 def _net_mirrors():
@@ -107,7 +115,7 @@ def _net_mirrors():
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
 @pytest.mark.parametrize("name", ["EditSourcePage", "KeyPage", "PickPage", "PathPickPage",
                                   "AddSourcePage", "BulkReviewPage",
-                                  "EditNetworkPage", "AddNetworkPage", "CertsPage"])
+                                  "EditNetworkPage", "AddNetworkPage", "CertsPage", "ApplyReviewPage"])
 def test_every_control_on_pushed_pages_is_reachable(tmp_path, name, size):
     async def go():
         app = MmwApp(_cfg(), tmp_path, initial_section="settings")

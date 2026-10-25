@@ -104,6 +104,25 @@ an edit would change every copy. nginx's generated files are the exception
 (they are written fresh) but are still replaced by the next bundle — keep
 your own deployment copy outside the root, as [airgap.md](airgap.md) says.
 
+## The TUI
+
+```bash
+mmw site manage
+```
+
+Opens on every repository the site serves — what it serves, the newest
+version here, held or current — with the selected repository's history
+beside it, the served version marked ▶. Keys: **Enter** on a version serves
+it (after a confirmation saying what changes), **f** forwards, **h** holds,
+**d** deletes a version, **a** applies a bundle, **r** refreshes.
+
+Applying from the TUI: pick the bundle (a `.tar` or a stage directory; the
+last five are remembered), review it — every repository it changes, ticked
+unless held; unticking one stores its new version and holds it — then
+Apply. Progress shows the read rate and each repository switching; Stop
+takes effect before any repository switches. The last screen says what was
+done and what needs a person, such as recreating nginx.
+
 ## One operator at a time
 
 Commands that change the site take a lock in its home. A second one says

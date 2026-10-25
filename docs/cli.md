@@ -123,6 +123,8 @@ networks whose far side runs mmw (`far_side = "mmw"`).
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for everything. Default: what was last sent of each repository. |
 | `--to` |  | Snapshot to bring it to. Default: a new snapshot of now. |
 | `--repo` |  | Only this repository (URL or name; repeatable). |
+| `--no-runtime` |  | Leave mmw's own runtime out (it is carried when the far side's mmw is out of date). |
+| `--runtime-wheel` |  | Ship this mmw wheel in the runtime instead of PyPI's (a dev build; `uv build` makes one). |
 
 ### `mmw site`
 

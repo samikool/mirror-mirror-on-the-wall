@@ -416,12 +416,20 @@ class PublishFlows:
             ends["repos"] = list(choice.repos)
         verb = stage_network if choice.stage else bundle_network
         view.begin()
+
+        def run(**more):
+            return verb(net, self.cfg(), self.cfg().settings.mirror_dir,
+                        progress=view.record, stop_event=view.stop_event,
+                        mirror_start_callback=view.notify_mirror_start, **ends, **more)
+        from mmw.core.runtime import RuntimeUnavailable
         try:
-            result = await asyncio.to_thread(
-                lambda: verb(
-                    net, self.cfg(), self.cfg().settings.mirror_dir,
-                    progress=view.record, stop_event=view.stop_event,
-                    mirror_start_callback=view.notify_mirror_start, **ends))
+            try:
+                result = await asyncio.to_thread(run)
+            except RuntimeUnavailable as exc:
+                # mmw's runtime couldn't be built (offline, a dev build):
+                # the bundle goes without it, and the next one carries it.
+                result = await asyncio.to_thread(lambda: run(runtime=False))
+                result.warnings.append(f"mmw's runtime was left out ({exc}) — the next bundle carries it")
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return

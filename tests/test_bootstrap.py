@@ -67,7 +67,8 @@ def test_bootstrap_installs_with_stub_uv(tmp_path):
     assert f"mmw 1.2.0 installed — {home}/bin/mmw" in r.stdout
     assert "--offline" in log and "--no-index" in log and "mirror-mirror-on-the-wall==1.2.0" in log
     assert f"UV_CACHE_DIR={home}/" in log                          # nothing written outside --home
-    assert (home / "runtime/1.2.0/python/bin/python3").exists()
+    assert (home / f"runtime/1.2.0-py3.12-{ARCH}/python/bin/python3").exists()
+    assert (home / "runtime/CURRENT").read_text().split() == ["1.2.0", "3.12"]
     out = subprocess.run([str(home / "bin/mmw"), "site", "show"], capture_output=True, text=True).stdout
     assert out.split() == ["mmw-stub", str(home), "site", "show"]   # the launcher knows its site
     assert not list((home / "runtime").glob("*.tmp")) and not (home / "runtime/.uv-cache").exists()
@@ -104,7 +105,7 @@ def test_bootstrap_failure_leaves_no_partial(tmp_path):
     r, _log = _run(rt, home, STUB_UV_FAIL="pip")
     assert r.returncode != 0 and "disk full" in r.stderr
     assert (home / "bin/mmw").read_text() == "#!/bin/sh\necho old\n"
-    assert sorted(p.name for p in (home / "runtime").iterdir()) == []
+    assert sorted(p.name for p in (home / "runtime").iterdir()) == []      # no install, no CURRENT
 
 
 def test_bootstrap_again_is_quick(tmp_path):
@@ -112,3 +113,18 @@ def test_bootstrap_again_is_quick(tmp_path):
     _run(rt, home)
     r, log = _run(rt, home)
     assert r.returncode == 0 and log.count("pip install") == 1    # already installed: only the launcher
+
+
+def test_launcher_refuses_another_arch(tmp_path):
+    """A home on a share, mounted by machines of two architectures: each
+    machine's launcher runs only what was installed for it."""
+    rt, home = _runtime(tmp_path), tmp_path / "site"
+    _run(rt, home)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "uname").write_text(f"#!/bin/sh\necho {OTHER}\n")
+    (fake / "uname").chmod(0o755)
+    r = subprocess.run([str(home / "bin/mmw"), "site", "show"], capture_output=True, text=True,
+                       env={**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"})
+    assert r.returncode == 2
+    assert f"mmw 1.2.0 isn't installed here for {OTHER}" in r.stderr and "bootstrap.sh" in r.stderr

@@ -436,11 +436,13 @@ def bundle_network(
 
 def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir: Path | None = None,
                   progress=None, stop_event=None, mirror_start_callback=None, *,
-                  from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None) -> BundleResult:
+                  from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None,
+                  runtime: bool = True, runtime_wheel: Path | None = None, fetcher=None) -> BundleResult:
     """`mmw stage`: the bundle `bundle_network` would write, laid out as a
     directory `{out_dir or bundle_dir}/{network}-{name}/` of hardlinks to the
     pool instead of a tar. For mmw networks only."""
     from mmw.core.far_side import require_mmw
     require_mmw(network, "mmw stage")
     return bundle_network(network, cfg, mirror_dir, out_dir, progress, stop_event, mirror_start_callback,
-                          from_ref=from_ref, to_ref=to_ref, repos=repos, stage=True)
+                          from_ref=from_ref, to_ref=to_ref, repos=repos, stage=True,
+                          runtime=runtime, runtime_wheel=runtime_wheel, fetcher=fetcher)

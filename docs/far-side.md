@@ -45,8 +45,11 @@ mmw 1.3.0 installed — /mnt/oak/.mmw/site/bin/mmw (export PATH=/mnt/oak/.mmw/si
 
 - The bootstrap needs only `/bin/sh`, `tar`, `gzip` and `uname`. Everything
   goes under `--home`: the interpreter and a virtualenv in
-  `runtime/VERSION/`, and the launcher `bin/mmw`, which sets
+  `runtime/VERSION-pyPYTHON-ARCH/`, and the launcher `bin/mmw`, which sets
   `MMW_SITE_HOME` to that home unless you set it yourself.
+- A home on a share mounted by machines of different architectures works:
+  run the bootstrap once on a machine of each, and `bin/mmw` runs that
+  machine's install (or says how to install one).
 - A machine of an architecture the bundle lacks is told which ones the
   bundle has (exit 2). On the connected side, `runtime_arches = ["x86_64",
   "aarch64"]` on the network ships both; `runtime_python` picks the Python
@@ -56,7 +59,9 @@ mmw 1.3.0 installed — /mnt/oak/.mmw/site/bin/mmw (export PATH=/mnt/oak/.mmw/si
 
 On the connected side, `mmw bundle --no-runtime` leaves the runtime out of
 one bundle (it then rides the next), and `--runtime-wheel PATH` ships a
-locally built mmw (`uv build`) when this version isn't on PyPI. Building a
+locally built mmw (`uv build`) when this version isn't on PyPI; `mmw stage`
+takes both. The TUI bundles without the runtime, with a warning, when it
+can't be built. Building a
 runtime downloads from PyPI and python-build-standalone once; it is cached
 under `{mirror_dir}/runtime/`. If a download fails, nothing is bundled.
 
@@ -98,16 +103,19 @@ Files arrive in any order: a stage directory tarred with
 
 ### Updates to mmw itself
 
-A bundle that brings a newer mmw is applied by the mmw you are running;
-then the new one is installed beside it (with the bundle's own bootstrap)
-and `bin/mmw` switches to it:
+A bundle that brings a newer mmw — newer than both the one you are running
+and the one `bin/mmw` runs — is applied by the mmw you are running; then
+the new one is checked against its recorded sha256s, installed beside the
+current one (with the bundle's own bootstrap) and `bin/mmw` switches to it:
 
 ```
-! mmw updated to 1.4.0 — restart it
+! mmw updated to 1.4.0 — restart it (/mnt/oak/.mmw/site/bin/mmw)
 ```
 
-A failed install (a full disk, a damaged copy) leaves `bin/mmw` as it was
-and says why; the bundle's runtime stays in `{home}/runtime/incoming/` to
+The same mmw on a different `runtime_python` is installed too. Machines of
+another architecture sharing the home are told the one command that
+installs theirs. A damaged runtime is never installed. A failed install (a
+full disk) leaves `bin/mmw` as it was and says why; the bundle's runtime stays in `{home}/runtime/incoming/` to
 run its `bootstrap.sh` by hand. An older mmw is never installed unless you
 ask: `mmw site apply … --allow-downgrade`. Older installs stay in
 `{home}/runtime/` until you remove them.

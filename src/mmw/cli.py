@@ -525,13 +525,20 @@ def cmd_stage(
         None, "--to", help="Snapshot to bring it to. Default: a new snapshot of now."),
     repo: list[str] = typer.Option(
         None, "--repo", help="Only this repository (URL or name; repeatable)."),
+    no_runtime: bool = typer.Option(
+        False, "--no-runtime", help="Leave mmw's own runtime out (it is carried when the far side's "
+                                    "mmw is out of date)."),
+    runtime_wheel: Path = typer.Option(
+        None, "--runtime-wheel", help="Ship this mmw wheel in the runtime instead of PyPI's "
+                                      "(a dev build; `uv build` makes one)."),
 ):
     """Lay a bundle out as a directory of hardlinks to the pool — the same
     members as `mmw bundle`, almost no disk — to tar, rsync or inspect without
     mmw. For networks whose far side runs mmw (far_side = "mmw")."""
     from mmw.commands.stage import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
-                         from_ref=from_ref, to_ref=to_ref, repos=repo or None))
+                         from_ref=from_ref, to_ref=to_ref, repos=repo or None,
+                         runtime=not no_runtime, runtime_wheel=runtime_wheel))
 
 
 site_app = typer.Typer(

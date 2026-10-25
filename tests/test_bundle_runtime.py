@@ -151,3 +151,42 @@ def test_tui_edits_runtime_settings(tmp_path, monkeypatch):
         await until(pilot, lambda: any("runtime arches" in str(n) for n in app.notes))
         assert isinstance(app.screen, EditNetworkPage)
     _run(tmp_path, check, cfg=_cfg(tmp_path, "lab"), monkeypatch=monkeypatch)
+
+
+# ── review findings ──────────────────────────────────────────────────────────
+
+def test_stage_takes_the_runtime_options(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
+    from mmw.core.publisher.bundle import stage_network
+    cfg, net, md = _mmw(two_mirrors)
+    r = stage_network(net, cfg, md, tmp_path / "s", from_ref=None, runtime=False, fetcher=Offline())
+    assert not (r.out_path / ".mmw/runtime").exists()
+    from mmw.commands import stage as stage_cmd
+    seen = []
+    monkeypatch.setattr("mmw.commands.bundle.stage_network", lambda *a, **kw: seen.append(kw) or r)
+    monkeypatch.setattr("mmw.commands.bundle.load_config_or_none", lambda d: cfg)
+    monkeypatch.setattr("mmw.commands.bundle.preflight_ok", lambda *a, **k: True)
+    stage_cmd.run(tmp_path, network=net.name, out=tmp_path / "s2", runtime=False)
+    assert seen and seen[0]["runtime"] is False
+    from typer.testing import CliRunner
+
+    from mmw.cli import app
+    seen.clear()
+    CliRunner().invoke(app, ["--config", str(tmp_path), "stage", "-n", net.name, "--out", str(tmp_path / "s3"),
+                             "--no-runtime"])
+    assert seen and seen[0]["runtime"] is False
+
+
+def test_tui_bundles_without_a_runtime_it_cannot_build(tmp_path, monkeypatch):
+    from mmw.core.publisher.results import BundleResult
+    from test_bundle_progress_notifications import _run_bundle_scenario
+    calls = []
+
+    def fake(network, cfg, mirror_dir, progress=None, stop_event=None, mirror_start_callback=None, **kw):
+        calls.append(kw.get("runtime", True))
+        if kw.get("runtime", True):
+            raise R.FetchError("couldn't fetch https://pypi.org/pypi/uv/0.11.33/json: no route to host")
+        return BundleResult(network_name=network.name, out_path=tmp_path / "x.tar", sent=1)
+
+    [(message, severity)] = _run_bundle_scenario(tmp_path, fake, monkeypatch)
+    assert calls == [True, False]
+    assert "1 warning" in message

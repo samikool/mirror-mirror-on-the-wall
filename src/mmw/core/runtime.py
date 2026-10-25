@@ -25,7 +25,12 @@ class NotOnIndex(Exception):
     """The requirement has no release on the index (a dev build of mmw)."""
 
 
-class FetchError(Exception):
+class RuntimeUnavailable(ValueError):
+    """A runtime couldn't be built: a download failed, or this mmw has no
+    release to ship. The bundle can still go without one (`--no-runtime`)."""
+
+
+class FetchError(RuntimeUnavailable):
     """Something a runtime needs couldn't be downloaded."""
 
 
@@ -162,7 +167,7 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
         try:
             fetcher.wheels(requirement, python, arch, tmp / "wheels")
         except NotOnIndex:
-            raise ValueError(f"mmw {mmw_version} isn't on PyPI — pass --runtime-wheel PATH "
+            raise RuntimeUnavailable(f"mmw {mmw_version} isn't on PyPI — pass --runtime-wheel PATH "
                              "(uv build makes one)") from None
         files = {str(p.relative_to(tmp)): _sha256(p)
                  for p in sorted(disk_io.ops.rglob(tmp, "*")) if disk_io.ops.is_file(p)}

@@ -156,3 +156,13 @@ def test_no_room_for_the_runtime_still_applies(env, tmp_path, stub_bootstrap):  
     assert r.updated
     assert any("mmw 9.0.0" not in a and "runtime" in a and "couldn't be stored" in a for a in r.actions), r.actions
     assert not (home / "bootstrap.log").exists()
+
+
+def test_dry_run_says_which_mmw_it_would_install(env, tmp_path, stub_bootstrap):  # noqa: F811
+    cfg, net, md, home, root = env
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None, runtime_wheel=_wheel(tmp_path, "9.0.0"))
+    r = apply_bundle(home, str(b), say=lambda *a: None, dry_run=True)
+    assert f"  mmw 9.0.0 would be installed (now {R.mmw_version()})" in r.lines
+    b = _bundle(cfg, net, md, tmp_path / "2", from_ref=None, runtime_wheel=_wheel(tmp_path, "0.1.0"))
+    r = apply_bundle(home, str(b), say=lambda *a: None, dry_run=True)
+    assert any("mmw 0.1.0" in line and "--allow-downgrade" in line for line in r.lines)

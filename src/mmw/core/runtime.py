@@ -293,3 +293,28 @@ def runtime_files(network, cfg, mirror_dir: Path, *, fetcher: Fetcher,
             if disk_io.ops.is_file(p):
                 out[f".mmw/runtime/{arch}/{p.relative_to(d)}"] = p
     return out
+
+
+def pending(network, mirror_dir: Path, *, from_nothing: bool) -> str | None:
+    """What the next bundle of `network` adds for mmw's runtime, said for an
+    estimate: None when it carries none (an apply network, or what was last
+    sent is current and the bundle doesn't start from nothing)."""
+    if network.far_side != "mmw":
+        return None
+    from mmw.core.format import fmt_size
+    from mmw.core.pool import Pool
+    want = wanted(network)
+    if not from_nothing:
+        try:
+            with Pool(mirror_dir, read_only=True) as pool:
+                if pool.runtime_sent(network.name) == want:
+                    return None
+        except Exception:  # noqa: BLE001 — no pool yet: nothing was sent
+            pass
+    size = 0
+    for arch in want["arches"]:
+        d = Path(mirror_dir) / "runtime" / f"{want['mmw']}-py{want['python']}-{arch}"
+        if verify(d) is None:
+            return "mmw's runtime (downloaded when it runs, about 100 MB per architecture)"
+        size += sum(disk_io.ops.stat(p).st_size for p in disk_io.ops.rglob(d, "*") if disk_io.ops.is_file(p))
+    return f"mmw's runtime ({fmt_size(size)})"

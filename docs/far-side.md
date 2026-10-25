@@ -117,7 +117,7 @@ another architecture sharing the home are told the one command that
 installs theirs. A damaged runtime is never installed. A failed install (a
 full disk) leaves `bin/mmw` as it was and says why; the bundle's runtime stays in `{home}/runtime/incoming/` to
 run its `bootstrap.sh` by hand. An older mmw is never installed unless you
-ask: `mmw site apply … --allow-downgrade`. Older installs stay in
+ask: `mmw site apply … --allow-downgrade`. `--dry-run` says which mmw a bundle would install. Older installs stay in
 `{home}/runtime/` until you remove them.
 
 ## Serve another version

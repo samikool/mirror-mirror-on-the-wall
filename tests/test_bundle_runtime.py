@@ -247,3 +247,33 @@ def test_a_stage_never_links_into_the_installation(two_mirrors, tmp_path, monkey
     staged = r.out_path / ".mmw/runtime/bootstrap.sh"
     assert staged.read_bytes() == BOOTSTRAP.read_bytes()
     assert staged.stat().st_ino != BOOTSTRAP.stat().st_ino
+
+
+def test_pending_says_whether_the_next_bundle_carries_it(two_mirrors, tmp_path):  # noqa: F811
+    cfg, net, md = _mmw(two_mirrors)
+    assert R.pending(two_mirrors[1], md, from_nothing=True) is None              # an apply network: never
+    assert "downloaded when it runs" in R.pending(net, md, from_nothing=False)
+    bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None)
+    assert R.pending(net, md, from_nothing=False) is None                        # sent already
+    note = R.pending(net, md, from_nothing=True)                                  # cached: its size
+    assert note.startswith("mmw's runtime (") and "downloaded" not in note
+
+
+def test_bundle_picker_counts_the_runtime(tmp_path):
+    import asyncio
+
+    from textual.widgets import Label
+
+    from mmw.core import config
+    from mmw.tui.snapshot_pages import BundlePickPage
+    from test_tui_snapshots import _app
+    from test_tui_sweep import snapshot_status_demo
+    from waiting import until
+
+    net = config.NetworkConfig(name="lab", select=[], far_side="mmw")
+
+    async def run():
+        app = _app(lambda: BundlePickPage(net, snapshot_status_demo(), tmp_path, repos={"pypi": "PyPI"}))
+        async with app.run_test() as pilot:
+            await until(pilot, lambda: "mmw's runtime" in str(app.screen.query_one("#pick-estimate", Label).render()))
+    asyncio.run(run())

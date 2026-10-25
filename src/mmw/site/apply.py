@@ -7,6 +7,7 @@ the store. Only then are versions recorded and repositories switched — a
 held one keeps serving what it served, its new version stored for later.
 """
 import io
+import json
 import shutil
 import tarfile
 from dataclasses import dataclass, field
@@ -48,7 +49,8 @@ class ApplyResult:
 
 
 def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progress=None, stop_event=None,
-             on_manifest=None, runtime_dir: Path | None = None, runtime_problems: list | None = None):
+             on_manifest=None, runtime_dir: Path | None = None, runtime_problems: list | None = None,
+             runtime_top: dict | None = None):
     """Stream the members in: (name → (checksum, size), TLS files). Once the
     manifest has arrived, `on_manifest(path)` may return `route(name) ->
     Store`, the store each later member belongs in (its repository's root).
@@ -73,6 +75,11 @@ def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progres
                     route = on_manifest(manifest_path)
             elif m.name.startswith(TLS_PREFIX):
                 tls[m.name[len(TLS_PREFIX):]] = m.fh.read()
+            elif m.name == site_runtime.PREFIX + "RUNTIME.json" and runtime_dir is None and runtime_top is not None:
+                try:
+                    runtime_top.update(json.loads(m.fh.read()))      # a dry run: only what it would install
+                except ValueError as e:
+                    runtime_top["error"] = str(e)
             elif m.name.startswith(site_runtime.PREFIX) and runtime_dir is not None and m.kind != "link":
                 try:
                     dest = site_runtime.member_path(runtime_dir, m.name)
@@ -173,8 +180,10 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
             return lambda name: roots.store(placement.get(attribute(name, bases), roots.primary))
         try:
             runtime_problems: list[str] = []
+            runtime_top: dict = {}
             got, tls = _receive(src, store, manifest_path, dry_run, progress, stop_event,
-                                on_manifest=on_manifest, runtime_dir=incoming, runtime_problems=runtime_problems)
+                                on_manifest=on_manifest, runtime_dir=incoming, runtime_problems=runtime_problems,
+                                runtime_top=runtime_top)
             header, rows = iter_manifest_v2(manifest_path)
             rows = list(rows)
         finally:
@@ -238,6 +247,10 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if dry_run:
             for repo, plan in planned.items():
                 result.lines.append(f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
+            if runtime_top:
+                _verdict, note = site_runtime.decide(home, runtime_top, allow_downgrade=allow_downgrade)
+                if note:
+                    result.lines.append(f"  {note}")
             return result
 
         if stop_event is not None and stop_event.is_set():

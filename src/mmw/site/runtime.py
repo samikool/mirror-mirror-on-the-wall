@@ -55,34 +55,51 @@ def _other_build(home: Path, inst, incoming: Path, arch: str) -> bool:
         return False
 
 
+def decide(home: Path, top: dict, *, allow_downgrade: bool = False,
+           incoming: Path | None = None) -> tuple[str, str | None]:
+    """What to do with a bundle's runtime (its top `RUNTIME.json`):
+    ("install", what), ("skip", None) when this site already runs it, or
+    ("refuse", why). `incoming`, when the files are here, also tells a
+    rebuilt wheel of the same version apart."""
+    from packaging.version import InvalidVersion, Version
+
+    from mmw.core.runtime import mmw_version
+    running, inst = mmw_version(), installed(home)
+    try:
+        new, python = top["mmw"], top["python"]
+        current = max(Version(running), Version(inst[0])) if inst else Version(running)
+        newer, older = Version(new) > current, Version(new) < current
+    except (KeyError, TypeError, InvalidVersion) as e:
+        return "refuse", f"the bundle's mmw runtime can't be read ({top.get('error', e)}) — not installed"
+    same = inst is not None and Version(inst[0]) == Version(new)
+    other = same and (inst[1] != python or
+                      (incoming is not None and _other_build(home, inst, incoming, machine_arch())))
+    if older and not allow_downgrade:
+        return "refuse", (f"this bundle brings mmw {new}, older than this mmw {current} — not installed "
+                          "(mmw site apply --allow-downgrade installs it)")
+    if newer or older or other:
+        return "install", f"mmw {new} would be installed (now {current})"
+    return "skip", None
+
+
 def update_runtime(home: Path, incoming: Path, *, allow_downgrade: bool = False) -> list[str]:
     """Install the runtime in `incoming` if it is newer than both this mmw
     and the one `bin/mmw` runs (or the same version on another Python, or
     rebuilt; an older one only when `allow_downgrade`). Returns what to tell the
     operator; never raises — the apply it follows has already succeeded."""
-    from packaging.version import InvalidVersion, Version
-
     from mmw.core.runtime import mmw_version, verify
     home = Path(home).absolute()
-    running, inst = mmw_version(), installed(home)
+    running = mmw_version()
     arch = machine_arch()
     try:
         top = json.loads(disk_io.ops.read_text(incoming / "RUNTIME.json"))
-        new, python, arches = top["mmw"], top["python"], list(top["arches"])
-        current = max(Version(running), Version(inst[0])) if inst else Version(running)
-        newer, older = Version(new) > current, Version(new) < current
-    except (OSError, ValueError, KeyError, TypeError, InvalidVersion) as e:
+    except (OSError, ValueError) as e:
+        top = {"error": str(e)}
+    verdict, note = decide(home, top, allow_downgrade=allow_downgrade, incoming=incoming)
+    if verdict != "install":
         disk_io.ops.rmtree(incoming, ignore_errors=True)
-        return [f"the bundle's mmw runtime can't be read ({e}) — not installed"]
-    same = inst is not None and Version(inst[0]) == Version(new)
-    other = same and (inst[1] != python or _other_build(home, inst, incoming, arch))
-    if not newer and not older and not other:
-        disk_io.ops.rmtree(incoming, ignore_errors=True)
-        return []
-    if older and not allow_downgrade:
-        disk_io.ops.rmtree(incoming, ignore_errors=True)
-        return [f"this bundle brings mmw {new}, older than this mmw {current} — not installed "
-                "(mmw site apply --allow-downgrade installs it)"]
+        return [note] if note else []
+    new, arches = top["mmw"], list(top["arches"])
     if arch not in arches:
         disk_io.ops.rmtree(incoming, ignore_errors=True)
         return [f"this bundle's mmw {new} is for {', '.join(arches)} — this machine is {arch}; not installed"]

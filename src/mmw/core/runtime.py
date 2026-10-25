@@ -322,26 +322,16 @@ def wanted(network, wheel: Path | None = None) -> dict:
     return {"mmw": version, "python": network.runtime_python, "arches": sorted(network.runtime_arches), **built}
 
 
-def pending(network, mirror_dir: Path, *, from_nothing: bool) -> str | None:
-    """What the next bundle of `network` adds for mmw's runtime, said for an
-    estimate: None when it carries none (an apply network, or what was last
-    sent is current and the bundle doesn't start from nothing)."""
-    if network.far_side != "mmw":
-        return None
+def installer_note(network, mirror_dir: Path) -> str:
+    """What "Include mmw installer" adds, said for an estimate: the cached
+    runtimes' size, or the download it makes the first time."""
     from mmw.core.format import fmt_size
-    from mmw.core.pool import Pool
-    want = wanted(network)
-    if not from_nothing:
-        try:
-            with Pool(mirror_dir, read_only=True) as pool:
-                if pool.runtime_sent(network.name) == want:
-                    return None
-        except Exception:  # noqa: BLE001 — no pool yet: nothing was sent
-            pass
-    size = 0
-    for arch in want["arches"]:
-        d = Path(mirror_dir) / "runtime" / f"{want['mmw']}-py{want['python']}-{arch}"
-        if verify(d) is None:
-            return "mmw's runtime (downloaded when it runs, about 100 MB per architecture)"
-        size += sum(disk_io.ops.stat(p).st_size for p in disk_io.ops.rglob(d, "*") if disk_io.ops.is_file(p))
-    return f"mmw's runtime ({fmt_size(size)})"
+    version, size = mmw_version(), 0
+    for arch in sorted(network.runtime_arches):
+        found = [d for d in disk_io.ops.glob(Path(mirror_dir) / "runtime",
+                                             f"{version}-py{network.runtime_python}-{arch}*")
+                 if verify(d) is not None]
+        if not found:
+            return "mmw installer (about 100 MB per architecture)"
+        size += sum(disk_io.ops.stat(p).st_size for p in disk_io.ops.rglob(found[0], "*") if disk_io.ops.is_file(p))
+    return f"mmw installer ({fmt_size(size)})"

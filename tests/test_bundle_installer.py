@@ -150,3 +150,68 @@ def test_tui_edits_runtime_settings(tmp_path, monkeypatch):
         await until(pilot, lambda: any("mmw needs Python" in str(n) for n in app.notes))
         assert isinstance(app.screen, EditNetworkPage)
     _run(tmp_path, check, cfg=_cfg(tmp_path, "lab"), monkeypatch=monkeypatch)
+
+
+# ── the Transfer page ────────────────────────────────────────────────────────
+
+def _pick_page(tmp_path, status, check, far_side="mmw"):
+    import asyncio
+
+    from mmw.core import config
+    from mmw.tui.snapshot_pages import BundlePickPage
+    from test_tui_snapshots import _app
+
+    net = config.NetworkConfig(name="lab", select=[], far_side=far_side)
+
+    async def run():
+        app = _app(lambda: BundlePickPage(net, status, tmp_path,
+                                          repos={"pypi": "PyPI"} if far_side == "mmw" else None))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            return await check(app, pilot)
+    return asyncio.run(run())
+
+
+def _never_sent():
+    from dataclasses import replace
+
+    from test_tui_sweep import snapshot_status_demo
+    return replace(snapshot_status_demo(), last_bundle=None)
+
+
+def test_transfer_page_offers_installer(tmp_path):
+    from mmw.tui.ui.form import Form
+    from test_tui_sweep import snapshot_status_demo
+
+    async def value(app, pilot):
+        return app.screen.query_one(Form).values().get("pick-installer")
+    assert _pick_page(tmp_path, _never_sent(), value) == "yes"          # first transfer: on
+    assert _pick_page(tmp_path, snapshot_status_demo(), value) == "no"  # sent before: off
+
+    async def absent(app, pilot):
+        return app.screen.query("#pick-installer")
+    assert not _pick_page(tmp_path, snapshot_status_demo(), absent, far_side="apply")
+
+
+def test_transfer_with_installer_writes_it(tmp_path, monkeypatch):
+    from mmw.core.publisher.results import BundleResult
+    from mmw.tui.publish_flows import BundleChoice
+    from test_bundle_progress_notifications import _run_bundle_scenario
+    seen = []
+
+    def fake(network, cfg, mirror_dir, progress=None, stop_event=None, mirror_start_callback=None, **kw):
+        seen.append(kw.get("installer"))
+        return BundleResult(network_name=network.name, out_path=tmp_path / "x.tar", sent=1)
+    _run_bundle_scenario(tmp_path, fake, monkeypatch, choice=BundleChoice(installer=True))
+    assert seen == [True]
+
+
+def test_estimate_counts_the_installer(tmp_path):
+    from textual.widgets import Label
+
+    from waiting import until
+
+    async def check(app, pilot):
+        await until(pilot, lambda: "+ mmw installer (about 100 MB per architecture)"
+                    in str(app.screen.query_one("#pick-estimate", Label).render()))
+    _pick_page(tmp_path, _never_sent(), check)

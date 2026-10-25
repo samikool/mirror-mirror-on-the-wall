@@ -134,8 +134,8 @@ class BundlePickPage(Page):
         last = status.last_bundle.to_stamp if status.last_bundle else next(
             (s.stamp for s in status.snapshots if s.kind == "imported"), None)
         self._last = last
-        # mmw's runtime, if the bundle would carry it: (from nothing, a delta).
-        self._runtime: tuple[str | None, str | None] = (None, None)
+        # What "Include mmw installer" adds to the estimate (mmw far side).
+        self._installer_note = "mmw installer"
 
     def compose_body(self) -> ComposeResult:
         froms = ([(escape(f"Where the last transfer went — {self._status.name(self._last)}"), "last")]
@@ -155,6 +155,10 @@ class BundlePickPage(Page):
                            "bundle", id="pick-as",
                            hint="A folder costs almost no disk; tar, rsync or copy it across yourself.")]
               if self._repos else []),
+            *([ChoiceField("mmw installer", [("Include mmw installer", "yes"), ("Not this time", "no")],
+                           "no" if self._last else "yes", id="pick-installer",
+                           hint="Written beside it: the far side installs mmw from it, offline.")]
+              if self._net.far_side == "mmw" else []),
             id="pick-form")
         if self._repos:
             yield Label("[dim]Repositories · space toggles · ctrl+a toggles all[/]")
@@ -170,24 +174,25 @@ class BundlePickPage(Page):
         self._estimate_now()
         self.query_one("#btn-pick-go").focus()
         if self._net.far_side == "mmw":
-            self._runtime_notes()
+            self._installer_size()
 
-    @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-runtime")
-    def _runtime_notes(self) -> None:
-        from mmw.core.runtime import pending
-        notes = (pending(self._net, self._mirror_dir, from_nothing=True),
-                 pending(self._net, self._mirror_dir, from_nothing=False))
-        self.app.call_from_thread(self._got_runtime, notes)
+    @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-installer")
+    def _installer_size(self) -> None:
+        from mmw.core.runtime import installer_note
+        note = installer_note(self._net, self._mirror_dir)
+        self.app.call_from_thread(self._got_installer, note)
 
-    def _got_runtime(self, notes) -> None:
-        self._runtime = notes
+    def _got_installer(self, note: str) -> None:
+        self._installer_note = note
         self._estimate_now()
 
+    def _installer(self) -> bool:
+        return self.query_one(Form).values().get("pick-installer") == "yes"
+
     def _say(self, text: str, start: str | None) -> None:
-        """The estimate line, plus mmw's runtime when the bundle carries it."""
-        note = self._runtime[0 if start in (None, "none") else 1]
+        """The estimate line, plus mmw's installer when it is included."""
         self.query_one("#pick-estimate", Label).update(
-            text + (f"\n[dim]Plus {escape(note)}.[/]" if note else ""))
+            text + (f"\n[dim]+ {escape(self._installer_note)}[/]" if self._installer() else ""))
 
     def _ends(self) -> tuple[str, str]:
         values = self.query_one(Form).values()
@@ -252,7 +257,8 @@ class BundlePickPage(Page):
         self.dismiss(BundleChoice(from_last=start == "last",
                                   from_ref=None if start in ("last", "none") else start,
                                   to_ref=dest, repos=picked,
-                                  stage=bool(self._repos) and self.query_one(Form).values()["pick-as"] == "stage"))
+                                  stage=bool(self._repos) and self.query_one(Form).values()["pick-as"] == "stage",
+                                  installer=self._installer()))
 
 
 # ── the Snapshots page ───────────────────────────────────────────────────────

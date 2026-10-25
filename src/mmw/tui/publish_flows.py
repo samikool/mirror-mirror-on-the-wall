@@ -75,6 +75,7 @@ class BundleChoice:
     allow_incomplete: bool = False
     repos: tuple[str, ...] | None = None    # mmw far side: only these (None: all)
     stage: bool = False                     # mmw far side: a directory of hardlinks, not a tar
+    installer: bool = False                 # mmw far side: mmw's installer written beside it
 
 
 class PublishFlows:
@@ -414,6 +415,8 @@ class PublishFlows:
             ends["from_ref"] = choice.from_ref
         if choice.repos is not None:
             ends["repos"] = list(choice.repos)
+        if choice.installer:
+            ends["installer"] = True
         verb = stage_network if choice.stage else bundle_network
         view.begin()
 
@@ -421,15 +424,8 @@ class PublishFlows:
             return verb(net, self.cfg(), self.cfg().settings.mirror_dir,
                         progress=view.record, stop_event=view.stop_event,
                         mirror_start_callback=view.notify_mirror_start, **ends, **more)
-        from mmw.core.runtime import RuntimeUnavailable
         try:
-            try:
-                result = await asyncio.to_thread(run)
-            except RuntimeUnavailable as exc:
-                # mmw's runtime couldn't be built (offline, a dev build):
-                # the bundle goes without it, and the next one carries it.
-                result = await asyncio.to_thread(lambda: run(runtime=False))
-                result.warnings.append(f"mmw's runtime was left out ({exc}) — the next bundle carries it")
+            result = await asyncio.to_thread(run)
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return

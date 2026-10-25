@@ -44,7 +44,7 @@ class _RecordingApp(MmwApp):
         self.notifications.append((message, severity))
 
 
-def _run_bundle_scenario(tmp_path: Path, fake_bundle_network, monkeypatch):
+def _run_bundle_scenario(tmp_path: Path, fake_bundle_network, monkeypatch, choice=None):
     """Run `_execute_bundle` into a mounted `TransferView` against a faked
     `bundle_network`, and return the notifications the run produced."""
     monkeypatch.setattr(
@@ -61,7 +61,7 @@ def _run_bundle_scenario(tmp_path: Path, fake_bundle_network, monkeypatch):
             net = cfg.networks[0]
             view = TransferView(BUNDLE, net.name)
             await app.screen.mount(view)
-            worker = app.run_worker(flows._execute_bundle(net, view), exit_on_error=False)
+            worker = app.run_worker(flows._execute_bundle(net, view, choice), exit_on_error=False)
             await worker.wait()
             await pilot.pause()
             # The Publish section toasts exactly this pair once `Completed`

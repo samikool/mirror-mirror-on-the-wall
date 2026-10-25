@@ -145,8 +145,9 @@ def space(home: Path) -> SpaceReport:
             rep.repos[st.repo], rep.labels[st.repo] = rows, st.label
     for r in roots.all:
         if disk_io.ops.is_dir(r.path):
+            from mmw.site.space import real_free
             usage = disk_io.ops.disk_usage(r.path)
-            rep.roots[r.name] = (usage.used, usage.free)
+            rep.roots[r.name] = (usage.used, real_free(r.path))      # on WSL, the Windows drive's too
     rep.used, rep.free = rep.roots.get(roots.primary.name, (0, 0))
     return rep
 

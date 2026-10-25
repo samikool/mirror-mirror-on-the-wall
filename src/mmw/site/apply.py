@@ -42,6 +42,18 @@ class ApplyError(Exception):
         self.code = code
 
 
+class MaybeUnmounted(ApplyError):
+    """A location that held a root of a mirror on this machine is there but
+    empty: an unmounted share's mount point looks exactly like that, so
+    nothing is written unless the person says to (`apply_anyway`)."""
+
+    def __init__(self, locations: list[str]):
+        self.locations = locations
+        super().__init__(5, f"{', '.join(locations)} held a mirror on this machine but is empty now — if it's a "
+                            "share that isn't mounted, mount it; if you emptied it on purpose, apply anyway. "
+                            "Nothing was written")
+
+
 @dataclass
 class ApplyResult:
     created: str = ""
@@ -746,10 +758,8 @@ def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
                 from mmw.site.sshroot import free_at
                 cache[key] = (set(), free_at(key))
             else:
-                parent = Path(key).expanduser()
-                while not disk_io.ops.exists(parent):
-                    parent = parent.parent
-                cache[key] = (set(), disk_io.ops.disk_usage(parent).free)
+                from mmw.site.space import real_free
+                cache[key] = (set(), real_free(key))
         have, free = cache[key]
         need_cs = dict(plan.host_checksums.get(None, {}))
         for h in hs:
@@ -824,7 +834,7 @@ def _root_name(location: str, taken: set[str]) -> str:
 
 def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run: bool = False,
                  forward: set[str] | None = None, forward_all: bool = False, only: set[str] | None = None,
-                 progress=None, stop_event=None, say=print) -> SetApplyResult:
+                 progress=None, stop_event=None, say=print, apply_anyway: set[str] | None = None) -> SetApplyResult:
     """Apply the bundle at `src` to a set of roots (`mset`; None for a first
     apply) in one pass. Each hostname goes to the root that holds it; a new
     one to `place[host]` or `place["*"]` (a root location). A hostname whose
@@ -932,11 +942,21 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         new_locs = sorted({t for t in targets.values() if isinstance(t, str)})
         def norm(loc: str) -> str:
             return loc if ssh.parse_location(loc)[0] == "ssh" else str(Path(loc).expanduser().resolve())
-        seen_here = {norm(k) for k in recents.known()}
+        seen_here = {norm(k): k for k in recents.known()}
+        anyway = {norm(x) for x in (apply_anyway or ())}
+        unsure = []
         for loc in new_locs:
             if found.get(loc) is None and norm(loc) in seen_here:
-                raise ApplyError(5, f"{loc} was a root of a mirror on this machine but holds none now — "
-                                    "is it mounted? Nothing was written")
+                local = ssh.parse_location(loc)[0] == "local"
+                if local and not disk_io.ops.exists(Path(loc).expanduser()):
+                    # Gone altogether: deleted, never an unmounted share (its
+                    # mount point would still be there). Start afresh.
+                    recents.forget(seen_here[norm(loc)])
+                    result.lines.append(f"  {loc} was a root here once and is gone — starting a new one")
+                elif norm(loc) not in anyway:
+                    unsure.append(loc)
+        if unsure:
+            raise MaybeUnmounted(unsure)
         if mset is not None and mset.missing and any(found.get(loc) is None for loc in new_locs):
             raise ApplyError(5, f"root(s) {', '.join(mset.missing)} of this mirror aren't here — mount them "
                                 "(mmw site open PATH) before a new hostname starts a new root; nothing was written")
@@ -973,7 +993,6 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         hosts_map.update({h: t.info.name for h, t in targets.items()})
         for r in everyone:
             r.set_identity(members=members, hosts=hosts_map)
-            recents.remember(r.info.location)
 
         # One pass over the bundle: each member to its hostname's root. Each
         # root's lock is taken as its applier opens, in placement order; a
@@ -1086,6 +1105,10 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
             result.actions += [a for a in r.actions if a not in result.actions]
         for h, why in result.held_back.items():
             result.lines.append(f"  {h}: held back — {why}")
+        # Remembered on this machine only now that the apply committed: an
+        # apply that failed or stopped leaves no memory of its new roots.
+        for r in everyone:
+            recents.remember(r.info.location)
         if runtime_seen:
             result.actions.append(RUNTIME_NOTE)
     return result

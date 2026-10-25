@@ -56,8 +56,9 @@ def _place(specs: list[str]) -> dict[str, str]:
 
 
 def apply(src: str, root: list[str] | None = None, forward: list[str] | None = None,
-          forward_all: bool = False, dry_run: bool = False, break_lock: bool = False) -> int:
-    from mmw.site.apply import ApplyError, apply_to_set
+          forward_all: bool = False, dry_run: bool = False, break_lock: bool = False, yes: bool = False) -> int:
+    import sys
+    from mmw.site.apply import ApplyError, MaybeUnmounted, apply_to_set
     from mmw.site.lock import LockHeld
     from mmw.site.mset import root_at
     try:
@@ -71,7 +72,18 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
         if forward and mset is not None:
             from mmw.site import ops
             keys = {ops.on_repo(mset, ref)[1] for ref in forward}
-        r = apply_to_set(mset, src, place=place, forward=keys, forward_all=forward_all, dry_run=dry_run)
+        try:
+            r = apply_to_set(mset, src, place=place, forward=keys, forward_all=forward_all, dry_run=dry_run,
+                             apply_anyway=set(place.values()) if yes else None)
+        except MaybeUnmounted as e:
+            eprint(str(e))
+            if not sys.stdin.isatty() and not _interactive():
+                eprint("pass --yes to apply anyway (no terminal to ask on)")
+                return e.code
+            if input("Apply anyway? [y/N] ").strip().lower() not in ("y", "yes"):
+                return e.code
+            r = apply_to_set(mset, src, place=place, forward=keys, forward_all=forward_all, dry_run=dry_run,
+                             apply_anyway=set(e.locations))
     except ApplyError as e:
         eprint(str(e))
         return e.code
@@ -88,6 +100,12 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
         for cmd in cmds:
             print(f"    {cmd}")
     return 3 if any(x.refused for x in r.per_root.values()) else 0
+
+
+def _interactive() -> bool:
+    """A test's CliRunner gives input on a stdin that isn't a tty; MMW_ASSUME_TTY says to ask anyway."""
+    import os
+    return os.environ.get("MMW_ASSUME_TTY") == "1"
 
 
 def open_root(path: str, install: Path | None = None) -> int:

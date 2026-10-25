@@ -251,3 +251,83 @@ def test_progress_from_another_thread(tmp_path):
             await until(pilot, lambda: "switching" in str(page.query_one("#run-repos").render()))
             t.join()
     asyncio.run(go())
+
+
+# WSL: the Linux disk says ~1 TB free whatever the Windows drive has — Sam's
+# second WSL fill-up. The smaller of the two is the truth.
+def test_wsl_free_space_counts_the_windows_drive(monkeypatch, tmp_path):
+    from collections import namedtuple
+
+    from mmw.core import disk_io
+    from mmw.site import space
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(space, "_wsl", lambda: True)
+    monkeypatch.setattr(space, "_windows_drive_free", lambda: 50 * 10**9)
+    monkeypatch.setattr(disk_io.ops, "disk_usage", lambda p: Usage(10**13, 0, 10**12))
+    assert space.real_free(tmp_path) == 50 * 10**9                    # the Windows drive, not WSL's 1 TB
+    monkeypatch.setattr(space, "_existing", lambda p: Path("/mnt/d/mirror"))
+    monkeypatch.setattr(Path, "resolve", lambda self: self)
+    assert space.real_free(Path("/mnt/d/mirror")) == 10**12           # a Windows drive itself: as reported
+    monkeypatch.undo()
+    monkeypatch.setattr(space, "_wsl", lambda: False)
+    monkeypatch.setattr(disk_io.ops, "disk_usage", lambda p: Usage(10**13, 0, 10**12))
+    monkeypatch.setattr(space, "_wsl", lambda: False)
+    assert space.real_free(tmp_path) == 10**12
+
+
+# An interrupted first apply, then the folder wiped (Sam's WSL retry).
+def test_a_failed_first_apply_leaves_no_memory(hosts, tmp_path):  # noqa: F811
+    cfg, net, md = hosts
+    stop = threading.Event()
+    with pytest.raises(ApplyError):
+        apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={"*": str(tmp_path / "r")},
+                     say=quiet, stop_event=stop, progress=lambda e, **kw: e == "receive" and stop.set())
+    assert str(tmp_path / "r") not in recents.known()               # remembered only once it committed
+
+
+def test_a_deleted_root_starts_fresh(hosts, tmp_path):  # noqa: F811
+    import shutil
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    r = tmp_path / "r"
+    apply_to_set(None, b, place={"*": str(r)}, say=quiet)
+    shutil.rmtree(r)                                                  # gone: never a mount point
+    result = apply_to_set(None, b, place={"*": str(r)}, say=quiet)
+    assert any("was a root here once and is gone — starting a new one" in line for line in result.lines)
+    assert read_root(str(r)) is not None
+
+
+def test_an_emptied_root_asks_before_applying(hosts, tmp_path):  # noqa: F811
+    import shutil
+
+    from mmw.site.apply import MaybeUnmounted
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    r = tmp_path / "r"
+    apply_to_set(None, b, place={"*": str(r)}, say=quiet)
+    for child in r.iterdir():                                         # still there, empty: maybe not mounted
+        shutil.rmtree(child) if child.is_dir() else child.unlink()
+    with pytest.raises(MaybeUnmounted) as e:
+        apply_to_set(None, b, place={"*": str(r)}, say=quiet)
+    assert e.value.locations == [str(r)] and not any(r.iterdir())    # nothing written
+    apply_to_set(None, b, place={"*": str(r)}, say=quiet, apply_anyway={str(r)})
+    assert read_root(str(r)) is not None
+
+
+def test_cli_asks_or_takes_yes(hosts, tmp_path):  # noqa: F811
+    import shutil
+
+    from typer.testing import CliRunner
+
+    from mmw import cli
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    r = tmp_path / "r"
+    apply_to_set(None, b, place={"*": str(r)}, say=quiet)
+    for child in r.iterdir():
+        shutil.rmtree(child) if child.is_dir() else child.unlink()
+    out = CliRunner().invoke(cli.app, ["site", "apply", b, "--root", f"*={r}"])
+    assert out.exit_code == 5 and "--yes" in out.output and "isn't mounted" in out.output
+    out = CliRunner().invoke(cli.app, ["site", "apply", b, "--root", f"*={r}"], input="y\n",
+                             env={"MMW_ASSUME_TTY": "1"})
+    assert out.exit_code == 0, out.output

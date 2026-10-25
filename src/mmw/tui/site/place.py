@@ -31,8 +31,9 @@ class PlacePage(Page):
     BINDINGS = [Binding("space", "toggle", "Tick"), Binding("enter", "cycle", "Root"),
                 Binding("a", "add", "Add a root")]
 
-    def __init__(self, plan, src: str, mset):
+    def __init__(self, plan, src: str, mset, suggest: list[str] | None = None):
         super().__init__()
+        self._suggest = list(suggest or [])          # folders already chosen as roots (from the start page)
         self._plan, self._src, self._mset = plan, src, mset
         self.subtitle = f"{Path(src).name} · network {plan.network} · {plan.created}"
         self.roots: list[str] = list(plan.locations) if mset else []     # names here, then new locations
@@ -43,6 +44,7 @@ class PlacePage(Page):
         self._cache: dict = {}                     # each root's store hits and free space, checked once
 
     def compose_body(self) -> ComposeResult:
+        yield Static("", id="place-hint")
         yield DataTable(id="place-hosts", cursor_type="row")
         yield Static("", id="place-roots")
 
@@ -54,6 +56,8 @@ class PlacePage(Page):
     def on_mount(self) -> None:
         t = self.query_one("#place-hosts", DataTable)
         t.add_columns("", "Hostname", "Repos", "Size", "Root", "")
+        for path in self._suggest:
+            self.add_root(path)
         self._refresh()
         t.focus()
 
@@ -138,6 +142,9 @@ class PlacePage(Page):
             lines.append(f"{'✓' if ok else '✗'} {key}  ({where})  needs {fmt_size(need)} · {fmt_size(free)} free")
         self.query_one("#place-roots", Static).update(Text("Roots\n" + ("\n".join(lines) or "  none yet")))
         unplaced = [h for h in self._plan.hosts if h not in self.held_back and self.targets.get(h) is None]
+        self.query_one("#place-hint", Static).update(
+            "New hostnames need a root: press a (Add a root…) and pick a folder — an empty one becomes a new "
+            "root. Enter moves a hostname between roots." if unplaced else "")
         self.query_one("#btn-place-go", Button).disabled = bool(unplaced) or any(
             need > free for need, free in needs.values()) or not self.ticked
 

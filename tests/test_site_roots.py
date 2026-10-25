@@ -165,3 +165,109 @@ def test_cli_apply_place(split_env, tmp_path):
     r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--place", "b=second", "--home", str(home)])
     assert r.exit_code == 0, r.output
     assert any(f.startswith("b.example.com/") for f in _files(second))
+
+
+# ── moving ───────────────────────────────────────────────────────────────────
+
+def _split_three(split_env, tmp_path):
+    """b at v1–v3 in main, serving v3."""
+    cfg, net, md, home, main, second = split_env
+    for i in (1, 2, 3):
+        if i == 2:
+            from test_bundle_mmw import _change_b
+            _change_b(md)
+        elif i == 3:
+            _bump_b(md)
+        apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / f"m{i}", from_ref=None if i == 1 else None)),
+                     say=quiet)
+    return cfg, home, main, second, next(s.identity for s in cfg.sources if s.name == "b")
+
+
+def _bump_b(md):
+    from mmw.core.pool import KIND_META, KIND_PKG, Pool
+    from test_dry_run_totals import SHARED, _index, _sha
+    files = {"shared.deb": SHARED, "b3.deb": b"bee" * 30}
+    with Pool(md) as pool:
+        refs = []
+        for fname, data in {**files, "Packages": _index(files)}.items():
+            pool.add(data, _sha(data), "sha256", fname, len(data))
+            refs.append((_sha(data), fname, KIND_META if fname == "Packages" else KIND_PKG))
+        pool.reconcile_refs("b", refs)
+
+
+def _b_files(root):
+    return {f for f in _files(root) if f.startswith("b.example.com/")}
+
+
+def test_move_copies_switches_and_cleans(split_env, tmp_path):
+    cfg, home, main, second, kb = _split_three(split_env, tmp_path)
+    served = _b_files(main)
+    r = ops.move(home, "b", "second")
+    assert r.copied_bytes > 0 and r.files > 0
+    assert _b_files(main) == set() and _b_files(second) == served
+    assert "b.example.com" in (second / "nginx/mirror.conf").read_text()
+    assert "b.example.com" not in (main / "nginx/mirror.conf").read_text()
+    assert ops.verify(home) == []
+    with SiteDB(home) as db:
+        assert db.repo_state(kb).root == "second"
+
+
+def test_move_held_repo_keeps_versions(split_env, tmp_path):
+    cfg, home, main, second, kb = _split_three(split_env, tmp_path)
+    ops.serve(home, "b", 1)
+    v1 = _b_files(main)
+    ops.move(home, "b", "second")
+    assert _b_files(second) == v1
+    with SiteDB(home) as db:
+        st = db.repo_state(kb)
+        assert st.serving.number == 1 and st.held
+    for n in (2, 3, 1):
+        ops.serve(home, "b", n)                     # every kept version is servable from the new root
+        assert ops.verify(home) == []
+
+
+def test_move_resumes(split_env, tmp_path, monkeypatch):
+    from mmw.site import apply as apply_mod
+    cfg, home, main, second, kb = _split_three(split_env, tmp_path)
+    served = _b_files(main)
+    real = apply_mod._ensure
+    calls = []
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return real(*a, **kw)
+    monkeypatch.setattr(apply_mod, "_ensure", flaky)
+    with pytest.raises(KeyboardInterrupt):
+        ops.move(home, "b", "second")
+    from mmw.site.lock import break_lock
+    break_lock(home)
+    assert _b_files(main) == served                 # the old root still serves
+    monkeypatch.setattr(apply_mod, "_ensure", real)
+    ops.move(home, "b", "second")
+    assert _b_files(second) == served and _b_files(main) == set() and ops.verify(home) == []
+
+
+def test_move_between_roots_on_one_fs(split_env, tmp_path):
+    cfg, home, main, second, kb = _split_three(split_env, tmp_path)
+    assert main.stat().st_dev == second.stat().st_dev
+    ops.move(home, "b", "second")
+    blob = next((second / ".mmw/store").rglob("*"))
+    assert blob.exists()
+    ops.move(home, "b", "main")
+    assert _b_files(second) == set() and ops.verify(home) == []
+
+
+def test_move_refuses_shared_host_split(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+    H.add_root(home, "second", tmp_path / "srv2")
+    with pytest.raises(ValueError, match="must share a root"):
+        ops.move(home, "b", "second")
+
+
+def test_cli_move(split_env, tmp_path):
+    cfg, home, main, second, kb = _split_three(split_env, tmp_path)
+    r = CliRunner().invoke(cli.app, ["site", "move", "b", "second", "--yes", "--home", str(home)])
+    assert r.exit_code == 0, r.output
+    assert "copies" in r.output and "recreate" in r.output and _b_files(second)

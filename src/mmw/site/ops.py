@@ -64,6 +64,7 @@ def _session(home: Path):
     roots = _roots(home)
     with SiteLock(home), SiteDB(home) as db:
         resume_switches(db, roots)
+        _finish_moves(db, roots)
         yield db, roots
 
 
@@ -277,3 +278,86 @@ def repair(home: Path) -> int:
                 place_served_file(store, root, rel, checksum, network=rel in network)
                 fixed += 1
     return fixed
+
+
+# ── moving a repository to another root ─────────────────────────────────────
+
+@dataclass(frozen=True)
+class MoveResult:
+    copied_bytes: int
+    files: int
+    nginx_changed: list[str]
+
+
+def move_size(home: Path, ref: str, root_name: str) -> int:
+    """Bytes `move` would copy into the target root's store."""
+    roots = _roots(home)
+    with SiteDB(home) as db:
+        repo = resolve_repo(db, ref)
+        dst = roots.store(roots.named(root_name))
+        need = {c for v in db.versions(repo) for c in db.version_files(v.id).values() if not dst.has(c)}
+        src = roots.store(roots.of(db.repo_state(repo)))
+        return sum(disk_io.ops.stat(src.path(c)).st_size for c in need if src.has(c))
+
+
+def move(home: Path, ref: str, root_name: str) -> MoveResult:
+    """Move a repository to another root: copy every kept version's files
+    into its store, serve from there, then clear the old root."""
+    import json
+    from mmw.site.apply import _ensure, check_shared_hosts
+    with _session(home) as (db, roots):
+        repo = resolve_repo(db, ref)
+        state = db.repo_state(repo)
+        src, dst = roots.of(state), roots.named(root_name)
+        if src.name == dst.name:
+            raise ValueError(f"{state.label} is already in {dst.name}")
+        roots.check_mounted(src)
+        roots.check_mounted(dst)
+        states = db.repo_states()
+        check_shared_hosts({s.repo: (dst if s.repo == repo else roots.of(s)) for s in states},
+                           {s.repo: s.label for s in states}, {s.repo: s.bases for s in states})
+        dst_store = roots.store(dst)
+        copied = files = 0
+        for v in db.versions(repo):
+            for checksum in db.version_files(v.id).values():
+                if not dst_store.has(checksum):
+                    _ensure(roots, dst_store, checksum)
+                    copied += disk_io.ops.stat(dst_store.path(checksum)).st_size
+                    files += 1
+        db.set_meta(f"move:{repo}", json.dumps({"from": src.name}))
+        db.set_root(repo, dst.name)
+        if state.serving is not None:
+            from mmw.site.switch import _run
+            db.begin_switch(repo, None, state.serving.id)
+            _run(db, dst_store, Path(dst.path), repo, None, state.serving.id, None)
+            db.set_serving(repo, state.serving.id, held=state.held)
+        _finish_moves(db, roots)
+        changed = [r.name for r in (src, dst)] if roots.multi else []
+        _render(roots)
+        return MoveResult(copied, files, changed)
+
+
+def _finish_moves(db: SiteDB, roots: Roots) -> None:
+    """Clear the old root of every repository a move has placed elsewhere:
+    its served files go, the store keeps only what the root still needs,
+    and both roots' nginx follow."""
+    import json
+    from mmw.resources.apply import _prune_empty_parents
+    from mmw.site.apply import write_root_nginx
+    for st in db.repo_states():
+        rec = db.get_meta(f"move:{st.repo}")
+        if not rec or rec == "{}":
+            continue
+        old = roots.named(json.loads(rec)["from"])
+        if disk_io.ops.is_dir(Path(old.path) / ".mmw" / "store"):
+            root = Path(old.path)
+            here = {p for s in db.repo_states() if s.serving is not None and roots.of(s).name == old.name
+                    for p in db.version_files(s.serving.id)}
+            if st.serving is not None:
+                for rel in db.version_files(st.serving.id):
+                    if rel not in here and disk_io.ops.remove(root / rel) is not None:
+                        _prune_empty_parents(str(root), str((root / rel).parent))
+            roots.store(old).gc(roots.referenced(db, old))
+        if roots.multi and db.get_meta("settings"):
+            write_root_nginx(db, roots)
+        db.set_meta(f"move:{st.repo}", "{}")

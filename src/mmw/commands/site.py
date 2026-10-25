@@ -294,3 +294,31 @@ def root_list(home: Path | None = None) -> int:
         primary = "  (primary)" if i == 0 else ""
         print(f"  {r.name:<12} {r.path}  serving host: {r.serve_path}{primary}")
     return 0
+
+
+def move(repo: str, root: str, home: Path | None = None, yes: bool = False, break_lock: bool = False) -> int:
+    import sys
+    from mmw.core.format import fmt_size
+    from mmw.site import ops
+    from mmw.site.lock import LockHeld
+    try:
+        h = _home(home, break_lock)
+        size = ops.move_size(h, repo, root)
+        print(f"moving {repo} to {root} copies {fmt_size(size)} into its store")
+        if not yes:
+            if not sys.stdin.isatty():
+                eprint("pass --yes to move it (no terminal to ask on)")
+                return 1
+            if input("Move it? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 1
+        r = ops.move(h, repo, root)
+    except LockHeld as e:
+        eprint(str(e))
+        return 5
+    except (ValueError, LookupError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"moved: {r.files} file(s), {fmt_size(r.copied_bytes)} copied")
+    if r.nginx_changed:
+        print(f"! nginx changed in {', '.join(r.nginx_changed)} — recreate them on the serving host")
+    return 0

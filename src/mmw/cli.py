@@ -673,6 +673,16 @@ def cmd_site_root_list(home: Path = _SITE_HOME):
     raise typer.Exit(root_list(home))
 
 
+@site_app.command("move")
+def cmd_site_move(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                  root: str = typer.Argument(..., help="The root to move it to"),
+                  home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
+                  break_lock: bool = _BREAK_LOCK):
+    """Move a repository, every kept version, to another root."""
+    from mmw.commands.site import move
+    raise typer.Exit(move(repo, root, home, yes, break_lock))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

@@ -190,8 +190,8 @@ class BundleResult:
     stream_sha256: str | None = None
     # mmw far side: each repository this bundle carries (`repo_delta.RepoDelta`).
     repos: list = field(default_factory=list)
-    # mmw far side: the mmw runtime it carries ({mmw, python, arches}), if any.
-    runtime: dict | None = None
+    # mmw far side: the mmw installers written beside it (`--installer`).
+    installers: list[Path] = field(default_factory=list)
     mirrors: list[MirrorPublishResult] = field(default_factory=list)
     errors: list[str] = _FoldedErrors()
     dist_upgrade_warnings: list[str] = field(default_factory=list)

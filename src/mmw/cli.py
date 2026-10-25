@@ -493,6 +493,12 @@ def cmd_bundle(
     repo: list[str] = typer.Option(
         None, "--repo", help="Only this repository (URL or name; repeatable). Needs -n and "
                              'far_side = "mmw".'),
+    no_runtime: bool = typer.Option(
+        False, "--no-runtime", help="Leave mmw's own runtime out of an mmw network's bundle "
+                                    "(it is carried when the far side's mmw is out of date)."),
+    runtime_wheel: Path = typer.Option(
+        None, "--runtime-wheel", help="Ship this mmw wheel in the runtime instead of PyPI's "
+                                      "(a dev build; `uv build` makes one)."),
 ):
     """Write a network's mirrors to a transferable bundle — between any two
     snapshots (see `mmw snapshot list`). By default: from where the last
@@ -500,7 +506,8 @@ def cmd_bundle(
     from mmw.commands.bundle import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out,
                          allow_incomplete=allow_incomplete,
-                         from_ref=from_ref, to_ref=to_ref, repos=repo or None))
+                         from_ref=from_ref, to_ref=to_ref, repos=repo or None,
+                         runtime=not no_runtime, runtime_wheel=runtime_wheel))
 
 
 @app.command("stage")

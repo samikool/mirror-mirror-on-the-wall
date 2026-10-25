@@ -280,6 +280,7 @@ def test_edit_persists_every_networkconfig_field(tmp_path):
         select=[config.NetworkSelect(source="https://deb.example.com/debian")],
         prune=False, dist_upgrade=True, certs=False,
         nginx=False, retention="30d", far_side="mmw",
+        runtime_arches=["aarch64"], runtime_python="3.13",
     )
     defaults = config.NetworkConfig(name="x")
     unchanged = [f for f in config.NetworkConfig.model_fields

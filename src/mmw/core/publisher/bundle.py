@@ -180,6 +180,9 @@ def bundle_network(
     stdout=None,
     repos: list[str] | None = None,
     stage: bool = False,
+    runtime: bool = True,
+    runtime_wheel: Path | None = None,
+    fetcher=None,
 ) -> BundleResult:
     """One `.tar` that takes a far side from snapshot `from_ref` to
     snapshot `to_ref` — any two, forwards or backwards.
@@ -196,6 +199,11 @@ def bundle_network(
     everything and deletes every path any snapshot of this network ever had
     that the destination lacks — a far side of unknown state is repaired.
     The nginx config and TLS files are regenerated for the far side.
+
+    An mmw network's bundle carries mmw's own runtime (`.mmw/runtime/`) when
+    it is full, or when the mmw version or the runtime settings differ from
+    the last runtime sent — unless `runtime` is False. `runtime_wheel` is a
+    local mmw wheel for a version PyPI lacks; `fetcher` does the downloads.
     """
     from mmw.core.snapshots import (
         ensure_repo_versions, find_snapshot, import_ledger, recorded_bases, take_snapshot,
@@ -293,6 +301,17 @@ def bundle_network(
                 for rel in prev:
                     if rel.startswith("nginx/") and not rel.endswith(".tar"):
                         prev[rel] = ""
+        # mmw's runtime: built (or taken from the cache) before anything is
+        # written, so a download that fails leaves no bundle and no ledger row.
+        shipped_runtime, runtime_members = None, {}
+        if mmw_far_side and runtime:
+            from mmw.core import runtime as rt
+            want = rt.wanted(network, runtime_wheel)
+            if header.full or pool.runtime_sent(network.name) != want:
+                runtime_members = rt.runtime_files(network, cfg, mirror_dir,
+                                                   fetcher=fetcher or rt.default_fetcher(),
+                                                   wheel=runtime_wheel)
+                shipped_runtime = want
         streaming = is_stdout(out_path) and not stage
         hashing = None
         writer = None
@@ -313,7 +332,7 @@ def bundle_network(
                           apply_script_bytes(), prune=network.prune and not mmw_far_side,
                           full=header.full if mmw_far_side else start is None, row_repo=row_repo,
                           progress=progress, tls_files=tls_files, stop_event=stop_event,
-                          writer=writer,
+                          writer=writer, runtime_files=runtime_members,
                           scratch_dir=ledger_dir(mirror_dir, network.name) if streaming or stage else None)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
@@ -410,7 +429,8 @@ def bundle_network(
         pool.record_bundle(network.name, header.previous, dest.stamp, str(target),
                            sink.sent, sink.sent_bytes, len(sink.deleted),
                            kind="stage" if stage else "stream" if streaming else "bundle",
-                           repos=sent_repos)
+                           repos=sent_repos, runtime=shipped_runtime)
+    result.runtime = shipped_runtime
     return result
 
 

@@ -95,3 +95,13 @@ def _no_real_docker(monkeypatch):
     from mmw.core.publisher import nginx_container
     monkeypatch.setattr(image, "DOCKER", "mmw-test-has-no-docker", raising=True)
     monkeypatch.setattr(nginx_container, "DOCKER", "mmw-test-has-no-docker", raising=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_runtime_downloads(monkeypatch):
+    """mmw's runtime rides mmw networks' bundles; building it downloads uv,
+    an interpreter and wheels. Every test builds from a fake instead —
+    `test_runtime_e2e.py` is the one that fetches for real."""
+    from mmw.core import runtime
+    from test_runtime import FakeFetcher
+    monkeypatch.setattr(runtime, "default_fetcher", FakeFetcher)

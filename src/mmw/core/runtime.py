@@ -174,3 +174,38 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
         disk_io.ops.rmtree(tmp, ignore_errors=True)
         raise
     return d
+
+
+def default_fetcher() -> Fetcher:
+    return RealFetcher()
+
+
+def wanted(network, wheel: Path | None = None) -> dict:
+    """What an `mmw` network's far side should be running: {mmw, python,
+    arches} — the record a bundle that carries it leaves in the ledger."""
+    version = mmw_version()
+    if wheel is not None:
+        from packaging.utils import parse_wheel_filename
+        version = str(parse_wheel_filename(wheel.name)[1])
+    return {"mmw": version, "python": network.runtime_python, "arches": sorted(network.runtime_arches)}
+
+
+def runtime_files(network, cfg, mirror_dir: Path, *, fetcher: Fetcher,
+                  wheel: Path | None = None) -> dict[str, bytes | Path]:
+    """The `.mmw/runtime/` members of a bundle: `bootstrap.sh`, a top
+    `RUNTIME.json` ({mmw, python, arches}), and each architecture's built
+    runtime under `{arch}/`. Builds what isn't cached; raises before
+    anything is written if a download fails."""
+    from mmw.resources import BOOTSTRAP
+    want = wanted(network, wheel)
+    out: dict[str, bytes | Path] = {
+        ".mmw/runtime/bootstrap.sh": BOOTSTRAP,
+        ".mmw/runtime/RUNTIME.json": (json.dumps(want, sort_keys=True) + "\n").encode(),
+    }
+    for arch in want["arches"]:
+        d = build_runtime(Path(mirror_dir) / "runtime", arch=arch, python=want["python"],
+                          mmw_version=want["mmw"], fetcher=fetcher, wheel=wheel)
+        for p in sorted(disk_io.ops.rglob(d, "*")):
+            if disk_io.ops.is_file(p):
+                out[f".mmw/runtime/{arch}/{p.relative_to(d)}"] = p
+    return out

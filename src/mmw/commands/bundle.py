@@ -26,12 +26,15 @@ from mmw.core.publisher.bundle import bundle_network, stage_network
 def run(cfg_dir: Path = Path("."), network: str | None = None,
         out: Path | None = None,
         allow_incomplete: bool = False, from_ref: str | None = None,
-        to_ref: str | None = None, repos: list[str] | None = None, stage: bool = False) -> int:
+        to_ref: str | None = None, repos: list[str] | None = None, stage: bool = False,
+        runtime: bool = True, runtime_wheel: Path | None = None) -> int:
     """Bundle one or all configured networks. Returns a process exit code.
 
     `from_ref` / `to_ref` name snapshots (stamp, label or id) of the one
     network `-n` names; `from_ref="none"` is a full bundle. Unset: from where
-    the last bundle went, to a new snapshot of now."""
+    the last bundle went, to a new snapshot of now. `runtime=False` leaves
+    mmw's own runtime out of an mmw network's bundle; `runtime_wheel` is a
+    local mmw wheel to ship in place of PyPI's."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
@@ -105,6 +108,10 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
         try:
             picked = {"repos": keys} if keys else {}
+            if not runtime:
+                picked["runtime"] = False
+            if runtime_wheel is not None:
+                picked["runtime_wheel"] = runtime_wheel
             # A warning the run raises before its long part (a stage that will
             # copy, not hardlink) is said then, while there is time to stop it.
             told: list[str] = []
@@ -136,6 +143,9 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         say(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
         for d in result.repos:
             say(f"  {d.label}  {f'v{d.start.number}' if d.start else 'full'} → v{d.dest.number}")
+        if result.runtime:
+            rt = result.runtime
+            say(f"  mmw {rt['mmw']} runtime (Python {rt['python']}, {', '.join(rt['arches'])})")
         if result.timings:
             say(f"    {result.timing_summary()}")
         # The checksum sidecar, when the pipeline produces one. `getattr`

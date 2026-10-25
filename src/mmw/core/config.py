@@ -905,6 +905,7 @@ _LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port
 
 
 DEFAULT_RETENTION = "90d"
+DEFAULT_RUNTIME_PYTHON = "3.12"
 _RETENTION_RE = re.compile(r"([1-9]\d*)d")
 
 
@@ -942,6 +943,24 @@ class NetworkConfig(_StrictModel):
     # What runs on the airgapped side: `apply.py` alone, or mmw itself.
     # Partial bundles and `mmw stage` need mmw there.
     far_side: Literal["apply", "mmw"] = "apply"
+    # mmw's own runtime, shipped to an `mmw` far side: the machine
+    # architectures it may run on, and the Python it runs on.
+    runtime_arches: list[Literal["x86_64", "aarch64"]] = ["x86_64"]
+    runtime_python: str = DEFAULT_RUNTIME_PYTHON
+
+    @field_validator("runtime_python")
+    @classmethod
+    def _valid_runtime_python(cls, value):
+        if not re.fullmatch(r"3\.\d+", value):
+            raise ValueError(f"runtime_python is a Python version like 3.12, not {value!r}")
+        return value
+
+    @field_validator("runtime_arches")
+    @classmethod
+    def _some_runtime_arch(cls, value):
+        if not value:
+            raise ValueError("runtime_arches needs at least one architecture")
+        return sorted(set(value))
 
     @field_validator("retention")
     @classmethod
@@ -1430,6 +1449,8 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"certs": False} if not n.certs else {}),
             **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
             **({"far_side": "mmw"} if n.far_side == "mmw" else {}),
+            **({"runtime_arches": n.runtime_arches} if n.runtime_arches != ["x86_64"] else {}),
+            **({"runtime_python": n.runtime_python} if n.runtime_python != DEFAULT_RUNTIME_PYTHON else {}),
         }
         for n in cfg.networks
     ]

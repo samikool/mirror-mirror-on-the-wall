@@ -562,7 +562,8 @@ class BundleSink:
                 apply_script: bytes, prune: bool = True,
                 full: bool = False, progress=None,
                 tls_files: dict[str, bytes] | None = None, stop_event=None,
-                writer=None, scratch_dir: Path | None = None, row_repo=None):
+                writer=None, scratch_dir: Path | None = None, row_repo=None,
+                runtime_files: dict[str, bytes | Path] | None = None):
         self.out_path = out_path
         # Where the members go (`members.MemberWriter` factory); by default
         # one plain tar at `out_path`, written beside it and renamed in.
@@ -577,6 +578,9 @@ class BundleSink:
         # name → bytes, written as `{TLS_DIR}/{name}`; a name ending `.key`
         # goes in 0600. Empty unless the network has certs on.
         self._tls_files = dict(tls_files or {})
+        # member name → bytes or a file: mmw's runtime (`.mmw/runtime/…`)
+        # for a far side running mmw. Control members, never manifest rows.
+        self._runtime_files = dict(runtime_files or {})
         self.header = header
         self._prev = prev
         self._apply_script = apply_script
@@ -852,6 +856,16 @@ class BundleSink:
                 writer.add_bytes(".mmw/apply.py", self._apply_script, mode=0o755)
                 files_written += 1
                 raw_written += len(self._apply_script)
+                for name, data in sorted(self._runtime_files.items()):
+                    if isinstance(data, bytes):
+                        writer.add_bytes(name, data)
+                        raw_written += len(data)
+                    else:
+                        size = disk_io.ops.stat(data).st_size
+                        with disk_io.ops.open_rb(data) as fh:
+                            writer.add_blob(name, fh, size, src=data)
+                        raw_written += size
+                    files_written += 1
                 for name, data in sorted(self._tls_files.items()):
                     writer.add_bytes(f"{TLS_DIR}/{name}", data,
                                      mode=0o600 if name.endswith(".key") else 0o644)

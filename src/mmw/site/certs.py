@@ -71,3 +71,63 @@ def show_ca(home: Path) -> tuple[str, datetime, Path, Path] | None:
         return None
     cert = x509.load_pem_x509_certificate(disk_io.ops.read_bytes(s.ca_cert))
     return cert.subject.rfc4514_string(), cert.not_valid_after_utc, s.ca_cert, s.ca_key
+
+
+# ── a certificate per root ───────────────────────────────────────────────────
+
+class RootCertResult:
+    def __init__(self, root: str, hostnames: list[str], action: str, notes: list[str]):
+        self.root, self.hostnames, self.action, self.notes = root, hostnames, action, notes
+
+
+def root_hostnames(root: Path) -> list[str]:
+    """The DNS names a root serves: its nginx's `server_name`s."""
+    import re
+    from mmw.core.publisher.nginx import _dns_name
+    conf = Path(root) / "nginx" / "mirror.conf"
+    if not disk_io.ops.exists(conf):
+        return []
+    names: set[str] = set()
+    for line in disk_io.ops.read_text(conf).splitlines():
+        m = re.match(r"\s*server_name\s+(.+?);", line)
+        if m:
+            names.update(_dns_name(n) for n in m.group(1).split())
+    return sorted(n for n in names if n and n != "_")
+
+
+def sign_roots(home: Path, *, password: bytes | None, days: int = 730,
+               force: bool = False) -> list[RootCertResult]:
+    """Give every mounted root a key (kept if it has one), a request for its
+    hostnames, and a certificate from the site's CA — unless the one it has
+    still fits, covers them and is not about to expire. Then HTTPS follows
+    (`https.conf` only once the certificate fits the key)."""
+    from mmw.core.certs import check_cert, generate_key_and_csr, sign_csr
+    from mmw.resources.apply import https_state
+    s = load_site(home)
+    if s.ca_cert is None:
+        raise ValueError("no CA yet — mmw site ca load --cert … --key …, or mmw site ca make --out …")
+    for path in (s.ca_cert, s.ca_key):
+        if not disk_io.ops.exists(path):
+            raise FileNotFoundError(f"the CA isn't at {path} any more (moved, or not mounted?)")
+    _load_ca(s.ca_cert, s.ca_key, password)          # wrong passphrase / mismatch: before anything
+    out = []
+    for r in s.roots:
+        root = Path(r.path)
+        if not disk_io.ops.is_dir(root / ".mmw" / "store"):
+            out.append(RootCertResult(r.name, [], "not mounted", []))
+            continue
+        hosts = root_hostnames(root)
+        if not hosts:
+            out.append(RootCertResult(r.name, [], "no hostnames", []))
+            continue
+        tls = root / ".mmw" / "tls"
+        disk_io.ops.mkdir(tls, parents=True, exist_ok=True)
+        disk_io.ops.chmod(tls, 0o700)
+        _key, _cnf, csr = generate_key_and_csr(hosts, tls)
+        if not force and disk_io.ops.exists(tls / "mirror.crt") and not check_cert(tls, hosts):
+            action = "kept"
+        else:
+            sign_csr(csr, s.ca_cert, s.ca_key, days=days, password=password)
+            action = "signed"
+        out.append(RootCertResult(r.name, hosts, action, https_state(str(root))))
+    return out

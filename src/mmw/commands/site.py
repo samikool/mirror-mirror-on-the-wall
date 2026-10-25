@@ -405,3 +405,32 @@ def ca_show(home: Path | None = None) -> int:
     subject, expires, crt, key = info
     print(f"{subject}\n  expires {expires:%Y-%m-%d}\n  certificate {crt}\n  key {key}")
     return 0
+
+
+def certs(home: Path | None = None, days: int = 730, force: bool = False) -> int:
+    from mmw.core.certs import CAKeyEncrypted
+    from mmw.site import certs as site_certs
+    try:
+        h = _home(home, False)
+        try:
+            results = site_certs.sign_roots(h, password=None, days=days, force=force)
+        except CAKeyEncrypted:
+            password = _passphrase()
+            if password is None:
+                eprint("the CA key is encrypted — run this in a terminal, or set MMW_CA_PASSPHRASE")
+                return 1
+            results = site_certs.sign_roots(h, password=password, days=days, force=force)
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    recreate = []
+    for r in results:
+        hosts = f" ({len(r.hostnames)} hostname(s))" if r.hostnames else ""
+        print(f"  {r.root:<12} {r.action}{hosts}")
+        for note in r.notes:
+            print(f"    {note}")
+        if r.action == "signed" or any("recreate" in n for n in r.notes):
+            recreate.append(r.root)
+    if recreate:
+        print(f"! recreate nginx in {', '.join(recreate)} on the serving host")
+    return 0

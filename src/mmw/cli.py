@@ -720,6 +720,15 @@ def cmd_site_ca_show(home: Path = _SITE_HOME):
     raise typer.Exit(ca_show(home))
 
 
+@site_app.command("certs")
+def cmd_site_certs(home: Path = _SITE_HOME,
+                   days: int = typer.Option(730, "--days", help="Validity of each certificate"),
+                   force: bool = typer.Option(False, "--force", help="Re-sign even a certificate that is fine")):
+    """Sign every root's certificate with the site's CA and turn HTTPS on."""
+    from mmw.commands.site import certs
+    raise typer.Exit(certs(home, days, force))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

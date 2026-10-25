@@ -57,3 +57,89 @@ def test_cli_ca_make_and_show(site, tmp_path):
     assert r.exit_code == 0 and "Lab CA" in r.output and "expires" in r.output
     cert = x509.load_pem_x509_certificate((tmp_path / "ca/ca.crt").read_bytes())
     assert cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+
+
+# ── signing every root ───────────────────────────────────────────────────────
+
+from test_site_apply import _bundle, env  # noqa: E402,F401
+from test_site_roots import split_env  # noqa: E402,F401
+from test_dry_run_totals import two_mirrors  # noqa: E402,F401
+
+
+def _sans(path):
+    cert = x509.load_pem_x509_certificates(path.read_bytes())[0]
+    return sorted(cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+                  .value.get_values_for_type(x509.DNSName))
+
+
+def _applied(env, tmp_path, password=None):  # noqa: F811
+    from mmw.site.apply import apply_bundle
+    cfg, net, md, home, root = env
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
+    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", password)
+    C.load_ca(home, crt, key, password)
+    return home, root
+
+
+def test_sign_single_root(env, tmp_path):  # noqa: F811
+    home, root = _applied(env, tmp_path)
+    (r,) = C.sign_roots(home, password=None)
+    assert r.action == "signed" and r.hostnames == C.root_hostnames(root) == ["example.com"]
+    tls = root / ".mmw/tls"
+    assert _sans(tls / "mirror.crt") == ["example.com"]
+    assert (tls / "https.conf").exists() and (tls.stat().st_mode & 0o777) == 0o700
+    assert ((tls / "mirror.key").stat().st_mode & 0o777) == 0o600
+    (again,) = C.sign_roots(home, password=None)
+    assert again.action == "kept"
+
+
+def test_force_resigns(env, tmp_path):  # noqa: F811
+    home, root = _applied(env, tmp_path)
+    C.sign_roots(home, password=None)
+    before = (root / ".mmw/tls/mirror.crt").read_bytes()
+    key_before = (root / ".mmw/tls/mirror.key").read_bytes()
+    (r,) = C.sign_roots(home, password=None, force=True)
+    assert r.action == "signed" and (root / ".mmw/tls/mirror.crt").read_bytes() != before
+    assert (root / ".mmw/tls/mirror.key").read_bytes() == key_before          # the key is never regenerated
+
+
+def test_each_root_signed_for_its_hosts(split_env, tmp_path):  # noqa: F811
+    from mmw.site.apply import apply_bundle
+    cfg, net, md, home, main, second = split_env
+    kb = next(s.identity for s in cfg.sources if s.name == "b")
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={kb: "second"},
+                 say=lambda *a: None)
+    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
+    C.load_ca(home, crt, key, None)
+    results = {r.root: r for r in C.sign_roots(home, password=None)}
+    assert _sans(main / ".mmw/tls/mirror.crt") == ["a.example.com"]
+    assert _sans(second / ".mmw/tls/mirror.crt") == ["b.example.com"]
+    assert results["main"].action == results["second"].action == "signed"
+    assert "/srv/mmw/.mmw/tls/mirror.crt" in (second / ".mmw/tls/https.conf").read_text()
+
+
+def test_encrypted_ca_needs_passphrase(env, tmp_path, monkeypatch):  # noqa: F811
+    home, root = _applied(env, tmp_path, password=b"pw")
+    monkeypatch.delenv("MMW_CA_PASSPHRASE", raising=False)
+    r = CliRunner().invoke(cli.app, ["site", "certs", "--home", str(home)])
+    assert r.exit_code == 1 and "MMW_CA_PASSPHRASE" in r.output and "terminal" in r.output
+    assert not (root / ".mmw/tls/mirror.crt").exists()
+    monkeypatch.setenv("MMW_CA_PASSPHRASE", "pw")
+    r = CliRunner().invoke(cli.app, ["site", "certs", "--home", str(home)])
+    assert r.exit_code == 0, r.output
+    assert "signed" in r.output and "recreate nginx" in r.output
+
+
+def test_ca_missing_refused(env, tmp_path):  # noqa: F811
+    home, root = _applied(env, tmp_path)
+    (tmp_path / "ca/ca.key").rename(tmp_path / "ca/moved.key")
+    with pytest.raises(FileNotFoundError, match="ca.key"):
+        C.sign_roots(home, password=None)
+
+
+def test_no_ca_yet(env, tmp_path):  # noqa: F811
+    from mmw.site.apply import apply_bundle
+    cfg, net, md, home, root = env
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
+    with pytest.raises(ValueError, match="no CA yet"):
+        C.sign_roots(home, password=None)

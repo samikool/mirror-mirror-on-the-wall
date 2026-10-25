@@ -68,6 +68,8 @@ def test_first_apply_places_hosts_from_the_tui(hosts, tmp_path):  # noqa: F811
         await until(pilot, lambda: not page.query_one("#btn-place-go").disabled)
         page.query_one("#btn-place-go").press()
         await until(pilot, lambda: _name(app) == "ApplyRunPage" and app.screen.finished, timeout=30)
+        done = str(app.screen.query_one("#run-done").render())
+        assert "start nginx in r1" in done and "docker compose up -d" in done
     _run(None, check)
     assert read_root(str(r1)) is not None and str(r1) in recents.known()
     from mmw.site.db import SiteDB

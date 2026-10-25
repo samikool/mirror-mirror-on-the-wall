@@ -583,6 +583,8 @@ class SetApplyResult:
     lines: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
     created: str = ""
+    made: list[str] = field(default_factory=list)                # roots this apply created
+    paths: dict[str, str] = field(default_factory=dict)          # root name → its path here
 
     def merged(self) -> "ApplyResult":
         """One `ApplyResult` for the whole set (what the TUI shows)."""
@@ -594,6 +596,24 @@ class SetApplyResult:
             out.stopped += r.stopped
             out.network_changed = out.network_changed or r.network_changed
         return out
+
+
+def nginx_steps(result: "SetApplyResult") -> list[tuple[str, list[str]]]:
+    """What a person runs on the serving host after an apply, per root: a new
+    root's first start (load the image, start it), a changed one's recreate."""
+    out = []
+    for name, r in result.per_root.items():
+        path = result.paths.get(name)
+        if path is None:
+            continue
+        nginx = Path(path) / "nginx"
+        if name in result.made:
+            images = sorted(p.name for p in disk_io.ops.glob(nginx, "*.tar"))
+            cmds = [f"docker load -i {nginx}/{images[0]}"] if images else []
+            out.append((name, cmds + [f"cd {nginx} && docker compose up -d"]))
+        elif r.network_changed:
+            out.append((name, [f"cd {nginx} && docker compose up -d --force-recreate"]))
+    return out
 
 
 def _read_manifest_member(gen, scratch: Path):
@@ -822,8 +842,10 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         # New roots, then every root's view of the set.
         taken = set(present) | set(mset.missing if mset else [])
         made: dict[str, LocalRoot] = {}
+        read_root_was_new: dict[str, bool] = {}
         for loc in sorted({t for t in targets.values() if isinstance(t, str)}):
             info = read_root(loc)
+            read_root_was_new[loc] = info is None
             if info is None:
                 name = _root_name(loc, taken)
                 taken.add(name)
@@ -935,9 +957,12 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         for name in order:
             appliers[name].check()                 # every root checked before any changes
         changed = False
+        result.made = [r.info.name for loc, r in made.items() if loc in new_locs and read_root_was_new.get(loc)]
+        result.paths = {name: str(roots[name].info.path) for name in order}
         for name in order:
             r = appliers[name].commit(others_changed=changed)
             changed = changed or bool(r.updated or r.stored_held or r.stopped) or r.network_changed
+            r.actions = [a for a in r.actions if not a.startswith("nginx config changed — recreate nginx on the serving host")]   # nginx_steps says it
             result.per_root[name] = r
             if len(order) > 1:
                 result.lines.append(f"  [{name}]")

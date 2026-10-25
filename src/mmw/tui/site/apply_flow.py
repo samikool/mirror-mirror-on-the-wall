@@ -249,7 +249,7 @@ class ApplyRunPage(Page):
 
     @work(thread=True, exclusive=True, group="site-apply", exit_on_error=False)
     def _run(self) -> None:
-        from mmw.site.apply import ApplyError, apply_to_set
+        from mmw.site.apply import ApplyError, apply_to_set, nginx_steps
         mset = self.app.mset
         place = self._choice.place
         if place is None:
@@ -257,14 +257,16 @@ class ApplyRunPage(Page):
         try:
             result = apply_to_set(mset, self._choice.src, place=place,
                                   only=set(self._choice.only), forward=set(self._choice.forward),
-                                  progress=self._progress, stop_event=self._stop, say=lambda *a: None).merged()
+                                  progress=self._progress, stop_event=self._stop, say=lambda *a: None)
+            steps = nginx_steps(result)
+            result = result.merged()
         except ApplyError as e:
             self.app.call_from_thread(self._failed, str(e))
             return
         except Exception as e:  # noqa: BLE001 — the lock, and the like
             self.app.call_from_thread(self._failed, str(e))
             return
-        self.app.call_from_thread(self._done, result)
+        self.app.call_from_thread(self._done, result, steps)
 
     def _finish(self) -> None:
         self.finished = True
@@ -283,7 +285,7 @@ class ApplyRunPage(Page):
         self.set_status("")
         self._finish()
 
-    def _done(self, result) -> None:
+    def _done(self, result, steps=()) -> None:
         for repo in result.updated:
             self._state[repo] = "updated"
         for repo in result.stored_held:
@@ -295,6 +297,10 @@ class ApplyRunPage(Page):
         self.query_one("#run-repos", Static).update(self._repo_lines())
         lines = [f"[b $success]✓ applied {result.created}[/]", *map(escape_markup, result.lines)]
         lines += [f"[b $warning]! {escape_markup(a)}[/]" for a in result.actions]
+        for name, cmds in steps:
+            verb = "start" if any("docker load" in c for c in cmds) or cmds[-1].endswith("up -d") else "recreate"
+            lines.append(f"[b $warning]! {verb} nginx in {escape_markup(name)} on the serving host:[/]")
+            lines += [f"    {escape_markup(c)}" for c in cmds]
         self.query_one("#run-done", Static).update("\n".join(lines))
         self.set_status("")
         self._finish()

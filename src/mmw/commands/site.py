@@ -74,11 +74,16 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
         return e.code
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
+    from mmw.site.apply import nginx_steps
     print(f"applied {r.created}" if not dry_run else f"would apply {r.created}")
     for line in r.lines:
         print(line)
     for action in r.actions:
         print(f"! {action}")
+    for name, cmds in nginx_steps(r):
+        print(f"! start nginx in {name}:" if name in r.made else f"! recreate nginx in {name}:")
+        for cmd in cmds:
+            print(f"    {cmd}")
     return 3 if any(x.refused for x in r.per_root.values()) else 0
 
 

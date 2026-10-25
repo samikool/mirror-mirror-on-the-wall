@@ -100,3 +100,18 @@ def test_stream_preflight_messages_go_to_stderr(seeded, tmp_path, monkeypatch, c
     assert cmd.run(cfg_dir, network="lab", out=Path("-"), allow_incomplete=True) == 0
     out = capsys.readouterr()
     assert "warming" not in out.out and "warming" in out.err
+
+
+def test_file_bundle_checksum_is_hashed_while_writing(seeded, tmp_path, monkeypatch):  # noqa: F811
+    """A 120 GB bundle must not be read back just to hash it: the
+    `.sha256` comes from the bytes as they were written."""
+    import hashlib
+    from mmw.core import disk_io
+    mirror_dir, cfg = seeded
+    progress = []
+    monkeypatch.setattr(disk_io, "hash_file", lambda *a, **k: pytest.fail("bundle re-read to hash it"))
+    r = bundle_network(_net(tmp_path), cfg, mirror_dir, out_path=tmp_path / "f", from_ref=None,
+                       progress=lambda rel, status: progress.append(status))
+    digest, name = r.checksum_path.read_text().split()
+    assert (digest, name) == (hashlib.sha256(r.out_path.read_bytes()).hexdigest(), r.out_path.name)
+    assert "step:writing the checksum…" in progress

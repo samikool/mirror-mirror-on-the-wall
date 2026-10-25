@@ -25,14 +25,32 @@ def _home(home: Path | None, break_lock: bool) -> Path:
     return h
 
 
+def _placements(h: Path, src: str, specs: list[str]) -> dict[str, str]:
+    """`REPO=ROOT` (a repository's name or URL) → {key: root}; names come
+    from the bundle itself, since a new repository isn't in the site yet."""
+    from mmw.core.repos import resolve_repo_refs
+    from mmw.site.apply import plan_apply
+    available = {r.repo: r.label for r in plan_apply(h, src).rows} if src != "-" else {}
+    out = {}
+    for spec in specs:
+        ref, sep, root = spec.partition("=")
+        if not sep or not root:
+            raise ValueError(f"--place wants REPO=ROOT, not {spec!r}")
+        key = ref if src == "-" else resolve_repo_refs([ref], available)[0]
+        out[key] = root
+    return out
+
+
 def apply(src: str, home: Path | None = None, forward: list[str] | None = None,
-          forward_all: bool = False, dry_run: bool = False, break_lock: bool = False) -> int:
+          forward_all: bool = False, dry_run: bool = False, break_lock: bool = False,
+          place: list[str] | None = None) -> int:
     from mmw.site.apply import ApplyError, apply_bundle
     from mmw.site.lock import LockHeld
     try:
         h = _home(home, break_lock)
         keys = _repo_keys(h, forward) if forward else None
-        r = apply_bundle(h, src, forward=keys, forward_all=forward_all, dry_run=dry_run)
+        placed = _placements(h, src, place) if place else None
+        r = apply_bundle(h, src, forward=keys, forward_all=forward_all, dry_run=dry_run, place=placed)
     except ApplyError as e:
         eprint(str(e))
         return e.code
@@ -138,8 +156,9 @@ def space(home: Path | None = None) -> int:
             tag = "serving" if v.serving else f"frees {fmt_size(v.frees)}"
             label = f" {v.snap_label}" if v.snap_label else ""
             print(f"  v{v.number:<4} {v.stamp}{label}  {fmt_size(v.total):>10}  {tag}")
-    print(f"root: {fmt_size(rep.used)} used, {fmt_size(rep.free)} free; "
-          f"old versions hold {fmt_size(rep.history_bytes)}")
+    for name, (used, free) in rep.roots.items():
+        print(f"root {name}: {fmt_size(used)} used, {fmt_size(free)} free")
+    print(f"old versions hold {fmt_size(rep.history_bytes)}")
     return 0
 
 
@@ -252,4 +271,70 @@ def manage(home: Path | None = None) -> int:
         return 1
     from mmw.tui.site.app import SiteApp
     SiteApp(h).run()
+    return 0
+
+
+def root_add(name: str, path: Path, serve_path: Path | None = None, home: Path | None = None) -> int:
+    try:
+        r = site_home.add_root(_home(home, False), name, path, serve_path)
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"root {r.name}: {r.path} (the serving host sees {r.serve_path})")
+    return 0
+
+
+def root_list(home: Path | None = None) -> int:
+    try:
+        s = site_home.load_site(_home(home, False))
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    for i, r in enumerate(s.roots):
+        primary = "  (primary)" if i == 0 else ""
+        print(f"  {r.name:<12} {r.path}  serving host: {r.serve_path}{primary}")
+    return 0
+
+
+def move(repo: str, root: str, home: Path | None = None, yes: bool = False, break_lock: bool = False) -> int:
+    import sys
+    from mmw.core.format import fmt_size
+    from mmw.site import ops
+    from mmw.site.lock import LockHeld
+    try:
+        h = _home(home, break_lock)
+        size = ops.move_size(h, repo, root)
+        print(f"moving {repo} to {root} copies {fmt_size(size)} into its store")
+        if not yes:
+            if not sys.stdin.isatty():
+                eprint("pass --yes to move it (no terminal to ask on)")
+                return 1
+            if input("Move it? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 1
+        r = ops.move(h, repo, root)
+    except LockHeld as e:
+        eprint(str(e))
+        return 5
+    except (ValueError, LookupError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"moved: {r.files} file(s), {fmt_size(r.copied_bytes)} copied")
+    if r.nginx_changed:
+        print(f"! nginx changed in {', '.join(r.nginx_changed)} — recreate them on the serving host")
+    print("the old root still serves its copy until you run `mmw site tidy` (the next apply does it too)")
+    return 0
+
+
+def tidy(home: Path | None = None, break_lock: bool = False) -> int:
+    from mmw.site import ops
+    from mmw.site.lock import LockHeld
+    try:
+        done = ops.tidy(_home(home, break_lock))
+    except LockHeld as e:
+        eprint(str(e))
+        return 5
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"cleared the old copies of: {', '.join(done)}" if done else "nothing to tidy")
     return 0

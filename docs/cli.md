@@ -131,12 +131,15 @@ the site take `--break-lock`. See [far-side.md](far-side.md).
 | Command | What it does |
 |---|---|
 | `mmw site init --root DIR [--home DIR]` | Make a site: a root to serve, a home for its state (default `DIR/.mmw/site`) |
-| `mmw site apply SRC [--forward REPO]… [--forward-all] [--dry-run]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin) |
+| `mmw site apply SRC [--forward REPO]… [--forward-all] [--place REPO=ROOT]… [--dry-run]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin) |
 | `mmw site manage` | The far-side TUI: repositories, their history, applying bundles |
 | `mmw site status` | What each repository serves, the newest kept, held or current |
 | `mmw site history REPO` | A repository's kept versions, sizes, what each would free |
 | `mmw site serve REPO VERSION [--yes]` | Serve any kept version; anything but the newest holds it |
 | `mmw site hold REPO` / `mmw site forward [REPO] [--all]` | Hold a repository / move it to its newest version |
+| `mmw site root add NAME PATH [--serve-path P]` / `mmw site root list` | Another root to place repositories in; the roots |
+| `mmw site move REPO ROOT [--yes]` | Move a repository, every kept version, to another root |
+| `mmw site tidy` | Clear moved repositories' old copies, once nginx has been recreated |
 | `mmw site space` | Each version's size and what deleting it frees; the root's free space |
 | `mmw site delete REPO VERSION [--yes]` | Delete a kept version (never the served one, nor a held repository's newest) |
 | `mmw site settings [--keep N \| --keep-all]` | How many versions of each repository to keep |

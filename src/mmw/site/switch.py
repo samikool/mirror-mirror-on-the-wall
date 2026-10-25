@@ -61,6 +61,12 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
     return SwitchResult(placed, removed)
 
 
+def switch_in(db, roots, repo: str, to_id: int, *, progress=None) -> SwitchResult:
+    """`switch_repo` in the repository's own root."""
+    root = roots.of(db.repo_state(repo))
+    return switch_repo(db, roots.store(root), Path(root.path), repo, to_id, progress=progress)
+
+
 def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None) -> SwitchResult:
     """Serve version `to_id` of `repo` at `root`. Held afterwards when it is
     not the newest version here."""
@@ -72,12 +78,18 @@ def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None) 
     return _run(db, store, Path(root), repo, from_id, to_id, progress)
 
 
-def resume_switches(db, store, root: Path) -> list[str]:
-    """Finish every switch a killed run left halfway; the repositories."""
+def resume_switches(db, roots) -> list[str]:
+    """Finish every switch a killed run left halfway, each in its
+    repository's root (`roots`: a `mmw.site.roots.Roots`)."""
     done = []
     for repo, from_id, to_id, _phase in db.pending_switches():
+        root = roots.of(db.repo_state(repo))
         try:
-            _run(db, store, Path(root), repo, from_id, to_id, None)
+            roots.check_mounted(root)
+        except FileNotFoundError:
+            continue                    # finished once that root is back
+        try:
+            _run(db, roots.store(root), Path(root.path), repo, from_id, to_id, None)
         except ValueError:
             continue                    # its target is gone; what it served stays
         done.append(repo)

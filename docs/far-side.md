@@ -80,6 +80,32 @@ next, release files last, removals after — a client mid-`apt update` never
 sees an index naming a file that is not there. A switch cut short (power,
 Ctrl-C) is finished by the next `mmw site` command.
 
+## Placements: more than one root
+
+Too big for one disk? Give the site more roots and put each repository in
+one of them:
+
+```bash
+mmw site root add pypi /mnt/pypi --serve-path /export/pypi
+mmw site apply bundle.tar --place PyPI=pypi       # a repository new to the site
+mmw site move debian pypi                         # one already here, every version
+mmw site root list
+```
+
+- `--serve-path` is where the **serving host** sees the root, when it
+  mounts the share somewhere else: the generated Compose file mounts that.
+- Each root gets its own `nginx/` (`mirror.conf` for just its hostnames,
+  `compose.yaml`, the image), and its own store. Recreate nginx in each root
+  the command names after an apply or a move.
+- Two repositories that share a hostname must live in the same root —
+  nginx routes a hostname to one place — so mmw refuses to split them.
+- A move copies every kept version's files into the new root's store and
+  places them before anything is recorded; an interrupted move just runs
+  again. The old root keeps serving its copy — the nginx running there
+  still routes the hostname to it — until you recreate nginx in both roots
+  and run `mmw site tidy` (the next apply tidies too).
+- A root that isn't mounted stops an apply or a move before anything changes.
+
 ## Space
 
 ```bash

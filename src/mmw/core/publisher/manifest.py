@@ -92,6 +92,9 @@ class ManifestHeader:
     # manifest stays byte-for-byte what it was.
     format: int | None = None
     repos: dict | None = None
+    # Format 2: the destination snapshot's settings (its mirrors, bases,
+    # hosts), so a far side can set nginx up per root. Written only when set.
+    settings: str | None = None
 
 
 def write_manifest(path: Path, header: ManifestHeader,
@@ -106,7 +109,7 @@ def write_manifest(path: Path, header: ManifestHeader,
     try:
         with disk_io.ops.open_file(tmp, "w", encoding="utf-8") as out:
             fields = asdict(header)
-            for optional in ("format", "repos"):
+            for optional in ("format", "repos", "settings"):
                 if fields[optional] is None:
                     del fields[optional]
             out.write(json.dumps(fields, sort_keys=True) + "\n")

@@ -6,6 +6,7 @@ from mmw.site import home as H
 from mmw.site import ops
 from mmw.site.apply import apply_bundle
 from mmw.site.db import SiteDB
+from mmw.site.roots import Roots
 from mmw.site.store import Store
 
 from test_site_apply import env  # noqa: F401
@@ -48,7 +49,7 @@ def test_delete_frees_store_blobs(env, tmp_path):  # noqa: F811
 def test_retention_keeps_newest_and_protected(env, tmp_path):  # noqa: F811
     cfg, home, root, _ = _three(env, tmp_path)
     with SiteDB(home) as db:
-        assert ops.apply_retention(db, Store(root), 1) == [(_key(cfg, "a"), 2), (_key(cfg, "a"), 1)]
+        assert ops.apply_retention(db, Roots(H.load_site(home)), 1) == [(_key(cfg, "a"), 2), (_key(cfg, "a"), 1)]
         assert [v.number for v in db.versions(_key(cfg, "a"))] == [3]
 
 

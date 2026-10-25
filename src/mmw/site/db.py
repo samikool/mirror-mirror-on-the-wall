@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS network_files (path TEXT PRIMARY KEY, blob INTEGER NO
 CREATE TABLE IF NOT EXISTS switches (
     repo TEXT PRIMARY KEY, from_version INTEGER, to_version INTEGER NOT NULL,
     phase TEXT NOT NULL DEFAULT 'pkg');
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applied (
     id INTEGER PRIMARY KEY, created TEXT NOT NULL, previous TEXT, kind TEXT NOT NULL,
     applied_at TEXT NOT NULL);
@@ -59,6 +60,7 @@ class RepoState:
     bases: list[str]
     serving: VersionInfo | None
     held: bool
+    root: str | None = None      # the root it is placed in; None: the primary
 
 
 class SiteDB:
@@ -67,6 +69,8 @@ class SiteDB:
         self._conn.execute("PRAGMA journal_mode=DELETE")
         self._conn.execute("PRAGMA foreign_keys=OFF")
         self._conn.executescript(SCHEMA)
+        if "root" not in {r[1] for r in self._conn.execute("PRAGMA table_info(repos)")}:
+            self._conn.execute("ALTER TABLE repos ADD COLUMN root TEXT")
 
     def __enter__(self) -> "SiteDB":
         return self
@@ -157,23 +161,28 @@ class SiteDB:
     # ── what each repository serves ──────────────────────────────────────────
 
     def _state(self, row) -> RepoState:
-        repo, label, bases, serving, held = row
+        repo, label, bases, serving, held, root = row
         return RepoState(repo, label, json.loads(bases),
-                         self.version_by_id(serving) if serving is not None else None, bool(held))
+                         self.version_by_id(serving) if serving is not None else None, bool(held), root)
 
     def repo_state(self, repo: str) -> RepoState | None:
-        row = self._conn.execute("SELECT repo, label, bases, serving, held FROM repos WHERE repo = ?",
+        row = self._conn.execute("SELECT repo, label, bases, serving, held, root FROM repos WHERE repo = ?",
                                  (repo,)).fetchone()
         return self._state(row) if row else None
 
     def repo_states(self) -> list[RepoState]:
         return [self._state(r) for r in self._conn.execute(
-            "SELECT repo, label, bases, serving, held FROM repos ORDER BY lower(label)").fetchall()]
+            "SELECT repo, label, bases, serving, held, root FROM repos ORDER BY lower(label)").fetchall()]
 
     def set_serving(self, repo: str, version_id: int, held: bool) -> None:
         self._conn.execute("UPDATE repos SET serving = ?, held = ? WHERE repo = ?",
                            (version_id, int(held), repo))
         self._conn.commit()
+
+    def set_root(self, repo: str, root: str | None, *, commit: bool = True) -> None:
+        self._conn.execute("UPDATE repos SET root = ? WHERE repo = ?", (root, repo))
+        if commit:
+            self._conn.commit()
 
     def set_held(self, repo: str, held: bool) -> None:
         self._conn.execute("UPDATE repos SET held = ? WHERE repo = ?", (int(held), repo))
@@ -217,6 +226,14 @@ class SiteDB:
 
     # ── log, sizes, references ───────────────────────────────────────────────
 
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        self._conn.commit()
+
     def record_applied(self, created: str, previous: str | None, kind: str) -> None:
         self._conn.execute("INSERT INTO applied (created, previous, kind, applied_at) VALUES (?, ?, ?, ?)",
                            (created, previous, kind, time.strftime("%Y-%m-%dT%H:%M:%S")))
@@ -240,7 +257,21 @@ class SiteDB:
             "AND b.id NOT IN (SELECT blob FROM network_files)", (version_id, version_id)).fetchone()[0]
         return total, only
 
-    def referenced_checksums(self) -> set[str]:
-        return {r[0] for r in self._conn.execute(
-            "SELECT checksum FROM blobs WHERE id IN (SELECT blob FROM version_files "
-            "UNION SELECT blob FROM network_files)").fetchall()}
+    def referenced_checksums(self, repos: "set[str] | None" = None, network: bool = True,
+                             network_prefix: str | None = None) -> set[str]:
+        """Every blob the given repositories' versions use (None: every
+        repository), plus the network files (all, or only those under
+        `network_prefix`, or none)."""
+        out: set[str] = set()
+        if repos is None:
+            out |= {r[0] for r in self._conn.execute(
+                "SELECT checksum FROM blobs WHERE id IN (SELECT blob FROM version_files)").fetchall()}
+        elif repos:
+            ph = ",".join("?" * len(repos))
+            out |= {r[0] for r in self._conn.execute(
+                f"SELECT checksum FROM blobs WHERE id IN (SELECT f.blob FROM version_files f "
+                f"JOIN versions v ON v.id = f.version WHERE v.repo IN ({ph}))", tuple(repos)).fetchall()}
+        if network:
+            out |= {c for p, c in self.network_files().items()
+                    if network_prefix is None or p.startswith(network_prefix)}
+        return out

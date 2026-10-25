@@ -555,11 +555,13 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
                    forward_all: bool = typer.Option(False, "--forward-all",
                                                     help="Move every held repository forward"),
                    dry_run: bool = typer.Option(False, "--dry-run", help="Check it; change nothing"),
+                   place: list[str] = typer.Option(None, "--place",
+                                                   help="REPO=ROOT: put a repository new to this site in ROOT"),
                    break_lock: bool = _BREAK_LOCK):
     """Apply a bundle: everything is checked before anything served changes;
     held repositories keep serving what they serve."""
     from mmw.commands.site import apply
-    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock))
+    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock, place))
 
 
 @site_app.command("serve")
@@ -647,6 +649,45 @@ def cmd_site_manage(home: Path = _SITE_HOME):
     """The far-side TUI: repositories, their history, applying bundles."""
     from mmw.commands.site import manage
     raise typer.Exit(manage(home))
+
+
+site_root_app = typer.Typer(help="The roots a site serves from.", no_args_is_help=True)
+site_app.add_typer(site_root_app, name="root")
+
+
+@site_root_app.command("add")
+def cmd_site_root_add(name: str = typer.Argument(..., help="A short name for the root"),
+                      path: Path = typer.Argument(..., help="Where this machine sees it"),
+                      serve_path: Path = typer.Option(None, "--serve-path",
+                                                      help="Where the serving host sees it (default: PATH)"),
+                      home: Path = _SITE_HOME):
+    """Add a root: another disk or export to place repositories in."""
+    from mmw.commands.site import root_add
+    raise typer.Exit(root_add(name, path, serve_path, home))
+
+
+@site_root_app.command("list")
+def cmd_site_root_list(home: Path = _SITE_HOME):
+    """The site's roots; the first is the primary."""
+    from mmw.commands.site import root_list
+    raise typer.Exit(root_list(home))
+
+
+@site_app.command("move")
+def cmd_site_move(repo: str = typer.Argument(..., help="Repository (URL or name)"),
+                  root: str = typer.Argument(..., help="The root to move it to"),
+                  home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
+                  break_lock: bool = _BREAK_LOCK):
+    """Move a repository, every kept version, to another root."""
+    from mmw.commands.site import move
+    raise typer.Exit(move(repo, root, home, yes, break_lock))
+
+
+@site_app.command("tidy")
+def cmd_site_tidy(home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+    """Clear moved repositories' old copies — once nginx has been recreated."""
+    from mmw.commands.site import tidy
+    raise typer.Exit(tidy(home, break_lock))
 
 
 snapshot_app = typer.Typer(

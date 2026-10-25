@@ -67,8 +67,9 @@ def test_bootstrap_installs_with_stub_uv(tmp_path):
     assert f"mmw 1.2.0 installed — {home}/bin/mmw" in r.stdout
     assert "--offline" in log and "--no-index" in log and "mirror-mirror-on-the-wall==1.2.0" in log
     assert f"UV_CACHE_DIR={home}/" in log                          # nothing written outside --home
-    assert (home / f"runtime/1.2.0-py3.12-{ARCH}/python/bin/python3").exists()
-    assert (home / "runtime/CURRENT").read_text().split() == ["1.2.0", "3.12"]
+    version, python, name = (home / "runtime/CURRENT").read_text().split()
+    assert (version, python) == ("1.2.0", "3.12") and name.startswith("1.2.0-py3.12-")
+    assert (home / f"runtime/{name}-{ARCH}/python/bin/python3").exists()
     out = subprocess.run([str(home / "bin/mmw"), "site", "show"], capture_output=True, text=True).stdout
     assert out.split() == ["mmw-stub", str(home), "site", "show"]   # the launcher knows its site
     assert not list((home / "runtime").glob("*.tmp")) and not (home / "runtime/.uv-cache").exists()
@@ -128,3 +129,17 @@ def test_launcher_refuses_another_arch(tmp_path):
                        env={**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"})
     assert r.returncode == 2
     assert f"mmw 1.2.0 isn't installed here for {OTHER}" in r.stderr and "bootstrap.sh" in r.stderr
+
+
+def test_a_rebuilt_wheel_installs_beside(tmp_path):
+    """The same version, rebuilt: a new install beside the old one, which
+    keeps working until the launcher switches."""
+    rt, home = _runtime(tmp_path), tmp_path / "site"
+    _run(rt, home)
+    first = (home / "runtime/CURRENT").read_text().split()[2]
+    (rt / ARCH / "wheels/mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl").write_bytes(b"rebuilt")
+    r, log = _run(rt, home)
+    second = (home / "runtime/CURRENT").read_text().split()[2]
+    assert r.returncode == 0 and log.count("pip install") == 2 and first != second
+    assert (home / f"runtime/{first}-{ARCH}/.complete").exists()
+    assert (home / f"runtime/{second}-{ARCH}/mmw.whl").read_bytes() == b"rebuilt"

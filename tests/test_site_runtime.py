@@ -129,3 +129,15 @@ def test_a_new_python_reinstalls(env, tmp_path, stub_bootstrap):  # noqa: F811
     (home / "runtime" / "CURRENT").write_text(f"{R.mmw_version()} 3.11\n")
     notes = update_runtime(home, inc)
     assert any("updated" in n for n in notes) and (home / "bootstrap.log").exists()
+
+
+def test_a_rebuilt_wheel_reinstalls(env, tmp_path, stub_bootstrap):  # noqa: F811
+    from mmw.site.runtime import update_runtime
+    cfg, net, md, home, root = env
+    home, inc = _incoming(tmp_path, net, R.mmw_version())
+    name = f"{R.mmw_version()}-py3.12-123"
+    (home / "runtime" / "CURRENT").write_text(f"{R.mmw_version()} 3.12 {name}\n")
+    (home / "runtime" / f"{name}-x86_64").mkdir()
+    (home / "runtime" / f"{name}-x86_64" / "mmw.whl").write_bytes(b"an older build")
+    notes = update_runtime(home, inc)
+    assert any("updated" in n for n in notes) and (home / "bootstrap.log").exists()

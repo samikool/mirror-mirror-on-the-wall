@@ -34,6 +34,8 @@ class FakeFetcher:
             out.append(dest / "mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl")
         for p in out:
             p.write_bytes(p.name.encode())
+        if not requirement.startswith(R.DIST):
+            out[-1].write_bytes(Path(requirement).read_bytes())    # pip copies a local wheel as is
         return out
 
 
@@ -101,3 +103,16 @@ def test_pip_failures_are_told_apart():
     assert isinstance(e, R.RuntimeUnavailable) and "doesn't run on Python 3.9" in str(e)
     e = R.pip_failure("ERROR: something else\n", req, "3.12", "x86_64")
     assert isinstance(e, R.FetchError) and "something else" in str(e)
+
+
+def test_a_rebuilt_wheel_is_rebuilt(tmp_path):
+    wheel = tmp_path / "w" / "mirror_mirror_on_the_wall-1.3.0.dev0-py3-none-any.whl"
+    wheel.parent.mkdir()
+    wheel.write_bytes(b"first build")
+    cache = tmp_path / "cache"
+    a = R.build_runtime(cache, arch="x86_64", python="3.12", mmw_version="1.3.0.dev0", fetcher=FakeFetcher(),
+                        wheel=wheel)
+    wheel.write_bytes(b"second build")
+    b = R.build_runtime(cache, arch="x86_64", python="3.12", mmw_version="1.3.0.dev0", fetcher=FakeFetcher(),
+                        wheel=wheel)
+    assert a != b and (b / "wheels" / wheel.name).read_bytes() == b"second build"

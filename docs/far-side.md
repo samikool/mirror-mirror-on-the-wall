@@ -45,7 +45,7 @@ mmw 1.3.0 installed — /mnt/oak/.mmw/site/bin/mmw (export PATH=/mnt/oak/.mmw/si
 
 - The bootstrap needs only `/bin/sh`, `tar`, `gzip` and `uname`. Everything
   goes under `--home`: the interpreter and a virtualenv in
-  `runtime/VERSION-pyPYTHON-ARCH/`, and the launcher `bin/mmw`, which sets
+  `runtime/VERSION-pyPYTHON-BUILD-ARCH/`, and the launcher `bin/mmw`, which sets
   `MMW_SITE_HOME` to that home unless you set it yourself.
 - A home on a share mounted by machines of different architectures works:
   run the bootstrap once on a machine of each, and `bin/mmw` runs that
@@ -112,7 +112,7 @@ current one (with the bundle's own bootstrap) and `bin/mmw` switches to it:
 ! mmw updated to 1.4.0 — restart it (/mnt/oak/.mmw/site/bin/mmw)
 ```
 
-The same mmw on a different `runtime_python` is installed too. Machines of
+The same mmw on a different `runtime_python`, or a rebuilt dev wheel of the same version, is installed too. Machines of
 another architecture sharing the home are told the one command that
 installs theirs. A damaged runtime is never installed. A failed install (a
 full disk) leaves `bin/mmw` as it was and says why; the bundle's runtime stays in `{home}/runtime/incoming/` to

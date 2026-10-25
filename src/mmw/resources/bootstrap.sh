@@ -6,12 +6,12 @@
 # RUNTIME_DIR (default: this script's directory) holds one directory per
 # architecture, each with uv, a standalone Python archive and mmw's wheels.
 # Everything goes under DIR: the interpreter and a virtualenv in
-# DIR/runtime/VERSION-pyPYTHON-ARCH, and the launcher DIR/bin/mmw (it runs
+# DIR/runtime/VERSION-pyPYTHON-BUILD-ARCH, and the launcher DIR/bin/mmw (it runs
 # this machine's architecture's install). DIR/runtime/CURRENT records
-# "VERSION PYTHON". Nothing is downloaded,
-# and the system Python is never used.
+# "VERSION PYTHON NAME". Nothing is downloaded, and the system Python is
+# never used.
 #
-# POSIX sh only; needs tar, gzip and uname.
+# POSIX sh and utilities only (tar, gzip, uname, cksum, cp, mv).
 set -eu
 
 usage() {
@@ -53,6 +53,7 @@ fi
 version=
 for w in "$rt"/wheels/mirror_mirror_on_the_wall-*.whl; do
     [ -f "$w" ] || continue
+    wheel=$w
     version=${w##*/mirror_mirror_on_the_wall-}
     version=${version%%-*}
 done
@@ -75,7 +76,12 @@ py=${py%.*}
 
 # Keyed by architecture too: DIR may be on a share that machines of several
 # architectures mount, each running its own install through one launcher.
-name=$version-py$py
+# The build id (the mmw wheel's cksum — the same wheel for every
+# architecture) tells a rebuild of the same version apart, so it installs
+# beside the one in use instead of over it.
+build=$(cksum < "$wheel")
+build=${build%% *}
+name=$version-py$py-$build
 dest=$home/runtime/$name-$arch
 cache=$home/runtime/.uv-cache
 # The interpreter and the virtualenv record their absolute paths, so they are
@@ -111,6 +117,7 @@ if [ ! -f "$dest/.complete" ]; then
         echo "the install made no $dest/venv/bin/mmw" >&2
         exit 1
     fi
+    cp "$wheel" "$dest/mmw.whl"
     echo "$version" > "$dest/.complete"
 fi
 
@@ -133,6 +140,6 @@ exec "\$mmw" "\$@"
 EOF
 chmod 755 "$launcher.tmp"
 mv -f "$launcher.tmp" "$launcher"
-echo "$version $py" > "$home/runtime/CURRENT.tmp"
+echo "$version $py $name" > "$home/runtime/CURRENT.tmp"
 mv -f "$home/runtime/CURRENT.tmp" "$home/runtime/CURRENT"
 echo "mmw $version installed — $launcher (export PATH=$home/bin:\$PATH)"

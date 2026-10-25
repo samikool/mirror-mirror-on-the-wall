@@ -198,3 +198,17 @@ def test_tui_bundles_without_a_runtime_it_cannot_build(tmp_path, monkeypatch):
     [(message, severity)] = _run_bundle_scenario(tmp_path, fake, monkeypatch)
     assert calls == [True, False]
     assert "1 warning" in message
+
+
+def test_a_rebuilt_wheel_is_sent_again(two_mirrors, tmp_path):  # noqa: F811
+    cfg, net, md = _mmw(two_mirrors)
+    wheel = tmp_path / "mirror_mirror_on_the_wall-1.3.0.dev0-py3-none-any.whl"
+    wheel.write_bytes(b"first build")
+    bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None, runtime_wheel=wheel)
+    wheel.write_bytes(b"second build")
+    _change_a(md)
+    r = bundle_network(net, cfg, md, out_path=tmp_path / "2", runtime_wheel=wheel)
+    assert ".mmw/runtime/bootstrap.sh" in _members(r.out_path)[0]
+    _change_b(md)
+    r = bundle_network(net, cfg, md, out_path=tmp_path / "3", runtime_wheel=wheel)
+    assert ".mmw/runtime/bootstrap.sh" not in _members(r.out_path)[0]

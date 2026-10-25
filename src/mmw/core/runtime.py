@@ -165,7 +165,10 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
     PyPI's — a dev build has none there."""
     if arch not in ARCHES:
         raise ValueError(f"no runtime for {arch} — one of {', '.join(ARCHES)}")
-    d = cache / f"{mmw_version}-py{python}-{arch}"
+    # A local wheel's version may stay the same across rebuilds: its hash
+    # tells the builds apart.
+    build = f"-{_sha256(wheel)[:12]}" if wheel is not None else ""
+    d = cache / f"{mmw_version}-py{python}-{arch}{build}"
     if verify(d) is not None:
         return d
     tmp = cache / f"{d.name}.tmp"
@@ -204,11 +207,12 @@ def default_fetcher() -> Fetcher:
 def wanted(network, wheel: Path | None = None) -> dict:
     """What an `mmw` network's far side should be running: {mmw, python,
     arches} — the record a bundle that carries it leaves in the ledger."""
-    version = mmw_version()
+    version, built = mmw_version(), {}
     if wheel is not None:
         from packaging.utils import parse_wheel_filename
         version = str(parse_wheel_filename(wheel.name)[1])
-    return {"mmw": version, "python": network.runtime_python, "arches": sorted(network.runtime_arches)}
+        built = {"wheel": _sha256(wheel)}            # a rebuild of the same version is another runtime
+    return {"mmw": version, "python": network.runtime_python, "arches": sorted(network.runtime_arches), **built}
 
 
 def runtime_files(network, cfg, mirror_dir: Path, *, fetcher: Fetcher,

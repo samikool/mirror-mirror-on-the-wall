@@ -32,19 +32,33 @@ def machine_arch() -> str:
     return {"arm64": "aarch64"}.get(platform.machine(), platform.machine())
 
 
-def installed(home: Path) -> tuple[str, str] | None:
-    """(version, python) of the runtime `bin/mmw` runs, from `runtime/CURRENT`."""
+def installed(home: Path) -> tuple[str, str, str | None] | None:
+    """(version, python, install name) of the runtime `bin/mmw` runs, from
+    `runtime/CURRENT`."""
     try:
-        version, python = disk_io.ops.read_text(Path(home) / "runtime" / "CURRENT").split()[:2]
-        return version, python
-    except (OSError, ValueError):
+        fields = disk_io.ops.read_text(Path(home) / "runtime" / "CURRENT").split()
+        return fields[0], fields[1], fields[2] if len(fields) > 2 else None
+    except (OSError, IndexError):
         return None
+
+
+def _other_build(home: Path, inst, incoming: Path, arch: str) -> bool:
+    """The bundle's mmw wheel isn't the one installed (a rebuild of the same
+    version)."""
+    if inst is None or inst[2] is None:
+        return False
+    mine = Path(home) / "runtime" / f"{inst[2]}-{arch}" / "mmw.whl"
+    theirs = next(iter(sorted(disk_io.ops.glob(incoming / arch / "wheels", "mirror_mirror_on_the_wall-*.whl"))), None)
+    try:
+        return theirs is not None and disk_io.ops.read_bytes(mine) != disk_io.ops.read_bytes(theirs)
+    except OSError:
+        return False
 
 
 def update_runtime(home: Path, incoming: Path, *, allow_downgrade: bool = False) -> list[str]:
     """Install the runtime in `incoming` if it is newer than both this mmw
-    and the one `bin/mmw` runs (or the same version on another Python; an
-    older one only when `allow_downgrade`). Returns what to tell the
+    and the one `bin/mmw` runs (or the same version on another Python, or
+    rebuilt; an older one only when `allow_downgrade`). Returns what to tell the
     operator; never raises — the apply it follows has already succeeded."""
     from packaging.version import InvalidVersion, Version
 
@@ -60,8 +74,9 @@ def update_runtime(home: Path, incoming: Path, *, allow_downgrade: bool = False)
     except (OSError, ValueError, KeyError, TypeError, InvalidVersion) as e:
         disk_io.ops.rmtree(incoming, ignore_errors=True)
         return [f"the bundle's mmw runtime can't be read ({e}) — not installed"]
-    other_python = inst is not None and Version(inst[0]) == Version(new) and inst[1] != python
-    if not newer and not older and not other_python:
+    same = inst is not None and Version(inst[0]) == Version(new)
+    other = same and (inst[1] != python or _other_build(home, inst, incoming, arch))
+    if not newer and not older and not other:
         disk_io.ops.rmtree(incoming, ignore_errors=True)
         return []
     if older and not allow_downgrade:

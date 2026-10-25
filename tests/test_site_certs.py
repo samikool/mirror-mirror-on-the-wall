@@ -19,12 +19,13 @@ def site(tmp_path):
 def test_make_then_load_records_paths_only(site, tmp_path):
     crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
     assert (key.stat().st_mode & 0o777) == 0o600
-    subject = C.load_ca(site, crt, key, None)
+    subject = C.load_ca(crt, key, None)
     assert "Lab CA" in subject
-    s = H.load_site(site)
-    assert (s.ca_cert, s.ca_key) == (crt.resolve(), key.resolve())
+    from mmw.site import recents
+    assert recents.ca_paths() == (crt.resolve(), key.resolve())     # on this machine, never in a root
     text = (site / "site.toml").read_text()
-    assert "PRIVATE KEY" not in text and str(key.resolve()) in text
+    assert "PRIVATE KEY" not in text and "ca_key" not in text
+    assert "PRIVATE KEY" not in (recents.state_dir() / "ca.json").read_text()
 
 
 def test_make_refuses_existing(tmp_path):
@@ -37,15 +38,15 @@ def test_load_refuses_mismatch(site, tmp_path):
     crt1, _key1 = C.make_ca(tmp_path / "ca1", "One", None)
     _crt2, key2 = C.make_ca(tmp_path / "ca2", "Two", None)
     with pytest.raises(ValueError, match="does not match"):
-        C.load_ca(site, crt1, key2, None)
+        C.load_ca(crt1, key2, None)
     assert H.load_site(site).ca_cert is None
 
 
 def test_load_encrypted_asks(site, tmp_path):
     crt, key = C.make_ca(tmp_path / "ca", "Lab CA", b"s3cret")
     with pytest.raises(CAKeyEncrypted):
-        C.load_ca(site, crt, key, None)
-    assert "Lab CA" in C.load_ca(site, crt, key, b"s3cret")
+        C.load_ca(crt, key, None)
+    assert "Lab CA" in C.load_ca(crt, key, b"s3cret")
 
 
 def test_cli_ca_make_and_show(site, tmp_path):
@@ -76,7 +77,7 @@ def _applied(env, tmp_path, password=None):  # noqa: F811
     cfg, net, md, home, root = env
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
     crt, key = C.make_ca(tmp_path / "ca", "Lab CA", password)
-    C.load_ca(home, crt, key, password)
+    C.load_ca(crt, key, password)
     return home, root
 
 
@@ -146,7 +147,7 @@ def test_a_new_ca_re_signs(env, tmp_path):  # noqa: F811
     home, root = _applied(env, tmp_path)
     C.sign_roots(home, password=None)
     crt2, key2 = C.make_ca(tmp_path / "ca2", "New CA", None)
-    C.load_ca(home, crt2, key2, None)
+    C.load_ca(crt2, key2, None)
     (r,) = C.sign_roots(home, password=None)
     assert r.action == "signed"
     leaf = x509.load_pem_x509_certificates((root / ".mmw/tls/mirror.crt").read_bytes())[0]

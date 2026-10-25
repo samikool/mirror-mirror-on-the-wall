@@ -362,15 +362,14 @@ def ca_load(cert: Path, key: Path, home: Path | None = None) -> int:
     from mmw.core.certs import CAKeyEncrypted
     from mmw.site import certs
     try:
-        h = _home(home, False)
         try:
-            subject = certs.load_ca(h, cert, key, None)
+            subject = certs.load_ca(cert, key, None)
         except CAKeyEncrypted:
             password = _passphrase()
             if password is None:
                 eprint(f"{key} is encrypted — run this in a terminal, or set MMW_CA_PASSPHRASE")
                 return 1
-            subject = certs.load_ca(h, cert, key, password)
+            subject = certs.load_ca(cert, key, password)
     except (ValueError, FileNotFoundError) as e:
         eprint(str(e))
         return 1
@@ -381,7 +380,6 @@ def ca_load(cert: Path, key: Path, home: Path | None = None) -> int:
 def ca_make(out: Path, name: str, encrypt: bool = False, home: Path | None = None) -> int:
     from mmw.site import certs
     try:
-        h = _home(home, False)
         password = None
         if encrypt:
             password = _passphrase("Passphrase for the new CA key: ", confirm=True)
@@ -389,7 +387,7 @@ def ca_make(out: Path, name: str, encrypt: bool = False, home: Path | None = Non
                 eprint("--encrypt needs a passphrase: run this in a terminal, or set MMW_CA_PASSPHRASE")
                 return 1
         crt, key = certs.make_ca(out, name, password)
-        certs.load_ca(h, crt, key, password)
+        certs.load_ca(crt, key, password)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         eprint(str(e))
         return 1
@@ -401,7 +399,7 @@ def ca_make(out: Path, name: str, encrypt: bool = False, home: Path | None = Non
 def ca_show(home: Path | None = None) -> int:
     from mmw.site import certs
     try:
-        info = certs.show_ca(_home(home, False))
+        info = certs.show_ca()
     except (ValueError, FileNotFoundError) as e:
         eprint(str(e))
         return 1

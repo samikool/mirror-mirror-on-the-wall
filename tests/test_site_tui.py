@@ -259,7 +259,7 @@ def test_tui_c_signs(env, tmp_path):  # noqa: F811
     cfg, net, md, home, root = env
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
     crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
-    C.load_ca(home, crt, key, None)
+    C.load_ca(crt, key, None)
 
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)

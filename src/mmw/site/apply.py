@@ -48,11 +48,13 @@ class ApplyResult:
 
 
 def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progress=None, stop_event=None,
-             on_manifest=None, runtime_dir: Path | None = None):
+             on_manifest=None, runtime_dir: Path | None = None, runtime_problems: list | None = None):
     """Stream the members in: (name → (checksum, size), TLS files). Once the
     manifest has arrived, `on_manifest(path)` may return `route(name) ->
     Store`, the store each later member belongs in (its repository's root).
-    mmw's runtime (`.mmw/runtime/…`) goes under `runtime_dir`, if given."""
+    mmw's runtime (`.mmw/runtime/…`) goes under `runtime_dir`, if given;
+    if it can't be written there (a full disk), it is dropped and the reason
+    added to `runtime_problems` — the content still applies."""
     route = None
     got: dict[str, tuple[str, int]] = {}
     links: dict[str, str] = {}
@@ -76,9 +78,17 @@ def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progres
                     dest = site_runtime.member_path(runtime_dir, m.name)
                 except ValueError as e:
                     raise ApplyError(2, str(e)) from None
-                disk_io.ops.mkdir(dest.parent, parents=True, exist_ok=True)
-                with disk_io.ops.open_file(dest, "wb") as out:
-                    shutil.copyfileobj(m.fh, out)
+                if runtime_problems:
+                    continue                    # dropped already
+                try:
+                    disk_io.ops.mkdir(dest.parent, parents=True, exist_ok=True)
+                    with disk_io.ops.open_file(dest, "wb") as out:
+                        shutil.copyfileobj(m.fh, out)
+                except OSError as e:
+                    disk_io.ops.rmtree(runtime_dir, ignore_errors=True)
+                    if runtime_problems is not None:
+                        runtime_problems.append(f"mmw's runtime in this bundle couldn't be stored "
+                                                f"({e.strerror or e}) — not installed; the rest applied")
             elif m.name.startswith(".mmw/"):
                 continue                        # the bundle's own apply.py and the like
             elif m.kind == "link":
@@ -162,8 +172,9 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
             bases = {k: m["bases"] for k, m in (head.repos or {}).items()}
             return lambda name: roots.store(placement.get(attribute(name, bases), roots.primary))
         try:
+            runtime_problems: list[str] = []
             got, tls = _receive(src, store, manifest_path, dry_run, progress, stop_event,
-                                on_manifest=on_manifest, runtime_dir=incoming)
+                                on_manifest=on_manifest, runtime_dir=incoming, runtime_problems=runtime_problems)
             header, rows = iter_manifest_v2(manifest_path)
             rows = list(rows)
         finally:
@@ -318,6 +329,7 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if result.network_changed:
             result.actions.append("nginx config changed — recreate nginx on the serving host "
                                   "(docker compose … up -d --force-recreate)")
+        result.actions.extend(runtime_problems)
         if incoming is not None and disk_io.ops.exists(incoming / "RUNTIME.json"):
             # Last: the apply finished with the mmw that started it.
             result.actions.extend(site_runtime.update_runtime(home, incoming, allow_downgrade=allow_downgrade))

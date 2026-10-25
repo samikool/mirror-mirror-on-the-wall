@@ -141,3 +141,18 @@ def test_a_rebuilt_wheel_reinstalls(env, tmp_path, stub_bootstrap):  # noqa: F81
     (home / "runtime" / f"{name}-x86_64" / "mmw.whl").write_bytes(b"an older build")
     notes = update_runtime(home, inc)
     assert any("updated" in n for n in notes) and (home / "bootstrap.log").exists()
+
+
+@pytest.mark.skipif(__import__("os").geteuid() == 0, reason="root writes anywhere")
+def test_no_room_for_the_runtime_still_applies(env, tmp_path, stub_bootstrap):  # noqa: F811
+    cfg, net, md, home, root = env
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None, runtime_wheel=_wheel(tmp_path, "9.0.0"))
+    (home / "runtime").mkdir()
+    (home / "runtime").chmod(0o500)                                # as good as a full disk, for writes
+    try:
+        r = apply_bundle(home, str(b), say=lambda *a: None)
+    finally:
+        (home / "runtime").chmod(0o700)
+    assert r.updated
+    assert any("mmw 9.0.0" not in a and "runtime" in a and "couldn't be stored" in a for a in r.actions), r.actions
+    assert not (home / "bootstrap.log").exists()

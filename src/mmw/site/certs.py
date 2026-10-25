@@ -152,14 +152,28 @@ def _good(tls: Path, hosts: list[str], ca_cert) -> bool:
 
 
 def _sign_root(r, ca_cert, s, password, days, force) -> "RootCertResult":
-    from mmw.core.certs import generate_key_and_csr, sign_csr
+    from mmw.core.certs import sign_csr
     from mmw.resources.apply import https_state
+    hosts, notes, csr, action = prepare_csr(r, ca_cert, force)
+    if action in ("not mounted", "no hostnames"):
+        return RootCertResult(r.name, [], action, [])
+    if csr is not None:
+        sign_csr(Path(r.path) / ".mmw" / "tls" / "mirror.csr", s.ca_cert, s.ca_key, days=days, password=password)
+        action = "signed"
+    return RootCertResult(r.name, hosts, action, notes + https_state(str(r.path)))
+
+
+def prepare_csr(r, ca_cert, force: bool) -> tuple[list[str], list[str], bytes | None, str]:
+    """A root's half of signing, run where the root is: its key (kept, or
+    made here — never moved), a request for its hostnames; (hosts, notes,
+    the request PEM or None when the certificate there still fits, action)."""
+    from mmw.core.certs import generate_key_and_csr
     root = Path(r.path)
     if not disk_io.ops.is_dir(root / ".mmw" / "store"):
-        return RootCertResult(r.name, [], "not mounted", [])
+        return [], [], None, "not mounted"
     hosts = root_hostnames(root)
     if not hosts:
-        return RootCertResult(r.name, [], "no hostnames", [])
+        return [], [], None, "no hostnames"
     tls = root / ".mmw" / "tls"
     if disk_io.ops.is_symlink(tls):
         raise ValueError(f"{tls} is a symlink — refusing to write a private key through it")
@@ -167,19 +181,47 @@ def _sign_root(r, ca_cert, s, password, days, force) -> "RootCertResult":
     disk_io.ops.chmod(tls, 0o700)
     notes = []
     if disk_io.ops.exists(tls / "mirror.key") and not disk_io.ops.exists(tls / KEY_MADE_HERE):
-        # A key an older bundle carried over (made on the connected side):
-        # replaced once, so this root's key never crossed on transfer media.
         for name in ("mirror.key", "mirror.crt", "mirror.csr"):
             disk_io.ops.unlink(tls / name, missing_ok=True)
         notes.append("replaced the key that came over in an older bundle with one made here")
     _key, _cnf, csr = generate_key_and_csr(hosts, tls)
     disk_io.ops.write_text(tls / KEY_MADE_HERE, "mirror.key was made on this side\n")
     if not force and _good(tls, hosts, ca_cert):
-        action = "kept"
-    else:
-        sign_csr(csr, s.ca_cert, s.ca_key, days=days, password=password)
+        return hosts, notes, None, "kept"
+    return hosts, notes, disk_io.ops.read_bytes(csr), "needs"
+
+
+def install_cert(r, pem: bytes) -> list[str]:
+    """A root's other half: the signed certificate in place, HTTPS to match."""
+    from mmw.resources.apply import https_state
+    root = Path(r.path)
+    disk_io.ops.atomic_write(root / ".mmw" / "tls" / "mirror.crt", pem)
+    return https_state(str(root))
+
+
+def sign_remote(root, *, password: bytes | None, days: int, force: bool) -> list[RootCertResult]:
+    """Sign an ssh root: its key and request are made there; only the request
+    comes here, and only the certificate goes back. The CA key never moves."""
+    import tempfile
+    from mmw.core.certs import sign_csr
+    paths = _ca_paths(None)
+    if paths is None:
+        raise ValueError("no CA yet — mmw site ca load --cert … --key …, or mmw site ca make --out …")
+    for path in paths:
+        if not disk_io.ops.exists(path):
+            raise FileNotFoundError(f"the CA isn't at {path} any more (moved, or not mounted?)")
+    _load_ca(*paths, password)                       # wrong passphrase / mismatch: first
+    got = root._call("csr", *(["--force"] if force else []), input=disk_io.ops.read_bytes(paths[0]))
+    hosts, notes, action = got["hosts"], got["notes"], got["action"]
+    if got.get("csr"):
+        with tempfile.TemporaryDirectory() as tmp:
+            csr = Path(tmp) / "mirror.csr"
+            disk_io.ops.write_text(csr, got["csr"])
+            sign_csr(csr, paths[0], paths[1], days=days, password=password)
+            pem = disk_io.ops.read_bytes(Path(tmp) / "mirror.crt")
+        notes = notes + root._call("cert", input=pem)["notes"]
         action = "signed"
-    return RootCertResult(r.name, hosts, action, notes + https_state(str(root)))
+    return [RootCertResult(root.info.name, hosts, action, notes)]
 
 
 def tls_notes(home: Path) -> list[str]:

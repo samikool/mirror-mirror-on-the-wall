@@ -75,3 +75,18 @@ def test_move_between_local_and_ssh_root(hosts, tmp_path):  # noqa: F811
     assert _labels(r1) == ["a", "b"]
     assert sorted((root, st.label) for root, st in ops.set_status(open_set())) == [("r1", "a"), ("r1", "b")]
     assert ops.tidy_set(open_set()) == ["b"]
+
+
+def test_certs_over_ssh_never_move_a_key(hosts, tmp_path):  # noqa: F811
+    from mmw.site import certs as C
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
+    C.load_ca(crt, key, None)
+    log = tmp_path / "ssh.log"
+    log.write_bytes(b"")
+    signed = C.sign_set(open_set(), password=None)
+    assert sorted((x.root, x.action) for x in signed) == [("r1", "signed"), ("r2", "signed")]
+    assert (r2 / ".mmw" / "tls" / "mirror.crt").exists() and (r2 / ".mmw" / "tls" / "mirror.key").exists()
+    crossed = log.read_bytes()
+    assert b"CERTIFICATE REQUEST" in crossed and b"BEGIN CERTIFICATE" in crossed
+    assert b"PRIVATE KEY" not in crossed                       # neither the CA's nor the root's

@@ -152,6 +152,34 @@ mmw site tidy                       # once nginx is recreated in both: clear the
 - Every command takes `--root PATH` (any root of the mirror) when this
   machine has opened more than one mirror.
 
+## Roots over ssh
+
+A root can live on another machine: give its location as
+`[user@]host:/path` anywhere a root goes (`--root`, `mmw site open`,
+**Add a root…**). The mmw on that host does the root's disk work; this one
+streams it only that root's files and shows its progress.
+
+```bash
+mmw site open lnxp005:/data/mirror --install mmw-1.3.0-x86_64.tar   # first time: put mmw there
+mmw site apply oak.tar --root pypi.org=lnxp005:/data/mirror
+```
+
+- **Key-based ssh only, never a prompt.** mmw runs the system `ssh` with
+  `BatchMode=yes`. If plain `ssh lnxp005` doesn't get in without a
+  password, mmw stops: *lnxp005 needs key-based ssh access for mmw (a
+  security requirement) — configure it and try again*.
+- **Host keys are yours to accept.** An unknown or changed host key stops
+  mmw too; connect once with plain `ssh` to check it.
+- **Nothing secret, ever.** mmw never stores, copies, reads, logs or shows a
+  private key, a passphrase or a password. Keys stay in your agent and
+  `~/.ssh/config` (aliases work).
+- **Certificates:** the remote root makes its own key and request; only the
+  request comes back to be signed, and only the certificate goes out. The
+  CA key never moves.
+- The remote's mmw must be the same version or newer; `--install` pushes
+  the installer over the same ssh. A host that can't be reached shows as
+  MISSING (*can't reach lnxp005*) and its hostnames are held back.
+
 ## HTTPS
 
 The far side makes its own keys: an mmw network's bundles never carry a

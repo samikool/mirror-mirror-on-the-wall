@@ -260,6 +260,22 @@ def _break_lock(root, args, stdin):
     return {"removed": root.break_lock()}
 
 
+def _csr(root, args, stdin):
+    """The root's key stays here; the request goes back. stdin: the CA's
+    certificate (public), to tell whether the one here still fits."""
+    from cryptography import x509
+
+    from mmw.site.certs import prepare_csr
+    ca_cert = x509.load_pem_x509_certificate(stdin.read())
+    hosts, notes, csr, action = prepare_csr(root.info, ca_cert, force="--force" in args)
+    return {"hosts": hosts, "notes": notes, "csr": csr.decode() if csr else None, "action": action}
+
+
+def _cert(root, args, stdin):
+    from mmw.site.certs import install_cert
+    return {"notes": install_cert(root.info, stdin.read())}
+
+
 _VERBS = {
     "info": _info,
     "status": _status,
@@ -283,6 +299,8 @@ _VERBS = {
     "break-lock": _simple(_break_lock),
     "tidy": _simple(lambda r, a, i: r.tidy()),
     "tls-notes": _simple(lambda r, a, i: r.tls_notes()),
+    "csr": _simple(_csr),
+    "cert": _simple(_cert),
     "move-out-info": _simple(lambda r, a, i: r.move_out_info(a[0])),
     "move-in": _simple(lambda r, a, i: {"changed": r.move_in(a[0], _json_in(i))}),
     "move-out-finish": _simple(lambda r, a, i: {"changed": r.move_out_finish(a[0], a[1], _json_in(i))}),

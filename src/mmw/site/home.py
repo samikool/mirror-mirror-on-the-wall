@@ -2,6 +2,8 @@
 lock), on the share beside the root it serves, so any machine that mounts
 the share sees the same site."""
 import os
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import tomli_w
@@ -16,6 +18,7 @@ from mmw.core import disk_io
 
 SETTINGS = "site.toml"
 STORE = Path(".mmw") / "store"
+ROOT_HOME = Path(".mmw") / "site"            # every root is its own site: its home is here
 
 
 class RootConfig(BaseModel):
@@ -30,6 +33,12 @@ class SiteSettings(BaseModel):
     # The site's CA, by path only: mmw never copies the key, never keeps its passphrase.
     ca_cert: Path | None = None
     ca_key: Path | None = None
+    # v2: the root's identity — its set (one connected-side network's roots),
+    # its own name, and the names (never paths) of every root in the set.
+    set_id: str | None = None
+    network: str | None = None
+    name: str | None = None
+    members: list[str] = []
 
     @property
     def primary(self) -> RootConfig:
@@ -77,6 +86,11 @@ def init_site(home: Path, root: Path) -> SiteSettings:
 def save_settings(home: Path, settings: SiteSettings) -> None:
     data: dict = {"roots": [{"name": r.name, "path": str(r.path), "serve_path": str(r.serve_path)}
                             for r in settings.roots]}
+    for key in ("set_id", "network", "name"):
+        if getattr(settings, key) is not None:
+            data[key] = getattr(settings, key)
+    if settings.members:
+        data["members"] = list(settings.members)
     if settings.keep_versions is not None:
         data["keep_versions"] = settings.keep_versions
     if settings.ca_cert is not None:
@@ -92,7 +106,14 @@ def load_site(home: Path) -> SiteSettings:
     if "root" in data and "roots" not in data:        # a site made before roots had names
         root = data.pop("root")
         data["roots"] = [{"name": "main", "path": root, "serve_path": root}]
-    return SiteSettings.model_validate(data)
+    settings = SiteSettings.model_validate(data)
+    if settings.set_id is not None:
+        # A v2 root is wherever its home is mounted now: paths don't travel.
+        here = Path(home).resolve().parent.parent
+        r = settings.roots[0]
+        moved = r.serve_path == r.path
+        settings.roots[0] = r.model_copy(update={"path": here, "serve_path": here if moved else r.serve_path})
+    return settings
 
 
 def add_root(home: Path, name: str, path: Path, serve_path: Path | None = None) -> RootConfig:
@@ -104,3 +125,60 @@ def add_root(home: Path, name: str, path: Path, serve_path: Path | None = None) 
     disk_io.ops.mkdir(path / STORE, parents=True, exist_ok=True)
     save_settings(home, settings.model_copy(update={"roots": [*settings.roots, root]}))
     return root
+
+
+# ── v2: every root its own site ──────────────────────────────────────────────
+
+def root_home(root: Path) -> Path:
+    return Path(root) / ROOT_HOME
+
+
+def new_set_id() -> str:
+    return uuid.uuid4().hex
+
+
+@dataclass(frozen=True)
+class RootInfo:
+    location: str                       # as the user gave it (recents keep this)
+    path: Path
+    home: Path
+    name: str
+    set_id: str | None
+    network: str | None
+    members: tuple[str, ...]
+
+
+def init_root(root: Path, *, name: str, set_id: str, network: str, serve_path: Path | None = None) -> Path:
+    """Make `root` a root of set `set_id`; its home. A root of another set is refused."""
+    home = root_home(root)
+    if disk_io.ops.exists(home / SETTINGS):
+        have = load_site(home)
+        if have.set_id != set_id:
+            raise ValueError(f"{root} already holds the mirror of network {have.network!r} — "
+                             f"not {network!r}; pick another root")
+        return home
+    settings = init_site(home, root)
+    r = settings.roots[0]
+    if serve_path is not None:
+        settings.roots[0] = r.model_copy(update={"serve_path": Path(serve_path)})
+    save_settings(home, settings.model_copy(update={"set_id": set_id, "network": network, "name": name,
+                                                    "members": [name]}))
+    return home
+
+
+def read_root(location: str) -> RootInfo | None:
+    """The root at `location`, or None: no mirror there (or nothing mounted)."""
+    path = Path(location).expanduser()
+    home = root_home(path)
+    if not disk_io.ops.exists(home / SETTINGS):
+        return None
+    s = load_site(home)
+    return RootInfo(location, path.resolve(), home, s.name or path.name, s.set_id, s.network,
+                    tuple(s.members or [s.name or path.name]))
+
+
+def hostnames(home: Path) -> set[str]:
+    """Every hostname a root holds: the first component of its repositories' bases."""
+    from mmw.site.db import SiteDB
+    with SiteDB(home) as db:
+        return {b.split("/", 1)[0] for st in db.repo_states() for b in st.bases}

@@ -55,7 +55,7 @@ def test_anyway_button_continues_after_refusal_with_warning(tmp_path, monkeypatc
             listed = str(dialog.query_one("#confirm-details Label").render())
             assert f"✗ {unit.name}:" in listed
             confirm = dialog.query_one("#confirm", Button)
-            assert str(confirm.label) == ("Publish anyway" if verb == "publish" else "Bundle anyway")
+            assert str(confirm.label) == ("Publish anyway" if verb == "publish" else "Transfer anyway")
             confirm.press()
             await until(pilot, lambda: app.active_transfer is not None
                         and app.active_transfer is not first)

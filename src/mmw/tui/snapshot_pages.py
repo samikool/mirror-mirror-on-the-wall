@@ -117,13 +117,13 @@ class PublishPickPage(Page):
 
 
 class BundlePickPage(Page):
-    """Where the far side is (From) and where to bring it (To), with what that
-    sends. Dismisses with a `BundleChoice`, or None."""
+    """Transfer: where the far side is (From) and where to bring it (To),
+    with what that sends, as a bundle or (mmw) a stage. Dismisses with a `BundleChoice`, or None."""
 
     def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, mirror_dir: Path,
                  repos: dict[str, str] | None = None):
         super().__init__()
-        self.TITLE = f"Bundle {net.name}"
+        self.TITLE = f"Transfer {net.name}"
         # An mmw far side: key → label of the repositories to choose from.
         self._repos = repos
         self._net = net
@@ -138,21 +138,22 @@ class BundlePickPage(Page):
         self._runtime: tuple[str | None, str | None] = (None, None)
 
     def compose_body(self) -> ComposeResult:
-        froms = ([(escape(f"Where the last bundle went — {self._status.name(self._last)}"), "last")]
+        froms = ([(escape(f"Where the last transfer went — {self._status.name(self._last)}"), "last")]
                  if self._last else [])
-        froms += [("Nothing — a full bundle", "none")]
+        froms += [("Nothing — send everything", "none")]
         froms += [(_describe(s), s.stamp) for s in self._status.snapshots]
         tos = [("A new snapshot of now", "now")] + [
             (_describe(s), s.stamp) for s in self._status.snapshots if s.complete]
         yield Form(
             ChoiceField("From", froms, froms[0][1], id="pick-from",
-                        hint="The snapshot the far side is at. A full bundle also repairs a "
+                        hint="The snapshot the far side is at. Sending everything also repairs a "
                              "far side of unknown state."),
             ChoiceField("To", tos, "now", id="pick-to",
                         hint="Backwards is fine: the far side is brought to exactly that state."),
-            *([ChoiceField("As", [("bundle (.tar)", "bundle"), ("stage (directory of hardlinks)", "stage")],
+            *([ChoiceField("How", [("One .tar file (bundle)", "bundle"),
+                                   ("A folder of hardlinks (stage)", "stage")],
                            "bundle", id="pick-as",
-                           hint="A stage costs almost no disk; tar or rsync it across yourself.")]
+                           hint="A folder costs almost no disk; tar, rsync or copy it across yourself.")]
               if self._repos else []),
             id="pick-form")
         if self._repos:
@@ -163,7 +164,7 @@ class BundlePickPage(Page):
 
     def compose_actions(self) -> ComposeResult:
         yield Button("Cancel", id="btn-pick-cancel", compact=True)
-        yield Button("Bundle", id="btn-pick-go", variant="primary", compact=True)
+        yield Button("Transfer", id="btn-pick-go", variant="primary", compact=True)
 
     def on_mount(self) -> None:
         self._estimate_now()
@@ -299,7 +300,7 @@ class CleanPage(Page):
     def compose_body(self) -> ComposeResult:
         yield Form(TextField("Keep newest", "3", id="inp-snap-keep", integer_min=0,
                              hint="Snapshots a directory serves, and the one the last "
-                                  "bundle went to, are always kept."))
+                                  "transfer went to, are always kept."))
         yield Label("", id="clean-preview")
 
     def compose_actions(self) -> ComposeResult:
@@ -361,11 +362,11 @@ class SnapshotsPage(Page):
     """One network's snapshots, newest first."""
 
     SCROLLS = False
-    HELP = ("A snapshot is the network's exact published state, kept in the pool to bundle\n"
-            "to or publish again (p on Networks offers them). Holds: the disk only that\n"
+    HELP = ("A snapshot is the network's exact published state, kept in the pool to transfer\n"
+            "or publish again (p on Networks offers them). Holds: the disk only that\n"
             "snapshot keeps — freed by the next prune once it is deleted. A snapshot a\n"
             "directory serves cannot be deleted; history-only ones (from old bundles) can\n"
-            "only be a bundle's starting point.")
+            "only be a transfer's starting point.")
     BINDINGS = [
         Binding("t", "take", "Take"),
         Binding("r", "rename", "Rename"),
@@ -439,7 +440,7 @@ class SnapshotsPage(Page):
         if status.serving == s.stamp:
             notes.append("published")
         if status.last_bundle and status.last_bundle.to_stamp == s.stamp:
-            notes.append("last bundled")
+            notes.append("last transferred")
         if not s.complete:
             notes.append("history only")
         if s.stamp in self._changed:
@@ -555,8 +556,8 @@ class SnapshotsPage(Page):
         last = self._status.last_bundle
         message = f"Delete snapshot [b]{name}[/]? The next prune frees the files only it holds."
         if last is not None and last.to_stamp == snap.stamp:
-            message += ("\n[$mmw-warn]The last bundle went to it: the next bundle then needs "
-                        "a From chosen (or a full one).[/]")
+            message += ("\n[$mmw-warn]The last transfer went to it: the next transfer then needs "
+                        "a From chosen (or sends everything).[/]")
         if not await self.app.push_screen_wait(ConfirmDialog("Delete snapshot", message,
                                                              "Delete")):
             return

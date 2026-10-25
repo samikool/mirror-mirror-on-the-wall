@@ -67,7 +67,7 @@ def _cap_file_lines(lines: list[str]) -> list[str]:
     if files > _LOG_LINES_PER_TICK:
         out.append(f"  [dim]… {files - _LOG_LINES_PER_TICK:,} more[/]")
     return out
-BUNDLE = TransferKind("Bundling", "Bundled", "sent", False, "bun")
+BUNDLE = TransferKind("Transferring", "Transferred", "sent", False, "bun")
 
 
 class DryRunReport(Vertical):

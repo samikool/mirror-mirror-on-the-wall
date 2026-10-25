@@ -174,11 +174,11 @@ class NetworkForm(Vertical):
                     hint="How long releases that left the mirror stay published (PyPI): current, "
                          "forever or days like 90d. Widening is not retroactive."),
                 PathField(
-                    "Bundle output", str(net.bundle_dir) if net and net.bundle_dir else "",
+                    "Transfer output", str(net.bundle_dir) if net and net.bundle_dir else "",
                     id="inp-bundle-dir", browse_id="btn-browse-bundle",
-                    browse_title="Where should bundles for this network be written?",
+                    browse_title="Where should transfers for this network be written?",
                     browse_subtitle="pick the output directory — nothing is created by picking it",
-                    hint="Optional. Where `mmw bundle` writes this network's tarballs.",
+                    hint="Optional. Where transfers (bundles and stages) of this network are written.",
                 ),
             )
             if add:
@@ -286,7 +286,7 @@ class NetworkForm(Vertical):
         if root:
             parts.append(f"publish → [b]{escape(root)}/{escape(name) or '…'}[/]")
         if bundle:
-            parts.append(f"bundle → [b]{escape(bundle)}[/]")
+            parts.append(f"transfer → [b]{escape(bundle)}[/]")
         if parts:
             preview.update("   ".join(parts))
         elif name:
@@ -302,7 +302,7 @@ class NetworkForm(Vertical):
         if root is not None:
             lines.append(f"Publish  [$mmw-path]{escape(str(root))}[/]")
         if bundle:
-            lines.append(f"Bundle   [$mmw-path]{escape(bundle)}[/]")
+            lines.append(f"Transfer [$mmw-path]{escape(bundle)}[/]")
         if root is None and not bundle:
             lines.append("[dim]no destination — this network can be edited and synced, "
                          "not published[/]")

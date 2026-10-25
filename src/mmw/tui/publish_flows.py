@@ -333,7 +333,7 @@ class PublishFlows:
                 if self._ends_early(verify_results, view):
                     return
             await self._execute_bundle(net, view, choice)
-        await self._guarded(view, "Bundle", flow)
+        await self._guarded(view, "Transfer", flow)
 
     @staticmethod
     def _allow_incomplete(view) -> None:

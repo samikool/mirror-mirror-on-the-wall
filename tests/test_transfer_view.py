@@ -68,7 +68,7 @@ def test_stop_says_stopped_never_complete():
         view.mark_done(SimpleNamespace(sent=3, errors=[]))
         await _ticks(pilot)
         assert app.completed == ["stopped"]
-        assert "Stopped" in _title(view) and view.summary().startswith("Bundling lab stopped")
+        assert "Stopped" in _title(view) and view.summary().startswith("Transferring lab stopped")
     _run(check, BUNDLE)
 
 

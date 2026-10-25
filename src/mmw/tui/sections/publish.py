@@ -21,7 +21,7 @@ from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
 _IDLE = ("Nothing publishing. Highlight a network in Networks and press p to publish, "
-         "r for a dry run, or b to bundle.")
+         "r for a dry run, or t to transfer.")
 
 VERBS = {"publish": PUBLISH, "dry_run": PUBLISH, "bundle": BUNDLE}
 
@@ -133,7 +133,7 @@ class PublishSection(Page):
             f"[$mmw-ok]✓[/] {escape(name)}: [dim]{escape(detail)}[/]" if ok
             else f"[$mmw-error]✗ {escape(name)}[/]: {escape(detail)}"
             for ok, name, detail in rows)
-        verb = "Bundle" if view.kind is BUNDLE else "Publish"
+        verb = "Transfer" if view.kind is BUNDLE else "Publish"
         message = (f"{bad} of {len(rows)} mirrors incomplete. {verb} anyway? "
                    "Missing files will be unavailable to clients.")
 

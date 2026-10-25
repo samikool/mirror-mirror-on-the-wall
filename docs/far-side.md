@@ -99,9 +99,11 @@ mmw site root list
   the command names after an apply or a move.
 - Two repositories that share a hostname must live in the same root —
   nginx routes a hostname to one place — so mmw refuses to split them.
-- A move copies every kept version's files into the new root's store before
-  anything is served from it; an interrupted move just runs again. Then the
-  old root is cleared.
+- A move copies every kept version's files into the new root's store and
+  places them before anything is recorded; an interrupted move just runs
+  again. The old root keeps serving its copy — the nginx running there
+  still routes the hostname to it — until you recreate nginx in both roots
+  and run `mmw site tidy` (the next apply tidies too).
 - A root that isn't mounted stops an apply or a move before anything changes.
 
 ## Space

@@ -168,9 +168,11 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if roots.multi and not header.settings:
             raise ApplyError(5, "bundle again with this mmw — it doesn't say enough to set up nginx per root")
 
-        def have(cs, root=roots.primary):
-            return any(roots.store(r).has(cs) for r in roots.all)
         sizes = {cs: size for cs, size in got.values()}
+
+        def have(cs):
+            # Arrived with this bundle (a dry run only hashed it), or in a store.
+            return cs in sizes or any(roots.store(r).has(cs) for r in roots.all)
         if progress:
             progress("check")
 
@@ -241,8 +243,9 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
             for rel in sorted(set(old[r.name]) - set(new)):
                 if disk_io.ops.remove(rroot / rel) is not None:
                     _prune_empty_parents(str(rroot), str((rroot / rel).parent))
+        if header.settings:
+            db.set_meta("settings", header.settings)          # for nginx per root, now or later
         if roots.multi:
-            db.set_meta("settings", header.settings)
             result.network_changed = write_root_nginx(db, roots) or result.network_changed
         for name, data in sorted(tls.items()):
             _install_tls(str(root), name, io.BytesIO(data))
@@ -284,6 +287,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
             if disk_io.ops.is_dir(r.path):
                 render_derived(str(r.path), say=lambda m: say(f"  {m}"))
         db.record_applied(header.created, header.previous, "full" if header.full else "delta")
+        from mmw.site.ops import _tidy
+        _tidy(db, roots)
         if settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
             apply_retention(db, roots, settings.keep_versions)
@@ -455,9 +460,14 @@ def write_root_nginx(db, roots: Roots) -> bool:
         for rel, data in files.items():
             if before.get(rel) != after[rel] or not disk_io.ops.exists(rroot / rel):
                 disk_io.ops.atomic_write(rroot / rel, data, tmp_dir=roots.store(r).place_tmp)
-        for rel in set(before) - set(after):
+        stale = set(before) - set(after)
+        if r.name == roots.primary.name:
+            # The bundle's own nginx text, from when this was a one-root site.
+            stale |= {p for p in db.network_files() if p.startswith("nginx/") and not p.endswith(".tar")
+                      and p not in after and disk_io.ops.exists(rroot / p)}
+        for rel in stale:
             disk_io.ops.remove(rroot / rel)
-        if before != after:
+        if before != after or stale:
             changed = True
             db.set_meta(f"nginx:{r.name}", json.dumps(after, sort_keys=True))
     return changed

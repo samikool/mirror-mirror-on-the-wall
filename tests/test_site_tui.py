@@ -290,6 +290,9 @@ def test_move_key(two_mirrors, tmp_path):  # noqa: F811
         await until(pilot, lambda: type(app.screen).__name__ == "MoveRootPage")
         app.screen.query_one("#move-root", Select).value = "second"
         app.screen.query_one("#btn-move-go").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        assert "Copies" in str(app.screen.query_one("#confirm-message").render())
+        app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
                     and "moved" in str(app.screen.query_one("#page-status").render()))
     _run(home, check)

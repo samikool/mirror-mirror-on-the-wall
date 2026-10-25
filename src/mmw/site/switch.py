@@ -85,6 +85,10 @@ def resume_switches(db, roots) -> list[str]:
     for repo, from_id, to_id, _phase in db.pending_switches():
         root = roots.of(db.repo_state(repo))
         try:
+            roots.check_mounted(root)
+        except FileNotFoundError:
+            continue                    # finished once that root is back
+        try:
             _run(db, roots.store(root), Path(root.path), repo, from_id, to_id, None)
         except ValueError:
             continue                    # its target is gone; what it served stays

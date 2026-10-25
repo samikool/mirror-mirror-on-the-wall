@@ -683,6 +683,13 @@ def cmd_site_move(repo: str = typer.Argument(..., help="Repository (URL or name)
     raise typer.Exit(move(repo, root, home, yes, break_lock))
 
 
+@site_app.command("tidy")
+def cmd_site_tidy(home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+    """Clear moved repositories' old copies — once nginx has been recreated."""
+    from mmw.commands.site import tidy
+    raise typer.Exit(tidy(home, break_lock))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

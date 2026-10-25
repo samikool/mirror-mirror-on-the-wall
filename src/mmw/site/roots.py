@@ -60,8 +60,10 @@ class Roots:
 
     def referenced(self, db, root: RootConfig) -> set[str]:
         """Every blob this root's store must keep."""
-        return (db.referenced_checksums(self.placed_in(db, root), network=False)
-                | set(self.network_files(db, root).values()))
+        kept = set(self.network_files(db, root).values())
+        if root.name == self.primary.name:
+            kept |= set(db.network_files().values())     # nginx's shipped text too: deltas assume it
+        return db.referenced_checksums(self.placed_in(db, root), network=False) | kept
 
 
 def _nginx_text(path: str) -> bool:

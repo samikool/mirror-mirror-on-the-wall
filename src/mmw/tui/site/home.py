@@ -37,6 +37,7 @@ class SiteHomePage(Page):
         Binding("d", "delete", "Delete version"),
         Binding("a", "apply", "Apply bundle"),
         Binding("m", "move", "Move to root"),
+        Binding("t", "tidy", "Tidy", show=False),
         Binding("r", "refresh", "Refresh"),
     ]
 
@@ -230,11 +231,27 @@ class SiteHomePage(Page):
         current = state.root or self.app.settings.primary.name
 
         def chosen(root):
-            if root and root != current:
-                self._act(f"moved {state.label} to {root} — recreate nginx in both roots",
-                          ops.move, self.app.home, repo, root)
+            if not root or root == current:
+                return
+            from mmw.tui.ui.dialog import ConfirmDialog
+            try:
+                size = ops.move_size(self.app.home, repo, root)
+            except Exception as e:  # noqa: BLE001
+                self.set_status(str(e), "error")
+                return
+            self.app.push_screen(
+                ConfirmDialog(f"Move {state.label} to {root}?",
+                              f"Copies {fmt_size(size)} into {root}'s store first. The old copy stays "
+                              "served until you tidy (t) after recreating nginx.",
+                              confirm_label="Move", confirm_variant="primary", cancel_variant="default"),
+                lambda ok: ok and self._act(f"moved {state.label} to {root} — recreate nginx in {current} and "
+                                            f"{root}, then t tidies the old copy",
+                                            ops.move, self.app.home, repo, root))
         self.app.push_screen(MoveRootPage(state.label, current, [r.name for r in self.app.settings.roots]),
                              chosen)
+
+    def action_tidy(self) -> None:
+        self._act("cleared moved repositories' old copies", ops.tidy, self.app.home)
 
     def action_apply(self) -> None:
         from mmw.tui.path_pick import PathPickPage

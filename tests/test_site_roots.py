@@ -204,7 +204,9 @@ def test_move_copies_switches_and_cleans(split_env, tmp_path):
     served = _b_files(main)
     r = ops.move(home, "b", "second")
     assert r.copied_bytes > 0 and r.files > 0
-    assert _b_files(main) == set() and _b_files(second) == served
+    assert _b_files(second) == served
+    assert ops.tidy(home) == ["b"]
+    assert _b_files(main) == set()
     assert "b.example.com" in (second / "nginx/mirror.conf").read_text()
     assert "b.example.com" not in (main / "nginx/mirror.conf").read_text()
     assert ops.verify(home) == []
@@ -246,6 +248,7 @@ def test_move_resumes(split_env, tmp_path, monkeypatch):
     assert _b_files(main) == served                 # the old root still serves
     monkeypatch.setattr(apply_mod, "_ensure", real)
     ops.move(home, "b", "second")
+    ops.tidy(home)
     assert _b_files(second) == served and _b_files(main) == set() and ops.verify(home) == []
 
 
@@ -255,7 +258,9 @@ def test_move_between_roots_on_one_fs(split_env, tmp_path):
     ops.move(home, "b", "second")
     blob = next((second / ".mmw/store").rglob("*"))
     assert blob.exists()
+    ops.tidy(home)
     ops.move(home, "b", "main")
+    ops.tidy(home)
     assert _b_files(second) == set() and ops.verify(home) == []
 
 

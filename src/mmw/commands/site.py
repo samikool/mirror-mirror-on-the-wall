@@ -321,4 +321,20 @@ def move(repo: str, root: str, home: Path | None = None, yes: bool = False, brea
     print(f"moved: {r.files} file(s), {fmt_size(r.copied_bytes)} copied")
     if r.nginx_changed:
         print(f"! nginx changed in {', '.join(r.nginx_changed)} — recreate them on the serving host")
+    print("the old root still serves its copy until you run `mmw site tidy` (the next apply does it too)")
+    return 0
+
+
+def tidy(home: Path | None = None, break_lock: bool = False) -> int:
+    from mmw.site import ops
+    from mmw.site.lock import LockHeld
+    try:
+        done = ops.tidy(_home(home, break_lock))
+    except LockHeld as e:
+        eprint(str(e))
+        return 5
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"cleared the old copies of: {', '.join(done)}" if done else "nothing to tidy")
     return 0

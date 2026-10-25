@@ -39,7 +39,15 @@ class Roots:
 
     @property
     def multi(self) -> bool:
-        return len(self.all) > 1
+        """nginx generated per root: several roots here, or (v2) a set of several roots."""
+        return len(self.all) > 1 or len(self.settings.members) > 1
+
+    def serves_extras(self, root: RootConfig) -> bool:
+        """Whether `root` serves the network's own hostnames (upstream and
+        extra hosts): the primary here, or in a set its first member."""
+        if self.settings.set_id is not None and self.settings.members:
+            return self.settings.members[0] == self.settings.name
+        return root.name == self.primary.name
 
     def network_files(self, db, root: RootConfig) -> dict[str, str]:
         """The network-level files this root serves from its store. One root

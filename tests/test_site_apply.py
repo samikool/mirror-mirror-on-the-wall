@@ -191,3 +191,20 @@ def test_cli_apply(env, tmp_path):
     r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--home", str(home)])
     assert r.exit_code == 0, r.output
     assert "a  full → v1" in r.output and "recreate nginx" in r.output
+
+
+def test_root_apply_takes_members_pushed_to_it(env, tmp_path):
+    """RootApply, driven by hand, does what apply_bundle does."""
+    from mmw.resources.apply import MANIFEST_MEMBER
+    from mmw.site.apply import RootApply, members_of
+    cfg, net, md, home, root = env
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    with RootApply(home, say=lambda *a: None) as ra:
+        for m in members_of(str(b)):
+            if m.name == MANIFEST_MEMBER:
+                ra.begin(m.fh.read())
+            else:
+                ra.take(m)
+        r = ra.finish()
+    assert sorted(r.updated) == sorted([_key(cfg, "a"), _key(cfg, "b")])
+    assert _tree(root) == _published(cfg, net, md, tmp_path, "p1")

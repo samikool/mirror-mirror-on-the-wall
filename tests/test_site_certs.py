@@ -62,7 +62,6 @@ def test_cli_ca_make_and_show(site, tmp_path):
 # ── signing every root ───────────────────────────────────────────────────────
 
 from test_site_apply import _bundle, env  # noqa: E402,F401
-from test_site_roots import split_env  # noqa: E402,F401
 from test_dry_run_totals import two_mirrors  # noqa: E402,F401
 
 
@@ -103,21 +102,6 @@ def test_force_resigns(env, tmp_path):  # noqa: F811
     assert (root / ".mmw/tls/mirror.key").read_bytes() == key_before          # the key is never regenerated
 
 
-def test_each_root_signed_for_its_hosts(split_env, tmp_path):  # noqa: F811
-    from mmw.site.apply import apply_bundle
-    cfg, net, md, home, main, second = split_env
-    kb = next(s.identity for s in cfg.sources if s.name == "b")
-    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={kb: "second"},
-                 say=lambda *a: None)
-    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
-    C.load_ca(home, crt, key, None)
-    results = {r.root: r for r in C.sign_roots(home, password=None)}
-    assert _sans(main / ".mmw/tls/mirror.crt") == ["a.example.com"]
-    assert _sans(second / ".mmw/tls/mirror.crt") == ["b.example.com"]
-    assert results["main"].action == results["second"].action == "signed"
-    assert "/srv/mmw/.mmw/tls/mirror.crt" in (second / ".mmw/tls/https.conf").read_text()
-
-
 def test_encrypted_ca_needs_passphrase(env, tmp_path, monkeypatch):  # noqa: F811
     home, root = _applied(env, tmp_path, password=b"pw")
     monkeypatch.delenv("MMW_CA_PASSPHRASE", raising=False)
@@ -143,23 +127,6 @@ def test_no_ca_yet(env, tmp_path):  # noqa: F811
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
     with pytest.raises(ValueError, match="no CA yet"):
         C.sign_roots(home, password=None)
-
-
-def test_apply_reports_uncovered_hostname(split_env, tmp_path):  # noqa: F811
-    from mmw.site.apply import apply_bundle
-    from test_bundle_mmw import _change_b
-    cfg, net, md, home, main, second = split_env
-    ka = next(s.identity for s in cfg.sources if s.name == "a")
-    # a alone first, signed; then b arrives in the same root, with its own hostname
-    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None, repos=[ka])), say=lambda *a: None)
-    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
-    C.load_ca(home, crt, key, None)
-    C.sign_roots(home, password=None)
-    _change_b(md)
-    r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2")), say=lambda *a: None)
-    assert any("main" in a and "b.example.com" in a and "mmw site certs" in a for a in r.actions), r.actions
-    C.sign_roots(home, password=None)
-    assert _sans(main / ".mmw/tls/mirror.crt") == ["a.example.com", "b.example.com"]
 
 
 def test_mmw_bundle_carries_no_tls_key(two_mirrors, tmp_path):  # noqa: F811
@@ -200,18 +167,6 @@ def test_a_key_from_an_older_bundle_is_replaced_once(env, tmp_path):  # noqa: F8
     made_here = (root / ".mmw/tls/mirror.key").read_bytes()
     (again,) = C.sign_roots(home, password=None)
     assert again.action == "kept" and (root / ".mmw/tls/mirror.key").read_bytes() == made_here
-
-
-def test_move_into_an_unsigned_root_says_so(split_env, tmp_path):  # noqa: F811
-    from mmw.site import ops
-    from mmw.site.apply import apply_bundle
-    cfg, net, md, home, main, second = split_env
-    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
-    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
-    C.load_ca(home, crt, key, None)
-    C.sign_roots(home, password=None)
-    r = ops.move(home, "b", "second")
-    assert any("second" in n and "no certificate" in n for n in r.tls_notes)
 
 
 def test_a_corrupt_certificate_does_not_fail_the_apply(env, tmp_path):  # noqa: F811

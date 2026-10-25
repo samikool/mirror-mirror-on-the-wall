@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""A stand-in for ssh in tests: insists on mmw's options, plays the remote.
+
+FAKE_SSH_MODE: ok (run the remote command here with sh -c), password,
+hostkey, down. FAKE_SSH_LOG, if set, gets each argv and every byte of stdin
+and stdout, so a test can prove what crossed the wire."""
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+opts, i = [], 0
+while i < len(args) and args[i].startswith("-"):
+    if args[i] == "-o":
+        opts.append(args[i + 1])
+        i += 2
+    elif args[i] == "--":
+        i += 1
+        break
+    else:
+        sys.stderr.write(f"fake ssh: unexpected option {args[i]}\n")
+        sys.exit(2)
+host = args[i]
+rest = args[i + 1:]
+if rest[:1] == ["--"]:
+    rest = rest[1:]
+if "BatchMode=yes" not in opts or "StrictHostKeyChecking=yes" not in opts:
+    sys.stderr.write("fake ssh: mmw must use BatchMode=yes and StrictHostKeyChecking=yes\n")
+    sys.exit(2)
+log = os.environ.get("FAKE_SSH_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write(repr(sys.argv) + "\n")
+mode = os.environ.get("FAKE_SSH_MODE", "ok")
+if mode == "password":
+    sys.stderr.write(f"{host}: Permission denied (publickey,password). secret-hint-should-not-show\n")
+    sys.exit(255)
+if mode == "hostkey":
+    sys.stderr.write("Host key verification failed.\n")
+    sys.exit(255)
+if mode == "down":
+    sys.stderr.write(f"ssh: connect to host {host} port 22: No route to host\n")
+    sys.exit(255)
+data = sys.stdin.buffer.read() if not sys.stdin.isatty() else b""
+if log:
+    with open(log, "ab") as f:
+        f.write(b"STDIN:" + data[:1000000] + b"\n")
+r = subprocess.run(["sh", "-c", " ".join(rest)], input=data, capture_output=True)
+if log:
+    with open(log, "ab") as f:
+        f.write(b"STDOUT:" + r.stdout[:1000000] + b"\n")
+sys.stdout.buffer.write(r.stdout)
+sys.stderr.buffer.write(r.stderr)
+sys.exit(r.returncode)

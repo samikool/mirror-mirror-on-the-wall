@@ -275,3 +275,18 @@ def test_installer_command_uses_the_default_python(monkeypatch, tmp_path):
     (tmp_path / "mmw.toml").write_text(f'[settings]\nmirror_dir = "{tmp_path / "pool"}"\n')
     assert inst_cmd.run(tmp_path, out=tmp_path / "o") == 0
     assert got["python"] == "3.13"
+
+
+def test_cli_installer_defaults_to_the_current_folder(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from mmw.cli import app
+    from mmw.commands import installer as inst_cmd
+    monkeypatch.setattr(inst_cmd, "default_fetcher", lambda stop_event=None: FakeFetcher())
+    (tmp_path / "mmw.toml").write_text(f'[settings]\nmirror_dir = "{tmp_path / "pool"}"\n')
+    work = tmp_path / "here"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    r = CliRunner().invoke(app, ["--config", str(tmp_path), "installer"])
+    assert r.exit_code == 0, r.output
+    assert list(work.glob("mmw-*.tar"))

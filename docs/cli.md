@@ -135,7 +135,7 @@ source checkout it ships that checkout's own build, never PyPI's.
 
 | Option | Short | Description |
 |---|---|---|
-| `--out` | `-o` | Directory to write the installer(s) into (required). |
+| `--out` | `-o` | Directory to write the installer(s) into (default: the current folder). |
 | `--network` | `-n` | Take the architectures and Python from this network's `runtime_arches` and `runtime_python`. |
 | `--runtime-wheel` |  | The mmw wheel to ship. |
 

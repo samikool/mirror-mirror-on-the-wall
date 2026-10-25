@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""A stand-in for ssh in tests: insists on mmw's options, plays the remote.
+
+FAKE_SSH_MODE: ok (run the remote command here with sh -c), password,
+hostkey, down. FAKE_SSH_LOG, if set, gets each argv and every byte of stdin
+and stdout, so a test can prove what crossed the wire."""
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+opts, i = [], 0
+while i < len(args) and args[i].startswith("-"):
+    if args[i] == "-o":
+        opts.append(args[i + 1])
+        i += 2
+    elif args[i] == "--":
+        i += 1
+        break
+    else:
+        sys.stderr.write(f"fake ssh: unexpected option {args[i]}\n")
+        sys.exit(2)
+host = args[i]
+rest = args[i + 1:]
+if rest[:1] == ["--"]:
+    rest = rest[1:]
+if "BatchMode=yes" not in opts or "StrictHostKeyChecking=yes" not in opts:
+    sys.stderr.write("fake ssh: mmw must use BatchMode=yes and StrictHostKeyChecking=yes\n")
+    sys.exit(2)
+log = os.environ.get("FAKE_SSH_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write(repr(sys.argv) + "\n")
+mode = os.environ.get("FAKE_SSH_MODE", "ok")
+if mode == "password":
+    sys.stderr.write(f"{host}: Permission denied (publickey,password). secret-hint-should-not-show\n")
+    sys.exit(255)
+if mode == "hostkey":
+    sys.stderr.write("Host key verification failed.\n")
+    sys.exit(255)
+if mode == "down":
+    sys.stderr.write(f"ssh: connect to host {host} port 22: No route to host\n")
+    sys.exit(255)
+# Stream both ways, as ssh does (a two-phase apply talks back and forth),
+# logging what crosses so a test can prove what never did.
+import threading
+
+env = dict(os.environ)
+if os.environ.get("FAKE_REMOTE_HOME"):          # the remote user's home (its ~/.local/bin)
+    env["HOME"] = os.environ["FAKE_REMOTE_HOME"]
+proc = subprocess.Popen(["sh", "-c", " ".join(rest)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+
+
+def pump(src, dst, tag, close):
+    while True:
+        chunk = src.read1(1 << 16)
+        if not chunk:
+            break
+        if log:
+            with open(log, "ab") as f:
+                f.write(tag + chunk + b"\n")
+        try:
+            dst.write(chunk)
+            dst.flush()
+        except BrokenPipeError:
+            break
+    if close:
+        try:
+            dst.close()
+        except BrokenPipeError:
+            pass
+
+
+threading.Thread(target=pump, args=(sys.stdin.buffer, proc.stdin, b"STDIN:", True), daemon=True).start()
+pump(proc.stdout, sys.stdout.buffer, b"STDOUT:", False)
+sys.exit(proc.wait())

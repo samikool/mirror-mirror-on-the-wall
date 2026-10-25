@@ -84,3 +84,10 @@ def test_reapplying_writes_nothing(tmp_path, monkeypatch):
                         or real(p, mode, *a, **k))
     apply_bundle(home, b, say=lambda *a: None)
     assert [p for p in writes if "/.mmw/store/" in str(p)] == []
+
+
+def test_a_checksum_is_never_a_path(tmp_path):
+    s = Store(tmp_path)
+    for bad in ("/home/sam/.ssh/id_ed25519", "../../etc/passwd", "ab" * 31 + "/x", "zz" * 32):
+        with pytest.raises(ValueError):
+            s.path(bad)

@@ -73,23 +73,21 @@ class SiteHomePage(Page):
     def _load(self, done: str | None = None) -> None:
         """Reload; `done` is an action's message, said once the list is back
         (a reload landing after it would otherwise talk over it)."""
-        from mmw.site.db import SiteDB
         if self.app.mset is None:
             self.app.call_from_thread(self._loaded, [], {}, "no mirror opened yet — a applies a bundle; "
                                                             "`mmw site open PATH` opens a root")
             return
         try:
             self.app.reopen()
-            homes = {r.info.name: r.home for r in self.app.mset.roots}
+            roots_by = {r.info.name: r for r in self.app.mset.roots}
             rows = ops.set_status(self.app.mset)
             states, newest, self._root_of = [], {}, {}
             for name, st in rows:
                 states.append(st)
                 self._root_of[st.repo] = name
-                with SiteDB(homes[name]) as db:
-                    v = db.versions(st.repo)
-                    if v:
-                        newest[st.repo] = v[0].number
+                n = roots_by[name].newest(st.repo)
+                if n is not None:
+                    newest[st.repo] = n
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
@@ -137,7 +135,7 @@ class SiteHomePage(Page):
         rows = []
         if repo is not None:
             try:
-                rows = ops.history(self.app.home_for(repo), repo)
+                rows = self.app.root_of(repo).history(repo)
             except Exception as e:  # noqa: BLE001
                 self.app.call_from_thread(self.set_status, str(e), "error")
                 return
@@ -187,7 +185,7 @@ class SiteHomePage(Page):
             self.set_status("Pick a version in the history first.", "error")
             return
         try:
-            p = ops.serve_preview(self.app.home_for(repo), repo, number)
+            p = self.app.root_of(repo).serve_preview(repo, number)
         except Exception as e:  # noqa: BLE001
             self.set_status(str(e), "error")
             return
@@ -201,18 +199,18 @@ class SiteHomePage(Page):
             ConfirmDialog(f"Serve {p.label} v{number} ({_date(p.target.stamp)})?", "",
                           confirm_label=f"Serve v{number}", confirm_variant="primary",
                           cancel_variant="default", details=details),
-            lambda ok: ok and self._act(f"{p.label} serves v{number}", ops.serve, self.app.home_for(repo), repo, number))
+            lambda ok: ok and self._act(f"{p.label} serves v{number}", self.app.root_of(repo).serve, repo, number))
 
     def action_forward(self) -> None:
         repo = self.selected_repo()
         if repo is not None:
-            self._act("moved forward", ops.forward, self.app.home_for(repo), repo)
+            self._act("moved forward", self.app.root_of(repo).forward, repo)
 
     def action_hold(self) -> None:
         repo = self.selected_repo()
         if repo is not None:
             self._act("held — bundles store its new versions without serving them",
-                      ops.hold, self.app.home_for(repo), repo)
+                      self.app.root_of(repo).hold, repo)
 
     def action_delete(self) -> None:
         repo, number = self.selected_repo(), self.selected_version()
@@ -225,8 +223,8 @@ class SiteHomePage(Page):
             ConfirmDialog(f"Delete {label} v{number} from this site?",
                           "Its files go too, unless another kept version uses them.",
                           confirm_label="Delete"),
-            lambda ok: ok and self._act(f"deleted {label} v{number}", ops.delete_version,
-                                        self.app.home_for(repo), repo, number))
+            lambda ok: ok and self._act(f"deleted {label} v{number}", self.app.root_of(repo).delete,
+                                        repo, number))
 
     @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
     def _act(self, done: str, fn, *args) -> None:
@@ -258,9 +256,14 @@ class SiteHomePage(Page):
             if not root or root == current:
                 return
             from mmw.tui.ui.dialog import ConfirmDialog
+            try:
+                size = fmt_size(ops.move_size(self.app.mset, repo, root))
+            except Exception as e:  # noqa: BLE001
+                self.set_status(str(e), "error")
+                return
             self.app.push_screen(
                 ConfirmDialog(f"Move {state.label} to {root}?",
-                              f"Copies every kept version into {root}'s store first. The old copy stays "
+                              f"Copies {size} (every kept version) into {root}'s store first. The old copy stays "
                               "served until you tidy (t) after recreating nginx.",
                               confirm_label="Move", confirm_variant="primary", cancel_variant="default"),
                 lambda ok: ok and self._act(f"moved {state.label} to {root} — recreate nginx in {current} and "

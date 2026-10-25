@@ -8,28 +8,26 @@ from mmw.commands.common import eprint
 def _set(root: Path | None, break_lock: bool = False):
     """The mirror: the set `root` belongs to, or the one this machine has opened."""
     from mmw.site import recents
-    from mmw.site.home import read_root
-    from mmw.site.lock import break_lock as _break
-    from mmw.site.mset import open_set
+    from mmw.site.mset import open_set, root_at
     set_id = None
     if root is not None:
-        info = read_root(str(root))
-        if info is None:
+        found = root_at(str(root))
+        if found is None:
             raise FileNotFoundError(f"no mirror at {root}")
         recents.remember(str(root))
-        set_id = info.set_id
+        set_id = found.info.set_id
     mset = open_set(set_id=set_id)
     if break_lock:
         for r in mset.roots:
-            if _break(r.home):
+            if r.break_lock():
                 eprint(f"removed the lock in {r.info.name}")
     return mset
 
 
-def _repo_home(root: Path | None, repo: str, break_lock: bool = False) -> Path:
+def _repo(root: Path | None, repo: str, break_lock: bool = False):
+    """The root holding repository `repo`, and its key."""
     from mmw.site import ops
-    home, _key = ops.on_repo(_set(root, break_lock), repo)
-    return home
+    return ops.on_repo(_set(root, break_lock), repo)
 
 
 def _fail(e: Exception) -> int:
@@ -38,7 +36,12 @@ def _fail(e: Exception) -> int:
     return 5 if isinstance(e, LockHeld) else 1
 
 
-_ERRORS = (ValueError, LookupError, FileNotFoundError, KeyError)
+def _ssh_error():
+    from mmw.site.ssh import SshError
+    return SshError
+
+
+_ERRORS = (ValueError, LookupError, FileNotFoundError, KeyError, _ssh_error())
 
 
 def _place(specs: list[str]) -> dict[str, str]:
@@ -55,11 +58,11 @@ def _place(specs: list[str]) -> dict[str, str]:
 def apply(src: str, root: list[str] | None = None, forward: list[str] | None = None,
           forward_all: bool = False, dry_run: bool = False, break_lock: bool = False) -> int:
     from mmw.site.apply import ApplyError, apply_to_set
-    from mmw.site.home import read_root
     from mmw.site.lock import LockHeld
+    from mmw.site.mset import root_at
     try:
         place = _place(root or [])
-        at = next((Path(loc) for loc in place.values() if read_root(loc) is not None), None)
+        at = next((loc for loc in place.values() if root_at(loc) is not None), None)
         try:
             mset = _set(at, break_lock)
         except LookupError:
@@ -80,22 +83,32 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
         print(line)
     for action in r.actions:
         print(f"! {action}")
-    for name, cmds in nginx_steps(r):
-        print(f"! start nginx in {name}:" if name in r.made else f"! recreate nginx in {name}:")
+    for name, verb, cmds in nginx_steps(r):
+        print(f"! {verb} nginx in {name}:")
         for cmd in cmds:
             print(f"    {cmd}")
     return 3 if any(x.refused for x in r.per_root.values()) else 0
 
 
-def open_root(path: Path) -> int:
-    from mmw.site import recents
-    from mmw.site.home import read_root
-    info = read_root(str(path))
-    if info is None:
+def open_root(path: str, install: Path | None = None) -> int:
+    from mmw.site import recents, ssh
+    from mmw.site.mset import root_at
+    try:
+        kind, host, _p = ssh.parse_location(str(path))
+        if install is not None:
+            if kind != "ssh":
+                raise ValueError("--install pushes mmw to an ssh root (host:/path); here, run install.sh yourself")
+            ssh.check_access(host)
+            ssh.install_remote(host, install)
+            print(f"mmw installed on {host}")
+        found = root_at(str(path))
+    except _ERRORS as e:
+        return _fail(e)
+    if found is None:
         eprint(f"no mirror at {path}")
         return 1
     recents.remember(str(path))
-    print(f"opened {info.name} — a root of {info.network}")
+    print(f"opened {found.info.name} — a root of {found.info.network}")
     return 0
 
 
@@ -109,7 +122,9 @@ def roots(root: Path | None = None) -> int:
         hosts = ", ".join(sorted(r.hostnames())) or "no hostnames yet"
         print(f"  {r.info.name:<12} {r.info.location}  {hosts}")
     for name in mset.missing:
-        print(f"  {name:<12} MISSING — mount it, then: mmw site open PATH")
+        why = mset.missing_reason.get(name, "")
+        hint = why if why and why != "not opened on this machine" else "mount it, then: mmw site open PATH"
+        print(f"  {name:<12} MISSING — {hint}")
     return 0
 
 
@@ -123,9 +138,9 @@ def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
     from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
-        h = _repo_home(root, repo, break_lock)
+        r_, key = _repo(root, repo, break_lock)
         number = _version_number(version)
-        p = ops.serve_preview(h, repo, number)
+        p = r_.serve_preview(key, number)
         now = f"v{p.current.number}" if p.current else "nothing"
         print(f"{p.label}: now serving {now} · serve v{p.target.number} ({p.target.stamp}"
               f"{' ' + p.target.snap_label if p.target.snap_label else ''}) · relinks {p.relinks} file(s) · "
@@ -136,7 +151,7 @@ def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
                 return 1
             if input("Serve it? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
-        r = ops.serve(h, repo, number)
+        r = r_.serve(key, number)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     print(f"{p.label} serves v{p.target.number} ({r.placed} placed, {r.removed} removed)")
@@ -151,9 +166,10 @@ def forward(repo: str | None, root: Path | None = None, all_: bool = False, brea
         return 1
     try:
         if repo is not None:
-            moved = ops.forward(_repo_home(root, repo, break_lock), repo)
+            r_, key = _repo(root, repo, break_lock)
+            moved = r_.forward(key)
         else:
-            moved = [m for r in _set(root, break_lock).roots for m in ops.forward(r.home, None)]
+            moved = [m for r in _set(root, break_lock).roots for m in r.forward(None)]
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     print(f"moved forward: {len(moved)} repositor{'y' if len(moved) == 1 else 'ies'}")
@@ -164,7 +180,8 @@ def hold(repo: str, root: Path | None = None, break_lock: bool = False) -> int:
     from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
-        label = ops.hold(_repo_home(root, repo, break_lock), repo)
+        r_, key = _repo(root, repo, break_lock)
+        label = r_.hold(key)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     print(f"{label} is held: bundles store its new versions without serving them")
@@ -200,14 +217,14 @@ def delete(repo: str, version: str, root: Path | None = None, yes: bool = False,
     from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
-        h = _repo_home(root, repo, break_lock)
+        r_, key = _repo(root, repo, break_lock)
         if not yes:
             if not sys.stdin.isatty():
                 eprint("pass --yes to delete it (no terminal to ask on)")
                 return 1
             if input(f"Delete {repo} {version}? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
-        freed = ops.delete_version(h, repo, _version_number(version))
+        freed = r_.delete(key, _version_number(version))
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     print(f"deleted {repo} {version}; freed {fmt_size(freed)}")
@@ -216,14 +233,13 @@ def delete(repo: str, version: str, root: Path | None = None, yes: bool = False,
 
 def settings(root: Path | None = None, keep: int | None = None, keep_all: bool = False) -> int:
     from mmw.site import ops
-    from mmw.site.home import load_site
     from mmw.site.lock import LockHeld
     try:
         mset = _set(root)
         if keep_all or keep is not None:
             ops.set_keep(mset, None if keep_all else keep)
         for r in mset.roots:
-            k = load_site(r.home).keep_versions
+            k = r.keep_versions()
             kept = "every version" if k is None else f"the newest {k} per repository"
             print(f"root {r.info.name} ({r.info.location}): keeps {kept}")
     except (LockHeld, *_ERRORS) as e:
@@ -233,7 +249,6 @@ def settings(root: Path | None = None, keep: int | None = None, keep_all: bool =
 
 def status(root: Path | None = None) -> int:
     from mmw.site import ops
-    from mmw.site.db import SiteDB
     try:
         mset = _set(root)
         rows = ops.set_status(mset)
@@ -243,10 +258,9 @@ def status(root: Path | None = None) -> int:
         print("nothing applied yet — `mmw site apply BUNDLE --root '*'=PATH`")
         return 0
     several = len(mset.roots) > 1 or mset.missing
-    homes = {r.info.name: r.home for r in mset.roots}
+    roots_by = {r.info.name: r for r in mset.roots}
     for name, s in rows:
-        with SiteDB(homes[name]) as db:
-            newest = db.versions(s.repo)[0].number
+        newest = roots_by[name].newest(s.repo)
         serving = (f"v{s.serving.number} · {s.serving.stamp}"
                    f"{' ' + s.serving.snap_label if s.serving.snap_label else ''}") if s.serving else "nothing"
         state = "held" if s.held else "current"
@@ -261,7 +275,8 @@ def history(repo: str, root: Path | None = None) -> int:
     from mmw.core.format import fmt_size
     from mmw.site import ops
     try:
-        rows = ops.history(_repo_home(root, repo), repo)
+        r_, key = _repo(root, repo)
+        rows = r_.history(key)
     except _ERRORS as e:
         return _fail(e)
     for v, total, frees, serving in rows:
@@ -311,6 +326,7 @@ def move(repo: str, to_root: str, root: Path | None = None, yes: bool = False, b
     from mmw.site.lock import LockHeld
     try:
         mset = _set(root, break_lock)
+        print(f"moving {repo} to {to_root} copies {fmt_size(ops.move_size(mset, repo, to_root))} first")
         if not yes:
             if not sys.stdin.isatty():
                 eprint("pass --yes to move it (no terminal to ask on)")

@@ -40,6 +40,7 @@ class SiteSettings(BaseModel):
     name: str | None = None
     members: list[str] = []
     hosts: dict[str, str] = {}          # hostname → the name of the root holding it, set-wide
+    hosts_at: str = ""                  # when `hosts` was last written (the newest map wins)
 
     @property
     def primary(self) -> RootConfig:
@@ -94,6 +95,8 @@ def save_settings(home: Path, settings: SiteSettings) -> None:
         data["members"] = list(settings.members)
     if settings.hosts:
         data["hosts"] = dict(sorted(settings.hosts.items()))
+    if settings.hosts_at:
+        data["hosts_at"] = settings.hosts_at
     if settings.keep_versions is not None:
         data["keep_versions"] = settings.keep_versions
     if settings.ca_cert is not None:
@@ -117,17 +120,6 @@ def load_site(home: Path) -> SiteSettings:
         moved = r.serve_path == r.path
         settings.roots[0] = r.model_copy(update={"path": here, "serve_path": here if moved else r.serve_path})
     return settings
-
-
-def add_root(home: Path, name: str, path: Path, serve_path: Path | None = None) -> RootConfig:
-    settings = load_site(home)
-    if any(r.name == name for r in settings.roots):
-        raise ValueError(f"this site already has a root called {name!r}")
-    path = Path(path).resolve()
-    root = RootConfig(name=name, path=path, serve_path=Path(serve_path) if serve_path else path)
-    disk_io.ops.mkdir(path / STORE, parents=True, exist_ok=True)
-    save_settings(home, settings.model_copy(update={"roots": [*settings.roots, root]}))
-    return root
 
 
 # ── v2: every root its own site ──────────────────────────────────────────────

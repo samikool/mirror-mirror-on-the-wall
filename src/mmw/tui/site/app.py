@@ -17,7 +17,8 @@ class SiteApp(ThemedApp):
             self.sub_title = "no mirror opened yet"
         else:
             here = ", ".join(r.info.name for r in m.roots)
-            self.sub_title = f"roots {here}" + (f" · missing {', '.join(m.missing)}" if m.missing else "")
+            gone = [f"{n} ({m.missing_reason.get(n, 'missing')})" for n in m.missing]
+            self.sub_title = f"roots {here}" + (f" · missing {', '.join(gone)}" if gone else "")
 
     def reopen(self) -> None:
         """Read the set again: an apply or a move can add roots and hostnames."""
@@ -26,9 +27,9 @@ class SiteApp(ThemedApp):
             self.mset = open_set(set_id=self.mset.set_id)
             self._titles()
 
-    def home_for(self, repo: str) -> Path:
-        from mmw.site.ops import on_repo
-        return on_repo(self.mset, repo)[0]
+    def root_of(self, repo: str):
+        """The root holding `repo` (its interface: local now, ssh too)."""
+        return self.mset.root_for_repo(repo)[0]
 
     def on_mount(self) -> None:
         if self.mset is None:

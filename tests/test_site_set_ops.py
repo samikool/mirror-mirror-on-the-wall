@@ -34,10 +34,10 @@ def test_serve_routes_to_the_owning_root(hosts, tmp_path):  # noqa: F811
     cfg, net, md, r1, r2 = _split(hosts, tmp_path)
     _change_a(md)
     apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
-    home, key = ops.on_repo(open_set(), "a")
-    assert home == read_root(str(r1)).home
-    ops.serve(home, key, 1)
-    with SiteDB(home) as db:
+    root, key = ops.on_repo(open_set(), "a")
+    assert root.info.name == "r1"
+    root.serve(key, 1)
+    with SiteDB(read_root(str(r1)).home) as db:
         st = db.repo_state(key)
         assert st.serving.number == 1 and st.held
 
@@ -102,3 +102,13 @@ def test_move_checks_space_first(hosts, tmp_path, monkeypatch):  # noqa: F811
     with pytest.raises(ValueError, match="free"):
         ops.move_repo(open_set(), "b", "r1")
     assert [label for root, st in ops.set_status(open_set()) for label in [st.label] if root == "r1"] == ["a"]
+
+
+def test_move_in_refuses_paths_outside_the_root(hosts, tmp_path):  # noqa: F811
+    *_, r1, r2 = _split(hosts, tmp_path)
+    from mmw.site import ops as O
+    bad = {"label": "x", "bases": ["example.net/x"], "held": False, "serving": 1, "hosts": ["example.net"],
+           "sharing": [], "versions": [{"number": 1, "label": "x", "digest": "d", "stamp": "s", "snap_label": None,
+                                         "files": [["../../escape", "ab" * 32, 1]]}]}
+    with pytest.raises(ValueError, match="outside"):
+        O.move_in(read_root(str(r1)).home, "kx", bad)

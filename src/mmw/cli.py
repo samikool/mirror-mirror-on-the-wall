@@ -562,7 +562,8 @@ site_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(site_app, name="site")
-_ROOT = typer.Option(None, "--root", help="Any root of the mirror (default: the one this machine has opened)")
+_ROOT = typer.Option(None, "--root", help="Any root of the mirror — a folder or [user@]host:/path "
+                                          "(default: the one this machine has opened)")
 _BREAK_LOCK = typer.Option(False, "--break-lock", help="Clear a lock a dead run left behind")
 _REPO = typer.Argument(..., help="Repository (URL or name)")
 _YES = typer.Option(False, "--yes", help="Don't ask")
@@ -587,10 +588,12 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
 
 
 @site_app.command("open")
-def cmd_site_open(path: Path = typer.Argument(..., help="A root of a mirror (a folder holding .mmw/site)")):
+def cmd_site_open(path: str = typer.Argument(..., help="A root of a mirror: a folder, or [user@]host:/path over ssh"),
+                  install: Path = typer.Option(None, "--install", help="Push this mmw installer (mmw-<version>-<arch>.tar) "
+                                                                       "to the ssh host first, over the same key-based ssh")):
     """Remember a root on this machine, so commands and the TUI find its mirror."""
     from mmw.commands.site import open_root
-    raise typer.Exit(open_root(path))
+    raise typer.Exit(open_root(path, install))
 
 
 @site_app.command("roots")
@@ -692,6 +695,15 @@ def cmd_site_tidy(root: Path = _ROOT, break_lock: bool = _BREAK_LOCK):
     """Clear moved repositories' old copies — once nginx has been recreated."""
     from mmw.commands.site import tidy
     raise typer.Exit(tidy(root, break_lock))
+
+
+@site_app.command("_root", hidden=True,
+                  context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def cmd_site_root_remote(ctx: typer.Context):
+    """The remote side of a root reached over ssh (JSON lines; not for people)."""
+    import sys
+    from mmw.site.remote import serve_root_command
+    raise typer.Exit(serve_root_command(list(ctx.args), sys.stdin.buffer, sys.stdout.buffer))
 
 
 site_ca_app = typer.Typer(help="The certificate authority (its location is kept on this machine).",

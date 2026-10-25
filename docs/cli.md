@@ -149,7 +149,7 @@ mirror this machine has opened); the ones that change a root take
 | Command | What it does |
 |---|---|
 | `mmw site apply SRC [--root HOST=PATH]… [--forward REPO]… [--forward-all] [--dry-run]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin); a new hostname goes to the root at PATH (`'*'=PATH`: every new one) |
-| `mmw site open PATH` / `mmw site roots` | Remember a root on this machine / the mirror's roots, their hostnames, or MISSING |
+| `mmw site open PATH [--install TAR]` / `mmw site roots` | Remember a root on this machine (a folder, or `[user@]host:/path` over key-based ssh; `--install` pushes mmw there first) / the mirror's roots, their hostnames, or MISSING |
 | `mmw site manage` | The far-side TUI: repositories, their history, applying bundles |
 | `mmw site status` | What each repository serves, the newest kept, held or current |
 | `mmw site history REPO` | A repository's kept versions, sizes, what each would free |

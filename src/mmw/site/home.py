@@ -40,6 +40,7 @@ class SiteSettings(BaseModel):
     name: str | None = None
     members: list[str] = []
     hosts: dict[str, str] = {}          # hostname → the name of the root holding it, set-wide
+    hosts_at: str = ""                  # when `hosts` was last written (the newest map wins)
 
     @property
     def primary(self) -> RootConfig:
@@ -94,6 +95,8 @@ def save_settings(home: Path, settings: SiteSettings) -> None:
         data["members"] = list(settings.members)
     if settings.hosts:
         data["hosts"] = dict(sorted(settings.hosts.items()))
+    if settings.hosts_at:
+        data["hosts_at"] = settings.hosts_at
     if settings.keep_versions is not None:
         data["keep_versions"] = settings.keep_versions
     if settings.ca_cert is not None:

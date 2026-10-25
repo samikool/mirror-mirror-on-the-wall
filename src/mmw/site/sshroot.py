@@ -112,6 +112,9 @@ class SshRoot:
     def hosts_map(self) -> dict[str, str]:
         return dict(self._call("info")["hosts"])
 
+    def hosts_at(self) -> str:
+        return self._call("info").get("hosts_at", "")
+
     def set_identity(self, *, members=None, hosts=None) -> None:
         self._call("set-identity", input=json.dumps({k: v for k, v in (("members", members), ("hosts", hosts))
                                                       if v is not None}).encode())

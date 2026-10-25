@@ -170,7 +170,7 @@ def _info(root, args, stdin, stdout) -> int:
     from mmw.core.runtime import mmw_version
     i = root.info
     _emit(stdout, {"name": i.name, "set_id": i.set_id, "network": i.network, "members": list(i.members),
-                   "hosts": root.hosts_map(), "hostnames": sorted(root.hostnames()), "free": root.free_bytes(),
+                   "hosts": root.hosts_map(), "hosts_at": root.hosts_at(), "hostnames": sorted(root.hostnames()), "free": root.free_bytes(),
                    "path": str(i.path), "mmw": mmw_version(), "protocol": PROTOCOL})
     return 0
 

@@ -15,6 +15,14 @@ from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
 
+def same_location(a: str, b: str) -> bool:
+    """One root, however its path is spelled (ssh locations compare as typed)."""
+    from mmw.site import ssh
+    if ssh.parse_location(a)[0] == "ssh" or ssh.parse_location(b)[0] == "ssh":
+        return a == b
+    return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+
+
 class PlacePage(Page):
     TITLE = "Apply"
     SCROLLS = False
@@ -57,6 +65,7 @@ class PlacePage(Page):
     def choose_root(self, host: str, root: str) -> None:
         if self._known(host):
             return                                  # a known hostname stays where it is
+        root = next((r for r in self.roots if r == root or same_location(r, root)), root)
         if root not in self.roots:
             self.roots.append(root)
         self.targets[host] = root
@@ -78,7 +87,13 @@ class PlacePage(Page):
                     self.set_status(f"{path} holds the mirror of network {info.network!r} — pick another "
                                     "folder", "error")
                     return
+            if info.name not in self._plan.locations:
+                # This mirror's root, not opened here yet: opened now, by its location.
+                from mmw.site import recents
+                recents.remember(path)
+                self._plan.locations[info.name] = path
             path = info.name
+        path = next((r for r in self.roots if r == path or same_location(r, path)), path)
         if path not in self.roots:
             self.roots.append(path)
         for h in self._plan.hosts:                  # new hostnames with no root yet go here

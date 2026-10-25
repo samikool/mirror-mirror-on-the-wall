@@ -26,7 +26,9 @@ class LocalRoot:
         return self.info.home
 
     def hostnames(self) -> set[str]:
-        return hostnames(self.home)
+        if getattr(self, "_hostnames", None) is None:
+            self._hostnames = hostnames(self.home)       # read once per set opened
+        return self._hostnames
 
     def free_bytes(self) -> int:
         return disk_io.ops.disk_usage(self.info.path).free
@@ -69,11 +71,22 @@ class LocalRoot:
         from mmw.site.home import load_site
         return dict(load_site(self.home).hosts)
 
+    def hosts_at(self) -> str:
+        from mmw.site.home import load_site
+        return load_site(self.home).hosts_at
+
     def set_identity(self, *, members: list[str] | None = None, hosts: dict[str, str] | None = None) -> None:
+        import time
+
         from mmw.site.home import load_site, save_settings
-        s = load_site(self.home)
-        update = {k: v for k, v in (("members", members), ("hosts", hosts)) if v is not None}
-        save_settings(self.home, s.model_copy(update=update))
+        from mmw.site.lock import SiteLock
+        with SiteLock(self.home):                       # every write to a root under its lock
+            s = load_site(self.home)
+            update = {k: v for k, v in (("members", members), ("hosts", hosts)) if v is not None}
+            if hosts is not None:
+                update["hosts_at"] = f"{time.time():.6f}"
+            save_settings(self.home, s.model_copy(update=update))
+        self._hostnames = None
 
     def keep_versions(self) -> int | None:
         from mmw.site.home import load_site
@@ -225,6 +238,7 @@ def open_set(locations: list[str] | None = None, set_id: str | None = None) -> M
     from mmw.site import ssh
     groups: dict[str, list] = {}
     seen: set[tuple[str | None, str]] = set()
+    v1: list[str] = []
     unreachable: dict[str, dict[str, str]] = {}          # set id → root name → why
     for loc in (recents.known() if locations is None else locations):
         try:
@@ -234,7 +248,10 @@ def open_set(locations: list[str] | None = None, set_id: str | None = None) -> M
             if last:
                 unreachable.setdefault(last["set_id"], {})[last["name"]] = str(e)
             continue
-        if root is None or root.info.set_id is None:
+        if root is None:
+            continue
+        if root.info.set_id is None:
+            v1.append(loc)
             continue
         info = root.info
         if (info.set_id, info.name) in seen:
@@ -243,6 +260,9 @@ def open_set(locations: list[str] | None = None, set_id: str | None = None) -> M
         groups.setdefault(info.set_id, []).append(root)
     if set_id is not None:
         groups = {k: v for k, v in groups.items() if k == set_id}
+    if not groups and v1:
+        raise LookupError(f"{v1[0]} was made before mirrors described themselves (a v1 site) — start it again: "
+                          "mmw site apply BUNDLE --root '*'=NEWPATH")
     if not groups:
         raise LookupError("no mirror opened on this machine yet — mmw site open ROOT, or apply a bundle")
     if len(groups) > 1:

@@ -723,7 +723,8 @@ def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPla
         host_checksums.setdefault(host_of.get(r) if r is not None else None, {})[c] = s or 0
     owner: dict[str, str | None] = {}
     named: dict[str, str] = {}
-    for root in (mset.roots if mset else []):
+    # The newest map last, so it wins over a root's stale one.
+    for root in sorted(mset.roots if mset else [], key=lambda r: r.hosts_at()):
         named.update(root.hosts_map())
     for h in hosts:
         held = mset.owner(h) if mset else None
@@ -773,6 +774,28 @@ def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
             need_cs.update(plan.host_checksums.get(h, {}))
         out[key] = (sum(size for c, size in need_cs.items() if c not in have), free)
     return out
+
+
+def shared_filesystem_short(needs: dict[str, tuple[int, int]], locations: dict[str, str],
+                            free_of=None) -> list[str]:
+    """Roots on one filesystem draw on one free space: the ones whose needs
+    together don't fit (each alone may). Local roots only."""
+    from mmw.site import ssh
+    groups: dict[int, list[str]] = {}
+    for key, loc in locations.items():
+        if key not in needs or ssh.parse_location(loc)[0] == "ssh":
+            continue
+        parent = Path(loc).expanduser()
+        while not disk_io.ops.exists(parent):
+            parent = parent.parent
+        groups.setdefault(disk_io.ops.stat(parent).st_dev, []).append(key)
+    for keys in groups.values():
+        if len(keys) < 2:
+            continue
+        free = free_of(keys[0]) if free_of else needs[keys[0]][1]
+        if sum(needs[k][0] for k in keys) > free:
+            return sorted(keys)
+    return []
 
 
 def plan_set_apply(mset, src: str) -> SetApplyPlan:
@@ -877,6 +900,12 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         set_id = mset.set_id if mset else next(
             (r.info.set_id for r in found.values() if r is not None), None) or new_set_id()
         for loc, r in list(found.items()):
+            if r is not None and r.info.set_id is None:
+                raise ApplyError(5, f"{loc} was made before mirrors described themselves (a v1 site) — "
+                                    "apply to a new folder instead")
+            if r is not None and r.info.network != header.network:
+                raise ApplyError(5, f"{loc} holds the mirror of network {r.info.network!r}, not "
+                                    f"{header.network!r} — pick another root")
             if r is not None and r.info.set_id != set_id:
                 raise ApplyError(5, f"{loc} already holds the mirror of network {r.info.network!r} — pick another root")
             if r is not None and r.info.name in present:
@@ -891,6 +920,13 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     where = f"{key!r} ({present[key].info.location})" if key in present else key
                     raise ApplyError(5, f"root {where} needs {fmt_size(need)} but has {fmt_size(free)} free — "
                                         "nothing was written; free space or place its hostnames elsewhere")
+            locs = {k: (present[k].info.location if k in present else k) for k in needs}
+            together = shared_filesystem_short(needs, locs)
+            if together:
+                total = sum(needs[k][0] for k in together)
+                raise ApplyError(5, f"roots {', '.join(together)} share one filesystem: together they need "
+                                    f"{fmt_size(total)} but it has {fmt_size(needs[together[0]][1])} free — "
+                                    "nothing was written")
         if dry_run:
             for h in plan.hosts:
                 t = placed.get(h)
@@ -904,6 +940,9 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
             for key, (need, free) in needs.items():
                 result.lines.append(f"  root {key}: needs {fmt_size(need)} of {fmt_size(free)} free "
                                     f"{'✓' if need <= free else '✗'}")
+            if not plan.sized:
+                result.lines.append("  space not checked: this bundle's sizes aren't known until it is read "
+                                    "(a tar on stdin, made before sizes were recorded)")
             return result
 
         # Never a new root where a root of a mirror was (an unmounted share's
@@ -987,11 +1026,18 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         spool = _Spool(Path(tmp) / "spool")
         started: set[str] = set()
         received = 0
+        runtime_seen = False
         with _truncation():
             for m in gen:
                 if stop_event is not None and stop_event.is_set():
                     raise ApplyError(5, "stopped before anything was applied — what arrived is stored; "
                                         "nothing served changed")
+                repo = repo_of.get(m.name)
+                h = host_of.get(repo) if repo is not None else None
+                if (progress and repo is not None and repo not in started and h not in result.held_back
+                        and m.kind != "link"):
+                    started.add(repo)                      # named before its first file is counted
+                    progress("repo", repo=repo, label=plan.labels.get(repo, repo), host=h)
                 if progress:
                     progress("receive", name=m.name, bytes=m.size)
                 if m.name.startswith(TLS_PREFIX):
@@ -999,13 +1045,13 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     for ra in appliers.values():
                         ra.tls[m.name[len(TLS_PREFIX):]] = data
                     continue
+                if m.name.startswith(RUNTIME_PREFIX):
+                    runtime_seen = True                    # said once, for the whole set
+                    continue
                 if m.name.startswith(".mmw/"):
-                    first.take(m)
                     continue
                 received += 1
-                repo = repo_of.get(m.name)
                 c = cs_of.get(m.name)
-                h = host_of.get(repo) if repo is not None else None
                 if m.kind == "link":
                     if repo is None:
                         for ra in appliers.values():
@@ -1017,9 +1063,6 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     spool.put(m.fh, c, m.name)             # held back or not: another root needs it
                 if repo is not None and h in result.held_back:
                     continue                               # its root isn't here
-                if repo is not None and progress and repo not in started:
-                    started.add(repo)
-                    progress("repo", repo=repo, label=plan.labels.get(repo, repo), host=h)
                 takers = list(appliers.values()) if repo is None else [appliers[targets[h].info.name]]
                 for ra in takers:
                     ra.take(_Member(m.name, "file", spool.open(c) if c in shared else m.fh, None, m.size))
@@ -1054,4 +1097,6 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
             result.actions += [a for a in r.actions if a not in result.actions]
         for h, why in result.held_back.items():
             result.lines.append(f"  {h}: held back — {why}")
+        if runtime_seen:
+            result.actions.append(RUNTIME_NOTE)
     return result

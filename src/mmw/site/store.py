@@ -27,7 +27,13 @@ class Store:
 
     def add_stream(self, fh: BinaryIO, expect: str | None = None) -> tuple[str, int]:
         """Store `fh`'s bytes; (checksum, size). With `expect`, bytes that do
-        not hash to it are refused and nothing is kept."""
+        not hash to it are refused and nothing is kept — and content the
+        store already has is only hashed to check it, never written again."""
+        if expect is not None and self.has(expect):
+            checksum, size = disk_io.ops.hash_fh(fh)
+            if checksum != expect:
+                raise ValueError(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
+            return checksum, size
         disk_io.ops.mkdir(self.tmp, parents=True, exist_ok=True)
         tmp = self.tmp / f"in-{os.getpid()}-{id(fh)}"
         h, size = hashlib.sha256(), 0

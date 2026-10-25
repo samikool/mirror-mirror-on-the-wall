@@ -147,7 +147,22 @@ class RootApply:
         elif self.dry_run:
             self.got[m.name] = disk_io.ops.hash_fh(m.fh)
         else:
-            self.got[m.name] = self.store.add_stream(m.fh)
+            want = self._expected().get(m.name)
+            try:
+                self.got[m.name] = self.store.add_stream(m.fh, expect=want)
+            except ValueError:
+                # Damaged on the way: hashed again, so the check after says
+                # which file and the whole apply is refused.
+                self.got[m.name] = ("damaged:" + m.name, m.size)
+
+    def _expected(self) -> dict[str, str]:
+        """The manifest's checksum for each path (what the store may already have)."""
+        if getattr(self, "_want", None) is None:
+            self._want = {}
+            if self._manifest:
+                _header, rows = iter_manifest_v2(self.manifest_path)
+                self._want = {p: c for p, c, _r in rows}
+        return self._want
 
     def take_blob(self, name: str, checksum: str, size: int, from_store: Store | None) -> None:
         """A member another root of the set received: its blob copied from there."""

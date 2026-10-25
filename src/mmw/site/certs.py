@@ -135,7 +135,7 @@ def sign_roots(home: Path, *, password: bytes | None, days: int = 730,
 
 def sign_set(mset, *, password: bytes | None, days: int = 730, force: bool = False) -> list[RootCertResult]:
     """Sign every root of the set that is here."""
-    return [r for root in mset.roots for r in sign_roots(root.home, password=password, days=days, force=force)]
+    return [r for root in mset.roots for r in root.sign(password=password, days=days, force=force)]
 
 
 def _good(tls: Path, hosts: list[str], ca_cert) -> bool:

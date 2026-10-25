@@ -75,3 +75,17 @@ def test_no_set_opened_yet(tmp_path):
 def test_free_bytes_of_a_root(tmp_path):
     _root(tmp_path / "r1", "main")
     assert open_set().roots[0].free_bytes() > 0
+
+
+def test_set_code_never_touches_root_home():
+    """The set layer reaches roots only through their interface (an ssh root
+    has no local home): no `<root>.home` outside mset.py."""
+    import re
+    from pathlib import Path
+    src = Path(__file__).resolve().parent.parent / "src" / "mmw"
+    files = [src / "site" / "ops.py", src / "site" / "apply.py", src / "site" / "certs.py",
+             src / "commands" / "site.py", *(src / "tui" / "site").glob("*.py")]
+    pattern = re.compile(r"\b(r|root|roots\[name\]|src|dst|first|second|keeper|mset\.roots\[0\])\.home\b")
+    bad = [f"{f.name}:{i}" for f in files for i, line in enumerate(f.read_text().splitlines(), 1)
+           if pattern.search(line)]
+    assert bad == []

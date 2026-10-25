@@ -34,6 +34,129 @@ class LocalRoot:
     def store(self) -> Store:
         return Store(self.info.path)
 
+    # ── the root interface (an ssh root answers the same calls remotely) ─────
+
+    def status(self) -> list:
+        from mmw.site.ops import status
+        return status(self.home)
+
+    def newest(self, repo: str) -> int | None:
+        from mmw.site.db import SiteDB
+        with SiteDB(self.home) as db:
+            v = db.versions(repo)
+            return v[0].number if v else None
+
+    def repo_key(self, ref: str) -> str | None:
+        """The key of repository `ref` here (key or label), or None — never a
+        move's copy that was cut short."""
+        from mmw.site.db import SiteDB
+        from mmw.site.ops import resolve_repo
+        with SiteDB(self.home) as db:
+            try:
+                key = resolve_repo(db, ref)
+            except LookupError:
+                return None
+            return None if db.get_meta(f"moving_in:{key}") else key
+
+    def labels(self) -> list[str]:
+        return [s.label for s in self.status()]
+
+    def has(self, checksums: set[str]) -> set[str]:
+        store = self.store()
+        return {c for c in checksums if store.has(c)}
+
+    def hosts_map(self) -> dict[str, str]:
+        from mmw.site.home import load_site
+        return dict(load_site(self.home).hosts)
+
+    def set_identity(self, *, members: list[str] | None = None, hosts: dict[str, str] | None = None) -> None:
+        from mmw.site.home import load_site, save_settings
+        s = load_site(self.home)
+        update = {k: v for k, v in (("members", members), ("hosts", hosts)) if v is not None}
+        save_settings(self.home, s.model_copy(update=update))
+
+    def keep_versions(self) -> int | None:
+        from mmw.site.home import load_site
+        return load_site(self.home).keep_versions
+
+    def history(self, key: str):
+        from mmw.site import ops
+        return ops.history(self.home, key)
+
+    def serve_preview(self, key: str, number: int):
+        from mmw.site import ops
+        return ops.serve_preview(self.home, key, number)
+
+    def serve(self, key: str, number: int):
+        from mmw.site import ops
+        return ops.serve(self.home, key, number)
+
+    def forward(self, key: str | None) -> list[str]:
+        from mmw.site import ops
+        return ops.forward(self.home, key)
+
+    def hold(self, key: str) -> str:
+        from mmw.site import ops
+        return ops.hold(self.home, key)
+
+    def delete(self, key: str, number: int) -> int:
+        from mmw.site import ops
+        return ops.delete_version(self.home, key, number)
+
+    def space(self):
+        from mmw.site import ops
+        return ops.space(self.home)
+
+    def verify(self, repair: bool = False):
+        from mmw.site import ops
+        return ops.repair(self.home) if repair else ops.verify(self.home)
+
+    def keep(self, keep: int | None) -> None:
+        from mmw.site import ops
+        ops.keep_here(self.home, keep)
+
+    def break_lock(self) -> bool:
+        from mmw.site.lock import break_lock
+        return break_lock(self.home)
+
+    def applier(self, **opts):
+        from mmw.site.apply import RootApply
+        return RootApply(self.home, **opts)
+
+    def export_blob(self, checksum: str):
+        return disk_io.ops.open_rb(self.store().path(checksum))
+
+    def import_blob(self, fh, checksum: str) -> None:
+        self.store().add_stream(fh, expect=checksum)
+
+    def move_out_info(self, key: str) -> dict:
+        from mmw.site import ops
+        return ops.move_out_info(self.home, key)
+
+    def move_in(self, key: str, info: dict) -> bool:
+        from mmw.site import ops
+        return ops.move_in(self.home, key, info)
+
+    def move_out_finish(self, key: str, to: str, info: dict) -> bool:
+        from mmw.site import ops
+        return ops.move_out_finish(self.home, key, to, info)
+
+    def set_moving_in(self, key: str, src: str) -> None:
+        from mmw.site import ops
+        ops.set_moving_in(self.home, key, src)
+
+    def tidy(self) -> list[str]:
+        from mmw.site import ops
+        return ops.tidy_here(self.home)
+
+    def tls_notes(self) -> list[str]:
+        from mmw.site.certs import tls_notes
+        return tls_notes(self.home)
+
+    def sign(self, *, password: bytes | None, days: int, force: bool):
+        from mmw.site.certs import sign_roots
+        return sign_roots(self.home, password=password, days=days, force=force)
+
     def __repr__(self) -> str:
         return f"LocalRoot({self.info.name!r} at {self.info.location!r})"
 
@@ -62,22 +185,14 @@ class MirrorSet:
                 return r
         return None
 
-    def root_for_repo(self, ref: str) -> tuple[LocalRoot, str]:
+    def root_for_repo(self, ref: str) -> tuple["LocalRoot", str]:
         """The root holding repository `ref` (key, or label in any case), and its key."""
-        from mmw.site.db import SiteDB
-        from mmw.site.ops import resolve_repo
         have = []
         for r in self.roots:
-            with SiteDB(r.home) as db:
-                states = db.repo_states()
-                have += [s.label for s in states]
-                try:
-                    key = resolve_repo(db, ref)
-                except LookupError:
-                    continue
-                if db.get_meta(f"moving_in:{key}"):
-                    continue                        # a move's copy, cut short: its home is the old root
+            key = r.repo_key(ref)
+            if key is not None:
                 return r, key
+            have += r.labels()
         raise KeyError(f"no repository {ref!r} — this mirror has: {', '.join(sorted(have, key=str.lower))}")
 
 

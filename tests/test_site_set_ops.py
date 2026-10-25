@@ -34,10 +34,10 @@ def test_serve_routes_to_the_owning_root(hosts, tmp_path):  # noqa: F811
     cfg, net, md, r1, r2 = _split(hosts, tmp_path)
     _change_a(md)
     apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
-    home, key = ops.on_repo(open_set(), "a")
-    assert home == read_root(str(r1)).home
-    ops.serve(home, key, 1)
-    with SiteDB(home) as db:
+    root, key = ops.on_repo(open_set(), "a")
+    assert root.info.name == "r1"
+    root.serve(key, 1)
+    with SiteDB(read_root(str(r1)).home) as db:
         st = db.repo_state(key)
         assert st.serving.number == 1 and st.held
 

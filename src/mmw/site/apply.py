@@ -166,11 +166,11 @@ class RootApply:
             self._want = {p: c for p, c, _r in rows}
         return getattr(self, "_want", None) or {}
 
-    def take_blob(self, name: str, checksum: str, size: int, from_store: Store | None) -> None:
+    def take_blob(self, name: str, checksum: str, size: int, from_root) -> None:
         """A member another root of the set received: its blob copied from there."""
-        if not self.dry_run and not self.store.has(checksum) and from_store is not None:
+        if not self.dry_run and not self.store.has(checksum) and from_root is not None:
             try:
-                with disk_io.ops.open_rb(from_store.path(checksum)) as fh:
+                with from_root.export_blob(checksum) as fh:
                     self.store.add_stream(fh, expect=checksum)
             except ChecksumMismatch:
                 raise ApplyError(2, f"{name} is damaged in another root's store — mmw site verify --repair") from None
@@ -458,7 +458,9 @@ def plan_apply(target, src: str) -> ApplyPlan:
     from mmw.core.repos import attribute
     if src == "-":
         raise ValueError("a bundle on stdin can't be planned — it can only be read once")
-    homes = [Path(target)] if isinstance(target, (str, Path)) else [r.home for r in target.roots]
+    single = isinstance(target, (str, Path))
+    homes = [Path(target)] if single else []
+    roots_here = None if single else list(target.roots)
     tmpdir = tempfile.TemporaryDirectory()
     scratch = Path(tmpdir.name) / "plan-manifest.jsonl"
     try:
@@ -482,13 +484,20 @@ def plan_apply(target, src: str) -> ApplyPlan:
             sent[repo][1] += size
     out = []
     found: dict[str, tuple] = {}
-    for home in homes:
-        with SiteDB(home) as db:
-            for repo in repos:
-                st = db.repo_state(repo)
-                if st is not None and repo not in found:
-                    found[repo] = (st, Path(load_site(home).root))
-    first_root = Path(load_site(homes[0]).root) if homes else None
+    if roots_here is None:
+        for home in homes:
+            with SiteDB(home) as db:
+                for repo in repos:
+                    st = db.repo_state(repo)
+                    if st is not None and repo not in found:
+                        found[repo] = (st, Path(load_site(home).root))
+        first_root = Path(load_site(homes[0]).root) if homes else None
+    else:
+        for r in roots_here:
+            for st in r.status():
+                if st.repo in repos and st.repo not in found:
+                    found[st.repo] = (st, Path(r.info.path))
+        first_root = Path(roots_here[0].info.path) if roots_here else None
     for repo, meta in sorted(repos.items(), key=lambda kv: kv[1]["label"].lower()):
         st, root = found.get(repo, (None, first_root))
         serving = st.serving.number if st and st.serving else None
@@ -675,7 +684,7 @@ def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPla
     owner: dict[str, str | None] = {}
     named: dict[str, str] = {}
     for root in (mset.roots if mset else []):
-        named.update(load_site(root.home).hosts)
+        named.update(root.hosts_map())
     for h in hosts:
         held = mset.owner(h) if mset else None
         owner[h] = held.info.name if held else named.get(h)
@@ -710,8 +719,7 @@ def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
                 info = read_root(key)
                 root = LocalRoot(info) if info is not None else None
             if root is not None:
-                store = root.store()
-                cache[key] = ({c for c in every if store.has(c)}, root.free_bytes())
+                cache[key] = (root.has(every), root.free_bytes())
             else:
                 parent = Path(key).expanduser()
                 while not disk_io.ops.exists(parent):
@@ -892,11 +900,10 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                                       *(r.info.name for r in everyone)]))
         hosts_map: dict[str, str] = {}
         for r in everyone:
-            hosts_map.update(load_site(r.home).hosts)
+            hosts_map.update(r.hosts_map())
         hosts_map.update({h: t.info.name for h, t in targets.items()})
         for r in everyone:
-            s = load_site(r.home)
-            save_settings(r.home, s.model_copy(update={"members": members, "hosts": hosts_map}))
+            r.set_identity(members=members, hosts=hosts_map)
             recents.remember(r.info.location)
 
         # One pass over the bundle: each member to its hostname's root.
@@ -904,8 +911,10 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         appliers = {}
         for name in order:
             repos = {r for h, t in targets.items() if t.info.name == name for r in plan.hosts[h]}
-            ra = stack.enter_context(RootApply(roots[name].home, forward=forward, forward_all=forward_all,
-                                               only=only, progress=progress, stop_event=stop_event, say=say))
+            ra = stack.enter_context(roots[name].applier(forward=forward, forward_all=forward_all,
+                                                         only=only, progress=progress, stop_event=stop_event,
+                                                         say=say))
+            ra.via = roots[name]          # the root this applier writes into (its interface)
             ra.begin(_filtered_manifest(header, rows, repos))
             appliers[name] = ra
         cs_all = {p: c for p, c, _r, _s in rows}
@@ -948,9 +957,10 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     if h in result.held_back:
                         c = cs_of.get(m.name)
                         if m.kind != "link" and c in needed_in:
-                            store = appliers[needed_in[c]].store
+                            keeper = roots[needed_in[c]]
                             try:
-                                kept[m.name] = (*store.add_stream(m.fh, expect=c), store)
+                                keeper.import_blob(m.fh, c)
+                                kept[m.name] = (c, m.size, keeper)
                             except ChecksumMismatch:
                                 raise ApplyError(2, f"{m.name} does not match the manifest — the bundle is damaged; copy it again") from None
                         continue                           # its root isn't here
@@ -968,7 +978,7 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                 checksum, size = first.got[m.name]
                 for ra in appliers.values():
                     if ra is not first:
-                        ra.take_blob(m.name, checksum, size, None if first.dry_run else first.store)
+                        ra.take_blob(m.name, checksum, size, None if first.dry_run else first.via)
         # A member may link to one that went to another root (shared content).
         for ra in appliers.values():
             for name, target in list(ra.links.items()):
@@ -977,10 +987,10 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                 src_ra = next((o for o in appliers.values() if target in o.got), None)
                 if src_ra is not None:
                     c, size = src_ra.got[target]
-                    ra.take_blob(name, c, size, src_ra.store)
+                    ra.take_blob(name, c, size, src_ra.via)
                 elif target in kept:
-                    c, size, store = kept[target]
-                    ra.take_blob(name, c, size, store)
+                    c, size, keeper = kept[target]
+                    ra.take_blob(name, c, size, keeper)
                 else:
                     continue                               # RootApply says it is malformed
                 del ra.links[name]

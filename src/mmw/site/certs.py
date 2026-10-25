@@ -26,12 +26,23 @@ Keep {key} private and backed up: losing it means re-trusting a new CA everywher
 Then `mmw site certs` signs every root."""
 
 
-def load_ca(home: Path, cert: Path, key: Path, password: bytes | None) -> str:
+def _ca_paths(s) -> tuple[Path, Path] | None:
+    """Where the CA is: this machine's record (never a root's), or a v1 site's."""
+    from mmw.site import recents
+    got = recents.ca_paths()
+    if got is not None:
+        return got
+    return (s.ca_cert, s.ca_key) if s is not None and s.ca_cert is not None else None
+
+
+def load_ca(cert: Path, key: Path, password: bytes | None) -> str:
     """Check the CA (a CA certificate, and its own key) and record where it
-    is. The subject, for people. `CAKeyEncrypted` when a passphrase is needed."""
+    is — on this machine, never in a root. The subject, for people.
+    `CAKeyEncrypted` when a passphrase is needed."""
+    from mmw.site import recents
     cert, key = Path(cert).resolve(), Path(key).resolve()
     ca_cert, _ca_key = _load_ca(cert, key, password)
-    save_settings(home, load_site(home).model_copy(update={"ca_cert": cert, "ca_key": key}))
+    recents.set_ca_paths(cert, key)
     return ca_cert.subject.rfc4514_string()
 
 
@@ -65,12 +76,12 @@ def make_ca(out: Path, name: str, password: bytes | None) -> tuple[Path, Path]:
     return crt, key_path
 
 
-def show_ca(home: Path) -> tuple[str, datetime, Path, Path] | None:
-    s = load_site(home)
-    if s.ca_cert is None:
+def show_ca() -> tuple[str, datetime, Path, Path] | None:
+    paths = _ca_paths(None)
+    if paths is None:
         return None
-    cert = x509.load_pem_x509_certificate(disk_io.ops.read_bytes(s.ca_cert))
-    return cert.subject.rfc4514_string(), cert.not_valid_after_utc, s.ca_cert, s.ca_key
+    cert = x509.load_pem_x509_certificate(disk_io.ops.read_bytes(paths[0]))
+    return cert.subject.rfc4514_string(), cert.not_valid_after_utc, *paths
 
 
 # ── a certificate per root ───────────────────────────────────────────────────
@@ -106,14 +117,25 @@ def sign_roots(home: Path, *, password: bytes | None, days: int = 730,
     (`https.conf` only once the certificate fits the key)."""
     from mmw.site.lock import SiteLock
     s = load_site(home)
-    if s.ca_cert is None:
+    paths = _ca_paths(s)
+    if paths is None:
         raise ValueError("no CA yet — mmw site ca load --cert … --key …, or mmw site ca make --out …")
-    for path in (s.ca_cert, s.ca_key):
+    for path in paths:
         if not disk_io.ops.exists(path):
             raise FileNotFoundError(f"the CA isn't at {path} any more (moved, or not mounted?)")
-    ca_cert, _ca_key = _load_ca(s.ca_cert, s.ca_key, password)   # wrong passphrase / mismatch: first
+    ca_cert, _ca_key = _load_ca(*paths, password)   # wrong passphrase / mismatch: first
+    s = s.model_copy(update={"ca_cert": paths[0], "ca_key": paths[1]})
     with SiteLock(home):
-        return [_sign_root(r, ca_cert, s, password, days, force) for r in s.roots]
+        out = [_sign_root(r, ca_cert, s, password, days, force) for r in s.roots]
+    if s.name is not None:
+        for r in out:
+            r.root = s.name                     # a v2 root is called by its own name
+    return out
+
+
+def sign_set(mset, *, password: bytes | None, days: int = 730, force: bool = False) -> list[RootCertResult]:
+    """Sign every root of the set that is here."""
+    return [r for root in mset.roots for r in sign_roots(root.home, password=password, days=days, force=force)]
 
 
 def _good(tls: Path, hosts: list[str], ca_cert) -> bool:
@@ -170,7 +192,7 @@ def tls_notes(home: Path) -> list[str]:
     s = load_site(home)
     roots = [r for r in s.roots if disk_io.ops.is_dir(Path(r.path) / ".mmw" / "store")]
     signed = {r.name for r in roots if disk_io.ops.exists(Path(r.path) / ".mmw" / "tls" / "mirror.crt")}
-    in_use = bool(signed) or s.ca_cert is not None
+    in_use = bool(signed) or _ca_paths(s) is not None
     notes = []
     for r in roots:
         root = Path(r.path)

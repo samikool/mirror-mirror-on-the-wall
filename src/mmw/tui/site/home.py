@@ -57,7 +57,8 @@ class SiteHomePage(Page):
     def on_mount(self) -> None:
         self.query_one("#site-banner").display = False
         t = self.query_one("#site-repos", DataTable)
-        self._multi = len(self.app.settings.roots) > 1
+        m = self.app.mset
+        self._multi = m is not None and (len(m.roots) > 1 or bool(m.missing))
         t.add_columns("Repository", *(["Root"] if self._multi else []), "Serving", "Newest", "State")
         self.query_one("#site-history", DataTable).add_columns("Version", "Date", "Size", "")
         t.focus()
@@ -73,10 +74,22 @@ class SiteHomePage(Page):
         """Reload; `done` is an action's message, said once the list is back
         (a reload landing after it would otherwise talk over it)."""
         from mmw.site.db import SiteDB
+        if self.app.mset is None:
+            self.app.call_from_thread(self._loaded, [], {}, "no mirror opened yet — a applies a bundle; "
+                                                            "`mmw site open PATH` opens a root")
+            return
         try:
-            states = ops.status(self.app.home)
-            with SiteDB(self.app.home) as db:
-                newest = {s.repo: db.versions(s.repo)[0].number for s in states if db.versions(s.repo)}
+            self.app.reopen()
+            homes = {r.info.name: r.home for r in self.app.mset.roots}
+            rows = ops.set_status(self.app.mset)
+            states, newest, self._root_of = [], {}, {}
+            for name, st in rows:
+                states.append(st)
+                self._root_of[st.repo] = name
+                with SiteDB(homes[name]) as db:
+                    v = db.versions(st.repo)
+                    if v:
+                        newest[st.repo] = v[0].number
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
@@ -91,7 +104,7 @@ class SiteHomePage(Page):
         t.clear()
         for s in states:
             serving = f"v{s.serving.number} · {_date(s.serving.stamp)}" if s.serving else "—"
-            root = [s.root or self.app.settings.primary.name] if self._multi else []
+            root = [self._root_of.get(s.repo, "")] if self._multi else []
             t.add_row(Text(s.label), *root, serving, f"v{newest.get(s.repo, '?')}",
                       "held" if s.held else "current", key=s.repo)
         if keep is not None and keep in {s.repo for s in states}:
@@ -124,7 +137,7 @@ class SiteHomePage(Page):
         rows = []
         if repo is not None:
             try:
-                rows = ops.history(self.app.home, repo)
+                rows = ops.history(self.app.home_for(repo), repo)
             except Exception as e:  # noqa: BLE001
                 self.app.call_from_thread(self.set_status, str(e), "error")
                 return
@@ -174,7 +187,7 @@ class SiteHomePage(Page):
             self.set_status("Pick a version in the history first.", "error")
             return
         try:
-            p = ops.serve_preview(self.app.home, repo, number)
+            p = ops.serve_preview(self.app.home_for(repo), repo, number)
         except Exception as e:  # noqa: BLE001
             self.set_status(str(e), "error")
             return
@@ -188,18 +201,18 @@ class SiteHomePage(Page):
             ConfirmDialog(f"Serve {p.label} v{number} ({_date(p.target.stamp)})?", "",
                           confirm_label=f"Serve v{number}", confirm_variant="primary",
                           cancel_variant="default", details=details),
-            lambda ok: ok and self._act(f"{p.label} serves v{number}", ops.serve, self.app.home, repo, number))
+            lambda ok: ok and self._act(f"{p.label} serves v{number}", ops.serve, self.app.home_for(repo), repo, number))
 
     def action_forward(self) -> None:
         repo = self.selected_repo()
         if repo is not None:
-            self._act("moved forward", ops.forward, self.app.home, repo)
+            self._act("moved forward", ops.forward, self.app.home_for(repo), repo)
 
     def action_hold(self) -> None:
         repo = self.selected_repo()
         if repo is not None:
             self._act("held — bundles store its new versions without serving them",
-                      ops.hold, self.app.home, repo)
+                      ops.hold, self.app.home_for(repo), repo)
 
     def action_delete(self) -> None:
         repo, number = self.selected_repo(), self.selected_version()
@@ -213,7 +226,7 @@ class SiteHomePage(Page):
                           "Its files go too, unless another kept version uses them.",
                           confirm_label="Delete"),
             lambda ok: ok and self._act(f"deleted {label} v{number}", ops.delete_version,
-                                        self.app.home, repo, number))
+                                        self.app.home_for(repo), repo, number))
 
     @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
     def _act(self, done: str, fn, *args) -> None:
@@ -233,31 +246,27 @@ class SiteHomePage(Page):
         repo = self.selected_repo()
         if repo is None:
             return
-        if len(self.app.settings.roots) < 2:
-            self.set_status("This site has one root — `mmw site root add` makes another.", "error")
+        names = [r.info.name for r in self.app.mset.roots]
+        if len(names) < 2:
+            self.set_status("This mirror has one root here — a bundle's new hostnames can go to another "
+                            "(mmw site apply … --root HOST=PATH).", "error")
             return
         state = next(s for s in self._states if s.repo == repo)
-        current = state.root or self.app.settings.primary.name
+        current = self._root_of.get(repo, names[0])
 
         def chosen(root):
             if not root or root == current:
                 return
             from mmw.tui.ui.dialog import ConfirmDialog
-            try:
-                size = ops.move_size(self.app.home, repo, root)
-            except Exception as e:  # noqa: BLE001
-                self.set_status(str(e), "error")
-                return
             self.app.push_screen(
                 ConfirmDialog(f"Move {state.label} to {root}?",
-                              f"Copies {fmt_size(size)} into {root}'s store first. The old copy stays "
+                              f"Copies every kept version into {root}'s store first. The old copy stays "
                               "served until you tidy (t) after recreating nginx.",
                               confirm_label="Move", confirm_variant="primary", cancel_variant="default"),
                 lambda ok: ok and self._act(f"moved {state.label} to {root} — recreate nginx in {current} and "
                                             f"{root}, then t tidies the old copy",
-                                            ops.move, self.app.home, repo, root))
-        self.app.push_screen(MoveRootPage(state.label, current, [r.name for r in self.app.settings.roots]),
-                             chosen)
+                                            ops.move_repo, self.app.mset, repo, root))
+        self.app.push_screen(MoveRootPage(state.label, current, names), chosen)
 
     def action_certs(self, password: bytes | None = None) -> None:
         self._sign(password)
@@ -265,10 +274,10 @@ class SiteHomePage(Page):
     @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
     def _sign(self, password: bytes | None) -> None:
         from mmw.core.certs import CAKeyEncrypted
-        from mmw.site.certs import sign_roots
+        from mmw.site.certs import sign_set
         self.app.call_from_thread(self.set_status, "signing…")
         try:
-            results = sign_roots(self.app.home, password=password)
+            results = sign_set(self.app.mset, password=password)
         except CAKeyEncrypted:
             self.app.call_from_thread(self._ask_passphrase)
             return
@@ -288,12 +297,16 @@ class SiteHomePage(Page):
         self.app.push_screen(PassphrasePage(), lambda pw: pw and self.action_certs(pw.encode()))
 
     def action_tidy(self) -> None:
-        self._act("cleared moved repositories' old copies", ops.tidy, self.app.home)
+        self._act("cleared moved repositories' old copies", ops.tidy_set, self.app.mset)
 
     def action_apply(self) -> None:
         from mmw.tui.path_pick import PathPickPage
         from mmw.tui.site.apply_flow import recent_paths
-        recent = recent_paths(self.app.home)
+        if self.app.mset is None:
+            self.set_status("No mirror opened yet: the first apply names its roots — "
+                            "mmw site apply BUNDLE --root '*'=PATH", "error")
+            return
+        recent = recent_paths()
         self.app.push_screen(
             PathPickPage("Apply a bundle", "a bundle .tar, or a stage directory",
                          recent[0] if recent else "", dirs_only=False, suffixes=(".tar",)),
@@ -301,18 +314,28 @@ class SiteHomePage(Page):
 
     @work(thread=True, exclusive=True, group="site-plan", exit_on_error=False)
     def _plan(self, path: str) -> None:
-        from mmw.site.apply import plan_apply
+        from mmw.site.apply import plan_apply, plan_set_apply
         self.app.call_from_thread(self.set_status, f"reading {path}…")
         try:
-            plan = plan_apply(self.app.home, path)
+            plan = plan_apply(self.app.mset, path)
+            placing = plan_set_apply(self.app.mset, path)
         except Exception as e:  # noqa: BLE001 — not a bundle, and the like
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._review, plan, path)
+        self.app.call_from_thread(self._review, plan, path, placing)
 
-    def _review(self, plan, path: str) -> None:
+    def _review(self, plan, path: str, placing=None) -> None:
         from mmw.tui.site.apply_flow import ApplyReviewPage, remember
-        remember(self.app.home, path)
+        remember(path)
+        here = placing.locations if placing is not None else {}
+        if placing is not None and any(o not in here for o in placing.owner.values()):
+            # A new hostname needs a root, or a root is missing: place first.
+            from mmw.tui.site.place import PlacePage
+            self.set_status("")
+            self.app.push_screen(PlacePage(placing, path, self.app.mset),
+                                 lambda c: c and self.app.push_screen(
+                                     ApplyReviewPage(plan, path), lambda r: self._chosen(r, c.place)))
+            return
         banner = self.query_one("#site-banner", Static)
         banner.update(f"▶ {Path(path).name}: {plan.network} → {plan.created} · "
                       f"{sum(1 for r in plan.rows if not r.unchanged)} repositories change")
@@ -320,9 +343,12 @@ class SiteHomePage(Page):
         self.set_status("")
         self.app.push_screen(ApplyReviewPage(plan, path), self._chosen)
 
-    def _chosen(self, choice) -> None:
+    def _chosen(self, choice, place=None) -> None:
         if choice is None:
             return
+        if place is not None:
+            from dataclasses import replace
+            choice = replace(choice, place=place)
         self.app.push_screen(_run_page(choice), lambda _r: self._load())
 
 

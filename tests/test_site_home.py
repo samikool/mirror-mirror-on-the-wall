@@ -53,7 +53,47 @@ def test_lock_refuses_second_holder(tmp_path):
         pass
 
 
-def test_cli_init_prints_export(tmp_path):
-    r = CliRunner().invoke(cli.app, ["site", "init", "--root", str(tmp_path / "root")])
-    assert r.exit_code == 0, r.output
-    assert f"export MMW_SITE_HOME={tmp_path / 'root' / '.mmw' / 'site'}" in r.output
+def test_cli_rejects_init(tmp_path):
+    """No init: the first apply makes the roots it names."""
+    assert CliRunner().invoke(cli.app, ["site", "init", "--root", str(tmp_path / "root")]).exit_code != 0
+    assert " init " not in CliRunner().invoke(cli.app, ["site", "--help"]).output
+
+
+# ── v2: every root its own site ──────────────────────────────────────────────
+
+def test_init_root_records_identity(tmp_path):
+    r = tmp_path / "srv"
+    home = H.init_root(r, name="nas", set_id="s1", network="debian")
+    info = H.read_root(str(r))
+    assert home == r / ".mmw" / "site" == info.home
+    assert (info.name, info.set_id, info.network, info.members) == ("nas", "s1", "debian", ("nas",))
+
+
+def test_init_root_refuses_another_sets_root(tmp_path):
+    r = tmp_path / "srv"
+    H.init_root(r, name="nas", set_id="s1", network="debian")
+    with pytest.raises(ValueError, match="debian"):
+        H.init_root(r, name="nas", set_id="s2", network="ubuntu")
+
+
+def test_read_root_of_a_plain_directory_is_none(tmp_path):
+    assert H.read_root(str(tmp_path)) is None
+    assert H.read_root(str(tmp_path / "not-there")) is None
+
+
+def test_a_root_is_found_where_it_is_mounted(tmp_path):
+    """Paths don't travel: the same share mounted elsewhere is the same root, at its new path."""
+    import shutil
+    r = tmp_path / "a"
+    H.init_root(r, name="nas", set_id="s1", network="debian")
+    shutil.move(str(r), str(tmp_path / "b"))
+    assert H.load_site(H.root_home(tmp_path / "b")).root == (tmp_path / "b").resolve()
+
+
+def test_hostnames_from_bases(tmp_path):
+    from mmw.site.db import SiteDB
+    r = tmp_path / "srv"
+    home = H.init_root(r, name="nas", set_id="s1", network="debian")
+    with SiteDB(home) as db:
+        db.add_version("k", "debian", 1, "d", "20261025T000000Z", None, ["deb.debian.org/debian"], [])
+    assert H.hostnames(home) == {"deb.debian.org"}

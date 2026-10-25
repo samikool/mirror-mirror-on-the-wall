@@ -105,3 +105,10 @@ def _no_runtime_downloads(monkeypatch):
     from mmw.core import runtime
     from test_runtime import FakeFetcher
     monkeypatch.setattr(runtime, "default_fetcher", FakeFetcher)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_mmw_state(tmp_path_factory, monkeypatch):
+    """This machine's mmw state (recent roots, the CA's location) per test —
+    never the real ~/.local/state/mmw."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state")))

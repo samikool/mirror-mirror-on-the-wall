@@ -9,6 +9,7 @@ held one keeps serving what it served, its new version stored for later.
 import io
 import json
 import tarfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from mmw.site.db import SiteDB
 from mmw.site.home import load_site
 from mmw.site.lock import SiteLock
 from mmw.site.reader import SourceError, open_source
-from mmw.site.store import Store
+from mmw.site.store import ChecksumMismatch, Store
 from mmw.site.roots import Roots
 from mmw.site.switch import resume_switches, switch_in
 
@@ -52,53 +53,14 @@ class ApplyResult:
     stopped: list[str] = field(default_factory=list)    # stored and held: a stop came before their switch
 
 
-def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progress=None, stop_event=None,
-             on_manifest=None, seen: set | None = None):
-    """Stream the members in: (name → (checksum, size), TLS files). Once the
-    manifest has arrived, `on_manifest(path)` may return `route(name) ->
-    Store`, the store each later member belongs in (its repository's root).
-    mmw's runtime (`.mmw/runtime/…`, which v1 bundles carried) is skipped;
-    "runtime" goes into `seen` when there was one."""
-    route = None
-    got: dict[str, tuple[str, int]] = {}
-    links: dict[str, str] = {}
-    tls: dict[str, bytes] = {}
-    manifest = False
+def members_of(src: str):
+    """The bundle's members, with a damaged or cut-off source said as an `ApplyError`."""
     try:
-        for m in open_source(src):
-            if stop_event is not None and stop_event.is_set():
-                raise ApplyError(5, "stopped before anything was applied")
-            if progress:
-                progress("receive", name=m.name, bytes=m.size)
-            if m.name == MANIFEST_MEMBER:
-                disk_io.ops.write_bytes(manifest_path, m.fh.read())
-                manifest = True
-                if on_manifest is not None:
-                    route = on_manifest(manifest_path)
-            elif m.name.startswith(TLS_PREFIX):
-                tls[m.name[len(TLS_PREFIX):]] = m.fh.read()
-            elif m.name.startswith(RUNTIME_PREFIX):
-                if seen is not None:
-                    seen.add("runtime")
-            elif m.name.startswith(".mmw/"):
-                continue                        # the bundle's own apply.py and the like
-            elif m.kind == "link":
-                links[m.name] = m.linkname
-            elif dry_run:
-                got[m.name] = disk_io.ops.hash_fh(m.fh)
-            else:
-                got[m.name] = (route(m.name) if route else store).add_stream(m.fh)
+        yield from open_source(src)
     except SourceError as e:
         raise ApplyError(e.code, str(e)) from None
     except (tarfile.ReadError, EOFError) as e:              # cut off inside a member
         raise ApplyError(5, f"bundle is truncated ({e}) — copy it again") from None
-    for name, target in links.items():
-        if target not in got:
-            raise ApplyError(2, f"bundle is malformed: {name!r} links to {target!r}, which it lacks")
-        got[name] = got[target]
-    if not manifest:
-        raise ApplyError(2, "bundle is malformed: no .mmw/manifest.jsonl")
-    return got, tls
 
 
 def place_served_file(store: Store, root: Path, rel: str, checksum: str, *, network: bool) -> None:
@@ -121,48 +83,132 @@ def _size(store: Store, checksum: str, sizes: dict[str, int]) -> int:
     return sizes[checksum]
 
 
-def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forward_all: bool = False,
-                 dry_run: bool = False, say=print, only: set[str] | None = None, progress=None,
-                 stop_event=None, place: dict[str, str] | None = None) -> ApplyResult:
-    """Apply the bundle at `src`. `only`: the repositories to switch; the
-    others in the bundle are stored and held. `progress(event, **data)`:
-    receive(name, bytes), check, switch(repo, label), done. `stop_event`:
-    before anything changes, a stop raises; once repositories are switching,
-    the ones not reached yet are stored and held. `place`: repository →
-    root name for repositories new to this site (default: the primary).
-    An mmw runtime in the bundle is ignored, with a note."""
-    settings = load_site(home)
-    roots = Roots(settings)
-    root = Path(roots.primary.path)
-    store = roots.store(roots.primary)
-    result = ApplyResult()
-    with SiteLock(home), SiteDB(home) as db:
-        if not dry_run:
-            store.sweep_tmp()
-            resume_switches(db, roots)
-        manifest_path = Path(home) / "incoming-manifest.jsonl"
-        placement: dict[str, object] = {}
+class RootApply:
+    """One root's apply, fed member by member: `begin` with its manifest,
+    `take` each member (or `take_blob`, a file another root received),
+    then `finish` — check everything, record, then switch each hostname's
+    repositories together. Holds the root's lock and database while open.
 
-        def on_manifest(path):
-            from mmw.core.repos import attribute
-            head, _rows = iter_manifest_v2(path)
-            _rows.close()
-            placement.update(_place(db, roots, head.repos or {}, place or {}))
-            for r in {placement[k].name: placement[k] for k in placement}.values():
-                try:
-                    roots.check_mounted(r)
-                except FileNotFoundError as e:
-                    raise ApplyError(5, str(e)) from None
-            bases = {k: m["bases"] for k, m in (head.repos or {}).items()}
-            return lambda name: roots.store(placement.get(attribute(name, bases), roots.primary))
+    `only`: the repositories to switch; the others are stored and held.
+    `progress(event, **data)`: check, switch(repo, label), done. `stop_event`:
+    before anything changes, a stop raises; once switching, the hostnames
+    not reached yet are stored and held — a hostname never half-switched."""
+
+    def __init__(self, home: Path, *, dry_run: bool = False, forward: set[str] | None = None,
+                 forward_all: bool = False, only: set[str] | None = None, progress=None, stop_event=None,
+                 say=print):
+        self.home = Path(home)
+        self.dry_run, self.forward, self.forward_all, self.only = dry_run, set(forward or ()), forward_all, only
+        self.progress, self.stop_event, self.say = progress, stop_event, say
+        self.got: dict[str, tuple[str, int]] = {}
+        self.links: dict[str, str] = {}
+        self.tls: dict[str, bytes] = {}
+        self.seen: set[str] = set()
+        self.manifest_path = self.home / "incoming-manifest.jsonl"
+        self._manifest = False
+        self.expected: dict[str, str] | None = None     # path → checksum, shared by a set's roots
+
+    def __enter__(self) -> "RootApply":
+        self.settings = load_site(self.home)
+        self.roots = Roots(self.settings)
+        self.root = Path(self.roots.primary.path)
+        self.store = self.roots.store(self.roots.primary)
+        self._lock = SiteLock(self.home).__enter__()
         try:
-            seen: set[str] = set()
-            got, tls = _receive(src, store, manifest_path, dry_run, progress, stop_event,
-                                on_manifest=on_manifest, seen=seen)
-            header, rows = iter_manifest_v2(manifest_path)
-            rows = list(rows)
+            self.db = SiteDB(self.home).__enter__()
+        except BaseException:
+            self._lock.__exit__(None, None, None)
+            raise
+        if not self.dry_run:
+            self.store.sweep_tmp()
+            resume_switches(self.db, self.roots)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        disk_io.ops.unlink(self.manifest_path, missing_ok=True)
+        try:
+            self.db.__exit__(*exc)
         finally:
-            disk_io.ops.unlink(manifest_path, missing_ok=True)
+            self._lock.__exit__(*exc)
+
+    def begin(self, manifest: bytes) -> None:
+        disk_io.ops.write_bytes(self.manifest_path, manifest)
+        self._manifest = True
+
+    def take(self, m) -> None:
+        """One member of the bundle (never the manifest: that is `begin`)."""
+        if m.name.startswith(TLS_PREFIX):
+            self.tls[m.name[len(TLS_PREFIX):]] = m.fh.read()
+        elif m.name.startswith(RUNTIME_PREFIX):
+            self.seen.add("runtime")
+        elif m.name.startswith(".mmw/"):
+            return                              # the bundle's own apply.py and the like
+        elif m.kind == "link":
+            self.links[m.name] = m.linkname
+        elif self.dry_run:
+            self.got[m.name] = disk_io.ops.hash_fh(m.fh)
+        else:
+            want = self._expected().get(m.name)
+            try:
+                self.got[m.name] = self.store.add_stream(m.fh, expect=want)
+            except ChecksumMismatch:
+                # Damaged on the way: refused here, before anything changed
+                # anywhere, and nothing of it kept.
+                raise ApplyError(2, f"{m.name} does not match the manifest — the bundle is damaged; copy it again") from None
+
+    def _expected(self) -> dict[str, str]:
+        """The manifest's checksum for each path (what the store may already
+        have). A set hands every root its one shared map (`self.expected`)."""
+        if self.expected is not None:
+            return self.expected
+        if getattr(self, "_want", None) is None and self._manifest:
+            _header, rows = iter_manifest_v2(self.manifest_path)
+            self._want = {p: c for p, c, _r in rows}
+        return getattr(self, "_want", None) or {}
+
+    def take_blob(self, name: str, checksum: str, size: int, from_store: Store | None) -> None:
+        """A member another root of the set received: its blob copied from there."""
+        if not self.dry_run and not self.store.has(checksum) and from_store is not None:
+            try:
+                with disk_io.ops.open_rb(from_store.path(checksum)) as fh:
+                    self.store.add_stream(fh, expect=checksum)
+            except ChecksumMismatch:
+                raise ApplyError(2, f"{name} is damaged in another root's store — mmw site verify --repair") from None
+        self.got[name] = (checksum, size)
+
+    def _settle(self) -> None:
+        for name, target in self.links.items():
+            if target not in self.got:
+                raise ApplyError(2, f"bundle is malformed: {name!r} links to {target!r}, which it lacks")
+            self.got[name] = self.got[target]
+        if not self._manifest:
+            raise ApplyError(2, "bundle is malformed: no .mmw/manifest.jsonl")
+
+    def switch_order(self, repos: dict) -> list[list[str]]:
+        """The repositories grouped by hostname, each hostname whole, in order."""
+        groups: dict[str, list[str]] = {}
+        for repo, meta in repos.items():
+            host = (meta.get("bases") or [repo])[0].split("/", 1)[0]
+            groups.setdefault(host, []).append(repo)
+        return list(groups.values())
+
+    def finish(self) -> "ApplyResult":
+        """Check everything, then (unless a dry run) record and switch."""
+        result = self.check()
+        return result if self.dry_run else self.commit()
+
+    def check(self) -> "ApplyResult":
+        """Everything checked against the manifest, nothing changed: each
+        repository's new version is complete (or refused alone), and so are
+        the network files. A set checks every root before any commits."""
+        self._want = None                          # the arrivals' map isn't needed past here
+        self._settle()
+        db, roots, store, root, progress, stop_event = (self.db, self.roots, self.store, self.root,
+                                                        self.progress, self.stop_event)
+        got, say = self.got, self.say
+        result = ApplyResult()
+        header, rows = iter_manifest_v2(self.manifest_path)
+        rows = list(rows)
         if (header.format or 1) < 2:
             raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
                                 'or set far_side = "mmw" on the connected side and bundle again')
@@ -177,16 +223,11 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if header.file_count is not None and len(got) != header.file_count:
             raise ApplyError(5, f"bundle is truncated: expected {header.file_count} file(s), "
                                 f"got {len(got)} — copy it again")
-        if not placement:
-            placement.update(_place(db, roots, header.repos or {}, place or {}))
-        if roots.multi and not header.settings:
-            raise ApplyError(5, "bundle again with this mmw — it doesn't say enough to set up nginx per root")
-
         sizes = {cs: size for cs, size in got.values()}
 
         def have(cs):
-            # Arrived with this bundle (a dry run only hashed it), or in a store.
-            return cs in sizes or any(roots.store(r).has(cs) for r in roots.all)
+            # Arrived with this bundle (a dry run only hashed it), or in the store.
+            return cs in sizes or store.has(cs)
         if progress:
             progress("check")
 
@@ -202,7 +243,7 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
             if here is not None and here.digest != meta["digest"]:
                 result.refused[repo] = (
                     f"v{meta['to']} here is not the connected side's v{meta['to']} — its history no "
-                    f"longer matches this site. To follow it: mmw site delete '{label}' v{meta['to']} "
+                    f"longer matches this mirror. To follow it: mmw site delete '{label}' v{meta['to']} "
                     "(and any later), then apply again")
                 continue
             if not all(have(c) for _p, c in mine):
@@ -219,106 +260,138 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         result.network_changed = any(
             (before.get(p) != network.get(p)) for p in set(before) | set(network) if p.startswith("nginx/"))
 
-        if dry_run:
+        if self.dry_run:
             for repo, plan in planned.items():
                 result.lines.append(f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
-            if "runtime" in seen:
+            if "runtime" in self.seen:
                 result.lines.append(f"  {RUNTIME_NOTE}")
-            return result
+        self._checked = (header, rows, result, planned, network, sizes)
+        return result
 
-        if stop_event is not None and stop_event.is_set():
+    def commit(self, *, others_changed: bool = False) -> "ApplyResult":
+        """Record the checked versions, place the network files, switch each
+        hostname whole. A stop before anything changed anywhere raises; once
+        another root of the set has changed (`others_changed`), a stop
+        stores and holds instead."""
+        header, rows, result, planned, network, sizes = self._checked
+        db, roots, store, root, progress, stop_event = (self.db, self.roots, self.store, self.root,
+                                                        self.progress, self.stop_event)
+        say = self.say
+        if stop_event is not None and stop_event.is_set() and not others_changed:
             raise ApplyError(5, "stopped before anything changed — what arrived is stored")
+        # Nothing applied here before: nginx was never started for this root.
+        self.first_time = not db.applied()
         recorded: dict[str, int] = {}
         try:
             for repo, plan in planned.items():
                 meta = plan["meta"]
-                target = roots.store(placement[repo])
-                for _p, c in plan["rows"]:
-                    _ensure(roots, target, c)
                 recorded[repo] = db.add_version(
                     repo, meta["label"], meta["to"], meta["digest"], header.created, header.created_label,
-                    meta["bases"], [(p, c, _size(target, c, sizes)) for p, c in plan["rows"]], commit=False)
-                if db.repo_state(repo).root is None and placement[repo].name != roots.primary.name:
-                    db.set_root(repo, placement[repo].name, commit=False)
+                    meta["bases"], [(p, c, _size(store, c, sizes)) for p, c in plan["rows"]], commit=False)
             db.commit()
         except BaseException:
             db.rollback()
             raise
 
-        old = {r.name: roots.network_files(db, r) for r in roots.all}
+        old = roots.network_files(db, roots.primary)
         db.set_network_files(network, {c: _size(store, c, sizes) for c in network.values()})
-        for r in roots.all:
-            rroot, rstore = Path(r.path), roots.store(r)
-            if r.name != roots.primary.name and not disk_io.ops.is_dir(rroot / ".mmw" / "store"):
-                continue
-            new = roots.network_files(db, r)
-            for rel, checksum in sorted(new.items()):
-                if old[r.name].get(rel) != checksum or not disk_io.ops.exists(rroot / rel):
-                    _ensure(roots, rstore, checksum)
-                    place_served_file(rstore, rroot, rel, checksum, network=True)
-            for rel in sorted(set(old[r.name]) - set(new)):
-                if disk_io.ops.remove(rroot / rel) is not None:
-                    _prune_empty_parents(str(rroot), str((rroot / rel).parent))
+        new = roots.network_files(db, roots.primary)
+        for rel, checksum in sorted(new.items()):
+            if old.get(rel) != checksum or not disk_io.ops.exists(root / rel):
+                place_served_file(store, root, rel, checksum, network=True)
+        for rel in sorted(set(old) - set(new)):
+            if disk_io.ops.remove(root / rel) is not None:
+                _prune_empty_parents(str(root), str((root / rel).parent))
         if header.settings:
-            db.set_meta("settings", header.settings)          # for nginx per root, now or later
-        if roots.multi:
+            db.set_meta("settings", header.settings)
+        if roots.multi and db.get_meta("settings"):
             result.network_changed = write_root_nginx(db, roots) or result.network_changed
-        for name, data in sorted(tls.items()):
+        for name, data in sorted(self.tls.items()):
             _install_tls(str(root), name, io.BytesIO(data))
 
-        forward = set(forward or ())
-        for repo, vid in recorded.items():
-            meta, state = header.repos[repo], db.repo_state(repo)
-            was = state.serving.number if state and state.serving else None
-            if was is not None and meta["to"] <= was:
-                # An older or already-applied bundle never moves what is served.
-                result.lines.append(f"  {meta['label']}  already at v{was}" if meta["to"] == was else
-                                    f"  {meta['label']}  keeps serving v{was} (this bundle brings v{meta['to']}, "
-                                    "older — stored)")
-                continue
-            if stop_event is not None and stop_event.is_set():
-                db.set_held(repo, True)
-                result.stopped.append(repo)
-                result.lines.append(f"  {meta['label']}  not switched (stopped) — stored v{meta['to']}, held")
-                continue
-            if only is not None and repo not in only:
-                db.set_held(repo, True)
-                result.stored_held.append(repo)
-                result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
-                                    f"{f'still serving v{was}' if was else 'not served'} (held)")
-                continue
-            if state and state.held and not forward_all and repo not in forward:
-                result.stored_held.append(repo)
-                result.lines.append(f"  {meta['label']}  stored v{meta['to']}, still serving v{was} (held)")
-                continue
-            if progress:
-                progress("switch", repo=repo, label=meta["label"])
-            switch_in(db, roots, repo, vid)
-            result.updated.append(repo)
-            result.lines.append(f"  {meta['label']}  {f'v{was}' if was else 'full'} → v{meta['to']}")
+        forward, stopped = self.forward, False
+        for group in self.switch_order({r: header.repos[r] for r in recorded}):
+            # A hostname switches whole: Stop is looked at before each one.
+            stopped = stopped or (stop_event is not None and stop_event.is_set())
+            for repo in group:
+                vid = recorded[repo]
+                meta, state = header.repos[repo], db.repo_state(repo)
+                was = state.serving.number if state and state.serving else None
+                if was is not None and meta["to"] <= was:
+                    # An older or already-applied bundle never moves what is served.
+                    result.lines.append(f"  {meta['label']}  already at v{was}" if meta["to"] == was else
+                                        f"  {meta['label']}  keeps serving v{was} (this bundle brings "
+                                        f"v{meta['to']}, older — stored)")
+                    continue
+                if stopped:
+                    db.set_held(repo, True)
+                    result.stopped.append(repo)
+                    result.lines.append(f"  {meta['label']}  not switched (stopped) — stored v{meta['to']}, held")
+                    continue
+                if self.only is not None and repo not in self.only:
+                    db.set_held(repo, True)
+                    result.stored_held.append(repo)
+                    result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
+                                        f"{f'still serving v{was}' if was else 'not served'} (held)")
+                    continue
+                if state and state.held and not self.forward_all and repo not in forward:
+                    result.stored_held.append(repo)
+                    result.lines.append(f"  {meta['label']}  stored v{meta['to']}, still serving v{was} (held)")
+                    continue
+                if progress:
+                    progress("switch", repo=repo, label=meta["label"])
+                switch_in(db, roots, repo, vid)
+                result.updated.append(repo)
+                result.lines.append(f"  {meta['label']}  {f'v{was}' if was else 'full'} → v{meta['to']}")
         for repo, why in result.refused.items():
             result.lines.append(f"  {header.repos[repo]['label']}  refused: {why}")
 
-        for r in roots.all:
-            if disk_io.ops.is_dir(r.path):
-                render_derived(str(r.path), say=lambda m: say(f"  {m}"))
+        if disk_io.ops.is_dir(root):
+            render_derived(str(root), say=lambda m: say(f"  {m}"))
         db.record_applied(header.created, header.previous, "full" if header.full else "delta")
-        from mmw.site.ops import _tidy
-        _tidy(db, roots)
-        if settings.keep_versions is not None:
+        if self.settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
-            apply_retention(db, roots, settings.keep_versions)
+            apply_retention(db, roots, self.settings.keep_versions)
         from mmw.site.certs import tls_notes
-        result.actions.extend(tls_notes(home))
+        result.actions.extend(tls_notes(self.home))
         if progress:
             progress("done")
         if result.network_changed:
             result.actions.append("nginx config changed — recreate nginx on the serving host "
                                   "(docker compose … up -d --force-recreate)")
-        if "runtime" in seen:
+        if "runtime" in self.seen:
             result.actions.append(RUNTIME_NOTE)
-    return result
+        return result
 
+
+def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forward_all: bool = False,
+                 dry_run: bool = False, say=print, only: set[str] | None = None, progress=None,
+                 stop_event=None, place: dict[str, str] | None = None) -> "ApplyResult":
+    """Apply the bundle at `src` to the one root whose home is `home` (see
+    `RootApply`). `progress` also gets receive(name, bytes) per member.
+    An mmw runtime in the bundle is ignored, with a note."""
+    with RootApply(home, dry_run=dry_run, forward=forward, forward_all=forward_all, only=only,
+                   progress=progress, stop_event=stop_event, say=say) as ra:
+        with _truncation():
+            for m in members_of(src):
+                if stop_event is not None and stop_event.is_set():
+                    raise ApplyError(5, "stopped before anything was applied")
+                if progress:
+                    progress("receive", name=m.name, bytes=m.size)
+                if m.name == MANIFEST_MEMBER:
+                    ra.begin(m.fh.read())
+                else:
+                    ra.take(m)
+        return ra.finish()
+
+
+@contextmanager
+def _truncation():
+    """A bundle cut off inside a member (found while reading it) is said plainly."""
+    try:
+        yield
+    except (tarfile.ReadError, EOFError) as e:
+        raise ApplyError(5, f"bundle is truncated ({e}) — copy it again") from None
 
 # ── planning, for the TUI's review ───────────────────────────────────────────
 
@@ -377,14 +450,17 @@ def _manifest_and_sizes(src: str, scratch: Path) -> dict[str, int]:
     return sizes
 
 
-def plan_apply(home: Path, src: str) -> ApplyPlan:
+def plan_apply(target, src: str) -> ApplyPlan:
     """What applying `src` would do, from its manifest and member sizes —
-    nothing is stored or checked beyond that."""
+    nothing is stored or checked beyond that. `target`: one root's home, or
+    a mirror set (each repository as the root holding it sees it)."""
+    import tempfile
     from mmw.core.repos import attribute
     if src == "-":
         raise ValueError("a bundle on stdin can't be planned — it can only be read once")
-    settings = load_site(home)
-    scratch = Path(home) / "plan-manifest.jsonl"
+    homes = [Path(target)] if isinstance(target, (str, Path)) else [r.home for r in target.roots]
+    tmpdir = tempfile.TemporaryDirectory()
+    scratch = Path(tmpdir.name) / "plan-manifest.jsonl"
     try:
         sizes = _manifest_and_sizes(src, scratch)
         header, rows = iter_manifest_v2(scratch)
@@ -392,7 +468,7 @@ def plan_apply(home: Path, src: str) -> ApplyPlan:
     except (ValueError, KeyError, TypeError) as e:
         raise ApplyError(2, f"its manifest can't be read: {e}") from None
     finally:
-        disk_io.ops.unlink(scratch, missing_ok=True)
+        tmpdir.cleanup()
     if (header.format or 1) < 2:
         raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
                             'or set far_side = "mmw" on the connected side and bundle again')
@@ -405,13 +481,19 @@ def plan_apply(home: Path, src: str) -> ApplyPlan:
             sent[repo][0] += 1
             sent[repo][1] += size
     out = []
-    with SiteDB(home) as db:
-        for repo, meta in sorted(repos.items(), key=lambda kv: kv[1]["label"].lower()):
-            st = db.repo_state(repo)
-            serving = st.serving.number if st and st.serving else None
-            out.append(PlanRow(repo, meta["label"], meta["from"], meta["to"], sent[repo][0], sent[repo][1],
-                               serving, bool(st and st.held), serving is not None and meta["to"] <= serving,
-                               Path(settings.root)))
+    found: dict[str, tuple] = {}
+    for home in homes:
+        with SiteDB(home) as db:
+            for repo in repos:
+                st = db.repo_state(repo)
+                if st is not None and repo not in found:
+                    found[repo] = (st, Path(load_site(home).root))
+    first_root = Path(load_site(homes[0]).root) if homes else None
+    for repo, meta in sorted(repos.items(), key=lambda kv: kv[1]["label"].lower()):
+        st, root = found.get(repo, (None, first_root))
+        serving = st.serving.number if st and st.serving else None
+        out.append(PlanRow(repo, meta["label"], meta["from"], meta["to"], sent[repo][0], sent[repo][1],
+                           serving, bool(st and st.held), serving is not None and meta["to"] <= serving, root))
     network = sum(1 for _p, _c, r in rows if r is None)
     return ApplyPlan(header.created, header.network, out, network,
                      sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))
@@ -474,7 +556,7 @@ def write_root_nginx(db, roots: Roots) -> bool:
         rroot = Path(r.path)
         if not disk_io.ops.is_dir(rroot / ".mmw" / "store"):
             continue
-        files = site_nginx_files(settings_json, roots.placed_in(db, r), r, primary=r.name == roots.primary.name)
+        files = site_nginx_files(settings_json, roots.placed_in(db, r), r, primary=roots.serves_extras(r))
         before = roots.generated(db, r)
         after = {rel: hashlib.sha256(data).hexdigest() for rel, data in files.items()}
         for rel, data in files.items():
@@ -491,3 +573,435 @@ def write_root_nginx(db, roots: Roots) -> bool:
             changed = True
             db.set_meta(f"nginx:{r.name}", json.dumps(after, sort_keys=True))
     return changed
+
+
+# ── a set of roots: one pass, routed by hostname ─────────────────────────────
+
+def _host(meta: dict, repo: str) -> str:
+    return (meta.get("bases") or [repo])[0].split("/", 1)[0]
+
+
+@dataclass
+class SetApplyPlan:
+    network: str
+    created: str
+    hosts: dict[str, list[str]]                 # hostname → repository keys
+    labels: dict[str, str]                      # repository key → label
+    owner: dict[str, str | None]                # hostname → root name (None: new to the mirror)
+    sizes: dict[str, int]                       # hostname → bytes of its files
+    network_bytes: int
+    missing: list[str] = field(default_factory=list)
+    sized: bool = True                          # sizes known (a tar on stdin, without "s": not)
+    repo_sizes: dict[str, int] = field(default_factory=dict)
+    # hostname (None: the network's own files) → checksum → size: what any
+    # placement needs is worked out from this, never by reading the bundle again.
+    host_checksums: dict = field(default_factory=dict)
+    locations: dict[str, str] = field(default_factory=dict)     # root name → location, for the roots here
+
+
+@dataclass
+class SetApplyResult:
+    per_root: dict[str, "ApplyResult"] = field(default_factory=dict)
+    held_back: dict[str, str] = field(default_factory=dict)      # hostname → why
+    lines: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
+    created: str = ""
+    made: list[str] = field(default_factory=list)                # roots this apply created
+    paths: dict[str, str] = field(default_factory=dict)          # root name → its path here
+
+    def merged(self) -> "ApplyResult":
+        """One `ApplyResult` for the whole set (what the TUI shows)."""
+        out = ApplyResult(created=self.created, lines=list(self.lines), actions=list(self.actions))
+        for r in self.per_root.values():
+            out.updated += r.updated
+            out.stored_held += r.stored_held
+            out.refused.update(r.refused)
+            out.stopped += r.stopped
+            out.network_changed = out.network_changed or r.network_changed
+        return out
+
+
+def nginx_steps(result: "SetApplyResult") -> list[tuple[str, list[str]]]:
+    """What a person runs on the serving host after an apply, per root: a new
+    root's first start (load the image, start it), a changed one's recreate."""
+    out = []
+    for name, r in result.per_root.items():
+        path = result.paths.get(name)
+        if path is None:
+            continue
+        nginx = Path(path) / "nginx"
+        if name in result.made:
+            images = sorted(p.name for p in disk_io.ops.glob(nginx, "*.tar"))
+            cmds = [f"docker load -i {nginx}/{images[0]}"] if images else []
+            out.append((name, cmds + [f"cd {nginx} && docker compose up -d"]))
+        elif r.network_changed:
+            out.append((name, [f"cd {nginx} && docker compose up -d --force-recreate"]))
+    return out
+
+
+def _read_manifest_member(gen, scratch: Path):
+    first = next(gen, None)
+    if first is None or first.name != MANIFEST_MEMBER:
+        raise ApplyError(2, "bundle is malformed: its first member isn't .mmw/manifest.jsonl")
+    data = first.fh.read()
+    disk_io.ops.write_bytes(scratch, data)
+    return data
+
+
+def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPlan", dict]:
+    from mmw.site.home import load_site
+    repos = header.repos or {}
+    hosts: dict[str, list[str]] = {}
+    for repo, meta in sorted(repos.items()):
+        hosts.setdefault(_host(meta, repo), []).append(repo)
+    host_of = {repo: _host(meta, repo) for repo, meta in repos.items()}
+    sizes = {h: 0 for h in hosts}
+    network_bytes, sized = 0, True
+    if any(s is None for _p, _c, _r, s in rows):
+        if src == "-":
+            sized = False
+        else:
+            known = _manifest_and_sizes(src, scratch_dir / "sizes-manifest.jsonl")
+            rows = [(p, c, r, known.get(p, 0)) for p, c, r, _s in rows]
+    repo_sizes = {r: 0 for r in repos}
+    host_checksums: dict = {}
+    for _p, c, r, s in rows:
+        if r is None:
+            network_bytes += s or 0
+        elif r in host_of:
+            sizes[host_of[r]] += s or 0
+            repo_sizes[r] += s or 0
+        host_checksums.setdefault(host_of.get(r) if r is not None else None, {})[c] = s or 0
+    owner: dict[str, str | None] = {}
+    named: dict[str, str] = {}
+    for root in (mset.roots if mset else []):
+        named.update(load_site(root.home).hosts)
+    for h in hosts:
+        held = mset.owner(h) if mset else None
+        owner[h] = held.info.name if held else named.get(h)
+    plan = SetApplyPlan(header.network, header.created, hosts, {k: m["label"] for k, m in repos.items()},
+                        owner, sizes, network_bytes, list(mset.missing) if mset else [], sized,
+                        repo_sizes, host_checksums,
+                        {r.info.name: r.info.location for r in (mset.roots if mset else [])})
+    return plan, {"rows": rows, "host_of": host_of}
+
+
+def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
+                    cache: dict | None = None) -> dict[str, tuple[int, int]]:
+    """For a placement (hostname → a root's name, or a location for a new
+    one): each root's (bytes it needs, bytes free). What a root's store
+    already holds doesn't count; the network's own files count in every
+    root, including roots none of the hostnames go to. `cache` (kept by
+    the caller across calls) holds each root's store hits and free space, so
+    a screen recomputing on every keypress checks each store once."""
+    cache = {} if cache is None else cache
+    every = {c for by_cs in plan.host_checksums.values() for c in by_cs}
+    from mmw.site.home import read_root
+    from mmw.site.mset import LocalRoot
+    present = {r.info.name: r for r in (mset.roots if mset else [])}
+    by_root: dict[str, list[str]] = {name: [] for name in present}
+    for h, t in targets.items():
+        by_root.setdefault(t, []).append(h)
+    out = {}
+    for key, hs in by_root.items():
+        if key not in cache:
+            root = present.get(key)
+            if root is None:
+                info = read_root(key)
+                root = LocalRoot(info) if info is not None else None
+            if root is not None:
+                store = root.store()
+                cache[key] = ({c for c in every if store.has(c)}, root.free_bytes())
+            else:
+                parent = Path(key).expanduser()
+                while not disk_io.ops.exists(parent):
+                    parent = parent.parent
+                cache[key] = (set(), disk_io.ops.disk_usage(parent).free)
+        have, free = cache[key]
+        need_cs = dict(plan.host_checksums.get(None, {}))
+        for h in hs:
+            need_cs.update(plan.host_checksums.get(h, {}))
+        out[key] = (sum(size for c, size in need_cs.items() if c not in have), free)
+    return out
+
+
+def plan_set_apply(mset, src: str) -> SetApplyPlan:
+    """What applying `src` to `mset` (None: a first apply) would do — read
+    from the bundle's manifest alone (its first member)."""
+    import tempfile
+    from mmw.core.publisher.manifest import iter_manifest_sized
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp) / "manifest.jsonl"
+        gen = members_of(src)
+        try:
+            _read_manifest_member(gen, scratch)
+        finally:
+            gen.close()
+        header, rows = iter_manifest_sized(scratch)
+        plan, _ = _plan(mset, header, list(rows), src, Path(tmp))
+    return plan
+
+
+def _filtered_manifest(header, rows, repos: set[str]) -> bytes:
+    """This root's part of the manifest: its repositories and every
+    network-level file. `file_count` is checked for the whole set instead."""
+    from dataclasses import asdict, replace
+    head = replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in repos},
+                   file_count=None)
+    fields = asdict(head)
+    for optional in ("format", "repos", "settings"):
+        if fields[optional] is None:
+            del fields[optional]
+    out = [json.dumps(fields, sort_keys=True)]
+    for p, c, r, _s in rows:
+        if r is None or r in repos:
+            out.append(json.dumps({"p": p, "c": c, **({"r": r} if r is not None else {})}))
+    return ("\n".join(out) + "\n").encode()
+
+
+def _root_name(location: str, taken: set[str]) -> str:
+    base = Path(location.rstrip("/")).name or "root"
+    name, n = base, 2
+    while name in taken:
+        name, n = f"{base}-{n}", n + 1
+    return name
+
+
+def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run: bool = False,
+                 forward: set[str] | None = None, forward_all: bool = False, only: set[str] | None = None,
+                 progress=None, stop_event=None, say=print) -> SetApplyResult:
+    """Apply the bundle at `src` to a set of roots (`mset`; None for a first
+    apply) in one pass. Each hostname goes to the root that holds it; a new
+    one to `place[host]` or `place["*"]` (a root location). A hostname whose
+    root isn't here is held back; the rest apply. Each root's space is
+    checked before anything is written."""
+    import tempfile
+    from contextlib import ExitStack
+
+    from mmw.core.format import fmt_size
+    from mmw.core.publisher.manifest import iter_manifest_sized
+    from mmw.site import recents
+    from mmw.site.home import init_root, load_site, new_set_id, read_root, root_home, save_settings
+    from mmw.site.mset import LocalRoot
+    place = dict(place or {})
+    result = SetApplyResult()
+    with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+        scratch = Path(tmp) / "manifest.jsonl"
+        gen = members_of(src)
+        stack.callback(gen.close)
+        with _truncation():
+            _read_manifest_member(gen, scratch)
+        header, rows = iter_manifest_sized(scratch)
+        rows = list(rows)
+        if (header.format or 1) < 2:
+            raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
+                                'or set far_side = "mmw" on the connected side and bundle again')
+        if mset is not None and header.network != mset.network:
+            raise ApplyError(5, f"this bundle is for network {header.network!r} — this mirror holds "
+                                f"{mset.network!r}; nothing was applied")
+        plan, extra = _plan(mset, header, rows, src, Path(tmp))
+        result.created = header.created
+        rows, host_of = extra["rows"], extra["host_of"]
+
+        # Where each hostname goes.
+        present = {r.info.name: r for r in (mset.roots if mset else [])}
+        targets: dict[str, object] = {}            # hostname → LocalRoot, or a location to make one at
+        unplaced = []
+        for h in plan.hosts:
+            name = plan.owner[h]
+            if name in present:
+                targets[h] = present[name]
+            elif name is not None:
+                result.held_back[h] = (f"its root {name!r} isn't here — mount it, then: mmw site open PATH "
+                                       "(the rest applied)")
+            elif h in place or "*" in place:
+                targets[h] = place.get(h, place.get("*"))
+            else:
+                unplaced.append(h)
+        if unplaced:
+            raise ApplyError(1, f"new hostname(s) with no root yet: {', '.join(sorted(unplaced))} — "
+                                "choose one: --root HOST=PATH (or --root '*'=PATH)")
+        locations = {loc for loc in targets.values() if isinstance(loc, str)}
+        found = {loc: read_root(loc) for loc in locations}
+        set_id = mset.set_id if mset else next(
+            (i.set_id for i in found.values() if i is not None), None) or new_set_id()
+        for loc, info in found.items():
+            if info is not None and info.set_id != set_id:
+                raise ApplyError(5, f"{loc} already holds the mirror of network {info.network!r} — pick another root")
+            if info is not None and info.name in present:
+                found[loc] = None                    # a path to a root already open
+                targets.update({h: present[info.name] for h, t in targets.items() if t == loc})
+
+        # Space, per root, before anything is written.
+        placed = {h: (t.info.name if isinstance(t, LocalRoot) else t) for h, t in targets.items()}
+        needs = placement_needs(mset, plan, placed) if plan.sized else {}
+        if not dry_run:
+            for key, (need, free) in needs.items():
+                if need > free:
+                    where = f"{key!r} ({present[key].info.location})" if key in present else key
+                    raise ApplyError(5, f"root {where} needs {fmt_size(need)} but has {fmt_size(free)} free — "
+                                        "nothing was written; free space or place its hostnames elsewhere")
+        if dry_run:
+            for h in plan.hosts:
+                t = placed.get(h)
+                if t is None:
+                    continue
+                n = len(plan.hosts[h])
+                where = t if t in present else f"new root at {t}"
+                result.lines.append(f"  {h}  ({n} repo{'s' if n != 1 else ''}, {fmt_size(plan.sizes[h])}) → {where}")
+            for h, why in result.held_back.items():
+                result.lines.append(f"  {h}: held back — {why}")
+            for key, (need, free) in needs.items():
+                result.lines.append(f"  root {key}: needs {fmt_size(need)} of {fmt_size(free)} free "
+                                    f"{'✓' if need <= free else '✗'}")
+            return result
+
+        # Never a new root where a root of a mirror was (an unmounted share's
+        # empty mount point), nor while a root of this mirror is missing.
+        new_locs = sorted({t for t in targets.values() if isinstance(t, str)})
+        seen_here = {str(Path(k).expanduser().resolve()) for k in recents.known()}
+        for loc in new_locs:
+            if read_root(loc) is None and str(Path(loc).expanduser().resolve()) in seen_here:
+                raise ApplyError(5, f"{loc} was a root of a mirror on this machine but holds none now — "
+                                    "is it mounted? Nothing was written")
+        if mset is not None and mset.missing and any(read_root(loc) is None for loc in new_locs):
+            raise ApplyError(5, f"root(s) {', '.join(mset.missing)} of this mirror aren't here — mount them "
+                                "(mmw site open PATH) before a new hostname starts a new root; nothing was written")
+
+        # New roots, then every root's view of the set.
+        taken = set(present) | set(mset.missing if mset else [])
+        made: dict[str, LocalRoot] = {}
+        for loc in sorted({t for t in targets.values() if isinstance(t, str)}):
+            info = read_root(loc)
+            if info is None:
+                name = _root_name(loc, taken)
+                taken.add(name)
+                init_root(Path(loc).expanduser(), name=name, set_id=set_id, network=header.network)
+                info = read_root(loc)
+            made[loc] = LocalRoot(info)
+        for h, t in list(targets.items()):
+            if isinstance(t, str):
+                targets[h] = made[t]
+        everyone = [*present.values(), *[r for r in made.values() if r.info.name not in present]]
+        # Every root here takes part: the network files (and its nginx) reach
+        # each one, even one none of this bundle's hostnames go to.
+        roots: dict[str, LocalRoot] = {r.info.name: r for r in [*targets.values(), *everyone]}
+        # The set's order stays as it was (its first root serves the
+        # network's own hostnames); new roots join at the end.
+        members = list(dict.fromkeys([*(mset.roots[0].info.members if mset else []),
+                                      *(r.info.name for r in everyone)]))
+        hosts_map: dict[str, str] = {}
+        for r in everyone:
+            hosts_map.update(load_site(r.home).hosts)
+        hosts_map.update({h: t.info.name for h, t in targets.items()})
+        for r in everyone:
+            s = load_site(r.home)
+            save_settings(r.home, s.model_copy(update={"members": members, "hosts": hosts_map}))
+            recents.remember(r.info.location)
+
+        # One pass over the bundle: each member to its hostname's root.
+        order = list(roots)
+        appliers = {}
+        for name in order:
+            repos = {r for h, t in targets.items() if t.info.name == name for r in plan.hosts[h]}
+            ra = stack.enter_context(RootApply(roots[name].home, forward=forward, forward_all=forward_all,
+                                               only=only, progress=progress, stop_event=stop_event, say=say))
+            ra.begin(_filtered_manifest(header, rows, repos))
+            appliers[name] = ra
+        cs_all = {p: c for p, c, _r, _s in rows}
+        for ra in appliers.values():
+            ra.expected = cs_all                   # one map for every root, not one each
+        first = appliers[order[0]]
+        repo_of = {p: r for p, _c, r, _s in rows}
+        cs_of = {p: c for p, c, _r, _s in rows}
+        # Content a held-back hostname shares with one that applies: kept,
+        # in the root that needs it (a later member may link to it).
+        needed_in: dict[str, str] = {}
+        for p, c, r, _s in rows:
+            h = host_of.get(r) if r is not None else None
+            if r is None:
+                needed_in.setdefault(c, order[0])
+            elif h not in result.held_back and h in targets:
+                needed_in.setdefault(c, targets[h].info.name)
+        kept: dict[str, tuple] = {}                        # held-back member → (checksum, size, store)
+        started: set[str] = set()
+        received = 0
+        with _truncation():
+            for m in gen:
+                if stop_event is not None and stop_event.is_set():
+                    raise ApplyError(5, "stopped before anything was applied — what arrived is stored; "
+                                        "nothing served changed")
+                if progress:
+                    progress("receive", name=m.name, bytes=m.size)
+                if m.name.startswith(TLS_PREFIX):
+                    data = m.fh.read()
+                    for ra in appliers.values():
+                        ra.tls[m.name[len(TLS_PREFIX):]] = data
+                    continue
+                if m.name.startswith(".mmw/"):
+                    first.take(m)
+                    continue
+                received += 1
+                repo = repo_of.get(m.name)
+                if repo is not None:
+                    h = host_of.get(repo)
+                    if h in result.held_back:
+                        c = cs_of.get(m.name)
+                        if m.kind != "link" and c in needed_in:
+                            store = appliers[needed_in[c]].store
+                            try:
+                                kept[m.name] = (*store.add_stream(m.fh, expect=c), store)
+                            except ChecksumMismatch:
+                                raise ApplyError(2, f"{m.name} does not match the manifest — the bundle is damaged; copy it again") from None
+                        continue                           # its root isn't here
+                    if progress and repo not in started:
+                        started.add(repo)
+                        progress("repo", repo=repo, label=plan.labels.get(repo, repo), host=h)
+                    appliers[targets[h].info.name].take(m)
+                    continue
+                first.take(m)                              # network-level: every root gets it
+                if m.kind == "link":
+                    for ra in appliers.values():
+                        if ra is not first:
+                            ra.links[m.name] = m.linkname
+                    continue
+                checksum, size = first.got[m.name]
+                for ra in appliers.values():
+                    if ra is not first:
+                        ra.take_blob(m.name, checksum, size, None if first.dry_run else first.store)
+        # A member may link to one that went to another root (shared content).
+        for ra in appliers.values():
+            for name, target in list(ra.links.items()):
+                if target in ra.got or target in ra.links:
+                    continue
+                src_ra = next((o for o in appliers.values() if target in o.got), None)
+                if src_ra is not None:
+                    c, size = src_ra.got[target]
+                    ra.take_blob(name, c, size, src_ra.store)
+                elif target in kept:
+                    c, size, store = kept[target]
+                    ra.take_blob(name, c, size, store)
+                else:
+                    continue                               # RootApply says it is malformed
+                del ra.links[name]
+        if header.file_count is not None and received != header.file_count:
+            raise ApplyError(5, f"bundle is truncated: expected {header.file_count} file(s), "
+                                f"got {received} — copy it again")
+        for name in order:
+            appliers[name].check()                 # every root checked before any changes
+        changed = False
+        result.paths = {name: str(roots[name].info.path) for name in order}
+        for name in order:
+            r = appliers[name].commit(others_changed=changed)
+            changed = changed or bool(r.updated or r.stored_held or r.stopped) or r.network_changed
+            if appliers[name].first_time:
+                result.made.append(name)               # its nginx is started for the first time
+            r.actions = [a for a in r.actions if not a.startswith("nginx config changed — recreate nginx on the serving host")]   # nginx_steps says it
+            result.per_root[name] = r
+            if len(order) > 1:
+                result.lines.append(f"  [{name}]")
+            result.lines += r.lines
+            result.actions += [a for a in r.actions if a not in result.actions]
+        for h, why in result.held_back.items():
+            result.lines.append(f"  {h}: held back — {why}")
+    return result

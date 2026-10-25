@@ -446,8 +446,9 @@ def _site_demo(tmp_path, monkeypatch):
     days = itertools.count(1)
     monkeypatch.setattr(_snaps, "now_stamp", lambda: f"202610{next(days):02d}T120000Z")
     cfg, net, md = _mmw(_tm.__wrapped__(tmp_path))
-    home = tmp_path / "site"
-    _h.init_site(home, tmp_path / "oak")
+    home = _h.init_root(tmp_path / "oak", name="oak", set_id="s1", network=net.name)
+    from mmw.site import recents
+    recents.remember(str(tmp_path / "oak"))
     quiet = lambda *a: None  # noqa: E731
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
     _change_a(md)
@@ -466,7 +467,8 @@ def test_snapshot_site_home(snap_compare, tmp_path, monkeypatch):
         from textual.widgets import DataTable
         await until(pilot, lambda: pilot.app.screen.query("#site-history")
                     and pilot.app.screen.query_one("#site-history", DataTable).row_count == 3)
-    assert snap_compare(SiteApp(home), terminal_size=SNAP_SIZE, run_before=ready)
+    from mmw.site.mset import open_set
+    assert snap_compare(SiteApp(open_set()), terminal_size=SNAP_SIZE, run_before=ready)
 
 
 def test_snapshot_site_apply_review(snap_compare):
@@ -510,3 +512,27 @@ def test_snapshot_site_apply_done(snap_compare):
         pilot.app.screen.query_one("#run-bar").update(progress=28_900_000_000)
         pilot.app.screen._done(result)
     assert snap_compare(_app(lambda: Shown(choice)), terminal_size=SNAP_SIZE, run_before=done)
+
+
+def test_snapshot_site_place(snap_compare, tmp_path, monkeypatch):
+    """Placing a first bundle's hostnames: none has a root yet."""
+    import itertools
+    from mmw.core import snapshots as _snaps
+    from mmw.site.apply import plan_set_apply
+    from mmw.tui.site.app import SiteApp
+    from mmw.tui.site.place import PlacePage
+    from test_bundle_mmw import _mmw
+    from test_dry_run_totals import two_mirrors as _tm
+    from test_site_apply import _bundle
+    days = itertools.count(1)
+    monkeypatch.setattr(_snaps, "now_stamp", lambda: f"202610{next(days):02d}T120000Z")
+    cfg, net, md = _mmw(_tm.__wrapped__(tmp_path))
+    b = cfg.sources[1].model_copy(update={"url": "https://example.org/b/"})
+    cfg = cfg.model_copy(update={"sources": [cfg.sources[0], b]})
+    src = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+
+    async def ready(pilot):
+        pilot.app.push_screen(PlacePage(plan_set_apply(None, src), src, None))
+        await until(pilot, lambda: type(pilot.app.screen).__name__ == "PlacePage"
+                    and "choose a root" in pilot.app.screen.hosts_text())
+    assert snap_compare(SiteApp(None), terminal_size=SNAP_SIZE, run_before=ready)

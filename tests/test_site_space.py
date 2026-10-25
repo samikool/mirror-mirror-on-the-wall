@@ -70,7 +70,7 @@ def test_cli_space_delete_settings(env, tmp_path):  # noqa: F811
     from typer.testing import CliRunner
     from mmw import cli
     _cfg, home, _root, _ = _three(env, tmp_path)
-    run = lambda *a: CliRunner().invoke(cli.app, ["site", *a, "--home", str(home)])  # noqa: E731
+    run = lambda *a: CliRunner().invoke(cli.app, ["site", *a])  # noqa: E731
     r = run("space")
     assert r.exit_code == 0 and "v3" in r.output and "serving" in r.output and "frees" in r.output
     r = run("delete", "a", "v1", "--yes")

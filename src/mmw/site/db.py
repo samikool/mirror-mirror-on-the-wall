@@ -158,6 +158,19 @@ class SiteDB:
         c.execute("DELETE FROM versions WHERE id = ?", (version_id,))
         c.commit()
 
+    def drop_repo(self, repo: str) -> None:
+        """Forget a repository here, every version of it (it moved to another root)."""
+        c = self._conn
+        for (vid,) in c.execute("SELECT id FROM versions WHERE repo = ?", (repo,)).fetchall():
+            c.execute("DELETE FROM version_files WHERE version = ?", (vid,))
+        c.execute("DELETE FROM versions WHERE repo = ?", (repo,))
+        c.execute("DELETE FROM repos WHERE repo = ?", (repo,))
+        c.commit()
+
+    def metas(self, prefix: str) -> dict[str, str]:
+        return dict(self._conn.execute("SELECT key, value FROM meta WHERE key LIKE ? || '%'",
+                                       (prefix,)).fetchall())
+
     # ── what each repository serves ──────────────────────────────────────────
 
     def _state(self, row) -> RepoState:

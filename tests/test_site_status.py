@@ -19,7 +19,7 @@ def test_status_and_history(env, tmp_path):  # noqa: F811
     assert st[_key(cfg, "b")].serving.number == 1 and not st[_key(cfg, "b")].held
     hist = ops.history(home, "a")
     assert [(v.number, serving) for v, _total, _frees, serving in hist] == [(3, False), (2, True), (1, False)]
-    run = lambda *a: CliRunner().invoke(cli.app, ["site", *a, "--home", str(home)])  # noqa: E731
+    run = lambda *a: CliRunner().invoke(cli.app, ["site", *a])  # noqa: E731
     r = run("status")
     assert r.exit_code == 0 and "held" in r.output and "current" in r.output and "v3" in r.output
     r = run("history", "a")
@@ -36,5 +36,5 @@ def test_verify_clean_then_detects_tamper(env, tmp_path):  # noqa: F811
     problems = ops.verify(home)
     assert any(victim.name in p and "differs" in p for p in problems)
     assert any("b.deb" in p and "missing" in p for p in problems)
-    r = CliRunner().invoke(cli.app, ["site", "verify", "--home", str(home)])
+    r = CliRunner().invoke(cli.app, ["site", "verify"])
     assert r.exit_code == 4

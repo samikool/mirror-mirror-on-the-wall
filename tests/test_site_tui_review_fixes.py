@@ -73,7 +73,9 @@ def test_stop_after_the_checks_changes_nothing_served(env, tmp_path):  # noqa: F
     assert (root / "nginx/mirror.conf").read_bytes() == nginx_before
 
 
-def test_stop_between_repositories(env, tmp_path):  # noqa: F811
+def test_stop_never_half_switches_a_hostname(env, tmp_path):  # noqa: F811
+    """Both repositories live under one hostname: a stop as the first starts
+    switching lets the hostname finish whole (stop is looked at between hostnames)."""
     cfg, net, md, home, root = env
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
     _change_a(md)
@@ -81,13 +83,9 @@ def test_stop_between_repositories(env, tmp_path):  # noqa: F811
     stop, progress = _stop_on("switch")             # stop as the first repository starts switching
     r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet, progress=progress,
                      stop_event=stop)
-    assert len(r.updated) == 1 and len(r.stopped) == 1
-    other = r.stopped[0]
+    assert len(r.updated) == 2 and r.stopped == []
     with SiteDB(home) as db:
-        st = db.repo_state(other)
-        assert st.serving.number == 1 and st.held                   # honest: newest v2 stored, held
-        assert db.applied()[0][0] == r.created                     # the apply is still recorded
-    assert any("stopped" in line for line in r.lines)
+        assert db.applied()[0][0] == r.created                     # the apply is recorded
 
 
 def test_receive_progress_is_throttled(env, tmp_path):  # noqa: F811

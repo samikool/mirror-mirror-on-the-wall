@@ -14,15 +14,20 @@ A network whose far side runs only `apply.py` keeps working exactly as
 
 ## The shape of it
 
-- A **root** is the directory nginx serves, laid out as usual:
-  `{root}/{hostname}/{upstream path}`.
-- Every served file is a hardlink into the root's **store**,
-  `{root}/.mmw/store/`, one file per distinct content. Serving another
-  version relinks; nothing is copied. Keep the root on one filesystem: an
-  NFS export is fine.
-- The site's **home** holds its state: a small database, `site.toml`, and a
-  lock. It defaults to `{root}/.mmw/site`, so any machine that mounts the
-  share sees the same site. None of it is ever served.
+- A **root** is a folder nginx serves, laid out as usual:
+  `{root}/{hostname}/{upstream path}`. It can be a local disk or a share
+  (an NFS export is fine). Keep each root on one filesystem.
+- Each root **describes itself**: its `.mmw/` holds its store (one file
+  per distinct content; every served file is a hardlink into it), a small
+  database of every version it was sent, what it serves, its nginx setup
+  and a lock. Point any mmw on any machine at it and it knows what it is.
+- Every root of one connected-side network's mirror forms a **set**. Each
+  hostname lives in exactly one root; the files that belong to no
+  hostname (keys, the nginx image) go into every root. Roots know each
+  other by name, never by path — the same share can be mounted anywhere.
+- **This machine** only remembers which roots it has opened
+  (`~/.local/state/mmw/roots.json`) and where the CA is. Deleting that
+  loses nothing but convenience: `mmw site open PATH` finds a root again.
 
 ## Installing mmw
 
@@ -56,41 +61,49 @@ mmw 1.3.0 installed — /home/sam/.local/bin/mmw
   (`uv build`), never PyPI's release of the same version;
   `--runtime-wheel PATH` ships a wheel of your choosing.
 
-## Set it up once
-
-```bash
-mmw site init --root /mnt/oak
-export MMW_SITE_HOME=/mnt/oak/.mmw/site     # or pass --home to every command
-```
-
 ## Apply a bundle
 
+The first apply makes the roots it names — there is no setup step:
+
 ```bash
-mmw site apply /media/drive/oak-20261024T101500Z.tar
-mmw site apply /media/drive/oak-20261024T101500Z/        # a stage directory
-cat /media/drive/oak.tar | ssh server mmw site apply -   # a tar on stdin
+mmw site apply /media/drive/oak-20261024T101500Z.tar --root '*'=/mnt/oak       # every hostname here
+mmw site apply oak.tar --root deb.debian.org=/mnt/big --root '*'=/mnt/oak       # or split them
+```
+
+After that, each hostname goes to the root that holds it; only a hostname
+new to the mirror needs `--root`:
+
+```bash
+mmw site apply /media/drive/oak-20261031T101500Z.tar
+mmw site apply /media/drive/oak-20261031T101500Z/         # a stage directory
+cat /media/drive/oak.tar | ssh server mmw site apply -    # a tar on stdin
 ```
 
 ```
-applied 20261024T101500Z
-  archive.ubuntu.com/ubuntu  v14 → v15
-  deb.debian.org/debian  stored v10, still serving v6 (held)
+applied 20261031T101500Z
+  [big]
+  deb.debian.org/debian  v14 → v15
+  [oak]
   VS Code  v11 → v12
 ! nginx config changed — recreate nginx on the serving host (docker compose … up -d --force-recreate)
 ```
 
-Everything arrives in the store, and is checked against the bundle's
-manifest, **before anything served changes or is recorded**: a damaged copy, a truncated
-one, or a bundle missing files leaves the site exactly as it was — copy it
-again. A repository whose new version needs files this site never received
-(it missed an earlier bundle, or deleted that version) is refused on its
-own, with the connected-side command that fixes it; the rest still apply.
-
-An older bundle, or one already applied, never moves what a repository
-serves: its versions are stored, and `mmw site serve` can use them.
-
-Files arrive in any order: a stage directory tarred with
-`tar cf - -C …/oak-<stamp> .` is a bundle like any other.
+- The bundle is read once. Before anything is written, each root's free
+  space is checked against what it will receive (files it already has
+  don't count); a root without room stops the apply, and says so.
+- Everything arrives in the store and is checked against the bundle's
+  manifest **before anything served changes**: a damaged, truncated or
+  incomplete bundle leaves every root as it was — copy it again.
+- A hostname switches whole: all its repositories together, then the
+  next. Stop takes effect before the next hostname.
+- A root that isn't mounted holds back only its own hostnames, by name;
+  the rest apply.
+- A repository whose new version needs files a root never received (it
+  missed an earlier bundle) is refused on its own, with the
+  connected-side command that fixes it; the rest still apply.
+- A bundle from another network is refused.
+- An older bundle, or one already applied, never moves what a repository
+  serves: its versions are stored, and `mmw site serve` can use them.
 
 ### Updates to mmw itself
 
@@ -119,31 +132,25 @@ next, release files last, removals after — a client mid-`apt update` never
 sees an index naming a file that is not there. A switch cut short (power,
 Ctrl-C) is finished by the next `mmw site` command.
 
-## Placements: more than one root
-
-Too big for one disk? Give the site more roots and put each repository in
-one of them:
+## More than one root
 
 ```bash
-mmw site root add pypi /mnt/pypi --serve-path /export/pypi
-mmw site apply bundle.tar --place PyPI=pypi       # a repository new to the site
-mmw site move debian pypi                         # one already here, every version
-mmw site root list
+mmw site roots                      # the mirror's roots, their hostnames, or MISSING
+mmw site open /mnt/nas              # a root this machine hasn't opened yet
+mmw site move debian big            # a repository, every kept version, to another root
+mmw site tidy                       # once nginx is recreated in both: clear the old copy
 ```
 
-- `--serve-path` is where the **serving host** sees the root, when it
-  mounts the share somewhere else: the generated Compose file mounts that.
 - Each root gets its own `nginx/` (`mirror.conf` for just its hostnames,
-  `compose.yaml`, the image), and its own store. Recreate nginx in each root
-  the command names after an apply or a move.
-- Two repositories that share a hostname must live in the same root —
-  nginx routes a hostname to one place — so mmw refuses to split them.
-- A move copies every kept version's files into the new root's store and
-  places them before anything is recorded; an interrupted move just runs
-  again. The old root keeps serving its copy — the nginx running there
-  still routes the hostname to it — until you recreate nginx in both roots
-  and run `mmw site tidy` (the next apply tidies too).
-- A root that isn't mounted stops an apply or a move before anything changes.
+  `compose.yaml`, the image). Recreate nginx in each root the command names.
+- Two repositories that share a hostname move together — nginx routes a
+  hostname to one place.
+- A move copies every kept version's files into the new root and places
+  them before anything is recorded; an interrupted move just runs again.
+  The old root keeps serving its copy until you recreate nginx in both
+  roots and run `mmw site tidy`.
+- Every command takes `--root PATH` (any root of the mirror) when this
+  machine has opened more than one mirror.
 
 ## HTTPS
 
@@ -151,7 +158,7 @@ The far side makes its own keys: an mmw network's bundles never carry a
 private key. Point the site at your CA (or make one), then sign:
 
 ```bash
-mmw site ca load --cert /root/site-ca/ca.crt --key /root/site-ca/ca.key
+mmw site ca load --cert /root/site-ca/ca.crt --key /root/site-ca/ca.key   # recorded on this machine
 mmw site ca make --out /root/site-ca --name "Lab CA" [--encrypt]   # no CA yet
 mmw site certs                       # every root: key, request, certificate, HTTPS on
 ```
@@ -217,7 +224,7 @@ done and what needs a person, such as recreating nginx.
 
 ## One operator at a time
 
-Commands that change the site take a lock in its home. A second one says
+Commands that change a root take the lock in its `.mmw/`. A second one says
 who holds it; `--break-lock` clears a lock a dead run left behind.
 
 ## Exit codes

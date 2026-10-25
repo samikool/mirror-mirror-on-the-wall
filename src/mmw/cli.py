@@ -558,205 +558,178 @@ def cmd_installer(
 
 
 site_app = typer.Typer(
-    help="mmw on the far side of the airgap: apply bundles, serve any kept version.",
+    help="mmw on the far side of the airgap: apply bundles to your mirror's roots, serve any kept version.",
     no_args_is_help=True,
 )
 app.add_typer(site_app, name="site")
-_SITE_HOME = typer.Option(None, "--home", help="The site's home (default: $MMW_SITE_HOME)")
-
-
-@site_app.command("init")
-def cmd_site_init(root: Path = typer.Option(..., "--root", help="The directory the site serves"),
-                  home: Path = typer.Option(None, "--home",
-                                            help="Where the site keeps its state (default: ROOT/.mmw/site)")):
-    """Make a site: a root to serve and a home for its state."""
-    from mmw.commands.site import init
-    raise typer.Exit(init(root, home))
-
-
+_ROOT = typer.Option(None, "--root", help="Any root of the mirror (default: the one this machine has opened)")
 _BREAK_LOCK = typer.Option(False, "--break-lock", help="Clear a lock a dead run left behind")
+_REPO = typer.Argument(..., help="Repository (URL or name)")
+_YES = typer.Option(False, "--yes", help="Don't ask")
 
 
 @site_app.command("apply")
 def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage directory, or - for stdin"),
-                   home: Path = _SITE_HOME,
+                   root: list[str] = typer.Option(
+                       None, "--root", help="HOST=PATH: put a new hostname in the root at PATH "
+                                            "('*'=PATH: every new hostname). Known hostnames go where they are."),
                    forward: list[str] = typer.Option(None, "--forward",
                                                      help="Also move this held repository forward"),
                    forward_all: bool = typer.Option(False, "--forward-all",
                                                     help="Move every held repository forward"),
                    dry_run: bool = typer.Option(False, "--dry-run", help="Check it; change nothing"),
-                   place: list[str] = typer.Option(None, "--place",
-                                                   help="REPO=ROOT: put a repository new to this site in ROOT"),
                    break_lock: bool = _BREAK_LOCK):
-    """Apply a bundle: everything is checked before anything served changes;
-    held repositories keep serving what they serve."""
+    """Apply a bundle: each hostname goes to its root, everything is checked
+    before anything served changes, and held repositories keep serving what
+    they serve. The first apply makes the roots it names."""
     from mmw.commands.site import apply
-    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock, place))
+    raise typer.Exit(apply(src, root, forward, forward_all, dry_run, break_lock))
+
+
+@site_app.command("open")
+def cmd_site_open(path: Path = typer.Argument(..., help="A root of a mirror (a folder holding .mmw/site)")):
+    """Remember a root on this machine, so commands and the TUI find its mirror."""
+    from mmw.commands.site import open_root
+    raise typer.Exit(open_root(path))
+
+
+@site_app.command("roots")
+def cmd_site_roots(root: Path = _ROOT):
+    """The mirror's roots: where each is, its hostnames, or MISSING."""
+    from mmw.commands.site import roots
+    raise typer.Exit(roots(root))
 
 
 @site_app.command("serve")
-def cmd_site_serve(repo: str = typer.Argument(..., help="Repository (URL or name)"),
-                   version: str = typer.Argument(..., help="Version to serve: v3 or 3"),
-                   home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
-                   break_lock: bool = _BREAK_LOCK):
+def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help="Version to serve: v3 or 3"),
+                   root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
     """Serve any kept version of a repository — relinking, never copying.
     Anything but the newest holds it there."""
     from mmw.commands.site import serve
-    raise typer.Exit(serve(repo, version, home, yes, break_lock))
+    raise typer.Exit(serve(repo, version, root, yes, break_lock))
 
 
 @site_app.command("forward")
 def cmd_site_forward(repo: str = typer.Argument(None, help="Repository (URL or name)"),
                      all_: bool = typer.Option(False, "--all", help="Every held repository"),
-                     home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+                     root: Path = _ROOT, break_lock: bool = _BREAK_LOCK):
     """Serve the newest version kept here and clear the hold."""
     from mmw.commands.site import forward
-    raise typer.Exit(forward(repo, home, all_, break_lock))
+    raise typer.Exit(forward(repo, root, all_, break_lock))
 
 
 @site_app.command("hold")
-def cmd_site_hold(repo: str = typer.Argument(..., help="Repository (URL or name)"),
-                  home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+def cmd_site_hold(repo: str = _REPO, root: Path = _ROOT, break_lock: bool = _BREAK_LOCK):
     """Keep a repository where it is; bundles store its new versions unserved."""
     from mmw.commands.site import hold
-    raise typer.Exit(hold(repo, home, break_lock))
+    raise typer.Exit(hold(repo, root, break_lock))
 
 
 @site_app.command("space")
-def cmd_site_space(home: Path = _SITE_HOME):
+def cmd_site_space(root: Path = _ROOT):
     """What each kept version takes, and what deleting it would free."""
     from mmw.commands.site import space
-    raise typer.Exit(space(home))
+    raise typer.Exit(space(root))
 
 
 @site_app.command("delete")
-def cmd_site_delete(repo: str = typer.Argument(..., help="Repository (URL or name)"),
-                    version: str = typer.Argument(..., help="Version: v3 or 3"),
-                    home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
-                    break_lock: bool = _BREAK_LOCK):
+def cmd_site_delete(repo: str = _REPO, version: str = typer.Argument(..., help="Version: v3 or 3"),
+                    root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
     """Delete a kept version — never the one served, nor a held repository's newest."""
     from mmw.commands.site import delete
-    raise typer.Exit(delete(repo, version, home, yes, break_lock))
+    raise typer.Exit(delete(repo, version, root, yes, break_lock))
 
 
 @site_app.command("settings")
-def cmd_site_settings(home: Path = _SITE_HOME,
-                      keep: int = typer.Option(None, "--keep", min=1,
-                                               help="Keep the newest N versions of each repository"),
-                      keep_all: bool = typer.Option(False, "--keep-all", help="Keep every version (default)")):
-    """Show or change what the site keeps."""
+def cmd_site_settings(root: Path = _ROOT,
+                      keep: int = typer.Option(None, "--keep", help="Keep the newest N versions of each repository"),
+                      keep_all: bool = typer.Option(False, "--keep-all", help="Keep every version")):
+    """Show or change what the mirror keeps (in every root here)."""
     from mmw.commands.site import settings
-    raise typer.Exit(settings(home, keep, keep_all))
+    raise typer.Exit(settings(root, keep, keep_all))
 
 
 @site_app.command("status")
-def cmd_site_status(home: Path = _SITE_HOME):
+def cmd_site_status(root: Path = _ROOT):
     """Every repository: the version it serves, the newest here, held or current."""
     from mmw.commands.site import status
-    raise typer.Exit(status(home))
+    raise typer.Exit(status(root))
 
 
 @site_app.command("history")
-def cmd_site_history(repo: str = typer.Argument(..., help="Repository (URL or name)"),
-                     home: Path = _SITE_HOME):
+def cmd_site_history(repo: str = _REPO, root: Path = _ROOT):
     """A repository's kept versions, with what each takes and would free."""
     from mmw.commands.site import history
-    raise typer.Exit(history(repo, home))
+    raise typer.Exit(history(repo, root))
 
 
 @site_app.command("verify")
-def cmd_site_verify(home: Path = _SITE_HOME,
-                    repair: bool = typer.Option(False, "--repair",
-                                                help="Put wrong or missing files back from the store first"),
+def cmd_site_verify(root: Path = _ROOT,
+                    repair: bool = typer.Option(False, "--repair", help="Put wrong or missing files back"),
                     break_lock: bool = _BREAK_LOCK):
-    """Hash every served file against what the site says it serves."""
+    """Hash every served file against what the mirror says it serves."""
     from mmw.commands.site import verify
-    raise typer.Exit(verify(home, repair, break_lock))
+    raise typer.Exit(verify(root, repair, break_lock))
 
 
 @site_app.command("manage")
-def cmd_site_manage(home: Path = _SITE_HOME):
+def cmd_site_manage(root: Path = _ROOT):
     """The far-side TUI: repositories, their history, applying bundles."""
     from mmw.commands.site import manage
-    raise typer.Exit(manage(home))
-
-
-site_root_app = typer.Typer(help="The roots a site serves from.", no_args_is_help=True)
-site_app.add_typer(site_root_app, name="root")
-
-
-@site_root_app.command("add")
-def cmd_site_root_add(name: str = typer.Argument(..., help="A short name for the root"),
-                      path: Path = typer.Argument(..., help="Where this machine sees it"),
-                      serve_path: Path = typer.Option(None, "--serve-path",
-                                                      help="Where the serving host sees it (default: PATH)"),
-                      home: Path = _SITE_HOME):
-    """Add a root: another disk or export to place repositories in."""
-    from mmw.commands.site import root_add
-    raise typer.Exit(root_add(name, path, serve_path, home))
-
-
-@site_root_app.command("list")
-def cmd_site_root_list(home: Path = _SITE_HOME):
-    """The site's roots; the first is the primary."""
-    from mmw.commands.site import root_list
-    raise typer.Exit(root_list(home))
+    raise typer.Exit(manage(root))
 
 
 @site_app.command("move")
-def cmd_site_move(repo: str = typer.Argument(..., help="Repository (URL or name)"),
-                  root: str = typer.Argument(..., help="The root to move it to"),
-                  home: Path = _SITE_HOME, yes: bool = typer.Option(False, "--yes", help="Don't ask"),
-                  break_lock: bool = _BREAK_LOCK):
-    """Move a repository, every kept version, to another root."""
+def cmd_site_move(repo: str = _REPO, to_root: str = typer.Argument(..., help="The root to move it to (its name)"),
+                  root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
+    """Move a repository, every kept version, to another root of the mirror."""
     from mmw.commands.site import move
-    raise typer.Exit(move(repo, root, home, yes, break_lock))
+    raise typer.Exit(move(repo, to_root, root, yes, break_lock))
 
 
 @site_app.command("tidy")
-def cmd_site_tidy(home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
+def cmd_site_tidy(root: Path = _ROOT, break_lock: bool = _BREAK_LOCK):
     """Clear moved repositories' old copies — once nginx has been recreated."""
     from mmw.commands.site import tidy
-    raise typer.Exit(tidy(home, break_lock))
+    raise typer.Exit(tidy(root, break_lock))
 
 
-site_ca_app = typer.Typer(help="The site's certificate authority.", no_args_is_help=True)
+site_ca_app = typer.Typer(help="The certificate authority (its location is kept on this machine).",
+                          no_args_is_help=True)
 site_app.add_typer(site_ca_app, name="ca")
 
 
 @site_ca_app.command("load")
 def cmd_site_ca_load(cert: Path = typer.Option(..., "--cert", help="The CA certificate (PEM)"),
-                     key: Path = typer.Option(..., "--key", help="Its private key (PEM); never copied"),
-                     home: Path = _SITE_HOME):
+                     key: Path = typer.Option(..., "--key", help="Its private key (PEM); never copied")):
     """Use an existing CA. mmw records where it is — nothing more."""
     from mmw.commands.site import ca_load
-    raise typer.Exit(ca_load(cert, key, home))
+    raise typer.Exit(ca_load(cert, key))
 
 
 @site_ca_app.command("make")
 def cmd_site_ca_make(out: Path = typer.Option(..., "--out", help="Directory for ca.crt and ca.key"),
-                     name: str = typer.Option("mmw site CA", "--name", help="The CA's name"),
-                     encrypt: bool = typer.Option(False, "--encrypt", help="Protect ca.key with a passphrase"),
-                     home: Path = _SITE_HOME):
+                     name: str = typer.Option("mmw mirror CA", "--name", help="The CA's name"),
+                     encrypt: bool = typer.Option(False, "--encrypt", help="Protect ca.key with a passphrase")):
     """Make a new CA (never over an existing one) and use it."""
     from mmw.commands.site import ca_make
-    raise typer.Exit(ca_make(out, name, encrypt, home))
+    raise typer.Exit(ca_make(out, name, encrypt))
 
 
 @site_ca_app.command("show")
-def cmd_site_ca_show(home: Path = _SITE_HOME):
-    """The site's CA: name, expiry, where it is."""
+def cmd_site_ca_show():
+    """The CA: name, expiry, where it is."""
     from mmw.commands.site import ca_show
-    raise typer.Exit(ca_show(home))
+    raise typer.Exit(ca_show())
 
 
 @site_app.command("certs")
-def cmd_site_certs(home: Path = _SITE_HOME,
+def cmd_site_certs(root: Path = _ROOT,
                    days: int = typer.Option(730, "--days", help="Validity of each certificate"),
                    force: bool = typer.Option(False, "--force", help="Re-sign even a certificate that is fine")):
-    """Sign every root's certificate with the site's CA and turn HTTPS on."""
+    """Sign every root's certificate with the CA and turn HTTPS on."""
     from mmw.commands.site import certs
-    raise typer.Exit(certs(home, days, force))
+    raise typer.Exit(certs(root, days, force))
 
 
 snapshot_app = typer.Typer(

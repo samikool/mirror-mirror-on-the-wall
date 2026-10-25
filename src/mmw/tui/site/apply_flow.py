@@ -19,20 +19,24 @@ from mmw.core.format import fmt_size
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button, JumpSelectionList
 
-RECENT = "recent.json"
+RECENT = "recent-bundles.json"           # on this machine, beside its recent roots
 
 
-def recent_paths(home: Path) -> list[str]:
+def recent_paths() -> list[str]:
+    from mmw.site.recents import state_dir
     try:
-        return json.loads(disk_io.ops.read_text(Path(home) / RECENT))
+        got = json.loads(disk_io.ops.read_text(state_dir() / RECENT))
+        return [p for p in got if isinstance(p, str)] if isinstance(got, list) else []
     except (OSError, ValueError):
         return []
 
 
-def remember(home: Path, path: str) -> None:
-    paths = [path] + [p for p in recent_paths(home) if p != path]
+def remember(path: str) -> None:
+    from mmw.site.recents import state_dir
+    paths = [path] + [p for p in recent_paths() if p != path]
     try:
-        disk_io.ops.write_text(Path(home) / RECENT, json.dumps(paths[:5]))
+        disk_io.ops.mkdir(state_dir(), parents=True, exist_ok=True)
+        disk_io.ops.write_text(state_dir() / RECENT, json.dumps(paths[:5]))
     except OSError:
         pass                               # a convenience, never a failure
 
@@ -44,6 +48,8 @@ class ApplyChoice:
     total_bytes: int = 0
     labels: tuple = ()          # (repo, label) of every repository the bundle changes
     forward: frozenset[str] = frozenset()   # held repositories ticked: serve their new version
+    place: dict | None = None               # new hostname → root location (None: the first root here)
+    sizes: tuple = ()                       # (repo, bytes) from the manifest, for each row's progress
 
 
 class ApplyReviewPage(Page):
@@ -111,7 +117,8 @@ class ApplyReviewPage(Page):
         picked = frozenset(self.query_one("#review-repos", SelectionList).selected)
         held = {r.repo for r in self._changed if r.held}
         self.dismiss(ApplyChoice(self._src, picked, self._plan.bytes,
-                                 tuple((r.repo, r.label) for r in self._changed), picked & held))
+                                 tuple((r.repo, r.label) for r in self._changed), picked & held,
+                                 sizes=tuple((r.repo, r.bytes_sent) for r in self._changed)))
 
 
 class ApplyRunPage(Page):
@@ -130,13 +137,18 @@ class ApplyRunPage(Page):
         self._read = 0
         self._started = time.monotonic()
         self._state = {repo: "waiting" for repo, _label in choice.labels}
+        self._sizes = dict(choice.sizes)
+        self._got: dict[str, int] = {}
+        self._current: str | None = None        # the repository arriving now
         self._pending_bytes = 0
+        self._pending_name = ""
         self._last_report = 0.0
 
     def compose_body(self) -> ComposeResult:
         yield ProgressBar(total=max(self._choice.total_bytes, 1), show_eta=False, id="run-bar")
         yield Static("", id="run-rate")
         yield Static(self._repo_lines(), id="run-repos")
+        yield Static("", id="run-file", markup=False)
         yield Static("", id="run-done")
 
     def compose_actions(self) -> ComposeResult:
@@ -148,8 +160,31 @@ class ApplyRunPage(Page):
         self._run()
 
     def _repo_lines(self) -> str:
+        """One row per repository: ✓ done, ▶ the one arriving or switching
+        (bytes, %, rate, time left), ◇ arrived, · waiting."""
         labels = dict(self._choice.labels)
-        return "\n".join(f"  {labels[r]:<36} {state}" for r, state in self._state.items())
+        elapsed = max(time.monotonic() - self._started, 0.001)
+        rate = self._read / elapsed
+        rows = []
+        for r, state in self._state.items():
+            label = escape_markup(labels.get(r, r))
+            if state == "receiving":
+                got, size = self._got.get(r, 0), self._sizes.get(r, 0)
+                pct = f"  {100 * got // size}%" if size else ""
+                left = f" · ~{int((size - got) / rate)}s" if rate and size > got else ""
+                rows.append(f"  ▶ {label:<34} {fmt_size(got)} / {fmt_size(size)}{pct}"
+                            f"  [dim]· {fmt_size(int(rate))}/s{left}[/]")
+            elif state == "switching":
+                rows.append(f"  ▶ {label:<34} switching")
+            elif state == "received":
+                rows.append(f"  ◇ {label:<34} received — switches once everything is checked")
+            elif state == "updated":
+                rows.append(f"  [$success]✓[/] {label:<34} updated")
+            elif state == "waiting":
+                rows.append(f"  [dim]· {label:<34} waiting[/]")
+            else:
+                rows.append(f"  ◐ {label:<34} {state}")
+        return "\n".join(rows)
 
     def _progress(self, event: str, **data) -> None:
         """From the worker. Arrivals are added up and handed over at most ten
@@ -157,19 +192,38 @@ class ApplyRunPage(Page):
         millisecond each — minutes on a big bundle."""
         if event == "receive":
             self._pending_bytes += data.get("bytes", 0)
+            self._pending_name = data.get("name", self._pending_name)
             now = time.monotonic()
             if now - self._last_report < 0.1:
                 return
             self._last_report = now
-            data = {"bytes": self._pending_bytes}
+            data = {"bytes": self._pending_bytes, "name": self._pending_name}
+            self._pending_bytes = 0
+        elif self._pending_bytes:
+            # What arrived so far belongs to the repository before this event.
+            self.app.call_from_thread(self._on_progress, "receive",
+                                      {"bytes": self._pending_bytes, "name": self._pending_name})
             self._pending_bytes = 0
         self.app.call_from_thread(self._on_progress, event, data)
 
     def _on_progress(self, event: str, data: dict) -> None:
         if not self.is_attached:
             return
+        if event == "repo":
+            if self._current is not None and self._state.get(self._current) == "receiving":
+                self._state[self._current] = "received"
+            self._current = data["repo"]
+            if self._current in self._state:
+                self._state[self._current] = "receiving"
+            self.query_one("#run-repos", Static).update(self._repo_lines())
+            return
         if event == "receive":
             self._read += data.get("bytes", 0)
+            if self._current is not None:
+                self._got[self._current] = self._got.get(self._current, 0) + data.get("bytes", 0)
+            if data.get("name"):
+                self.query_one("#run-file", Static).update(f"  {data['name']}")
+            self.query_one("#run-repos", Static).update(self._repo_lines())
             self.query_one("#run-bar", ProgressBar).update(progress=self._read)
             elapsed = max(time.monotonic() - self._started, 0.001)
             rate = self._read / elapsed
@@ -182,23 +236,37 @@ class ApplyRunPage(Page):
             for repo in list(self._state):
                 if self._state[repo] == "switching":
                     self._state[repo] = "updated"
+                elif self._state[repo] == "receiving":
+                    self._state[repo] = "received"
             self._state[data["repo"]] = "switching"
+            self.query_one("#run-repos", Static).update(self._repo_lines())
+            self.query_one("#run-file", Static).update("")
+        elif event == "done":
+            for repo in list(self._state):
+                if self._state[repo] == "switching":
+                    self._state[repo] = "updated"
             self.query_one("#run-repos", Static).update(self._repo_lines())
 
     @work(thread=True, exclusive=True, group="site-apply", exit_on_error=False)
     def _run(self) -> None:
-        from mmw.site.apply import ApplyError, apply_bundle
+        from mmw.site.apply import ApplyError, apply_to_set, nginx_steps
+        mset = self.app.mset
+        place = self._choice.place
+        if place is None:
+            place = {"*": mset.roots[0].info.location} if mset is not None else {}
         try:
-            result = apply_bundle(self.app.home, self._choice.src, only=set(self._choice.only),
-                                  forward=set(self._choice.forward), progress=self._progress,
-                                  stop_event=self._stop, say=lambda *a: None)
+            result = apply_to_set(mset, self._choice.src, place=place,
+                                  only=set(self._choice.only), forward=set(self._choice.forward),
+                                  progress=self._progress, stop_event=self._stop, say=lambda *a: None)
+            steps = nginx_steps(result)
+            result = result.merged()
         except ApplyError as e:
             self.app.call_from_thread(self._failed, str(e))
             return
         except Exception as e:  # noqa: BLE001 — the lock, and the like
             self.app.call_from_thread(self._failed, str(e))
             return
-        self.app.call_from_thread(self._done, result)
+        self.app.call_from_thread(self._done, result, steps)
 
     def _finish(self) -> None:
         self.finished = True
@@ -212,12 +280,12 @@ class ApplyRunPage(Page):
         # anything changed (apply checks everything first).
         text = f"[b $error]✗ {escape_markup(message)}[/]"
         if "stopped" not in message:
-            text += "\nthe site is unchanged"
+            text += "\nthe mirror is unchanged"
         self.query_one("#run-done", Static).update(text)
         self.set_status("")
         self._finish()
 
-    def _done(self, result) -> None:
+    def _done(self, result, steps=()) -> None:
         for repo in result.updated:
             self._state[repo] = "updated"
         for repo in result.stored_held:
@@ -226,9 +294,16 @@ class ApplyRunPage(Page):
             self._state[repo] = "refused"
         for repo in result.stopped:
             self._state[repo] = "not switched (stopped) · held"
+        for repo, state in self._state.items():
+            if state in ("waiting", "received", "receiving"):
+                self._state[repo] = "unchanged"
         self.query_one("#run-repos", Static).update(self._repo_lines())
         lines = [f"[b $success]✓ applied {result.created}[/]", *map(escape_markup, result.lines)]
         lines += [f"[b $warning]! {escape_markup(a)}[/]" for a in result.actions]
+        for name, cmds in steps:
+            verb = "start" if any("docker load" in c for c in cmds) or cmds[-1].endswith("up -d") else "recreate"
+            lines.append(f"[b $warning]! {verb} nginx in {escape_markup(name)} on the serving host:[/]")
+            lines += [f"    {escape_markup(c)}" for c in cmds]
         self.query_one("#run-done", Static).update("\n".join(lines))
         self.set_status("")
         self._finish()

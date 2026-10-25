@@ -12,6 +12,10 @@ from mmw.core import disk_io
 _CHUNK = 1024 * 1024
 
 
+class ChecksumMismatch(ValueError):
+    """Bytes that don't hash to what the manifest says: damaged on the way."""
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = Path(root)
@@ -27,7 +31,13 @@ class Store:
 
     def add_stream(self, fh: BinaryIO, expect: str | None = None) -> tuple[str, int]:
         """Store `fh`'s bytes; (checksum, size). With `expect`, bytes that do
-        not hash to it are refused and nothing is kept."""
+        not hash to it are refused and nothing is kept — and content the
+        store already has is only hashed to check it, never written again."""
+        if expect is not None and self.has(expect):
+            checksum, size = disk_io.ops.hash_fh(fh)
+            if checksum != expect:
+                raise ChecksumMismatch(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
+            return checksum, size
         disk_io.ops.mkdir(self.tmp, parents=True, exist_ok=True)
         tmp = self.tmp / f"in-{os.getpid()}-{id(fh)}"
         h, size = hashlib.sha256(), 0
@@ -39,7 +49,7 @@ class Store:
                     size += len(chunk)
             checksum = h.hexdigest()
             if expect is not None and checksum != expect:
-                raise ValueError(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
+                raise ChecksumMismatch(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
             dest = self.path(checksum)
             if disk_io.ops.exists(dest):
                 return checksum, size

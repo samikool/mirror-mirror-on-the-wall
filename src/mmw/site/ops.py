@@ -292,94 +292,148 @@ class MoveResult:
     tls_notes: list[str] = field(default_factory=list)
 
 
-def move_size(home: Path, ref: str, root_name: str) -> int:
-    """Bytes `move` would copy into the target root's store."""
-    roots = _roots(home)
-    with SiteDB(home) as db:
-        repo = resolve_repo(db, ref)
-        dst = roots.store(roots.named(root_name))
-        need = {c for v in db.versions(repo) for c in db.version_files(v.id).values() if not dst.has(c)}
-        src = roots.store(roots.of(db.repo_state(repo)))
-        return sum(disk_io.ops.stat(src.path(c)).st_size for c in need if src.has(c))
+# ── a set of roots ────────────────────────────────────────────────────────────
+
+def set_status(mset) -> list[tuple[str, "RepoState"]]:
+    """Every repository of every root here: (root name, its state)."""
+    out = []
+    for root in mset.roots:
+        with SiteDB(root.home) as db:
+            out += [(root.info.name, st) for st in db.repo_states()]
+    return sorted(out, key=lambda x: x[1].label.lower())
 
 
-def move(home: Path, ref: str, root_name: str) -> MoveResult:
-    """Move a repository to another root. Every kept version's files are
-    copied into its store and the served ones placed there before anything
-    is recorded — so a move cut short just runs again. The old root keeps
-    its copy, still served by the nginx running there, until `tidy` (or the
-    next apply), once nginx has been recreated."""
+def on_repo(mset, ref: str) -> tuple[Path, str]:
+    """The home of the root holding repository `ref`, and its key — for the
+    one-root operations (serve, forward, hold, delete_version, history)."""
+    root, key = mset.root_for_repo(ref)
+    return root.home, key
+
+
+def set_space(mset) -> dict[str, "SpaceReport"]:
+    return {root.info.name: space(root.home) for root in mset.roots}
+
+
+def set_verify(mset, repair_too: bool = False) -> dict[str, "list[str] | int"]:
+    return {root.info.name: (repair(root.home) if repair_too else verify(root.home)) for root in mset.roots}
+
+
+def set_keep(mset, keep: int | None) -> None:
+    """Keep the newest `keep` versions of each repository (None: all), in every root here."""
+    from mmw.site.home import save_settings
+    for root in mset.roots:
+        with _session(root.home) as (db, roots):
+            save_settings(root.home, load_site(root.home).model_copy(update={"keep_versions": keep}))
+            if keep is not None:
+                apply_retention(db, roots, keep)
+
+
+def _hosts_of(bases: list[str]) -> set[str]:
+    return {b.split("/", 1)[0] for b in bases}
+
+
+def move_repo(mset, ref: str, to_root: str) -> MoveResult:
+    """Move a repository, every kept version, to another root of the set.
+    Its files are copied into the target's store and its served version
+    placed there before anything is recorded — a move cut short just runs
+    again. The old root keeps serving its copy (the nginx running there
+    still routes the hostname to it) until `tidy_set`, once nginx has been
+    recreated in both roots."""
     import json
-    from mmw.site.apply import _ensure, check_shared_hosts, place_served_file, write_root_nginx
-    with _session(home) as (db, roots):
-        repo = resolve_repo(db, ref)
-        state = db.repo_state(repo)
-        src, dst = roots.of(state), roots.named(root_name)
-        if src.name == dst.name:
-            raise ValueError(f"{state.label} is already in {dst.name}")
-        roots.check_mounted(src)
-        roots.check_mounted(dst)
-        states = db.repo_states()
-        check_shared_hosts({s.repo: (dst if s.repo == repo else roots.of(s)) for s in states},
-                           {s.repo: s.label for s in states}, {s.repo: s.bases for s in states})
-        dst_store, dst_path = roots.store(dst), Path(dst.path)
+
+    from mmw.core.publisher import replay_kind
+    from mmw.site.apply import place_served_file, write_root_nginx
+    from mmw.site.home import save_settings
+    from mmw.site.switch import PHASES, _base
+    src, key = mset.root_for_repo(ref)
+    dst = mset.root_named(to_root)
+    if src.info.name == dst.info.name:
+        raise ValueError(f"{ref} is already in {dst.info.name}")
+    first, second = sorted([src, dst], key=lambda r: r.info.name)
+    with _session(first.home) as (db1, roots1), _session(second.home) as (db2, roots2):
+        sdb, sroots = (db1, roots1) if first is src else (db2, roots2)
+        ddb, droots = (db2, roots2) if first is src else (db1, roots1)
+        state = sdb.repo_state(key)
+        hosts = _hosts_of(state.bases)
+        sharing = [s.label for s in sdb.repo_states() if s.repo != key and hosts & _hosts_of(s.bases)]
+        if sharing:
+            raise ValueError(f"{state.label} shares {', '.join(sorted(hosts))} with {', '.join(sharing)} — "
+                             "a hostname lives in one root; move them together")
+        sstore, dstore = src.store(), dst.store()
+        dpath = dst.info.path
+        lacking = {c for v in sdb.versions(key) for c in sdb.version_files(v.id).values() if not dstore.has(c)}
+        need = sum(disk_io.ops.stat(sstore.path(c)).st_size for c in lacking)
+        free = dst.free_bytes()
+        if need > free:
+            from mmw.core.format import fmt_size
+            raise ValueError(f"moving {state.label} needs {fmt_size(need)} in {dst.info.name}, which has "
+                             f"{fmt_size(free)} free — nothing was copied")
+        # Until the old root lets go, the copy here is not the repository's
+        # home: a move cut short runs again from the old root.
+        ddb.set_meta(f"moving_in:{key}", src.info.name)
         copied = files = 0
-        for v in db.versions(repo):
-            for checksum in db.version_files(v.id).values():
-                if not dst_store.has(checksum):
-                    _ensure(roots, dst_store, checksum)
-                    copied += disk_io.ops.stat(dst_store.path(checksum)).st_size
+        served_new = None
+        for v in sorted(sdb.versions(key), key=lambda v: v.number):
+            rows = []
+            for rel, checksum in sdb.version_files(v.id).items():
+                if not dstore.has(checksum):
+                    with disk_io.ops.open_rb(sstore.path(checksum)) as fh:
+                        dstore.add_stream(fh, expect=checksum)
+                    copied += disk_io.ops.stat(dstore.path(checksum)).st_size
                     files += 1
+                rows.append((rel, checksum, disk_io.ops.stat(dstore.path(checksum)).st_size))
+            vid = ddb.add_version(key, state.label, v.number, v.digest, v.stamp, v.snap_label, state.bases, rows)
+            if state.serving is not None and state.serving.id == v.id:
+                served_new = vid
+        served_files: list[str] = []
         if state.serving is not None:                 # placed, in package → index → release order
-            from mmw.core.publisher import replay_kind
-            from mmw.site.switch import PHASES, _base
-            served = db.version_files(state.serving.id)
+            served = sdb.version_files(state.serving.id)
+            served_files = sorted(served)
             for kind in PHASES:
                 for rel in sorted(served):
                     if replay_kind(rel, _base(rel, state.bases)) == kind:
-                        dst_store.place(served[rel], dst_path / rel)
-        for rel, checksum in roots.network_files(db, dst).items():   # keys, the nginx image
-            if not disk_io.ops.exists(dst_path / rel):
-                _ensure(roots, dst_store, checksum)
-                place_served_file(dst_store, dst_path, rel, checksum, network=True)
-        # Recorded in one go: the new root, and what the old one still holds.
-        db.set_meta(f"move:{repo}", json.dumps({"from": src.name,
-                                               "version": state.serving.id if state.serving else None}))
-        db.set_root(repo, dst.name)
+                        dstore.place(served[rel], dpath / rel)
+            ddb.set_serving(key, served_new, state.held)
+        for rel, checksum in droots.network_files(ddb, droots.primary).items():   # keys, the nginx image
+            if not disk_io.ops.exists(dpath / rel) and dstore.has(checksum):
+                place_served_file(dstore, dpath, rel, checksum, network=True)
+        # Recorded in one go: the target holds it now; the old root's served
+        # files go at `tidy_set`.
+        sdb.set_meta(f"moved:{key}", json.dumps({"to": dst.info.name, "label": state.label,
+                                                 "files": served_files}))
+        sdb.drop_repo(key)
+        ddb.set_meta(f"moving_in:{key}", "")
         changed = []
-        if roots.multi and db.get_meta("settings") and write_root_nginx(db, roots):
-            changed = [src.name, dst.name]
-        _render(roots)
+        for db_, roots_, name in ((sdb, sroots, src.info.name), (ddb, droots, dst.info.name)):
+            if roots_.multi and db_.get_meta("settings") and write_root_nginx(db_, roots_):
+                changed.append(name)
+        _render(droots)
+    for root in mset.roots:
+        s = load_site(root.home)
+        save_settings(root.home, s.model_copy(update={"hosts": {**s.hosts, **{h: dst.info.name for h in hosts}}}))
     from mmw.site.certs import tls_notes
-    return MoveResult(copied, files, changed, tls_notes(home))
+    return MoveResult(copied, files, changed, tls_notes(dst.home) + tls_notes(src.home))
 
 
-def tidy(home: Path) -> list[str]:
-    """Clear the old roots of moved repositories (do it once nginx has been
-    recreated); the labels of the repositories tidied."""
-    with _session(home) as (db, roots):
-        return _tidy(db, roots)
-
-
-def _tidy(db: SiteDB, roots: Roots) -> list[str]:
+def tidy_set(mset) -> list[str]:
+    """Clear moved repositories' old copies (once nginx has been recreated);
+    the labels tidied."""
     import json
+
     from mmw.resources.apply import _prune_empty_parents
     done = []
-    for st in db.repo_states():
-        rec = json.loads(db.get_meta(f"move:{st.repo}") or "{}")
-        if not rec:
-            continue
-        old = roots.named(rec["from"])
-        root = Path(old.path)
-        if not disk_io.ops.is_dir(root / ".mmw" / "store"):
-            continue                                  # not mounted: tidied when it is
-        here = {p for s in db.repo_states() if s.serving is not None and roots.of(s).name == old.name
-                for p in db.version_files(s.serving.id)}
-        if rec.get("version") is not None:
-            for rel in db.version_files(rec["version"]):
-                if rel not in here and disk_io.ops.remove(root / rel) is not None:
-                    _prune_empty_parents(str(root), str((root / rel).parent))
-        roots.store(old).gc(roots.referenced(db, old))
-        db.set_meta(f"move:{st.repo}", "{}")
-        done.append(st.label)
+    for root in mset.roots:
+        with _session(root.home) as (db, roots):
+            path = root.info.path
+            here = {p for s in db.repo_states() if s.serving is not None for p in db.version_files(s.serving.id)}
+            for k, raw in db.metas("moved:").items():
+                rec = json.loads(raw or "{}")
+                if not rec:
+                    continue
+                for rel in rec.get("files", []):
+                    if rel not in here and disk_io.ops.remove(path / rel) is not None:
+                        _prune_empty_parents(str(path), str((path / rel).parent))
+                db.set_meta(k, "{}")
+                done.append(rec.get("label", k.split(":", 1)[1]))
+            root.store().gc(roots.referenced(db, roots.primary))
     return done

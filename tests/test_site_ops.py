@@ -79,7 +79,7 @@ def test_hold_then_apply_keeps_serving(env, tmp_path):  # noqa: F811
 
 def test_cli_serve_needs_yes_without_tty(env, tmp_path):  # noqa: F811
     _cfg, home, root, trees = _three(env, tmp_path)
-    run = lambda *a: CliRunner().invoke(cli.app, ["site", *a, "--home", str(home)])  # noqa: E731
+    run = lambda *a: CliRunner().invoke(cli.app, ["site", *a])  # noqa: E731
     r = run("serve", "a", "v1")
     assert r.exit_code == 1 and "--yes" in r.output and _tree(root) == trees[2]
     r = run("serve", "a", "v1", "--yes")

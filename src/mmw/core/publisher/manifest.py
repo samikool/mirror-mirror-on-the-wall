@@ -100,7 +100,9 @@ class ManifestHeader:
 def write_manifest(path: Path, header: ManifestHeader,
                    files: Iterable[tuple[str, str]]) -> None:
     """Write header + one {"p":…,"c":…} line per file — with "r", the
-    repository, for a (path, checksum, repo) row whose repo is set.
+    repository, for a (path, checksum, repo) row whose repo is set, and "s",
+    the size, for a (path, checksum, repo, size) row (a far side plans its
+    disk space from the manifest alone; readers treat "s" as optional).
 
     Streams: `files` may be a generator over millions of rows.
     """
@@ -114,10 +116,12 @@ def write_manifest(path: Path, header: ManifestHeader,
                     del fields[optional]
             out.write(json.dumps(fields, sort_keys=True) + "\n")
             for row in files:
-                if len(row) == 3 and row[2] is not None:
-                    out.write(json.dumps({"p": row[0], "c": row[1], "r": row[2]}) + "\n")
-                else:
-                    out.write(json.dumps({"p": row[0], "c": row[1]}) + "\n")
+                line = {"p": row[0], "c": row[1]}
+                if len(row) >= 3 and row[2] is not None:
+                    line["r"] = row[2]
+                if len(row) >= 4 and row[3] is not None:
+                    line["s"] = row[3]
+                out.write(json.dumps(line) + "\n")
         disk_io.ops.replace(tmp, path)
     finally:
         # A no-op after a successful replace() — tmp no longer exists there,
@@ -148,6 +152,26 @@ def iter_manifest_v2(path: Path):
                 if line.strip():
                     row = json.loads(line)
                     yield row["p"], row["c"], row.get("r")
+        finally:
+            text.close()
+    return header, rows()
+
+
+def iter_manifest_sized(path: Path):
+    """(header, rows) with rows (path, checksum, repository or None, size or None)."""
+    text = _open_text(path)
+    try:
+        header = ManifestHeader(**json.loads(text.readline()))
+    except BaseException:
+        text.close()
+        raise
+
+    def rows():
+        try:
+            for line in text:
+                if line.strip():
+                    row = json.loads(line)
+                    yield row["p"], row["c"], row.get("r"), row.get("s")
         finally:
             text.close()
     return header, rows()

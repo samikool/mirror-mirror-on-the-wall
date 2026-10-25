@@ -163,7 +163,8 @@ class HashingWriter(io.RawIOBase):
         return n
 
     def flush(self) -> None:
-        self._out.flush()
+        if not self._out.closed:          # collected after its file was closed: nothing to flush
+            self._out.flush()
 
     def hexdigest(self) -> str:
         return self._h.hexdigest()

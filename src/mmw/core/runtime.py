@@ -20,6 +20,10 @@ from mmw.core import disk_io
 
 DIST = "mirror-mirror-on-the-wall"
 ARCHES = ("x86_64", "aarch64")
+# A checkout's wheel changes with every edit: keep this many of its runtimes
+# per (version, Python, architecture); older ones are removed.
+KEEP_DEV_BUILDS = 2
+UV_BUILD_TIMEOUT = 600          # seconds for `uv build` of a checkout
 
 
 class NotOnIndex(Exception):
@@ -46,6 +50,92 @@ class Fetcher(Protocol):
 def mmw_version() -> str:
     from importlib.metadata import version
     return version(DIST)
+
+
+def _distribution():
+    from importlib.metadata import distribution
+    return distribution(DIST)
+
+
+def source_checkout() -> Path | None:
+    """The project root when this mmw runs from a source checkout (an
+    editable install, or a path install whose directory still holds the
+    project), else None: an installed release."""
+    raw = _distribution().read_text("direct_url.json")
+    if not raw:
+        return None
+    try:
+        info = json.loads(raw)
+    except ValueError:
+        return None
+    if "dir_info" not in info:
+        return None                                    # a wheel or an index: a release
+    from urllib.parse import unquote, urlparse
+    url = urlparse(info.get("url", ""))
+    if url.scheme != "file":
+        return None
+    root = Path(unquote(url.path))
+    if (info["dir_info"] or {}).get("editable") or disk_io.ops.exists(root / "pyproject.toml"):
+        return root
+    return None
+
+
+def _uv_build_cmd(out: Path) -> list[str]:
+    import sys
+    return [sys.executable, "-m", "uv", "build", "--wheel", "-o", str(out)]
+
+
+def checkout_wheel(build_dir: Path, *, stop_event=None) -> Path:
+    """Build this checkout's wheel, working tree as it is, into a directory
+    of its own under `build_dir` — two builds at once never touch each
+    other's. Stops when `stop_event` is set; gives up after UV_BUILD_TIMEOUT."""
+    import time
+    root = source_checkout()
+    if root is None:
+        raise RuntimeUnavailable("mmw isn't running from a source checkout — nothing to build")
+    disk_io.ops.mkdir(build_dir, parents=True, exist_ok=True)
+    for old in disk_io.ops.glob(build_dir, "wheel-*"):         # a day old: no build still wants it
+        try:
+            if disk_io.ops.stat(old).st_mtime < time.time() - 86400:
+                disk_io.ops.rmtree(old, ignore_errors=True)
+        except OSError:
+            pass
+    out = Path(tempfile.mkdtemp(dir=build_dir, prefix="wheel-"))
+    proc = subprocess.Popen(_uv_build_cmd(out), cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
+    started = time.monotonic()
+    try:
+        while proc.poll() is None:
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("stopped while building mmw's wheel")
+            if time.monotonic() - started > UV_BUILD_TIMEOUT:
+                raise RuntimeUnavailable(f"building mmw's wheel from {root} took longer than "
+                                         f"{UV_BUILD_TIMEOUT:g}s — stopped")
+            time.sleep(0.1)
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        disk_io.ops.rmtree(out, ignore_errors=True)
+        raise
+    stdout, stderr = proc.communicate()
+    if proc.returncode != 0:
+        disk_io.ops.rmtree(out, ignore_errors=True)
+        raise RuntimeUnavailable(f"building mmw's wheel from {root} failed: "
+                                 f"{(stderr or stdout).strip().splitlines()[-1:] or ['uv build']}")
+    wheels = list(disk_io.ops.glob(out, "mirror_mirror_on_the_wall-*.whl"))
+    if len(wheels) != 1:
+        raise RuntimeUnavailable(f"uv build left {len(wheels)} mmw wheels in {out}")
+    return wheels[0]
+
+
+def resolve_wheel(explicit: Path | None, build_dir: Path, *, stop_event=None) -> Path | None:
+    """The mmw wheel to ship: `explicit`, else this checkout's own build,
+    else None — an installed release, fetched from PyPI."""
+    if explicit is not None:
+        return explicit
+    if source_checkout() is not None:
+        return checkout_wheel(build_dir, stop_event=stop_event)
+    return None
 
 
 def uv_version() -> str:
@@ -195,6 +285,49 @@ def _reap_abandoned(cache: Path, name: str, older_than: float = 86400) -> None:
             pass
 
 
+def _requires(wheel: Path) -> list[str] | None:
+    """A wheel's Requires-Dist lines, or None when it can't be read."""
+    try:
+        with disk_io.ops.open_rb(wheel) as fh, zipfile.ZipFile(fh) as z:
+            meta = next((n for n in z.namelist() if n.endswith(".dist-info/METADATA")), None)
+            if meta is None:
+                return None
+            text = z.read(meta).decode("utf-8", "replace")
+    except (OSError, zipfile.BadZipFile):
+        return None
+    return sorted(line.split(":", 1)[1].strip() for line in text.splitlines()
+                  if line.startswith("Requires-Dist:"))
+
+
+def _dev_builds(cache: Path, prefix: str) -> list[Path]:
+    """The verified runtimes of `prefix` built from local wheels, newest first."""
+    found = [p for p in disk_io.ops.glob(cache, f"{prefix}-*")
+             if ".tmp-" not in p.name and verify(p) is not None]
+    return sorted(found, key=lambda p: disk_io.ops.stat(p).st_mtime, reverse=True)
+
+
+def _reuse(sibling: Path, tmp: Path, wheel: Path) -> str | None:
+    """Lay `tmp` out from a sibling build of the same version whose mmw
+    wheel needs the same dependencies: every file but mmw's own wheel is
+    the same, so nothing is downloaded. The Python archive's name, or None
+    when the sibling can't be used."""
+    meta = verify(sibling)
+    old = next(iter(disk_io.ops.glob(sibling / "wheels", "mirror_mirror_on_the_wall-*.whl")), None)
+    if meta is None or old is None or _requires(old) is None or _requires(old) != _requires(wheel):
+        return None
+    for p in disk_io.ops.rglob(sibling, "*"):
+        rel = p.relative_to(sibling)
+        if not disk_io.ops.is_file(p) or rel.as_posix() == "RUNTIME.json" or p == old:
+            continue
+        disk_io.ops.mkdir((tmp / rel).parent, parents=True, exist_ok=True)
+        disk_io.ops.copy_file(p, tmp / rel)
+        if rel.as_posix() == "uv":
+            disk_io.ops.chmod(tmp / rel, 0o755)
+    disk_io.ops.mkdir(tmp / "wheels", parents=True, exist_ok=True)
+    disk_io.ops.copy_file(wheel, tmp / "wheels" / wheel.name)
+    return meta["python_archive"]
+
+
 def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetcher: Fetcher,
                   wheel: Path | None = None, progress=None, stop_event=None) -> Path:
     """`{cache}/{mmw_version}-py{python}-{arch}/`, built if it isn't there
@@ -222,8 +355,15 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
     # Each build in its own directory, renamed into place whole: two bundles
     # building the same runtime at once never write into each other's.
     tmp = Path(tempfile.mkdtemp(dir=cache, prefix=f"{d.name}.tmp-"))
+    prefix = f"{mmw_version}-py{python}-{arch}"
     try:
         uv = uv_version()
+        # A rebuilt local wheel (each edit of a checkout): only it changed.
+        name = next((n for n in (_reuse(s, tmp, wheel) for s in _dev_builds(cache, prefix)[:1]) if n),
+                    None) if wheel is not None else None
+        if name is not None:
+            step(f"mmw {mmw_version} rebuilt — reusing uv, Python and the other wheels")
+            return _finish(cache, d, tmp, prefix, name, uv, arch, python, mmw_version, step)
         step(f"uv {uv} for {arch}…")
         disk_io.ops.write_bytes(tmp / "uv", fetcher.uv_binary(uv, arch))
         disk_io.ops.chmod(tmp / "uv", 0o755)
@@ -237,21 +377,33 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
         except NotOnIndex:
             raise RuntimeUnavailable(f"mmw {mmw_version} isn't on PyPI — pass --runtime-wheel PATH "
                              "(uv build makes one)") from None
-        files = {str(p.relative_to(tmp)): _sha256(p)
-                 for p in sorted(disk_io.ops.rglob(tmp, "*")) if disk_io.ops.is_file(p)}
-        meta = {"mmw": mmw_version, "python": python, "python_archive": name, "uv": uv,
-                "arch": arch, "files": files}
-        disk_io.ops.write_text(tmp / "RUNTIME.json", json.dumps(meta, indent=2, sort_keys=True) + "\n")
-        step("done")
-        try:
-            disk_io.ops.rename(tmp, d)
-        except OSError:
-            if verify(d) is None:
-                raise
-            disk_io.ops.rmtree(tmp)                   # another build got there first
+        return _finish(cache, d, tmp, prefix, name, uv, arch, python, mmw_version, step,
+                       dev=wheel is not None)
     except BaseException:
         disk_io.ops.rmtree(tmp, ignore_errors=True)
         raise
+
+
+def _finish(cache: Path, d: Path, tmp: Path, prefix: str, name: str, uv: str, arch: str, python: str,
+            mmw_version: str, step, dev: bool = True) -> Path:
+    """Record `tmp`'s files in RUNTIME.json and rename it into place as `d`;
+    then keep only the newest KEEP_DEV_BUILDS dev builds of `prefix`."""
+    files = {str(p.relative_to(tmp)): _sha256(p)
+             for p in sorted(disk_io.ops.rglob(tmp, "*")) if disk_io.ops.is_file(p)}
+    meta = {"mmw": mmw_version, "python": python, "python_archive": name, "uv": uv,
+            "arch": arch, "files": files}
+    disk_io.ops.write_text(tmp / "RUNTIME.json", json.dumps(meta, indent=2, sort_keys=True) + "\n")
+    step("done")
+    try:
+        disk_io.ops.rename(tmp, d)
+    except OSError:
+        if verify(d) is None:
+            raise
+        disk_io.ops.rmtree(tmp)                   # another build got there first
+    if dev:
+        for old in _dev_builds(cache, prefix)[KEEP_DEV_BUILDS:]:
+            if old != d:
+                disk_io.ops.rmtree(old, ignore_errors=True)
     return d
 
 
@@ -270,51 +422,16 @@ def wanted(network, wheel: Path | None = None) -> dict:
     return {"mmw": version, "python": network.runtime_python, "arches": sorted(network.runtime_arches), **built}
 
 
-def runtime_files(network, cfg, mirror_dir: Path, *, fetcher: Fetcher,
-                  wheel: Path | None = None, progress=None, stop_event=None) -> dict[str, bytes | Path]:
-    """The `.mmw/runtime/` members of a bundle: `bootstrap.sh`, a top
-    `RUNTIME.json` ({mmw, python, arches}), and each architecture's built
-    runtime under `{arch}/`. Builds what isn't cached; raises before
-    anything is written if a download fails."""
-    from mmw.resources import BOOTSTRAP
-    want = wanted(network, wheel)
-    out: dict[str, bytes | Path] = {
-        # Bytes, never the file: a stage hardlinks files, and a link to the
-        # installed package's own copy would let an edit reach it.
-        ".mmw/runtime/bootstrap.sh": disk_io.ops.read_bytes(BOOTSTRAP),
-        ".mmw/runtime/RUNTIME.json": (json.dumps(want, sort_keys=True) + "\n").encode(),
-    }
-    for arch in want["arches"]:
-        d = build_runtime(Path(mirror_dir) / "runtime", arch=arch, python=want["python"],
-                          mmw_version=want["mmw"], fetcher=fetcher, wheel=wheel,
-                          progress=(lambda m: progress("", f"runtime:{m}")) if progress else None,
-                          stop_event=stop_event)
-        for p in sorted(disk_io.ops.rglob(d, "*")):
-            if disk_io.ops.is_file(p):
-                out[f".mmw/runtime/{arch}/{p.relative_to(d)}"] = p
-    return out
-
-
-def pending(network, mirror_dir: Path, *, from_nothing: bool) -> str | None:
-    """What the next bundle of `network` adds for mmw's runtime, said for an
-    estimate: None when it carries none (an apply network, or what was last
-    sent is current and the bundle doesn't start from nothing)."""
-    if network.far_side != "mmw":
-        return None
+def installer_note(network, mirror_dir: Path) -> str:
+    """What "Include mmw installer" adds, said for an estimate: the cached
+    runtimes' size, or the download it makes the first time."""
     from mmw.core.format import fmt_size
-    from mmw.core.pool import Pool
-    want = wanted(network)
-    if not from_nothing:
-        try:
-            with Pool(mirror_dir, read_only=True) as pool:
-                if pool.runtime_sent(network.name) == want:
-                    return None
-        except Exception:  # noqa: BLE001 — no pool yet: nothing was sent
-            pass
-    size = 0
-    for arch in want["arches"]:
-        d = Path(mirror_dir) / "runtime" / f"{want['mmw']}-py{want['python']}-{arch}"
-        if verify(d) is None:
-            return "mmw's runtime (downloaded when it runs, about 100 MB per architecture)"
-        size += sum(disk_io.ops.stat(p).st_size for p in disk_io.ops.rglob(d, "*") if disk_io.ops.is_file(p))
-    return f"mmw's runtime ({fmt_size(size)})"
+    version, size = mmw_version(), 0
+    for arch in sorted(network.runtime_arches):
+        found = [d for d in disk_io.ops.glob(Path(mirror_dir) / "runtime",
+                                             f"{version}-py{network.runtime_python}-{arch}*")
+                 if verify(d) is not None]
+        if not found:
+            return "mmw installer (about 100 MB per architecture)"
+        size += sum(disk_io.ops.stat(p).st_size for p in disk_io.ops.rglob(found[0], "*") if disk_io.ops.is_file(p))
+    return f"mmw installer ({fmt_size(size)})"

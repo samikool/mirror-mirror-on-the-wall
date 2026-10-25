@@ -182,7 +182,7 @@ def bundle_network(
     stdout=None,
     repos: list[str] | None = None,
     stage: bool = False,
-    runtime: bool = True,
+    installer: bool = False,
     runtime_wheel: Path | None = None,
     fetcher=None,
 ) -> BundleResult:
@@ -202,16 +202,25 @@ def bundle_network(
     that the destination lacks — a far side of unknown state is repaired.
     The nginx config and TLS files are regenerated for the far side.
 
-    An mmw network's bundle carries mmw's own runtime (`.mmw/runtime/`) when
-    it starts from nothing, or when the mmw version or the runtime settings differ from
-    the last runtime sent — unless `runtime` is False. `runtime_wheel` is a
-    local mmw wheel for a version PyPI lacks; `fetcher` does the downloads.
+    `installer` writes mmw's installer (`mmw-<version>-<arch>.tar`, one per
+    `runtime_arches`) beside the bundle once it is written — never inside
+    it, and a failure to build one is only a warning. `runtime_wheel` is
+    the mmw wheel to ship (default: this checkout's own build, or PyPI's
+    for a release); `fetcher` does the downloads.
     """
     from mmw.core.snapshots import (
         ensure_repo_versions, find_snapshot, import_ledger, recorded_bases, take_snapshot,
     )
 
     mmw_far_side = network.far_side == "mmw"
+    if installer:
+        from mmw.core.far_side import require_mmw
+        require_mmw(network, "the mmw installer")
+        if is_stdout(out_path) and not stage:
+            raise ValueError("a bundle on stdout has nowhere to put mmw's installer — "
+                             "write it on its own with `mmw installer --out DIR`")
+        if runtime_wheel is not None:
+            _check_wheel(runtime_wheel)             # before hours of bundling, not after
     if repos is not None and not mmw_far_side:
         from mmw.core.far_side import require_mmw
         require_mmw(network, "partial bundles")
@@ -222,18 +231,6 @@ def bundle_network(
         import_ledger(pool, mirror_dir, network.name)
         ensure_repo_versions(pool, network.name)
         start = _resolve_from(pool, network.name, from_ref)
-        # mmw's runtime: built (or taken from the cache) before anything is
-        # written — no snapshot, no bundle, no ledger row if a download
-        # fails. Carried from nothing, or when what was last sent differs.
-        shipped_runtime, runtime_members = None, {}
-        if mmw_far_side and runtime:
-            from mmw.core import runtime as rt
-            want = rt.wanted(network, runtime_wheel)
-            if start is None or pool.runtime_sent(network.name) != want:
-                runtime_members = rt.runtime_files(
-                    network, cfg, mirror_dir, fetcher=fetcher or rt.default_fetcher(stop_event=stop_event),
-                    wheel=runtime_wheel, progress=progress, stop_event=stop_event)
-                shipped_runtime = want
         if to_ref != "now":
             dest = find_snapshot(pool, network.name, to_ref)
             if not dest.complete:
@@ -335,7 +332,7 @@ def bundle_network(
                           apply_script_bytes(), prune=network.prune and not mmw_far_side,
                           full=header.full if mmw_far_side else start is None, row_repo=row_repo,
                           progress=progress, tls_files=tls_files, stop_event=stop_event,
-                          writer=writer, runtime_files=runtime_members,
+                          writer=writer,
                           scratch_dir=ledger_dir(mirror_dir, network.name) if streaming or stage else None)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
@@ -434,15 +431,45 @@ def bundle_network(
         pool.record_bundle(network.name, header.previous, dest.stamp, str(target),
                            sink.sent, sink.sent_bytes, len(sink.deleted),
                            kind="stage" if stage else "stream" if streaming else "bundle",
-                           repos=sent_repos, runtime=shipped_runtime)
-    result.runtime = shipped_runtime
+                           repos=sent_repos)
+    if installer and not (stop_event is not None and stop_event.is_set()):
+        _write_installers(result, network, mirror_dir, Path(target).parent, runtime_wheel, fetcher,
+                          progress, stop_event)
     return result
+
+
+def _write_installers(result, network, mirror_dir: Path, out_dir: Path, wheel, fetcher, progress,
+                      stop_event) -> None:
+    """mmw's installers beside a written bundle. A failure is a warning: the
+    bundle is complete without them."""
+    from mmw.core import runtime as rt
+    from mmw.core.installer import write_installers
+    cache = Path(mirror_dir) / "runtime"
+    try:
+        result.installers = write_installers(
+            out_dir, arches=sorted(network.runtime_arches), python=network.runtime_python, cache=cache,
+            fetcher=fetcher or rt.default_fetcher(stop_event=stop_event),
+            wheel=rt.resolve_wheel(wheel, cache / "build", stop_event=stop_event),
+            progress=(lambda m: progress("", f"runtime:{m}")) if progress else None, stop_event=stop_event)
+    except (rt.RuntimeUnavailable, OSError, InterruptedError, ValueError) as e:
+        result.warnings.append(f"mmw installer not written ({e})")
+
+
+def _check_wheel(wheel: Path) -> None:
+    from packaging.utils import InvalidWheelFilename, parse_wheel_filename
+    try:
+        parse_wheel_filename(Path(wheel).name)
+    except InvalidWheelFilename:
+        raise ValueError(f"--runtime-wheel {wheel}: isn't a wheel file name "
+                         "(mirror_mirror_on_the_wall-VERSION-py3-none-any.whl)") from None
+    if not disk_io.ops.is_file(wheel):
+        raise ValueError(f"--runtime-wheel {wheel}: no such wheel")
 
 
 def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir: Path | None = None,
                   progress=None, stop_event=None, mirror_start_callback=None, *,
                   from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None,
-                  runtime: bool = True, runtime_wheel: Path | None = None, fetcher=None) -> BundleResult:
+                  installer: bool = False, runtime_wheel: Path | None = None, fetcher=None) -> BundleResult:
     """`mmw stage`: the bundle `bundle_network` would write, laid out as a
     directory `{out_dir or bundle_dir}/{network}-{name}/` of hardlinks to the
     pool instead of a tar. For mmw networks only."""
@@ -450,4 +477,4 @@ def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir
     require_mmw(network, "mmw stage")
     return bundle_network(network, cfg, mirror_dir, out_dir, progress, stop_event, mirror_start_callback,
                           from_ref=from_ref, to_ref=to_ref, repos=repos, stage=True,
-                          runtime=runtime, runtime_wheel=runtime_wheel, fetcher=fetcher)
+                          installer=installer, runtime_wheel=runtime_wheel, fetcher=fetcher)

@@ -43,15 +43,14 @@ def _placements(h: Path, src: str, specs: list[str]) -> dict[str, str]:
 
 def apply(src: str, home: Path | None = None, forward: list[str] | None = None,
           forward_all: bool = False, dry_run: bool = False, break_lock: bool = False,
-          place: list[str] | None = None, allow_downgrade: bool = False) -> int:
+          place: list[str] | None = None) -> int:
     from mmw.site.apply import ApplyError, apply_bundle
     from mmw.site.lock import LockHeld
     try:
         h = _home(home, break_lock)
         keys = _repo_keys(h, forward) if forward else None
         placed = _placements(h, src, place) if place else None
-        r = apply_bundle(h, src, forward=keys, forward_all=forward_all, dry_run=dry_run, place=placed,
-                         allow_downgrade=allow_downgrade)
+        r = apply_bundle(h, src, forward=keys, forward_all=forward_all, dry_run=dry_run, place=placed)
     except ApplyError as e:
         eprint(str(e))
         return e.code

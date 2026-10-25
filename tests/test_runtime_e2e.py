@@ -1,19 +1,18 @@
-"""The real thing: build mmw's runtime from PyPI and python-build-standalone,
-then bootstrap it in a RHEL 8 container with no Python and no network.
+"""The real thing: build mmw's installer from this checkout, PyPI and
+python-build-standalone, then install it in a RHEL 8 container with no
+Python and no network.
 
 MMW_RUNTIME_E2E=1 enables it; ordinary pytest never downloads or starts
 Docker. MMW_RUNTIME_E2E_IMAGE overrides the image (default rockylinux:8).
 """
 import os
 import platform
-import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-from mmw.core import config
 from mmw.core import runtime as R
+from mmw.core.installer import write_installers
 
 pytestmark = [
     pytest.mark.network,
@@ -24,25 +23,15 @@ IMAGE = os.environ.get("MMW_RUNTIME_E2E_IMAGE", "rockylinux:8")
 ARCH = {"arm64": "aarch64"}.get(platform.machine(), platform.machine())
 
 
-def test_bootstrap_in_rocky8(tmp_path):
-    repo = Path(__file__).resolve().parent.parent
-    subprocess.run(["uv", "build", "--wheel", "-o", str(tmp_path / "dist")], cwd=repo, check=True,
-                   capture_output=True)
-    (wheel,) = (tmp_path / "dist").glob("mirror_mirror_on_the_wall-*.whl")
-    net = config.NetworkConfig(name="e2e", far_side="mmw", runtime_arches=[ARCH])
-    members = R.runtime_files(net, None, tmp_path / "pool", fetcher=R.RealFetcher(), wheel=wheel)
-    rt = tmp_path / "bundle"
-    for name, data in members.items():
-        dest = rt / name
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(data, bytes):
-            dest.write_bytes(data)
-        else:
-            shutil.copy(data, dest)
-    script = ("set -e; ! command -v python3; sh /b/.mmw/runtime/bootstrap.sh --home /site; "
-              "/site/bin/mmw --help >/dev/null; /site/bin/mmw site init --root /srv/oak; "
-              "/site/bin/mmw site status")
-    r = subprocess.run(["docker", "run", "--rm", "--network", "none", "-v", f"{rt}:/b:ro", IMAGE,
+def test_installer_in_rocky8(tmp_path):
+    cache = tmp_path / "cache"
+    # A checkout ships its own build: `site` exists in it, not in PyPI's 1.2.0.
+    (path,) = write_installers(tmp_path / "out", arches=[ARCH], python="3.12", cache=cache,
+                               fetcher=R.RealFetcher(), wheel=R.resolve_wheel(None, cache / "build"))
+    script = ("set -e; ! command -v python3; tar -xf /b/" + path.name + " -C /tmp; "
+              "sh /tmp/mmw-*/install.sh; ~/.local/bin/mmw site --help")
+    r = subprocess.run(["docker", "run", "--rm", "--network", "none", "-v", f"{path.parent}:/b:ro", IMAGE,
                         "sh", "-c", script], capture_output=True, text=True, timeout=900)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert f"mmw {R.wanted(net, wheel)['mmw']} installed — /site/bin/mmw" in r.stdout
+    assert "installed — /root/.local/bin/mmw" in r.stdout
+    assert "apply" in r.stdout and "serve" in r.stdout          # `mmw site --help`: the dev build's commands

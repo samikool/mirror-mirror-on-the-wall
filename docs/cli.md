@@ -106,8 +106,8 @@ bundle went, to a new snapshot of now.
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for a full bundle. Default: where the last bundle went. |
 | `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |
 | `--repo` |  | Only this repository (URL or name; repeatable). Needs `-n` and `far_side = "mmw"`. |
-| `--no-runtime` |  | Leave mmw's own runtime out of an mmw network's bundle (it is carried when the far side's mmw is out of date). |
-| `--runtime-wheel` |  | Ship this mmw wheel in the runtime instead of PyPI's (a dev build; `uv build` makes one). |
+| `--installer` |  | Include mmw installer: write `mmw-<version>-<arch>.tar` beside it, for a far side to install mmw from. |
+| `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
 
 ### `mmw stage`
 
@@ -123,8 +123,21 @@ networks whose far side runs mmw (`far_side = "mmw"`).
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for everything. Default: what was last sent of each repository. |
 | `--to` |  | Snapshot to bring it to. Default: a new snapshot of now. |
 | `--repo` |  | Only this repository (URL or name; repeatable). |
-| `--no-runtime` |  | Leave mmw's own runtime out (it is carried when the far side's mmw is out of date). |
-| `--runtime-wheel` |  | Ship this mmw wheel in the runtime instead of PyPI's (a dev build; `uv build` makes one). |
+| `--installer` |  | Include mmw installer: write `mmw-<version>-<arch>.tar` beside it, for a far side to install mmw from. |
+| `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
+
+### `mmw installer`
+
+Write mmw's installer on its own: one `mmw-<version>-<arch>.tar` per
+architecture. On the far side, `tar -xf mmw-….tar && sh mmw-…/install.sh`
+puts mmw on the path (`~/.local/bin`, or `--prefix DIR`), offline. From a
+source checkout it ships that checkout's own build, never PyPI's.
+
+| Option | Short | Description |
+|---|---|---|
+| `--out` | `-o` | Directory to write the installer(s) into (required). |
+| `--network` | `-n` | Take the architectures and Python from this network's `runtime_arches` and `runtime_python`. |
+| `--runtime-wheel` |  | The mmw wheel to ship. |
 
 ### `mmw site`
 
@@ -135,7 +148,7 @@ the site take `--break-lock`. See [far-side.md](far-side.md).
 | Command | What it does |
 |---|---|
 | `mmw site init --root DIR [--home DIR]` | Make a site: a root to serve, a home for its state (default `DIR/.mmw/site`) |
-| `mmw site apply SRC [--forward REPO]… [--forward-all] [--place REPO=ROOT]… [--dry-run] [--allow-downgrade]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin); a newer mmw in it is installed after |
+| `mmw site apply SRC [--forward REPO]… [--forward-all] [--place REPO=ROOT]… [--dry-run]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin) |
 | `mmw site manage` | The far-side TUI: repositories, their history, applying bundles |
 | `mmw site status` | What each repository serves, the newest kept, held or current |
 | `mmw site history REPO` | A repository's kept versions, sizes, what each would free |

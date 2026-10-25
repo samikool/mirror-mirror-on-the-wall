@@ -94,3 +94,24 @@ def test_dir_members_copies_when_it_cannot_link(tmp_path, monkeypatch):
     assert (tmp_path / "stage/h/p/a.deb").read_bytes() == b"payload"
     assert (tmp_path / "stage/h/p/a.deb").stat().st_ino != blob.stat().st_ino
     assert w.copied_bytes == 2 * len(b"payload")              # the blob, and its hardlink entry
+
+
+def test_a_committed_tar_file_cleans_up_quietly(tmp_path):
+    """The hashing wrapper outlives the file it wrote to: collecting it must
+    not flush a closed file (an unraisable ValueError on every bundle)."""
+    import gc
+    import sys
+
+    from mmw.core.publisher.members import TarMembers
+    seen = []
+    old, sys.unraisablehook = sys.unraisablehook, seen.append
+    try:
+        tmp = tmp_path / "b.tar.tmp"
+        w = TarMembers(open(tmp, "wb"), final_path=tmp_path / "b.tar", tmp_path=tmp)
+        w.add_bytes("a", b"x")
+        w.commit()
+        del w
+        gc.collect()
+    finally:
+        sys.unraisablehook = old
+    assert seen == []

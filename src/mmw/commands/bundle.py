@@ -27,14 +27,14 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         out: Path | None = None,
         allow_incomplete: bool = False, from_ref: str | None = None,
         to_ref: str | None = None, repos: list[str] | None = None, stage: bool = False,
-        runtime: bool = True, runtime_wheel: Path | None = None) -> int:
+        installer: bool = False, runtime_wheel: Path | None = None) -> int:
     """Bundle one or all configured networks. Returns a process exit code.
 
     `from_ref` / `to_ref` name snapshots (stamp, label or id) of the one
     network `-n` names; `from_ref="none"` is a full bundle. Unset: from where
-    the last bundle went, to a new snapshot of now. `runtime=False` leaves
-    mmw's own runtime out of an mmw network's bundle; `runtime_wheel` is a
-    local mmw wheel to ship in place of PyPI's."""
+    the last bundle went, to a new snapshot of now. `installer` writes mmw's
+    installer beside an mmw network's bundle; `runtime_wheel` is the mmw
+    wheel it ships."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
@@ -69,6 +69,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
     start = None if from_ref == "none" else (from_ref or _LAST)
     mirror_dir = cfg.settings.mirror_dir
     ok = True
+    installers_written: set[tuple] = set()      # (directory, arches, python): one installer each
     for net in networks:
         # A bundle destination is `out` (this run) or `net.bundle_dir` (the
         # config). Naming the network with `-n` and finding neither is an
@@ -108,8 +109,17 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
         try:
             picked = {"repos": keys} if keys else {}
-            if not runtime:
-                picked["runtime"] = False
+            if installer and net.far_side != "mmw":
+                if network:
+                    eprint(f"Network '{net.name}': the mmw installer is for a far side running mmw "
+                           f"(far_side = \"mmw\") — write one on its own with `mmw installer --out DIR`")
+                    return 1
+                say(f"  {net.name}: no mmw installer — its far side runs apply.py")
+            elif installer:
+                where = (str(out or net.bundle_dir), tuple(sorted(net.runtime_arches)), net.runtime_python)
+                if where not in installers_written:
+                    picked["installer"] = True
+                    installers_written.add(where)
             if runtime_wheel is not None:
                 picked["runtime_wheel"] = runtime_wheel
             # A warning the run raises before its long part (a stage that will
@@ -121,7 +131,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                     told.append(status.split(":", 1)[1])
                     eprint(f"    ⚠ {told[-1]}")
                 elif status.startswith("runtime:") and status != "runtime:done":
-                    eprint(f"  mmw runtime: {status.split(':', 1)[1]}")
+                    eprint(f"  mmw installer: {status.split(':', 1)[1]}")
             # A stage warns before its long part; an mmw network's runtime
             # build takes minutes the first time — both are said as they happen.
             if stage or net.far_side == "mmw":
@@ -147,9 +157,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         say(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
         for d in result.repos:
             say(f"  {d.label}  {f'v{d.start.number}' if d.start else 'full'} → v{d.dest.number}")
-        if result.runtime:
-            rt = result.runtime
-            say(f"  mmw {rt['mmw']} runtime (Python {rt['python']}, {', '.join(rt['arches'])})")
+        for path in result.installers:
+            say(f"  mmw installer: {path}")
         if result.timings:
             say(f"    {result.timing_summary()}")
         # The checksum sidecar, when the pipeline produces one. `getattr`

@@ -3,3 +3,4 @@
 # that are not disk (/proc) belong here.
 core/db_warm.py:_available_bytes  # permanent: /proc/meminfo, not disk
 core/profiler.py:_thread_cpu_ticks  # permanent: /proc reads, not disk
+core/runtime.py:source_checkout  # importlib.metadata Distribution.read_text: package metadata, not a mirror path

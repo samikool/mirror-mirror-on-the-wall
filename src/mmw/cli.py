@@ -493,12 +493,12 @@ def cmd_bundle(
     repo: list[str] = typer.Option(
         None, "--repo", help="Only this repository (URL or name; repeatable). Needs -n and "
                              'far_side = "mmw".'),
-    no_runtime: bool = typer.Option(
-        False, "--no-runtime", help="Leave mmw's own runtime out of an mmw network's bundle "
-                                    "(it is carried when the far side's mmw is out of date)."),
+    installer: bool = typer.Option(
+        False, "--installer", help="Include mmw installer: write mmw-<version>-<arch>.tar beside it, "
+                                   "for a far side to install mmw from."),
     runtime_wheel: Path = typer.Option(
-        None, "--runtime-wheel", help="Ship this mmw wheel in the runtime instead of PyPI's "
-                                      "(a dev build; `uv build` makes one)."),
+        None, "--runtime-wheel", help="The mmw wheel the installer ships (default: this checkout's own "
+                                      "build, or PyPI's for a release)."),
 ):
     """Write a network's mirrors to a transferable bundle — between any two
     snapshots (see `mmw snapshot list`). By default: from where the last
@@ -507,7 +507,7 @@ def cmd_bundle(
     raise typer.Exit(run(_cfg_dir(), network=network, out=out,
                          allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
-                         runtime=not no_runtime, runtime_wheel=runtime_wheel))
+                         installer=installer, runtime_wheel=runtime_wheel))
 
 
 @app.command("stage")
@@ -525,12 +525,12 @@ def cmd_stage(
         None, "--to", help="Snapshot to bring it to. Default: a new snapshot of now."),
     repo: list[str] = typer.Option(
         None, "--repo", help="Only this repository (URL or name; repeatable)."),
-    no_runtime: bool = typer.Option(
-        False, "--no-runtime", help="Leave mmw's own runtime out (it is carried when the far side's "
-                                    "mmw is out of date)."),
+    installer: bool = typer.Option(
+        False, "--installer", help="Include mmw installer: write mmw-<version>-<arch>.tar beside it, "
+                                   "for a far side to install mmw from."),
     runtime_wheel: Path = typer.Option(
-        None, "--runtime-wheel", help="Ship this mmw wheel in the runtime instead of PyPI's "
-                                      "(a dev build; `uv build` makes one)."),
+        None, "--runtime-wheel", help="The mmw wheel the installer ships (default: this checkout's own "
+                                      "build, or PyPI's for a release)."),
 ):
     """Lay a bundle out as a directory of hardlinks to the pool — the same
     members as `mmw bundle`, almost no disk — to tar, rsync or inspect without
@@ -538,7 +538,23 @@ def cmd_stage(
     from mmw.commands.stage import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
-                         runtime=not no_runtime, runtime_wheel=runtime_wheel))
+                         installer=installer, runtime_wheel=runtime_wheel))
+
+
+@app.command("installer")
+def cmd_installer(
+    out: Path = typer.Option(..., "--out", "-o", help="Directory to write mmw-<version>-<arch>.tar into"),
+    network: str = typer.Option(
+        None, "--network", "-n", help="Take the architectures and Python from this network's "
+                                      "runtime_arches and runtime_python"),
+    runtime_wheel: Path = typer.Option(
+        None, "--runtime-wheel", help="The mmw wheel to ship (default: this checkout's own build, "
+                                      "or PyPI's for a release)."),
+):
+    """Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh`
+    on the far side puts mmw on the path, offline."""
+    from mmw.commands.installer import run
+    raise typer.Exit(run(_cfg_dir(), out=out, network=network, runtime_wheel=runtime_wheel))
 
 
 site_app = typer.Typer(
@@ -571,14 +587,11 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
                    dry_run: bool = typer.Option(False, "--dry-run", help="Check it; change nothing"),
                    place: list[str] = typer.Option(None, "--place",
                                                    help="REPO=ROOT: put a repository new to this site in ROOT"),
-                   allow_downgrade: bool = typer.Option(
-                       False, "--allow-downgrade", help="Install the bundle's mmw even if it is older than this one"),
                    break_lock: bool = _BREAK_LOCK):
     """Apply a bundle: everything is checked before anything served changes;
-    held repositories keep serving what they serve. A newer mmw in the bundle
-    is installed after it (restart mmw then)."""
+    held repositories keep serving what they serve."""
     from mmw.commands.site import apply
-    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock, place, allow_downgrade))
+    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock, place))
 
 
 @site_app.command("serve")

@@ -28,18 +28,19 @@ class NetworksPage(Page):
     TITLE = "Networks"
     SCROLLS = False
     HELP = ("A network is what gets published, and where. Dry run counts what a publish\n"
-            "would link without writing; bundle writes a transfer archive for an offline\n"
-            "network; certs generates the network's TLS key and CSR (and checks a signed cert).\n"
-            "Publish, dry run and bundle run in the Publish section (4) — keep browsing meanwhile.\n"
-            "Publish asks what (live, or a snapshot) and where; bundle asks from and to.\n"
-            "Snapshots (n) keeps exact network states to bundle to or publish again.")
+            "would link without writing; transfer carries it to an offline network, as one\n"
+            ".tar (bundle) or a folder of hardlinks (stage); certs generates the network's\n"
+            "TLS key and CSR (and checks a signed cert).\n"
+            "Publish, dry run and transfer run in the Publish section (4) — keep browsing meanwhile.\n"
+            "Publish asks what (live, or a snapshot) and where; transfer asks from, to and how.\n"
+            "Snapshots (n) keeps exact network states to transfer or publish again.")
     BINDINGS = [
         Binding("a", "add", "Add"),
         Binding("e", "edit", "Edit"),
         Binding("d", "remove", "Remove"),
-        Binding("p", "verb('publish')", "Publish"),
         Binding("r", "verb('dry_run')", "Dry run"),
-        Binding("b", "verb('bundle')", "Bundle"),
+        Binding("p", "verb('publish')", "Publish"),
+        Binding("t", "verb('bundle')", "Transfer"),
         # Off the footer (it must fit 80 columns): a once-per-network job,
         # still a button, and listed by ?.
         Binding("c", "verb('certs')", "Certs", show=False),
@@ -58,13 +59,15 @@ class NetworksPage(Page):
         yield ListDetail(ListView(id="net-list"), NetworkDetail(), id="net-panes")
 
     def compose_actions(self) -> ComposeResult:
+        # Editing the network · moving it (the dry run before what it
+        # previews) · occasional tools. One primary: see `_primary`.
         yield Button("Add", id="btn-net-add", compact=True)
         yield Button("Edit", id="btn-net-edit", compact=True)
         yield Button("Remove", id="btn-net-remove", variant="error", compact=True)
-        yield Button("Snapshots", id="btn-net-snapshots", compact=True)
-        yield Button("Publish", id="btn-net-publish", variant="success", compact=True)
         yield Button("Dry run", id="btn-net-dry-run", compact=True)
-        yield Button("Bundle", id="btn-net-bundle", compact=True)
+        yield Button("Publish", id="btn-net-publish", variant="primary", compact=True)
+        yield Button("Transfer…", id="btn-net-bundle", compact=True)
+        yield Button("Snapshots", id="btn-net-snapshots", compact=True)
         yield Button("Certs", id="btn-net-certs", compact=True)
 
     async def on_mount(self) -> None:
@@ -115,7 +118,17 @@ class NetworksPage(Page):
             self._show_detail()
 
     def _show_detail(self, *, force: bool = False) -> None:
-        self.query_one(NetworkDetail).show(self.highlighted(), self.app.cfg, force=force)
+        net = self.highlighted()
+        self.query_one(NetworkDetail).show(net, self.app.cfg, force=force)
+        self._primary(net)
+
+    def _primary(self, net) -> None:
+        """The main way this network leaves: Publish when it has a publish
+        root (or neither destination), Transfer when it only has a transfer
+        output."""
+        transfer = net is not None and net.root is None and net.bundle_dir is not None
+        self.query_one("#btn-net-publish", Button).variant = "default" if transfer else "primary"
+        self.query_one("#btn-net-bundle", Button).variant = "primary" if transfer else "default"
 
     @on(ListView.Highlighted, "#net-list")
     def _highlighted(self) -> None:
@@ -168,7 +181,7 @@ class NetworksPage(Page):
             return
         choice = None
         if verb == "bundle" and net.bundle_dir is None:
-            self.notify(f"Network '{net.name}' has no bundle directory — set one in Edit.",
+            self.notify(f"Network '{net.name}' has no transfer output — set one in Edit.",
                         severity="warning")
             return
         if verb in ("publish", "bundle"):

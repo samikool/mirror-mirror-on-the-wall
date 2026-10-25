@@ -116,7 +116,7 @@ def test_b_bundles_between_two_snapshots_with_an_estimate(two_mirrors, tmp_path)
     s2 = take_snapshot(net, cfg, mirror_dir, label="after")
 
     async def check(app, pilot):
-        await pilot.press("b")
+        await pilot.press("t")
         await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage")
         app.screen.query_one("#pick-from", Select).value = s1.stamp
         app.screen.query_one("#pick-to", Select).value = s2.stamp
@@ -139,7 +139,7 @@ def test_b_refuses_the_same_snapshot_at_both_ends(two_mirrors, tmp_path):  # noq
     s1 = take_snapshot(net, cfg, mirror_dir)
 
     async def check(app, pilot):
-        await pilot.press("b")
+        await pilot.press("t")
         await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage")
         app.screen.query_one("#pick-from", Select).value = s1.stamp
         app.screen.query_one("#pick-to", Select).value = s1.stamp
@@ -313,7 +313,7 @@ def test_bundle_pick_mmw_has_repos_and_stage(two_mirrors, tmp_path):  # noqa: F8
     key_b = next(s.identity for s in cfg.sources if s.name == "b")
 
     async def check(app, pilot):
-        await pilot.press("b")
+        await pilot.press("t")
         await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage"
                     and app.screen.query("#pick-repos"))
         repos = app.screen.query_one("#pick-repos", SelectionList)
@@ -335,7 +335,7 @@ def test_bundle_pick_apply_unchanged(two_mirrors, tmp_path):  # noqa: F811
     cfg = cfg.model_copy(update={"networks": [net.model_copy(update={"bundle_dir": tmp_path / "usb"})]})
 
     async def check(app, pilot):
-        await pilot.press("b")
+        await pilot.press("t")
         await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage"
                     and app.screen.query("#pick-to"))
         assert not app.screen.query("#pick-repos") and not app.screen.query("#pick-as")

@@ -52,7 +52,7 @@ def test_question_mark_in_networks_lists_its_verbs_not_repositories(tmp_path):
         await pilot.press("question_mark")
         await pilot.pause()
         text = _text(app)
-        assert "Publish" in text and "Bundle" in text
+        assert "Publish" in text and "Transfer" in text
         assert "Prune pool" not in text
         await pilot.press("question_mark")           # ? closes it too
         await pilot.pause()

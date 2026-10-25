@@ -115,14 +115,14 @@ def test_b_asks_from_and_to_on_networks_then_bundles(two_mirrors):  # noqa: F811
     out = mirror_dir.parent / "usb"
 
     async def check(app, pilot):
-        await pilot.press("b")
+        await pilot.press("t")
         await confirm_picker(app, pilot, "BundlePickPage")
         assert app.current_mode == "networks"                 # asked where you are
         await _until(pilot, lambda: app.current_mode == "publish"
                      and app.screen.query(TransferView))
         view = app.screen.query_one(TransferView)
         await _finished(pilot, view)
-        assert view.outcome == "ok" and _status(app).startswith("Bundled oak")
+        assert view.outcome == "ok" and _status(app).startswith("Transferred oak")
     _run(cfg, mirror_dir.parent, check, bundle_dir=out)
     assert list(out.glob("*.tar*"))
 
@@ -294,7 +294,7 @@ def test_finished_with_errors_never_reads_as_success(two_mirrors, monkeypatch): 
         assert "✓" not in title and "1 error" in title
         status = app.screen.query_one("#page-status")
         assert not status.has_class("-ok")
-        assert not str(status.render()).startswith("Bundled")
+        assert not str(status.render()).startswith("Transferred")
     _run(cfg, mirror_dir.parent, check, bundle_dir=out)
 
 

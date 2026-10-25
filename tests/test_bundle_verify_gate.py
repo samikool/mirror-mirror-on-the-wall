@@ -122,5 +122,5 @@ def test_do_bundle_refuses_when_mirror_incomplete(tmp_path, monkeypatch):
     # bundle_network must never have been called for an incomplete mirror.
     assert calls == []
     # And the refusal must actually have been shown, not silently swallowed.
-    assert not any("Bundled" in msg for msg, _ in notifications)
+    assert not any("Transferred" in msg for msg, _ in notifications)
     assert outcome == "note" and "incomplete" in status

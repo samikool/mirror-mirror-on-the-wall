@@ -72,7 +72,7 @@ class ThemedApp(App):
             what.append(f"The dry run of {transfer.network_name} is waiting for Publish now "
                         "or Discard — quitting discards it; nothing is published.")
         elif transfer in running:
-            what.append("A publish or bundle is still running: it stops after the current "
+            what.append("A publish or transfer is still running: it stops after the current "
                         "file, and what is already written stays — but a bundle already "
                         "writing its archive finishes the archive first.")
         self.push_screen(ConfirmDialog("Quit now?", "\n".join(what), "Quit", "Keep going"),

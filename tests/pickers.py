@@ -16,7 +16,7 @@ async def press_publish(app, pilot) -> None:
 
 
 async def press_bundle(app, pilot) -> None:
-    await pilot.press("b")
+    await pilot.press("t")
     await confirm_picker(app, pilot, "BundlePickPage")
 
 

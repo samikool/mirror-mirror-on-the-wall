@@ -55,7 +55,7 @@ def snapshot_line(status) -> str:
     b = status.last_bundle
     if b is not None:
         day = f"{b.made[:4]}-{b.made[4:6]}-{b.made[6:8]}"
-        parts.append(f"last bundled {escape(status.name(b.from_stamp))} → "
+        parts.append(f"last transferred {escape(status.name(b.from_stamp))} → "
                      f"{escape(status.name(b.to_stamp))} on {day}")
     return " · ".join(parts)
 
@@ -322,10 +322,10 @@ class NetworkDetail(Widget):
             if not self._bundle_loaded:
                 when = "…"
             elif self._bundle_mtime is None:
-                when = "never bundled"
+                when = "never transferred"
             else:
                 when = _fmt_age(self._bundle_mtime)
-            self.mount(self._meta("Last bundle", when))
+            self.mount(self._meta("Last transfer", when))
         self.mount(self._meta("Snapshots", "…" if not self._bundle_loaded
                               else self._snapshots or "[dim]unreadable[/]"))
         # What it selects — an empty dimension meaning "all" is exactly what a

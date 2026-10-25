@@ -96,7 +96,7 @@ def test_b_is_refused_before_the_mode_question_while_busy(two_mirrors):  # noqa:
     async def check(app, pilot):
         app.active_transfer = SimpleNamespace(running=True, network_name="other",
                                               awaiting_decision=False, progress=lambda: None)
-        await pilot.press("b")
+        await pilot.press("t")
         await _settle(pilot)
         assert not app.screen.query("#btn-pick-go"), "asked from/to only to refuse after"
         assert any("Already working on other" in n for n in app.notes)

@@ -298,3 +298,35 @@ def test_modal_layout(size, factory, label):
             _check(app.screen, size)
 
     asyncio.run(scenario())
+
+
+def test_networks_buttons_order_and_primary(tmp_path):
+    """Edit the network · move it (dry run first) · occasional tools; the
+    primary is the way the highlighted network leaves."""
+    import asyncio
+
+    from textual.widgets import Button, ListView
+
+    from mmw.core import config
+    from mmw.tui.app import MmwApp
+
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "pool"), networks=[
+        config.NetworkConfig(name="served", root=tmp_path / "srv"),
+        config.NetworkConfig(name="offline", bundle_dir=tmp_path / "usb")])
+    config.save(cfg, tmp_path)
+
+    async def run():
+        app = MmwApp(cfg, tmp_path, initial_section="networks")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            ids = [b.id for b in app.screen.query(Button) if b.id and b.id.startswith("btn-net-")]
+            assert ids == ["btn-net-add", "btn-net-edit", "btn-net-remove", "btn-net-dry-run",
+                           "btn-net-publish", "btn-net-bundle", "btn-net-snapshots", "btn-net-certs"]
+            variant = lambda i: app.screen.query_one(f"#{i}", Button).variant  # noqa: E731
+            want = {"served": ("primary", "default"), "offline": ("default", "primary")}
+            for i in (0, 1):
+                app.screen.query_one("#net-list", ListView).index = i
+                await pilot.pause()
+                name = app.screen.highlighted().name
+                assert (variant("btn-net-publish"), variant("btn-net-bundle")) == want[name], name
+    asyncio.run(run())

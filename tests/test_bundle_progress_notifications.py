@@ -82,7 +82,7 @@ def test_execute_bundle_reports_success(tmp_path, monkeypatch):
     assert len(notifications) == 1
     message, severity = notifications[0]
     assert severity == "information"
-    assert "Bundled lab" in message
+    assert "Transferred lab" in message
     assert "5 sent" in message
     assert str(out_path) in message
 
@@ -105,7 +105,7 @@ def test_execute_bundle_reports_stopped_not_success(tmp_path, monkeypatch):
     assert severity == "warning"
     assert "stopped" in message.lower()
     assert "2 sent" in message
-    assert "Bundled" not in message  # must not be phrased as a clean success
+    assert "Transferred" not in message  # must not be phrased as a clean success
 
 
 def test_execute_bundle_reports_errors_not_success(tmp_path, monkeypatch):
@@ -126,4 +126,4 @@ def test_execute_bundle_reports_errors_not_success(tmp_path, monkeypatch):
     assert severity == "warning"
     assert "1 error" in message
     assert "3 sent" in message
-    assert "Bundled" not in message  # must not be phrased as a clean success
+    assert "Transferred" not in message  # must not be phrased as a clean success

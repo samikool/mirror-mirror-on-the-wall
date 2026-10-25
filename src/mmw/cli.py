@@ -694,6 +694,15 @@ def cmd_site_tidy(root: Path = _ROOT, break_lock: bool = _BREAK_LOCK):
     raise typer.Exit(tidy(root, break_lock))
 
 
+@site_app.command("_root", hidden=True,
+                  context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def cmd_site_root_remote(ctx: typer.Context):
+    """The remote side of a root reached over ssh (JSON lines; not for people)."""
+    import sys
+    from mmw.site.remote import serve_root_command
+    raise typer.Exit(serve_root_command(list(ctx.args), sys.stdin.buffer, sys.stdout.buffer))
+
+
 site_ca_app = typer.Typer(help="The certificate authority (its location is kept on this machine).",
                           no_args_is_help=True)
 site_app.add_typer(site_ca_app, name="ca")

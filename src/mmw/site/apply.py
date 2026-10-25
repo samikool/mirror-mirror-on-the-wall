@@ -41,9 +41,10 @@ class ApplyResult:
     network_changed: bool = False
     actions: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
+    stopped: list[str] = field(default_factory=list)    # stored and held: a stop came before their switch
 
 
-def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool):
+def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progress=None, stop_event=None):
     """Stream the members in: (name → (checksum, size), TLS files)."""
     got: dict[str, tuple[str, int]] = {}
     links: dict[str, str] = {}
@@ -51,6 +52,10 @@ def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool):
     manifest = False
     try:
         for m in open_source(src):
+            if stop_event is not None and stop_event.is_set():
+                raise ApplyError(5, "stopped before anything was applied")
+            if progress:
+                progress("receive", name=m.name, bytes=m.size)
             if m.name == MANIFEST_MEMBER:
                 disk_io.ops.write_bytes(manifest_path, m.fh.read())
                 manifest = True
@@ -98,7 +103,13 @@ def _size(store: Store, checksum: str, sizes: dict[str, int]) -> int:
 
 
 def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forward_all: bool = False,
-                 dry_run: bool = False, say=print) -> ApplyResult:
+                 dry_run: bool = False, say=print, only: set[str] | None = None, progress=None,
+                 stop_event=None) -> ApplyResult:
+    """Apply the bundle at `src`. `only`: the repositories to switch; the
+    others in the bundle are stored and held. `progress(event, **data)`:
+    receive(name, bytes), check, switch(repo, label), done. `stop_event`:
+    before anything changes, a stop raises; once repositories are switching,
+    the ones not reached yet are stored and held."""
     settings = load_site(home)
     root = Path(settings.root)
     store = Store(root)
@@ -109,7 +120,7 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
             resume_switches(db, store, root)
         manifest_path = Path(home) / "incoming-manifest.jsonl"
         try:
-            got, tls = _receive(src, store, manifest_path, dry_run)
+            got, tls = _receive(src, store, manifest_path, dry_run, progress, stop_event)
             header, rows = iter_manifest_v2(manifest_path)
             rows = list(rows)
         finally:
@@ -130,6 +141,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
                                 f"got {len(got)} — copy it again")
         have = store.has
         sizes = {cs: size for cs, size in got.values()}
+        if progress:
+            progress("check")
 
         # Check everything before writing anything: each repository's new
         # version is complete (or refused alone), and so are the network files.
@@ -165,6 +178,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
                 result.lines.append(f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
             return result
 
+        if stop_event is not None and stop_event.is_set():
+            raise ApplyError(5, "stopped before anything changed — what arrived is stored")
         recorded: dict[str, int] = {}
         try:
             for repo, plan in planned.items():
@@ -197,10 +212,23 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
                                     f"  {meta['label']}  keeps serving v{was} (this bundle brings v{meta['to']}, "
                                     "older — stored)")
                 continue
+            if stop_event is not None and stop_event.is_set():
+                db.set_held(repo, True)
+                result.stopped.append(repo)
+                result.lines.append(f"  {meta['label']}  not switched (stopped) — stored v{meta['to']}, held")
+                continue
+            if only is not None and repo not in only:
+                db.set_held(repo, True)
+                result.stored_held.append(repo)
+                result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
+                                    f"{f'still serving v{was}' if was else 'not served'} (held)")
+                continue
             if state and state.held and not forward_all and repo not in forward:
                 result.stored_held.append(repo)
                 result.lines.append(f"  {meta['label']}  stored v{meta['to']}, still serving v{was} (held)")
                 continue
+            if progress:
+                progress("switch", repo=repo, label=meta["label"])
             switch_repo(db, store, root, repo, vid)
             result.updated.append(repo)
             result.lines.append(f"  {meta['label']}  {f'v{was}' if was else 'full'} → v{meta['to']}")
@@ -212,7 +240,106 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
             apply_retention(db, store, settings.keep_versions)
+        if progress:
+            progress("done")
         if result.network_changed:
             result.actions.append("nginx config changed — recreate nginx on the serving host "
                                   "(docker compose … up -d --force-recreate)")
     return result
+
+
+# ── planning, for the TUI's review ───────────────────────────────────────────
+
+@dataclass(frozen=True)
+class PlanRow:
+    repo: str
+    label: str
+    from_number: int | None
+    to_number: int
+    files_sent: int
+    bytes_sent: int
+    serving_number: int | None
+    held: bool
+    unchanged: bool
+    root: Path
+
+
+@dataclass(frozen=True)
+class ApplyPlan:
+    created: str
+    network: str
+    rows: list
+    network_files: int
+    bytes: int
+
+
+def _manifest_and_sizes(src: str, scratch: Path) -> dict[str, int]:
+    """Write the bundle's manifest to `scratch`; the sizes of its members."""
+    from mmw.resources.apply import is_safe_path
+    path = Path(src)
+    sizes: dict[str, int] = {}
+    if disk_io.ops.is_dir(path):
+        manifest = path / MANIFEST_MEMBER
+        if not disk_io.ops.exists(manifest):
+            raise ApplyError(2, f"{path} is not a stage directory: it has no {MANIFEST_MEMBER}")
+        disk_io.ops.write_bytes(scratch, disk_io.ops.read_bytes(manifest))
+        for dirpath, _dirs, files in disk_io.ops.walk(path):
+            for fn in files:
+                rel = (Path(dirpath) / fn).relative_to(path).as_posix()
+                sizes[rel] = disk_io.ops.stat(Path(dirpath) / fn).st_size
+        return sizes
+    try:
+        with tarfile.open(path, mode="r:") as tar:
+            found = False
+            for m in tar:
+                name = m.name[2:] if m.name.startswith("./") else m.name
+                if name == MANIFEST_MEMBER and m.isreg():
+                    disk_io.ops.write_bytes(scratch, tar.extractfile(m).read())
+                    found = True
+                elif m.isreg() and is_safe_path(name):
+                    sizes[name] = m.size
+    except (tarfile.ReadError, EOFError, OSError) as e:
+        raise ApplyError(5, f"{path} is not a bundle, or is truncated: {e}") from None
+    if not found:
+        raise ApplyError(2, f"{path} has no {MANIFEST_MEMBER} — it is not an mmw bundle")
+    return sizes
+
+
+def plan_apply(home: Path, src: str) -> ApplyPlan:
+    """What applying `src` would do, from its manifest and member sizes —
+    nothing is stored or checked beyond that."""
+    from mmw.core.repos import attribute
+    if src == "-":
+        raise ValueError("a bundle on stdin can't be planned — it can only be read once")
+    settings = load_site(home)
+    scratch = Path(home) / "plan-manifest.jsonl"
+    try:
+        sizes = _manifest_and_sizes(src, scratch)
+        header, rows = iter_manifest_v2(scratch)
+        rows = list(rows)
+    except (ValueError, KeyError, TypeError) as e:
+        raise ApplyError(2, f"its manifest can't be read: {e}") from None
+    finally:
+        disk_io.ops.unlink(scratch, missing_ok=True)
+    if (header.format or 1) < 2:
+        raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
+                            'or set far_side = "mmw" on the connected side and bundle again')
+    repos = header.repos or {}
+    bases = {r: m["bases"] for r, m in repos.items()}
+    sent: dict[str, list[int]] = {r: [0, 0] for r in repos}
+    for name, size in sizes.items():
+        repo = attribute(name, bases)
+        if repo in sent:
+            sent[repo][0] += 1
+            sent[repo][1] += size
+    out = []
+    with SiteDB(home) as db:
+        for repo, meta in sorted(repos.items(), key=lambda kv: kv[1]["label"].lower()):
+            st = db.repo_state(repo)
+            serving = st.serving.number if st and st.serving else None
+            out.append(PlanRow(repo, meta["label"], meta["from"], meta["to"], sent[repo][0], sent[repo][1],
+                               serving, bool(st and st.held), serving is not None and meta["to"] <= serving,
+                               Path(settings.root)))
+    network = sum(1 for _p, _c, r in rows if r is None)
+    return ApplyPlan(header.created, header.network, out, network,
+                     sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))

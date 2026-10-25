@@ -642,6 +642,13 @@ def cmd_site_verify(home: Path = _SITE_HOME,
     raise typer.Exit(verify(home, repair, break_lock))
 
 
+@site_app.command("manage")
+def cmd_site_manage(home: Path = _SITE_HOME):
+    """The far-side TUI: repositories, their history, applying bundles."""
+    from mmw.commands.site import manage
+    raise typer.Exit(manage(home))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

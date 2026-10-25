@@ -217,3 +217,12 @@ def test_checkout_wheel_reflects_working_tree(monkeypatch, tmp_path):
     assert wheel.name.startswith("mirror_mirror_on_the_wall-")
     with zipfile.ZipFile(wheel) as z:
         assert b"edited-not-committed" in z.read("mmw/__init__.py")
+
+
+def test_a_path_install_of_a_checkout_builds_from_it(monkeypatch, tmp_path):
+    """`uv tool install /path/to/checkout` (not editable): still a checkout."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    monkeypatch.setattr(R, "_distribution", lambda: _Dist(f'{{"url":"file://{tmp_path}","dir_info":{{}}}}'))
+    assert R.source_checkout() == tmp_path
+    monkeypatch.setattr(R, "_distribution", lambda: _Dist(f'{{"url":"file://{tmp_path}/gone","dir_info":{{}}}}'))
+    assert R.source_checkout() is None                      # the checkout is gone: a release

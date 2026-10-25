@@ -326,8 +326,10 @@ class TransferView(Vertical):
             return (f"{name}: {verb} finished with {self.error_count} error(s)"
                     + (f" — {counts}" if counts else "") + ".")
         out = getattr(self._result, "out_path", None)
+        installers = getattr(self._result, "installers", None) or []
         return (f"{self.VERB_PAST} {name}" + (f" — {counts}" if counts else "")
-                + (f" → {out}" if out else "") + ".")
+                + (f" → {out}" if out else "")
+                + "".join(f"; mmw installer → {p}" for p in installers) + ".")
 
     @property
     def severity(self) -> str:

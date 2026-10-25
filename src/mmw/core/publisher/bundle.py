@@ -219,6 +219,8 @@ def bundle_network(
         if is_stdout(out_path) and not stage:
             raise ValueError("a bundle on stdout has nowhere to put mmw's installer — "
                              "write it on its own with `mmw installer --out DIR`")
+        if runtime_wheel is not None:
+            _check_wheel(runtime_wheel)             # before hours of bundling, not after
     if repos is not None and not mmw_far_side:
         from mmw.core.far_side import require_mmw
         require_mmw(network, "partial bundles")
@@ -449,8 +451,19 @@ def _write_installers(result, network, mirror_dir: Path, out_dir: Path, wheel, f
             fetcher=fetcher or rt.default_fetcher(stop_event=stop_event),
             wheel=rt.resolve_wheel(wheel, cache / "build", stop_event=stop_event),
             progress=(lambda m: progress("", f"runtime:{m}")) if progress else None, stop_event=stop_event)
-    except (rt.RuntimeUnavailable, OSError, InterruptedError) as e:
+    except (rt.RuntimeUnavailable, OSError, InterruptedError, ValueError) as e:
         result.warnings.append(f"mmw installer not written ({e})")
+
+
+def _check_wheel(wheel: Path) -> None:
+    from packaging.utils import InvalidWheelFilename, parse_wheel_filename
+    try:
+        parse_wheel_filename(Path(wheel).name)
+    except InvalidWheelFilename:
+        raise ValueError(f"--runtime-wheel {wheel}: isn't a wheel file name "
+                         "(mirror_mirror_on_the_wall-VERSION-py3-none-any.whl)") from None
+    if not disk_io.ops.is_file(wheel):
+        raise ValueError(f"--runtime-wheel {wheel}: no such wheel")
 
 
 def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir: Path | None = None,

@@ -215,3 +215,28 @@ def test_estimate_counts_the_installer(tmp_path):
         await until(pilot, lambda: "+ mmw installer (about 100 MB per architecture)"
                     in str(app.screen.query_one("#pick-estimate", Label).render()))
     _pick_page(tmp_path, _never_sent(), check)
+
+
+def test_a_bad_runtime_wheel_is_refused_before_bundling(two_mirrors, tmp_path):  # noqa: F811
+    from mmw.core.pool import Pool
+    cfg, net, md = _mmw(two_mirrors)
+    with Pool(md) as p:
+        before = len(p.snapshots(net.name))
+    bad_name = tmp_path / "mmw.whl"
+    bad_name.write_bytes(b"x")
+    for wheel, match in ((bad_name, "isn't a wheel file name"), (tmp_path / "missing-1.0-py3-none-any.whl",
+                                                                 "no such wheel")):
+        with pytest.raises(ValueError, match=match):
+            bundle_network(net, cfg, md, out_path=tmp_path / "o", from_ref=None, installer=True,
+                           runtime_wheel=wheel, fetcher=FakeFetcher())
+    with Pool(md) as p:
+        assert len(p.snapshots(net.name)) == before
+
+
+def test_transfer_summary_names_the_installer(tmp_path):
+    from mmw.core.publisher.results import BundleResult
+    from mmw.tui.transfer import BUNDLE, TransferView
+    view = TransferView(BUNDLE, "lab")
+    view.mark_done(BundleResult(network_name="lab", out_path=tmp_path / "lab-x.tar", sent=1,
+                                installers=[tmp_path / "mmw-1.2.0-x86_64.tar"]), stopped=False)
+    assert f"mmw installer → {tmp_path / 'mmw-1.2.0-x86_64.tar'}" in view.summary()

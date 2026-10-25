@@ -55,7 +55,8 @@ def _distribution():
 
 def source_checkout() -> Path | None:
     """The project root when this mmw runs from a source checkout (an
-    editable install), else None: an installed release."""
+    editable install, or a path install whose directory still holds the
+    project), else None: an installed release."""
     raw = _distribution().read_text("direct_url.json")
     if not raw:
         return None
@@ -63,11 +64,16 @@ def source_checkout() -> Path | None:
         info = json.loads(raw)
     except ValueError:
         return None
-    if not (info.get("dir_info") or {}).get("editable"):
-        return None
+    if "dir_info" not in info:
+        return None                                    # a wheel or an index: a release
     from urllib.parse import unquote, urlparse
     url = urlparse(info.get("url", ""))
-    return Path(unquote(url.path)) if url.scheme == "file" else None
+    if url.scheme != "file":
+        return None
+    root = Path(unquote(url.path))
+    if (info["dir_info"] or {}).get("editable") or disk_io.ops.exists(root / "pyproject.toml"):
+        return root
+    return None
 
 
 def checkout_wheel(build_dir: Path, *, stop_event=None) -> Path:

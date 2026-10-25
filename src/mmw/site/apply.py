@@ -8,7 +8,6 @@ held one keeps serving what it served, its new version stored for later.
 """
 import io
 import json
-import shutil
 import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +19,6 @@ from mmw.resources.apply import (
     MANIFEST_MEMBER, ROOT_PLACEHOLDER, TLS_PREFIX, _install_tls, _nginx_root_config,
     _prune_empty_parents, render_derived,
 )
-from mmw.site import runtime as site_runtime
 from mmw.site.db import SiteDB
 from mmw.site.home import load_site
 from mmw.site.lock import SiteLock
@@ -28,6 +26,12 @@ from mmw.site.reader import SourceError, open_source
 from mmw.site.store import Store
 from mmw.site.roots import Roots
 from mmw.site.switch import resume_switches, switch_in
+
+
+# v1 bundles carried mmw's runtime; mmw comes from its installer now, and
+# updating it from bundles waits for its own design (site/runtime.py).
+RUNTIME_PREFIX = ".mmw/runtime/"
+RUNTIME_NOTE = "this bundle carries an mmw runtime — ignored; install mmw from its installer file"
 
 
 class ApplyError(Exception):
@@ -49,14 +53,12 @@ class ApplyResult:
 
 
 def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progress=None, stop_event=None,
-             on_manifest=None, runtime_dir: Path | None = None, runtime_problems: list | None = None,
-             runtime_top: dict | None = None):
+             on_manifest=None, seen: set | None = None):
     """Stream the members in: (name → (checksum, size), TLS files). Once the
     manifest has arrived, `on_manifest(path)` may return `route(name) ->
     Store`, the store each later member belongs in (its repository's root).
-    mmw's runtime (`.mmw/runtime/…`) goes under `runtime_dir`, if given;
-    if it can't be written there (a full disk), it is dropped and the reason
-    added to `runtime_problems` — the content still applies."""
+    mmw's runtime (`.mmw/runtime/…`, which v1 bundles carried) is skipped;
+    "runtime" goes into `seen` when there was one."""
     route = None
     got: dict[str, tuple[str, int]] = {}
     links: dict[str, str] = {}
@@ -75,27 +77,9 @@ def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progres
                     route = on_manifest(manifest_path)
             elif m.name.startswith(TLS_PREFIX):
                 tls[m.name[len(TLS_PREFIX):]] = m.fh.read()
-            elif m.name == site_runtime.PREFIX + "RUNTIME.json" and runtime_dir is None and runtime_top is not None:
-                try:
-                    runtime_top.update(json.loads(m.fh.read()))      # a dry run: only what it would install
-                except ValueError as e:
-                    runtime_top["error"] = str(e)
-            elif m.name.startswith(site_runtime.PREFIX) and runtime_dir is not None and m.kind != "link":
-                try:
-                    dest = site_runtime.member_path(runtime_dir, m.name)
-                except ValueError as e:
-                    raise ApplyError(2, str(e)) from None
-                if runtime_problems:
-                    continue                    # dropped already
-                try:
-                    disk_io.ops.mkdir(dest.parent, parents=True, exist_ok=True)
-                    with disk_io.ops.open_file(dest, "wb") as out:
-                        shutil.copyfileobj(m.fh, out)
-                except OSError as e:
-                    disk_io.ops.rmtree(runtime_dir, ignore_errors=True)
-                    if runtime_problems is not None:
-                        runtime_problems.append(f"mmw's runtime in this bundle couldn't be stored "
-                                                f"({e.strerror or e}) — not installed; the rest applied")
+            elif m.name.startswith(RUNTIME_PREFIX):
+                if seen is not None:
+                    seen.add("runtime")
             elif m.name.startswith(".mmw/"):
                 continue                        # the bundle's own apply.py and the like
             elif m.kind == "link":
@@ -139,30 +123,23 @@ def _size(store: Store, checksum: str, sizes: dict[str, int]) -> int:
 
 def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forward_all: bool = False,
                  dry_run: bool = False, say=print, only: set[str] | None = None, progress=None,
-                 stop_event=None, place: dict[str, str] | None = None,
-                 allow_downgrade: bool = False) -> ApplyResult:
+                 stop_event=None, place: dict[str, str] | None = None) -> ApplyResult:
     """Apply the bundle at `src`. `only`: the repositories to switch; the
     others in the bundle are stored and held. `progress(event, **data)`:
     receive(name, bytes), check, switch(repo, label), done. `stop_event`:
     before anything changes, a stop raises; once repositories are switching,
     the ones not reached yet are stored and held. `place`: repository →
     root name for repositories new to this site (default: the primary).
-    A newer mmw runtime in the bundle is installed once the apply is done
-    (an older one only with `allow_downgrade`)."""
+    An mmw runtime in the bundle is ignored, with a note."""
     settings = load_site(home)
     roots = Roots(settings)
     root = Path(roots.primary.path)
     store = roots.store(roots.primary)
     result = ApplyResult()
     with SiteLock(home), SiteDB(home) as db:
-        incoming = None
         if not dry_run:
             store.sweep_tmp()
             resume_switches(db, roots)
-            # A failed apply's runtime is left here; never installed, cleared now.
-            incoming = site_runtime.incoming_dir(home)
-            if disk_io.ops.exists(incoming):
-                disk_io.ops.rmtree(incoming)
         manifest_path = Path(home) / "incoming-manifest.jsonl"
         placement: dict[str, object] = {}
 
@@ -179,11 +156,9 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
             bases = {k: m["bases"] for k, m in (head.repos or {}).items()}
             return lambda name: roots.store(placement.get(attribute(name, bases), roots.primary))
         try:
-            runtime_problems: list[str] = []
-            runtime_top: dict = {}
+            seen: set[str] = set()
             got, tls = _receive(src, store, manifest_path, dry_run, progress, stop_event,
-                                on_manifest=on_manifest, runtime_dir=incoming, runtime_problems=runtime_problems,
-                                runtime_top=runtime_top)
+                                on_manifest=on_manifest, seen=seen)
             header, rows = iter_manifest_v2(manifest_path)
             rows = list(rows)
         finally:
@@ -247,10 +222,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if dry_run:
             for repo, plan in planned.items():
                 result.lines.append(f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
-            if runtime_top:
-                _verdict, note = site_runtime.decide(home, runtime_top, allow_downgrade=allow_downgrade)
-                if note:
-                    result.lines.append(f"  {note}")
+            if "runtime" in seen:
+                result.lines.append(f"  {RUNTIME_NOTE}")
             return result
 
         if stop_event is not None and stop_event.is_set():
@@ -342,10 +315,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if result.network_changed:
             result.actions.append("nginx config changed — recreate nginx on the serving host "
                                   "(docker compose … up -d --force-recreate)")
-        result.actions.extend(runtime_problems)
-        if incoming is not None and disk_io.ops.exists(incoming / "RUNTIME.json"):
-            # Last: the apply finished with the mmw that started it.
-            result.actions.extend(site_runtime.update_runtime(home, incoming, allow_downgrade=allow_downgrade))
+        if "runtime" in seen:
+            result.actions.append(RUNTIME_NOTE)
     return result
 
 

@@ -322,31 +322,6 @@ def wanted(network, wheel: Path | None = None) -> dict:
     return {"mmw": version, "python": network.runtime_python, "arches": sorted(network.runtime_arches), **built}
 
 
-def runtime_files(network, cfg, mirror_dir: Path, *, fetcher: Fetcher,
-                  wheel: Path | None = None, progress=None, stop_event=None) -> dict[str, bytes | Path]:
-    """The `.mmw/runtime/` members of a bundle: `bootstrap.sh`, a top
-    `RUNTIME.json` ({mmw, python, arches}), and each architecture's built
-    runtime under `{arch}/`. Builds what isn't cached; raises before
-    anything is written if a download fails."""
-    from mmw.resources import BOOTSTRAP
-    want = wanted(network, wheel)
-    out: dict[str, bytes | Path] = {
-        # Bytes, never the file: a stage hardlinks files, and a link to the
-        # installed package's own copy would let an edit reach it.
-        ".mmw/runtime/bootstrap.sh": disk_io.ops.read_bytes(BOOTSTRAP),
-        ".mmw/runtime/RUNTIME.json": (json.dumps(want, sort_keys=True) + "\n").encode(),
-    }
-    for arch in want["arches"]:
-        d = build_runtime(Path(mirror_dir) / "runtime", arch=arch, python=want["python"],
-                          mmw_version=want["mmw"], fetcher=fetcher, wheel=wheel,
-                          progress=(lambda m: progress("", f"runtime:{m}")) if progress else None,
-                          stop_event=stop_event)
-        for p in sorted(disk_io.ops.rglob(d, "*")):
-            if disk_io.ops.is_file(p):
-                out[f".mmw/runtime/{arch}/{p.relative_to(d)}"] = p
-    return out
-
-
 def pending(network, mirror_dir: Path, *, from_nothing: bool) -> str | None:
     """What the next bundle of `network` adds for mmw's runtime, said for an
     estimate: None when it carries none (an apply network, or what was last

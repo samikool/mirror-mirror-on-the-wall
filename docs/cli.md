@@ -148,7 +148,7 @@ the site take `--break-lock`. See [far-side.md](far-side.md).
 | Command | What it does |
 |---|---|
 | `mmw site init --root DIR [--home DIR]` | Make a site: a root to serve, a home for its state (default `DIR/.mmw/site`) |
-| `mmw site apply SRC [--forward REPO]… [--forward-all] [--place REPO=ROOT]… [--dry-run] [--allow-downgrade]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin); a newer mmw in it is installed after |
+| `mmw site apply SRC [--forward REPO]… [--forward-all] [--place REPO=ROOT]… [--dry-run]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin) |
 | `mmw site manage` | The far-side TUI: repositories, their history, applying bundles |
 | `mmw site status` | What each repository serves, the newest kept, held or current |
 | `mmw site history REPO` | A repository's kept versions, sizes, what each would free |

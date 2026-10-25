@@ -1,5 +1,8 @@
 """A site's own mmw, updated from the runtime a bundle brings.
 
+Switched off until the auto-update design (far-side v2 spec §4): nothing
+calls it, and bundles no longer carry a runtime.
+
 The bundle's `.mmw/runtime/` arrives in `{home}/runtime/incoming.tmp/`
 during the apply. Once the apply is done, with the mmw that started it, a
 newer runtime is installed beside the current one by its own bootstrap,

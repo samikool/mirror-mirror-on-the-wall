@@ -587,14 +587,11 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
                    dry_run: bool = typer.Option(False, "--dry-run", help="Check it; change nothing"),
                    place: list[str] = typer.Option(None, "--place",
                                                    help="REPO=ROOT: put a repository new to this site in ROOT"),
-                   allow_downgrade: bool = typer.Option(
-                       False, "--allow-downgrade", help="Install the bundle's mmw even if it is older than this one"),
                    break_lock: bool = _BREAK_LOCK):
     """Apply a bundle: everything is checked before anything served changes;
-    held repositories keep serving what they serve. A newer mmw in the bundle
-    is installed after it (restart mmw then)."""
+    held repositories keep serving what they serve."""
     from mmw.commands.site import apply
-    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock, place, allow_downgrade))
+    raise typer.Exit(apply(src, home, forward, forward_all, dry_run, break_lock, place))
 
 
 @site_app.command("serve")

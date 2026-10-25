@@ -34,9 +34,6 @@ def gallery_script_bytes() -> bytes:
     return _GALLERY.read_bytes()
 
 
-BOOTSTRAP = Path(__file__).with_name("bootstrap.sh")
-"""The far side's first-contact installer (POSIX sh), shipped in every
-runtime as `.mmw/runtime/bootstrap.sh`."""
 
 INSTALL = Path(__file__).with_name("install.sh")
 """mmw's installer script (POSIX sh), the top of every

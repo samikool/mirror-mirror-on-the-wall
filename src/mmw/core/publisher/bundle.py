@@ -228,9 +228,9 @@ def bundle_network(
             from mmw.core import runtime as rt
             want = rt.wanted(network, runtime_wheel)
             if start is None or pool.runtime_sent(network.name) != want:
-                runtime_members = rt.runtime_files(network, cfg, mirror_dir,
-                                                   fetcher=fetcher or rt.default_fetcher(),
-                                                   wheel=runtime_wheel)
+                runtime_members = rt.runtime_files(
+                    network, cfg, mirror_dir, fetcher=fetcher or rt.default_fetcher(stop_event=stop_event),
+                    wheel=runtime_wheel, progress=progress, stop_event=stop_event)
                 shipped_runtime = want
         if to_ref != "now":
             dest = find_snapshot(pool, network.name, to_ref)

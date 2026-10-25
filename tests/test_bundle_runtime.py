@@ -97,7 +97,7 @@ def test_no_runtime_flag(monkeypatch, tmp_path):
     seen = []
 
     def fake(net, cfg, mirror_dir, out_path=None, from_ref=None, to_ref="now", **kw):
-        seen.append(kw)
+        seen.append({k: v for k, v in kw.items() if k != "progress"})
         return BundleResult(network_name="lab", out_path=Path("/tmp/out/x.tar"))
     monkeypatch.setattr(bundle_cmd, "bundle_network", fake)
     wheel = tmp_path / "mirror_mirror_on_the_wall-1.3.0.dev0-py3-none-any.whl"
@@ -212,3 +212,22 @@ def test_a_rebuilt_wheel_is_sent_again(two_mirrors, tmp_path):  # noqa: F811
     _change_b(md)
     r = bundle_network(net, cfg, md, out_path=tmp_path / "3", runtime_wheel=wheel)
     assert ".mmw/runtime/bootstrap.sh" not in _members(r.out_path)[0]
+
+
+def test_cli_says_what_the_runtime_build_is_doing(monkeypatch, tmp_path, capsys):
+    from mmw.commands import bundle as bundle_cmd
+    from mmw.core import config
+    from mmw.core.publisher.results import BundleResult
+    (tmp_path / "mmw.toml").write_text('[settings]\nmirror_dir = "/tmp/pool"\n')
+    net = config.NetworkConfig(name="lab", bundle_dir=Path("/tmp/out"), far_side="mmw")
+    monkeypatch.setattr(config, "load", lambda d: config.Config(
+        settings=config.Settings(mirror_dir=Path("/tmp/pool")), sources=[], networks=[net]))
+
+    def fake(net, cfg, mirror_dir, out_path=None, from_ref=None, to_ref="now", progress=None, **kw):
+        progress("", "runtime:uv 0.11.33 for x86_64…")
+        progress("", "runtime:done")
+        return BundleResult(network_name="lab", out_path=Path("/tmp/out/x.tar"))
+    monkeypatch.setattr(bundle_cmd, "bundle_network", fake)
+    assert bundle_cmd.run(tmp_path, network="lab") == 0
+    err = capsys.readouterr().err
+    assert "mmw runtime: uv 0.11.33 for x86_64…" in err and "runtime:done" not in err

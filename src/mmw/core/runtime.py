@@ -56,23 +56,46 @@ class RealFetcher:
     """PyPI for `uv` and the wheels, python-build-standalone (wherever
     `uv python list` says) for the interpreter."""
 
-    def __init__(self, uv_exe: Path | None = None, timeout: float = 600):
+    def __init__(self, uv_exe: Path | None = None, timeout: float = 600, stop_event=None):
         if uv_exe is None:
             from uv import find_uv_bin
             uv_exe = Path(find_uv_bin())
-        self.uv, self.timeout = str(uv_exe), timeout
+        self.uv, self.timeout, self.stop_event = str(uv_exe), timeout, stop_event
+
+    def _stopped(self) -> None:
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise InterruptedError("stopped while building mmw's runtime — nothing was written")
 
     def _get(self, url: str) -> bytes:
         import httpx
 
         from mmw.core.http import retrying_client
         try:
-            with retrying_client(timeout=self.timeout, follow_redirects=True) as c:
-                r = c.get(url)
+            with retrying_client(timeout=self.timeout, follow_redirects=True) as c, c.stream("GET", url) as r:
                 r.raise_for_status()
-                return r.content
+                buf = bytearray()
+                for chunk in r.iter_bytes():
+                    self._stopped()
+                    buf += chunk
+                return bytes(buf)
         except httpx.HTTPError as e:
             raise FetchError(f"couldn't fetch {url}: {e}") from e
+
+    def _run(self, cmd: list[str]) -> subprocess.CompletedProcess:
+        """`cmd`'s output, killed when Stop is pressed or it overruns."""
+        import time
+        deadline = time.monotonic() + self.timeout
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as p:
+            while True:
+                try:
+                    out, err = p.communicate(timeout=0.25)
+                    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+                except subprocess.TimeoutExpired:
+                    if (self.stop_event is not None and self.stop_event.is_set()) or time.monotonic() > deadline:
+                        p.kill()
+                        p.communicate()
+                        self._stopped()
+                        raise subprocess.TimeoutExpired(cmd, self.timeout) from None
 
     def uv_binary(self, version: str, arch: str) -> bytes:
         info = json.loads(self._get(f"https://pypi.org/pypi/uv/{version}/json"))
@@ -91,9 +114,11 @@ class RealFetcher:
 
     def python_archive(self, python: str, arch: str) -> tuple[str, bytes]:
         try:
-            out = subprocess.run([self.uv, "python", "list", "--all-platforms", "--only-downloads",
-                                  "--output-format", "json", python],
-                                 capture_output=True, text=True, timeout=self.timeout, check=True).stdout
+            r = self._run([self.uv, "python", "list", "--all-platforms", "--only-downloads",
+                           "--output-format", "json", python])
+            if r.returncode != 0:
+                raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout, r.stderr)
+            out = r.stdout
         except (OSError, subprocess.SubprocessError) as e:
             raise FetchError(f"couldn't list Python downloads: {e}") from e
         builds = [b for b in json.loads(out)
@@ -113,7 +138,7 @@ class RealFetcher:
                "python", "-m", "pip", "download", "--disable-pip-version-check", "--only-binary=:all:",
                *platforms, "--python-version", python, "--implementation", "cp", "--dest", str(dest), requirement]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
+            r = self._run(cmd)
         except (OSError, subprocess.SubprocessError) as e:
             raise FetchError(f"couldn't download wheels for {requirement}: {e}") from e
         if r.returncode != 0:
@@ -159,10 +184,17 @@ def verify(d: Path) -> dict | None:
 
 
 def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetcher: Fetcher,
-                  wheel: Path | None = None) -> Path:
+                  wheel: Path | None = None, progress=None, stop_event=None) -> Path:
     """`{cache}/{mmw_version}-py{python}-{arch}/`, built if it isn't there
     (or doesn't verify). `wheel` is a local mmw wheel used instead of
-    PyPI's — a dev build has none there."""
+    PyPI's — a dev build has none there. `progress(message)` before each
+    download and when done; a set `stop_event` stops between them, leaving
+    nothing behind."""
+    def step(message: str) -> None:
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("stopped while building mmw's runtime — nothing was written")
+        if progress:
+            progress(message)
     if arch not in ARCHES:
         raise ValueError(f"no runtime for {arch} — one of {', '.join(ARCHES)}")
     # A local wheel's version may stay the same across rebuilds: its hash
@@ -178,11 +210,14 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
     disk_io.ops.mkdir(tmp, parents=True)
     try:
         uv = uv_version()
+        step(f"uv {uv} for {arch}…")
         disk_io.ops.write_bytes(tmp / "uv", fetcher.uv_binary(uv, arch))
         disk_io.ops.chmod(tmp / "uv", 0o755)
+        step(f"Python {python} for {arch}…")
         name, data = fetcher.python_archive(python, arch)
         disk_io.ops.write_bytes(tmp / name, data)
         requirement = str(wheel) if wheel is not None else f"{DIST}=={mmw_version}"
+        step(f"wheels for mmw {mmw_version} on Python {python}, {arch}…")
         try:
             fetcher.wheels(requirement, python, arch, tmp / "wheels")
         except NotOnIndex:
@@ -193,6 +228,7 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
         meta = {"mmw": mmw_version, "python": python, "python_archive": name, "uv": uv,
                 "arch": arch, "files": files}
         disk_io.ops.write_text(tmp / "RUNTIME.json", json.dumps(meta, indent=2, sort_keys=True) + "\n")
+        step("done")
         disk_io.ops.rename(tmp, d)
     except BaseException:
         disk_io.ops.rmtree(tmp, ignore_errors=True)
@@ -200,8 +236,8 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
     return d
 
 
-def default_fetcher() -> Fetcher:
-    return RealFetcher()
+def default_fetcher(stop_event=None) -> Fetcher:
+    return RealFetcher(stop_event=stop_event)
 
 
 def wanted(network, wheel: Path | None = None) -> dict:
@@ -216,7 +252,7 @@ def wanted(network, wheel: Path | None = None) -> dict:
 
 
 def runtime_files(network, cfg, mirror_dir: Path, *, fetcher: Fetcher,
-                  wheel: Path | None = None) -> dict[str, bytes | Path]:
+                  wheel: Path | None = None, progress=None, stop_event=None) -> dict[str, bytes | Path]:
     """The `.mmw/runtime/` members of a bundle: `bootstrap.sh`, a top
     `RUNTIME.json` ({mmw, python, arches}), and each architecture's built
     runtime under `{arch}/`. Builds what isn't cached; raises before
@@ -229,7 +265,9 @@ def runtime_files(network, cfg, mirror_dir: Path, *, fetcher: Fetcher,
     }
     for arch in want["arches"]:
         d = build_runtime(Path(mirror_dir) / "runtime", arch=arch, python=want["python"],
-                          mmw_version=want["mmw"], fetcher=fetcher, wheel=wheel)
+                          mmw_version=want["mmw"], fetcher=fetcher, wheel=wheel,
+                          progress=(lambda m: progress("", f"runtime:{m}")) if progress else None,
+                          stop_event=stop_event)
         for p in sorted(disk_io.ops.rglob(d, "*")):
             if disk_io.ops.is_file(p):
                 out[f".mmw/runtime/{arch}/{p.relative_to(d)}"] = p

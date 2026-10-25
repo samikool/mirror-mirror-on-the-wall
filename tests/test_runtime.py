@@ -10,8 +10,8 @@ from mmw.core import runtime as R
 class FakeFetcher:
     """Every download, offline. Records what was asked for."""
 
-    def __init__(self, on_index=True):
-        self.on_index = on_index
+    def __init__(self, on_index=True, stop_event=None):
+        self.on_index, self.stop_event = on_index, stop_event
         self.calls = []
 
     def uv_binary(self, version, arch):
@@ -116,3 +116,42 @@ def test_a_rebuilt_wheel_is_rebuilt(tmp_path):
     b = R.build_runtime(cache, arch="x86_64", python="3.12", mmw_version="1.3.0.dev0", fetcher=FakeFetcher(),
                         wheel=wheel)
     assert a != b and (b / "wheels" / wheel.name).read_bytes() == b"second build"
+
+
+def test_build_reports_and_stops(tmp_path):
+    import threading
+    said = []
+    R.build_runtime(tmp_path / "a", arch="x86_64", python="3.12", mmw_version="1.2.0", fetcher=FakeFetcher(),
+                    progress=said.append)
+    assert [s.split(" ")[0] for s in said] == ["uv", "Python", "wheels", "done"]
+    stop = threading.Event()
+
+    class StopsMidway(FakeFetcher):
+        def python_archive(self, python, arch):
+            stop.set()                                             # Stop pressed during this fetch
+            return super().python_archive(python, arch)
+    with pytest.raises(InterruptedError, match="stopped"):
+        R.build_runtime(tmp_path / "b", arch="x86_64", python="3.12", mmw_version="1.2.0",
+                        fetcher=StopsMidway(), stop_event=stop)
+    assert not list((tmp_path / "b").iterdir())
+
+
+def test_real_fetcher_stops_a_running_command(tmp_path):
+    import threading
+    import time
+    stop = threading.Event()
+    f = R.RealFetcher(uv_exe=tmp_path / "uv", stop_event=stop)
+    threading.Timer(0.2, stop.set).start()
+    t = time.monotonic()
+    with pytest.raises(InterruptedError):
+        f._run(["sleep", "30"])
+    assert time.monotonic() - t < 5
+
+
+def test_runtime_phase_shows_in_the_tui():
+    from mmw.tui.transfer import BUNDLE, TransferView
+    view = TransferView(BUNDLE, "oak")
+    view.record("", "runtime:Python 3.12 for x86_64…")
+    assert "mmw runtime" in view._phase and "Python 3.12" in view._phase
+    view.record("", "runtime:done")
+    assert view._phase == ""

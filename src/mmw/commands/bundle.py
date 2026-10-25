@@ -120,7 +120,11 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                 if status.startswith("warning:"):
                     told.append(status.split(":", 1)[1])
                     eprint(f"    ⚠ {told[-1]}")
-            if stage:                       # only a stage warns before its long part
+                elif status.startswith("runtime:") and status != "runtime:done":
+                    eprint(f"  mmw runtime: {status.split(':', 1)[1]}")
+            # A stage warns before its long part; an mmw network's runtime
+            # build takes minutes the first time — both are said as they happen.
+            if stage or net.far_side == "mmw":
                 picked["progress"] = progress
             if stage:
                 result = stage_network(net, cfg, mirror_dir, out_dir=out,

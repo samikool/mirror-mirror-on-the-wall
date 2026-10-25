@@ -90,3 +90,53 @@ def test_certs_over_ssh_never_move_a_key(hosts, tmp_path):  # noqa: F811
     crossed = log.read_bytes()
     assert b"CERTIFICATE REQUEST" in crossed and b"BEGIN CERTIFICATE" in crossed
     assert b"PRIVATE KEY" not in crossed                       # neither the CA's nor the root's
+
+
+# ── review findings ──────────────────────────────────────────────────────────
+
+def test_an_ssh_first_root_applies(hosts, tmp_path):  # noqa: F811
+    """The set's first root over ssh: network files reach every root."""
+    cfg, net, md = hosts
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={HOST_A: f"farhost:{r1}", HOST_B: str(r2)}, say=quiet)
+    assert (_labels(r1), _labels(r2)) == (["a"], ["b"])
+    for r in (r1, r2):
+        assert (r / "nginx").is_dir()
+
+
+def test_a_remote_asking_for_more_hostnames_is_refused(hosts, tmp_path):  # noqa: F811
+    """A compromised remote's request names a hostname it doesn't serve: refused, unsigned."""
+    from types import SimpleNamespace
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    from mmw.site import certs as C
+    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
+    C.load_ca(crt, key, None)
+    k = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    req = (x509.CertificateSigningRequestBuilder()
+           .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, HOST_B)]))
+           .add_extension(x509.SubjectAlternativeName([x509.DNSName(HOST_B), x509.DNSName("bank.example")]),
+                          critical=False).sign(k, hashes.SHA256()))
+    pem = req.public_bytes(serialization.Encoding.PEM).decode()
+    sent = []
+    fake = SimpleNamespace(info=SimpleNamespace(name="r2"), hostnames=lambda: {HOST_B},
+                           _call=lambda verb, *a, input=None: sent.append(verb) or (
+                               {"hosts": [HOST_B], "notes": [], "csr": pem, "action": "needs"}))
+    with pytest.raises(ValueError, match="bank.example"):
+        C.sign_remote(fake, password=None, days=30, force=False, allowed={HOST_B})
+    assert sent == ["csr"]                                            # no certificate ever went back
+
+
+def test_roots_says_why_an_ssh_root_is_missing(hosts, tmp_path, monkeypatch):  # noqa: F811
+    from typer.testing import CliRunner
+
+    from mmw import cli
+    _split(hosts, tmp_path)
+    monkeypatch.setenv("FAKE_SSH_MODE", "down")
+    out = CliRunner().invoke(cli.app, ["site", "roots"]).output
+    assert "MISSING" in out and "can't reach farhost" in out

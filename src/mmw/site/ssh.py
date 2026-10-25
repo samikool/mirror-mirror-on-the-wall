@@ -15,7 +15,9 @@ KEY_AUTH = "{host} needs key-based ssh access for mmw (a security requirement) �
 HOST_KEY = ("{host}'s host key isn't known (or changed) — connect once with plain ssh to check it; "
             "mmw never accepts one for you")
 UNREACHABLE = "can't reach {host}"
-OPTIONS = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15")
+OPTIONS = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15",
+           # A connection that dies silently is noticed within a minute, never a hang.
+           "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4")
 
 
 class SshError(Exception):
@@ -25,13 +27,15 @@ class SshError(Exception):
 def parse_location(loc: str) -> tuple[str, str | None, str]:
     """("ssh", host, path) for `[user@]host:/path`, else ("local", None, loc)."""
     m = re.match(r"^([^/\\:]+):(.+)$", loc)
-    if m and not re.match(r"^[A-Za-z]$", m.group(1)) and not loc.startswith((".", "/")):
+    if m and not re.match(r"^[A-Za-z]$", m.group(1)) and not loc.startswith((".", "/", "-")):
         return "ssh", m.group(1), m.group(2)
     return "local", None, loc
 
 
 def ssh_argv(host: str, remote: list[str]) -> list[str]:
-    return ["ssh", *OPTIONS, host, "--", " ".join(shlex.quote(a) for a in remote)]
+    if host.startswith("-"):
+        raise SshError(f"{host!r} isn't a host")      # never an ssh option in disguise
+    return ["ssh", *OPTIONS, "--", host, " ".join(shlex.quote(a) for a in remote)]
 
 
 def _failure(host: str, returncode: int, stderr: bytes) -> SshError:
@@ -74,7 +78,7 @@ def popen(host: str, remote: list[str]) -> subprocess.Popen:
     """`remote` on `host` with stdin and stdout as pipes (a stream); stderr is
     kept from the terminal and never shown."""
     return subprocess.Popen(ssh_argv(host, remote), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
+                            stderr=subprocess.DEVNULL)   # never read, so never a pipe that fills
 
 
 # ── the mmw on the other end ─────────────────────────────────────────────────

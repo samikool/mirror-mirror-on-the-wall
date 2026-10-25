@@ -229,7 +229,7 @@ def open_set(locations: list[str] | None = None, set_id: str | None = None) -> M
     for loc in (recents.known() if locations is None else locations):
         try:
             root = root_at(loc)
-        except ssh.SshError as e:
+        except (ssh.SshError, ssh.RemoteMmw) as e:
             last = recents.last_seen(loc)
             if last:
                 unreachable.setdefault(last["set_id"], {})[last["name"]] = str(e)

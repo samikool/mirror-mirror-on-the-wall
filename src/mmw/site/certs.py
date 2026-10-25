@@ -134,8 +134,22 @@ def sign_roots(home: Path, *, password: bytes | None, days: int = 730,
 
 
 def sign_set(mset, *, password: bytes | None, days: int = 730, force: bool = False) -> list[RootCertResult]:
-    """Sign every root of the set that is here."""
-    return [r for root in mset.roots for r in root.sign(password=password, days=days, force=force)]
+    """Sign every root of the set that is here. A root over ssh is signed
+    only for the hostnames the local roots' maps give it."""
+    from mmw.site.mset import LocalRoot
+    known: dict[str, set[str]] = {}
+    for r in mset.roots:
+        if isinstance(r, LocalRoot):
+            for host, name in r.hosts_map().items():
+                known.setdefault(name, set()).add(host)
+    out = []
+    for root in mset.roots:
+        if isinstance(root, LocalRoot):
+            out += root.sign(password=password, days=days, force=force)
+        else:
+            out += sign_remote(root, password=password, days=days, force=force,
+                               allowed=known.get(root.info.name) if known else None)
+    return out
 
 
 def _good(tls: Path, hosts: list[str], ca_cert) -> bool:
@@ -199,7 +213,8 @@ def install_cert(r, pem: bytes) -> list[str]:
     return https_state(str(root))
 
 
-def sign_remote(root, *, password: bytes | None, days: int, force: bool) -> list[RootCertResult]:
+def sign_remote(root, *, password: bytes | None, days: int, force: bool,
+                allowed: set[str] | None = None) -> list[RootCertResult]:
     """Sign an ssh root: its key and request are made there; only the request
     comes here, and only the certificate goes back. The CA key never moves."""
     import tempfile
@@ -214,6 +229,20 @@ def sign_remote(root, *, password: bytes | None, days: int, force: bool) -> list
     got = root._call("csr", *(["--force"] if force else []), input=disk_io.ops.read_bytes(paths[0]))
     hosts, notes, action = got["hosts"], got["notes"], got["action"]
     if got.get("csr"):
+        # The remote's request asks for names; it gets only the ones this
+        # machine knows it serves (another root's map, not its own word).
+        req = x509.load_pem_x509_csr(got["csr"].encode())
+        try:
+            asked = set(req.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+                        .get_values_for_type(x509.DNSName))
+        except x509.ExtensionNotFound:
+            asked = set()
+        cn = [a.value for a in req.subject.get_attributes_for_oid(NameOID.COMMON_NAME)]
+        asked |= set(cn)
+        allowed = allowed if allowed is not None else set(root.hostnames())
+        if not asked or not asked <= allowed:
+            raise ValueError(f"{root.info.name} asked for a certificate for hostnames it doesn't serve: "
+                             f"{', '.join(sorted(asked - allowed)) or '(none)'} — not signed")
         with tempfile.TemporaryDirectory() as tmp:
             csr = Path(tmp) / "mirror.csr"
             disk_io.ops.write_text(csr, got["csr"])

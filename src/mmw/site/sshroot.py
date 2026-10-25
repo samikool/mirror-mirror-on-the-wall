@@ -174,9 +174,12 @@ class SshRoot:
 
     def import_blob(self, fh, checksum: str) -> None:
         proc = ssh.popen(self.host, ssh.mmw_argv("site", "_root", "import", self.path, checksum))
-        while chunk := fh.read(1 << 20):
-            proc.stdin.write(chunk)
-        proc.stdin.close()
+        try:
+            while chunk := fh.read(1 << 20):
+                proc.stdin.write(chunk)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
         out = proc.stdout.read()
         proc.wait()
         if proc.returncode == 255:
@@ -271,7 +274,11 @@ class RemoteApply:
         self._proc.wait()
         if self._proc.returncode == 255:
             return ssh.SshError(ssh.UNREACHABLE.format(host=self.root.host))
-        return ApplyError(5, f"{self.root.info.name}: the connection to {self.root.host} dropped — nothing changed there")
+        name = self.root.info.name
+        if getattr(self, "_committing", False):
+            return ApplyError(5, f"{name}: the connection to {self.root.host} dropped after commit — {name} "
+                                 "may have changed; check mmw site status")
+        return ApplyError(5, f"{name}: the connection to {self.root.host} dropped — nothing changed there")
 
     def _wait(self, want: str) -> dict:
         event = self._events.get()
@@ -328,6 +335,7 @@ class RemoteApply:
             self._send(lambda out: (out.write(b"abort\n"), out.flush()))
             raise ApplyError(5, "stopped before anything changed — what arrived is stored")
         control = "commit" + (" others" if others_changed else "") + (" stopped" if stopped else "")
+        self._committing = True
         self._send(lambda out: (out.write(control.encode() + b"\n"), out.flush(), out.close()))
         event = self._wait("result")
         self.first_time = bool(event.get("first_time"))

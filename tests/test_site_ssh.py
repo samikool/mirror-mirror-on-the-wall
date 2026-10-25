@@ -28,7 +28,7 @@ def test_parse_location():
 def test_argv_is_batch_mode_and_strict():
     argv = ssh.ssh_argv("lnxp005", ["mmw", "site", "_root", "info", "/data/m"])
     assert argv[:7] == ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15"]
-    assert argv[7] == "lnxp005"
+    assert argv[-2] == "lnxp005" and argv[-3] == "--"
 
 
 def test_no_secret_options_ever():
@@ -142,3 +142,14 @@ def test_cli_open_install_pushes_then_opens(tmp_path, fake_ssh, monkeypatch):
     monkeypatch.setenv("FAKE_SSH_MODE", "password")
     r = CliRunner().invoke(cli.app, ["site", "open", f"farhost:{tmp_path}"])
     assert r.exit_code == 1 and "needs key-based ssh access" in r.output
+
+
+def test_a_host_never_becomes_an_option():
+    assert ssh.parse_location("-oProxyCommand=evil:/x")[0] == "local"
+    argv = ssh.ssh_argv("lnxp005", ["true"])
+    assert argv.index("--") < argv.index("lnxp005")                  # options end before the host
+
+
+def test_keepalive_and_quiet_stderr():
+    argv = ssh.ssh_argv("h", ["true"])
+    assert "ServerAliveInterval=15" in argv and "ServerAliveCountMax=4" in argv

@@ -122,7 +122,9 @@ def roots(root: Path | None = None) -> int:
         hosts = ", ".join(sorted(r.hostnames())) or "no hostnames yet"
         print(f"  {r.info.name:<12} {r.info.location}  {hosts}")
     for name in mset.missing:
-        print(f"  {name:<12} MISSING — mount it, then: mmw site open PATH")
+        why = mset.missing_reason.get(name, "")
+        hint = why if why and why != "not opened on this machine" else "mount it, then: mmw site open PATH"
+        print(f"  {name:<12} MISSING — {hint}")
     return 0
 
 

@@ -359,6 +359,11 @@ def move_in(home: Path, key: str, info: dict) -> bool:
     from mmw.core.publisher import replay_kind
     from mmw.site.apply import place_served_file, write_root_nginx
     from mmw.site.switch import PHASES, _base
+    from mmw.resources.apply import is_safe_path
+    for v in info["versions"]:                       # another root's word: checked, never trusted
+        for rel, c, _size in v["files"]:
+            if not is_safe_path(rel):
+                raise ValueError(f"{rel!r} is outside the root — refusing the move")
     with _session(home) as (db, roots):
         store, path = roots.store(roots.primary), Path(roots.primary.path)
         served_id = None

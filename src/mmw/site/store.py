@@ -12,6 +12,9 @@ from mmw.core import disk_io
 _CHUNK = 1024 * 1024
 
 
+_SHA256 = __import__("re").compile(r"[0-9a-f]{64}")
+
+
 class ChecksumMismatch(ValueError):
     """Bytes that don't hash to what the manifest says: damaged on the way."""
 
@@ -24,6 +27,8 @@ class Store:
         self.place_tmp = self.root / ".mmw" / "tmp"
 
     def path(self, checksum: str) -> Path:
+        if not _SHA256.fullmatch(checksum or ""):
+            raise ValueError(f"{checksum[:80]!r} isn't a sha256 — refusing it as a store path")
         return self.dir / checksum[:2] / checksum
 
     def has(self, checksum: str) -> bool:

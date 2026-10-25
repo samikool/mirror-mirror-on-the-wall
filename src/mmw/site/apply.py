@@ -648,6 +648,46 @@ def nginx_steps(result: "SetApplyResult") -> list[tuple[str, list[str]]]:
     return out
 
 
+class _Member:
+    def __init__(self, name, kind, fh, linkname, size):
+        self.name, self.kind, self.fh, self.linkname, self.size = name, kind, fh, linkname, size
+
+
+class _Spool:
+    """Content more than one root of a set needs, held here for the length of
+    one apply; it answers `export_blob` like a root does."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def put(self, fh, checksum: str, name: str) -> None:
+        import hashlib
+        disk_io.ops.mkdir(self.path, parents=True, exist_ok=True)
+        dest = self.path / checksum
+        if disk_io.ops.exists(dest):
+            while fh.read(1 << 20):
+                pass
+            return
+        h, tmp = hashlib.sha256(), self.path / (checksum + ".part")
+        with disk_io.ops.open_file(tmp, "wb") as out:
+            while chunk := fh.read(1 << 20):
+                h.update(chunk)
+                out.write(chunk)
+        if h.hexdigest() != checksum:
+            disk_io.ops.unlink(tmp, missing_ok=True)
+            raise ApplyError(2, f"{name} does not match the manifest — the bundle is damaged; copy it again")
+        disk_io.ops.replace(tmp, dest)
+
+    def has(self, checksum: str) -> bool:
+        return disk_io.ops.exists(self.path / checksum)
+
+    def open(self, checksum: str):
+        return disk_io.ops.open_rb(self.path / checksum)
+
+    def export_blob(self, checksum: str):
+        return self.open(checksum)
+
+
 def _read_manifest_member(gen, scratch: Path):
     first = next(gen, None)
     if first is None or first.name != MANIFEST_MEMBER:
@@ -931,16 +971,20 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         first = appliers[order[0]]
         repo_of = {p: r for p, _c, r, _s in rows}
         cs_of = {p: c for p, c, _r, _s in rows}
-        # Content a held-back hostname shares with one that applies: kept,
-        # in the root that needs it (a later member may link to it).
-        needed_in: dict[str, str] = {}
-        for p, c, r, _s in rows:
-            h = host_of.get(r) if r is not None else None
+        size_of = {c: size or 0 for _p, c, _r, size in rows}
+        # Content more than one root needs (the network's own files, and
+        # files hostnames in different roots share) is spooled here once and
+        # handed to each — never read back from a root still receiving it.
+        needs: dict[str, set[str]] = {}
+        for _p, c, r, _s in rows:
             if r is None:
-                needed_in.setdefault(c, order[0])
-            elif h not in result.held_back and h in targets:
-                needed_in.setdefault(c, targets[h].info.name)
-        kept: dict[str, tuple] = {}                        # held-back member → (checksum, size, store)
+                needs.setdefault(c, set()).update(order)
+            else:
+                h = host_of.get(r)
+                if h in targets and h not in result.held_back:
+                    needs.setdefault(c, set()).add(targets[h].info.name)
+        shared = {c for c, names in needs.items() if len(names) > 1}
+        spool = _Spool(Path(tmp) / "spool")
         started: set[str] = set()
         received = 0
         with _truncation():
@@ -960,47 +1004,35 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     continue
                 received += 1
                 repo = repo_of.get(m.name)
-                if repo is not None:
-                    h = host_of.get(repo)
-                    if h in result.held_back:
-                        c = cs_of.get(m.name)
-                        if m.kind != "link" and c in needed_in:
-                            keeper = roots[needed_in[c]]
-                            try:
-                                keeper.import_blob(m.fh, c)
-                                kept[m.name] = (c, m.size, keeper)
-                            except ChecksumMismatch:
-                                raise ApplyError(2, f"{m.name} does not match the manifest — the bundle is damaged; copy it again") from None
-                        continue                           # its root isn't here
-                    if progress and repo not in started:
-                        started.add(repo)
-                        progress("repo", repo=repo, label=plan.labels.get(repo, repo), host=h)
-                    appliers[targets[h].info.name].take(m)
-                    continue
-                first.take(m)                              # network-level: every root gets it
+                c = cs_of.get(m.name)
+                h = host_of.get(repo) if repo is not None else None
                 if m.kind == "link":
-                    for ra in appliers.values():
-                        if ra is not first:
+                    if repo is None:
+                        for ra in appliers.values():
                             ra.links[m.name] = m.linkname
+                    elif h not in result.held_back:
+                        appliers[targets[h].info.name].take(m)
                     continue
-                checksum, size = first.got[m.name]
-                for ra in appliers.values():
-                    if ra is not first:
-                        ra.take_blob(m.name, checksum, size, None if first.dry_run else first.via)
-        # A member may link to one that went to another root (shared content).
+                if c in shared:
+                    spool.put(m.fh, c, m.name)             # held back or not: another root needs it
+                if repo is not None and h in result.held_back:
+                    continue                               # its root isn't here
+                if repo is not None and progress and repo not in started:
+                    started.add(repo)
+                    progress("repo", repo=repo, label=plan.labels.get(repo, repo), host=h)
+                takers = list(appliers.values()) if repo is None else [appliers[targets[h].info.name]]
+                for ra in takers:
+                    ra.take(_Member(m.name, "file", spool.open(c) if c in shared else m.fh, None, m.size))
+        # A member may link to one that went to another root (shared content):
+        # its bytes come from the spool.
         for ra in appliers.values():
             for name, target in list(ra.links.items()):
                 if target in ra.got or target in ra.links:
                     continue
-                src_ra = next((o for o in appliers.values() if target in o.got), None)
-                if src_ra is not None:
-                    c, size = src_ra.got[target]
-                    ra.take_blob(name, c, size, src_ra.via)
-                elif target in kept:
-                    c, size, keeper = kept[target]
-                    ra.take_blob(name, c, size, keeper)
-                else:
+                c = cs_of.get(target)
+                if c is None or not spool.has(c):
                     continue                               # RootApply says it is malformed
+                ra.take_blob(name, c, size_of.get(c, 0), spool)
                 del ra.links[name]
         if header.file_count is not None and received != header.file_count:
             raise ApplyError(5, f"bundle is truncated: expected {header.file_count} file(s), "

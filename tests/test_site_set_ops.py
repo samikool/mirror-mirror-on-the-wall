@@ -102,3 +102,13 @@ def test_move_checks_space_first(hosts, tmp_path, monkeypatch):  # noqa: F811
     with pytest.raises(ValueError, match="free"):
         ops.move_repo(open_set(), "b", "r1")
     assert [label for root, st in ops.set_status(open_set()) for label in [st.label] if root == "r1"] == ["a"]
+
+
+def test_move_in_refuses_paths_outside_the_root(hosts, tmp_path):  # noqa: F811
+    *_, r1, r2 = _split(hosts, tmp_path)
+    from mmw.site import ops as O
+    bad = {"label": "x", "bases": ["example.net/x"], "held": False, "serving": 1, "hosts": ["example.net"],
+           "sharing": [], "versions": [{"number": 1, "label": "x", "digest": "d", "stamp": "s", "snap_label": None,
+                                         "files": [["../../escape", "ab" * 32, 1]]}]}
+    with pytest.raises(ValueError, match="outside"):
+        O.move_in(read_root(str(r1)).home, "kx", bad)

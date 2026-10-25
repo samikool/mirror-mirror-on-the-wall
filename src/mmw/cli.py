@@ -690,6 +690,36 @@ def cmd_site_tidy(home: Path = _SITE_HOME, break_lock: bool = _BREAK_LOCK):
     raise typer.Exit(tidy(home, break_lock))
 
 
+site_ca_app = typer.Typer(help="The site's certificate authority.", no_args_is_help=True)
+site_app.add_typer(site_ca_app, name="ca")
+
+
+@site_ca_app.command("load")
+def cmd_site_ca_load(cert: Path = typer.Option(..., "--cert", help="The CA certificate (PEM)"),
+                     key: Path = typer.Option(..., "--key", help="Its private key (PEM); never copied"),
+                     home: Path = _SITE_HOME):
+    """Use an existing CA. mmw records where it is — nothing more."""
+    from mmw.commands.site import ca_load
+    raise typer.Exit(ca_load(cert, key, home))
+
+
+@site_ca_app.command("make")
+def cmd_site_ca_make(out: Path = typer.Option(..., "--out", help="Directory for ca.crt and ca.key"),
+                     name: str = typer.Option("mmw site CA", "--name", help="The CA's name"),
+                     encrypt: bool = typer.Option(False, "--encrypt", help="Protect ca.key with a passphrase"),
+                     home: Path = _SITE_HOME):
+    """Make a new CA (never over an existing one) and use it."""
+    from mmw.commands.site import ca_make
+    raise typer.Exit(ca_make(out, name, encrypt, home))
+
+
+@site_ca_app.command("show")
+def cmd_site_ca_show(home: Path = _SITE_HOME):
+    """The site's CA: name, expiry, where it is."""
+    from mmw.commands.site import ca_show
+    raise typer.Exit(ca_show(home))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

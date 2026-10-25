@@ -338,3 +338,70 @@ def tidy(home: Path | None = None, break_lock: bool = False) -> int:
         return 1
     print(f"cleared the old copies of: {', '.join(done)}" if done else "nothing to tidy")
     return 0
+
+
+def _passphrase(prompt: str = "CA key passphrase: ") -> bytes | None:
+    import getpass
+    import os
+    import sys
+    env = os.environ.get("MMW_CA_PASSPHRASE")
+    if env:
+        return env.encode()
+    if not sys.stdin.isatty():
+        return None
+    return getpass.getpass(prompt).encode()
+
+
+def ca_load(cert: Path, key: Path, home: Path | None = None) -> int:
+    from mmw.core.certs import CAKeyEncrypted
+    from mmw.site import certs
+    try:
+        h = _home(home, False)
+        try:
+            subject = certs.load_ca(h, cert, key, None)
+        except CAKeyEncrypted:
+            password = _passphrase()
+            if password is None:
+                eprint(f"{key} is encrypted — run this in a terminal, or set MMW_CA_PASSPHRASE")
+                return 1
+            subject = certs.load_ca(h, cert, key, password)
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"CA {subject} loaded (mmw keeps only where it is: {cert}, {key})")
+    return 0
+
+
+def ca_make(out: Path, name: str, encrypt: bool = False, home: Path | None = None) -> int:
+    from mmw.site import certs
+    try:
+        h = _home(home, False)
+        password = None
+        if encrypt:
+            password = _passphrase("Passphrase for the new CA key: ")
+            if not password:
+                eprint("--encrypt needs a passphrase: run this in a terminal, or set MMW_CA_PASSPHRASE")
+                return 1
+        crt, key = certs.make_ca(out, name, password)
+        certs.load_ca(h, crt, key, password)
+    except (ValueError, FileExistsError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"made CA {name!r}: {crt}, {key}")
+    print(certs.TRUST.format(crt=crt, key=key, name=name))
+    return 0
+
+
+def ca_show(home: Path | None = None) -> int:
+    from mmw.site import certs
+    try:
+        info = certs.show_ca(_home(home, False))
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    if info is None:
+        print("no CA yet — mmw site ca load --cert … --key …, or mmw site ca make --out …")
+        return 0
+    subject, expires, crt, key = info
+    print(f"{subject}\n  expires {expires:%Y-%m-%d}\n  certificate {crt}\n  key {key}")
+    return 0

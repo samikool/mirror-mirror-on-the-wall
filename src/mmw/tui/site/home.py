@@ -66,7 +66,9 @@ class SiteHomePage(Page):
         self._load()
 
     @work(thread=True, exclusive=True, group="site-load", exit_on_error=False)
-    def _load(self) -> None:
+    def _load(self, done: str | None = None) -> None:
+        """Reload; `done` is an action's message, said once the list is back
+        (a reload landing after it would otherwise talk over it)."""
         from mmw.site.db import SiteDB
         try:
             states = ops.status(self.app.home)
@@ -75,9 +77,9 @@ class SiteHomePage(Page):
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._loaded, states, newest)
+        self.app.call_from_thread(self._loaded, states, newest, done)
 
-    def _loaded(self, states, newest) -> None:
+    def _loaded(self, states, newest, done: str | None = None) -> None:
         if not self.is_attached:
             return
         self._states = states
@@ -95,7 +97,10 @@ class SiteHomePage(Page):
             self.set_status("nothing applied yet — a applies a bundle")
             self._show_history(None)
         else:
-            self.set_status(f"{len(states)} repositor{'y' if len(states) == 1 else 'ies'}")
+            if done:
+                self.set_status(done, "ok")
+            else:
+                self.set_status(f"{len(states)} repositor{'y' if len(states) == 1 else 'ies'}")
             self._show_history(self.selected_repo())
 
     def selected_repo(self) -> str | None:
@@ -212,8 +217,7 @@ class SiteHomePage(Page):
         self.app.call_from_thread(self._acted, done)
 
     def _acted(self, done: str) -> None:
-        self._load()
-        self.set_status(done, "ok")
+        self._load(done)
 
     def action_move(self) -> None:
         repo = self.selected_repo()

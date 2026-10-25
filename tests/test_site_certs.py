@@ -171,3 +171,76 @@ def test_mmw_bundle_carries_no_tls_key(two_mirrors, tmp_path):  # noqa: F811
     r = bundle_network(net, cfg, md, out_path=tmp_path, from_ref=None)
     with tarfile.open(r.out_path) as tar:
         assert not [n for n in tar.getnames() if n.startswith(".mmw/tls/")]
+
+
+# ── review findings ──────────────────────────────────────────────────────────
+
+def test_a_new_ca_re_signs(env, tmp_path):  # noqa: F811
+    home, root = _applied(env, tmp_path)
+    C.sign_roots(home, password=None)
+    crt2, key2 = C.make_ca(tmp_path / "ca2", "New CA", None)
+    C.load_ca(home, crt2, key2, None)
+    (r,) = C.sign_roots(home, password=None)
+    assert r.action == "signed"
+    leaf = x509.load_pem_x509_certificates((root / ".mmw/tls/mirror.crt").read_bytes())[0]
+    assert "New CA" in leaf.issuer.rfc4514_string()
+
+
+def test_a_key_from_an_older_bundle_is_replaced_once(env, tmp_path):  # noqa: F811
+    import io
+    from mmw.core.certs import generate_key_and_csr
+    from mmw.resources.apply import _install_tls
+    home, root = _applied(env, tmp_path)
+    near = tmp_path / "near"
+    key, _cnf, _csr = generate_key_and_csr(["example.com"], near)          # what the near side made …
+    _install_tls(str(root), "mirror.key", io.BytesIO(key.read_bytes()))    # … and an older bundle carried
+    (r,) = C.sign_roots(home, password=None)
+    assert (root / ".mmw/tls/mirror.key").read_bytes() != key.read_bytes()
+    assert any("replaced" in n for n in r.notes)
+    made_here = (root / ".mmw/tls/mirror.key").read_bytes()
+    (again,) = C.sign_roots(home, password=None)
+    assert again.action == "kept" and (root / ".mmw/tls/mirror.key").read_bytes() == made_here
+
+
+def test_move_into_an_unsigned_root_says_so(split_env, tmp_path):  # noqa: F811
+    from mmw.site import ops
+    from mmw.site.apply import apply_bundle
+    cfg, net, md, home, main, second = split_env
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
+    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
+    C.load_ca(home, crt, key, None)
+    C.sign_roots(home, password=None)
+    r = ops.move(home, "b", "second")
+    assert any("second" in n and "no certificate" in n for n in r.tls_notes)
+
+
+def test_a_corrupt_certificate_does_not_fail_the_apply(env, tmp_path):  # noqa: F811
+    from mmw.site.apply import apply_bundle
+    from test_snapshot_repo_versions import _change_a
+    cfg, net, md, home, root = env
+    home, root = _applied(env, tmp_path)
+    C.sign_roots(home, password=None)
+    (root / ".mmw/tls/mirror.crt").write_text("not a certificate")
+    _change_a(md)
+    r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2")), say=lambda *a: None)
+    assert r.updated and any("mirror.crt" in a or "certificate" in a for a in r.actions)
+
+
+def test_ca_make_encrypt_asks_twice(site, tmp_path, monkeypatch):
+    import getpass
+    import sys
+    answers = iter(["one", "two"])
+    monkeypatch.delenv("MMW_CA_PASSPHRASE", raising=False)
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": next(answers))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    from mmw.commands import site as cmd
+    assert cmd.ca_make(tmp_path / "ca", "Lab CA", encrypt=True, home=site) == 1
+    assert not (tmp_path / "ca/ca.key").exists()
+
+
+def test_certs_takes_the_lock(env, tmp_path):  # noqa: F811
+    from mmw.site.lock import LockHeld, SiteLock
+    home, root = _applied(env, tmp_path)
+    with SiteLock(home):
+        with pytest.raises(LockHeld):
+            C.sign_roots(home, password=None)

@@ -75,6 +75,9 @@ def show_ca(home: Path) -> tuple[str, datetime, Path, Path] | None:
 
 # ── a certificate per root ───────────────────────────────────────────────────
 
+KEY_MADE_HERE = "key-made-here"
+
+
 class RootCertResult:
     def __init__(self, root: str, hostnames: list[str], action: str, notes: list[str]):
         self.root, self.hostnames, self.action, self.notes = root, hostnames, action, notes
@@ -101,33 +104,86 @@ def sign_roots(home: Path, *, password: bytes | None, days: int = 730,
     hostnames, and a certificate from the site's CA — unless the one it has
     still fits, covers them and is not about to expire. Then HTTPS follows
     (`https.conf` only once the certificate fits the key)."""
-    from mmw.core.certs import check_cert, generate_key_and_csr, sign_csr
-    from mmw.resources.apply import https_state
+    from mmw.site.lock import SiteLock
     s = load_site(home)
     if s.ca_cert is None:
         raise ValueError("no CA yet — mmw site ca load --cert … --key …, or mmw site ca make --out …")
     for path in (s.ca_cert, s.ca_key):
         if not disk_io.ops.exists(path):
             raise FileNotFoundError(f"the CA isn't at {path} any more (moved, or not mounted?)")
-    _load_ca(s.ca_cert, s.ca_key, password)          # wrong passphrase / mismatch: before anything
-    out = []
-    for r in s.roots:
+    ca_cert, _ca_key = _load_ca(s.ca_cert, s.ca_key, password)   # wrong passphrase / mismatch: first
+    with SiteLock(home):
+        return [_sign_root(r, ca_cert, s, password, days, force) for r in s.roots]
+
+
+def _good(tls: Path, hosts: list[str], ca_cert) -> bool:
+    """The certificate there still fits, covers `hosts`, isn't about to
+    expire — and is the site CA's."""
+    from mmw.core.certs import check_cert
+    try:
+        if check_cert(tls, hosts):
+            return False
+        leaf = x509.load_pem_x509_certificates(disk_io.ops.read_bytes(tls / "mirror.crt"))[0]
+    except (ValueError, OSError):
+        return False                                   # unreadable: sign a good one
+    return leaf.issuer == ca_cert.subject
+
+
+def _sign_root(r, ca_cert, s, password, days, force) -> "RootCertResult":
+    from mmw.core.certs import generate_key_and_csr, sign_csr
+    from mmw.resources.apply import https_state
+    root = Path(r.path)
+    if not disk_io.ops.is_dir(root / ".mmw" / "store"):
+        return RootCertResult(r.name, [], "not mounted", [])
+    hosts = root_hostnames(root)
+    if not hosts:
+        return RootCertResult(r.name, [], "no hostnames", [])
+    tls = root / ".mmw" / "tls"
+    if disk_io.ops.is_symlink(tls):
+        raise ValueError(f"{tls} is a symlink — refusing to write a private key through it")
+    disk_io.ops.mkdir(tls, parents=True, exist_ok=True)
+    disk_io.ops.chmod(tls, 0o700)
+    notes = []
+    if disk_io.ops.exists(tls / "mirror.key") and not disk_io.ops.exists(tls / KEY_MADE_HERE):
+        # A key an older bundle carried over (made on the connected side):
+        # replaced once, so this root's key never crossed on transfer media.
+        for name in ("mirror.key", "mirror.crt", "mirror.csr"):
+            disk_io.ops.unlink(tls / name, missing_ok=True)
+        notes.append("replaced the key that came over in an older bundle with one made here")
+    _key, _cnf, csr = generate_key_and_csr(hosts, tls)
+    disk_io.ops.write_text(tls / KEY_MADE_HERE, "mirror.key was made on this side\n")
+    if not force and _good(tls, hosts, ca_cert):
+        action = "kept"
+    else:
+        sign_csr(csr, s.ca_cert, s.ca_key, days=days, password=password)
+        action = "signed"
+    return RootCertResult(r.name, hosts, action, notes + https_state(str(root)))
+
+
+def tls_notes(home: Path) -> list[str]:
+    """Per root: a certificate that no longer covers what the root serves, a
+    root serving hostnames with no certificate while others have one (or a
+    CA is loaded), HTTPS on or off to match. Never raises: a bad file is a
+    note."""
+    from mmw.core.certs import check_cert
+    from mmw.resources.apply import https_state
+    s = load_site(home)
+    roots = [r for r in s.roots if disk_io.ops.is_dir(Path(r.path) / ".mmw" / "store")]
+    signed = {r.name for r in roots if disk_io.ops.exists(Path(r.path) / ".mmw" / "tls" / "mirror.crt")}
+    in_use = bool(signed) or s.ca_cert is not None
+    notes = []
+    for r in roots:
         root = Path(r.path)
-        if not disk_io.ops.is_dir(root / ".mmw" / "store"):
-            out.append(RootCertResult(r.name, [], "not mounted", []))
-            continue
-        hosts = root_hostnames(root)
-        if not hosts:
-            out.append(RootCertResult(r.name, [], "no hostnames", []))
-            continue
         tls = root / ".mmw" / "tls"
-        disk_io.ops.mkdir(tls, parents=True, exist_ok=True)
-        disk_io.ops.chmod(tls, 0o700)
-        _key, _cnf, csr = generate_key_and_csr(hosts, tls)
-        if not force and disk_io.ops.exists(tls / "mirror.crt") and not check_cert(tls, hosts):
-            action = "kept"
-        else:
-            sign_csr(csr, s.ca_cert, s.ca_key, days=days, password=password)
-            action = "signed"
-        out.append(RootCertResult(r.name, hosts, action, https_state(str(root))))
-    return out
+        try:
+            hosts = root_hostnames(root)
+            if r.name not in signed:
+                if in_use and hosts:
+                    notes.append(f"{r.name}: no certificate yet for {len(hosts)} hostname(s) — mmw site certs")
+                continue
+            for problem in check_cert(tls, hosts):
+                notes.append(f"{r.name}: {problem.replace('re-sign', 'mmw site certs')}")
+            notes.extend(f"{r.name}: {n}" for n in https_state(str(root)) if "sign.py" not in n)
+        except (ValueError, OSError) as e:
+            notes.append(f"{r.name}: its certificate or key can't be read ({e}) — mmw site certs")
+    return notes

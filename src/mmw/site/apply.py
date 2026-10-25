@@ -292,7 +292,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
             apply_retention(db, roots, settings.keep_versions)
-        result.actions.extend(_tls_notes(roots))
+        from mmw.site.certs import tls_notes
+        result.actions.extend(tls_notes(home))
         if progress:
             progress("done")
         if result.network_changed:
@@ -472,21 +473,3 @@ def write_root_nginx(db, roots: Roots) -> bool:
             changed = True
             db.set_meta(f"nginx:{r.name}", json.dumps(after, sort_keys=True))
     return changed
-
-
-def _tls_notes(roots: Roots) -> list[str]:
-    """For every root with a certificate: whether it still covers what the
-    root serves, and HTTPS on or off to match (apply.py's rule)."""
-    from mmw.core.certs import check_cert
-    from mmw.resources.apply import https_state
-    from mmw.site.certs import root_hostnames
-    notes = []
-    for r in roots.all:
-        root = Path(r.path)
-        tls = root / ".mmw" / "tls"
-        if not disk_io.ops.exists(tls / "mirror.crt"):
-            continue
-        for problem in check_cert(tls, root_hostnames(root)):
-            notes.append(f"{r.name}: {problem.replace('re-sign', 'mmw site certs')}")
-        notes.extend(f"{r.name}: {n}" for n in https_state(str(root)) if "sign.py" not in n)
-    return notes

@@ -319,6 +319,8 @@ def move(repo: str, root: str, home: Path | None = None, yes: bool = False, brea
         eprint(str(e))
         return 1
     print(f"moved: {r.files} file(s), {fmt_size(r.copied_bytes)} copied")
+    for note in r.tls_notes:
+        print(f"! {note}")
     if r.nginx_changed:
         print(f"! nginx changed in {', '.join(r.nginx_changed)} — recreate them on the serving host")
     print("the old root still serves its copy until you run `mmw site tidy` (the next apply does it too)")
@@ -340,7 +342,7 @@ def tidy(home: Path | None = None, break_lock: bool = False) -> int:
     return 0
 
 
-def _passphrase(prompt: str = "CA key passphrase: ") -> bytes | None:
+def _passphrase(prompt: str = "CA key passphrase: ", confirm: bool = False) -> bytes | None:
     import getpass
     import os
     import sys
@@ -349,7 +351,11 @@ def _passphrase(prompt: str = "CA key passphrase: ") -> bytes | None:
         return env.encode()
     if not sys.stdin.isatty():
         return None
-    return getpass.getpass(prompt).encode()
+    first = getpass.getpass(prompt)
+    if confirm and getpass.getpass("Again: ") != first:
+        eprint("the two passphrases differ — nothing made")
+        return None
+    return first.encode()
 
 
 def ca_load(cert: Path, key: Path, home: Path | None = None) -> int:
@@ -378,7 +384,7 @@ def ca_make(out: Path, name: str, encrypt: bool = False, home: Path | None = Non
         h = _home(home, False)
         password = None
         if encrypt:
-            password = _passphrase("Passphrase for the new CA key: ")
+            password = _passphrase("Passphrase for the new CA key: ", confirm=True)
             if not password:
                 eprint("--encrypt needs a passphrase: run this in a terminal, or set MMW_CA_PASSPHRASE")
                 return 1

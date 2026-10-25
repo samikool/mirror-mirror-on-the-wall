@@ -219,11 +219,12 @@ class SiteHomePage(Page):
     def _act(self, done: str, fn, *args) -> None:
         self.app.call_from_thread(self.set_status, "working…")
         try:
-            fn(*args)
+            result = fn(*args)
         except Exception as e:  # noqa: BLE001 — a refusal, the lock: said on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._acted, done)
+        notes = getattr(result, "tls_notes", [])
+        self.app.call_from_thread(self._acted, "; ".join([done, *notes]))
 
     def _acted(self, done: str) -> None:
         self._load(done)
@@ -276,6 +277,9 @@ class SiteHomePage(Page):
             return
         signed = [r.root for r in results if r.action == "signed"]
         text = "; ".join(f"{r.root} {r.action}" for r in results)
+        notes = [f"{r.root}: {n}" for r in results for n in r.notes]
+        if notes:
+            text += "; " + "; ".join(notes)
         if signed:
             text += f" — recreate nginx in {', '.join(signed)}"
         self.app.call_from_thread(self.set_status, text, "ok")

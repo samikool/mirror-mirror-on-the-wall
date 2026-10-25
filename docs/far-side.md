@@ -126,8 +126,12 @@ mmw site certs                       # every root: key, request, certificate, HT
   `--force` re-signs. The key is never regenerated.
 - HTTPS turns on in a root's nginx only once its certificate fits its key;
   plain HTTP never stops. Recreate nginx in the roots the command names.
-- An apply that brings a new hostname says which root's certificate doesn't
-  cover it; `mmw site certs` puts it right. In the TUI, **c** signs.
+- An apply or a move says which root's certificate doesn't cover what it
+  serves, or which root has none yet; `mmw site certs` puts it right. In
+  the TUI, **c** signs.
+- Changing CA re-signs every root on the next `mmw site certs`. A key an
+  older bundle carried over (made on the connected side) is replaced once
+  with one made here.
 
 ## Space
 

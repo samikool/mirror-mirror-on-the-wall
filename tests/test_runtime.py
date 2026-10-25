@@ -152,7 +152,7 @@ def test_runtime_phase_shows_in_the_tui():
     from mmw.tui.transfer import BUNDLE, TransferView
     view = TransferView(BUNDLE, "oak")
     view.record("", "runtime:Python 3.12 for x86_64…")
-    assert "mmw runtime" in view._phase and "Python 3.12" in view._phase
+    assert "mmw installer" in view._phase and "Python 3.12" in view._phase
     view.record("", "runtime:done")
     assert view._phase == ""
 

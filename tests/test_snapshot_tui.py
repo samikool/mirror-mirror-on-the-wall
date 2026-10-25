@@ -320,6 +320,7 @@ def test_bundle_pick_mmw_has_repos_and_stage(two_mirrors, tmp_path):  # noqa: F8
         assert set(repos.selected) == {s.identity for s in cfg.sources}           # all ticked
         repos.deselect(key_b)
         app.screen.query_one("#pick-as", Select).value = "stage"
+        app.screen.query_one("#pick-installer", Select).value = "no"      # stage only: no installer build
         await until(pilot, lambda: "per repository" in str(app.screen.query_one("#pick-estimate").render()))
         await confirm_picker(app, pilot, "BundlePickPage")
         await until(pilot, lambda: _finished(app))

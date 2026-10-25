@@ -19,20 +19,24 @@ from mmw.core.format import fmt_size
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button, JumpSelectionList
 
-RECENT = "recent.json"
+RECENT = "recent-bundles.json"           # on this machine, beside its recent roots
 
 
-def recent_paths(home: Path) -> list[str]:
+def recent_paths() -> list[str]:
+    from mmw.site.recents import state_dir
     try:
-        return json.loads(disk_io.ops.read_text(Path(home) / RECENT))
+        got = json.loads(disk_io.ops.read_text(state_dir() / RECENT))
+        return [p for p in got if isinstance(p, str)] if isinstance(got, list) else []
     except (OSError, ValueError):
         return []
 
 
-def remember(home: Path, path: str) -> None:
-    paths = [path] + [p for p in recent_paths(home) if p != path]
+def remember(path: str) -> None:
+    from mmw.site.recents import state_dir
+    paths = [path] + [p for p in recent_paths() if p != path]
     try:
-        disk_io.ops.write_text(Path(home) / RECENT, json.dumps(paths[:5]))
+        disk_io.ops.mkdir(state_dir(), parents=True, exist_ok=True)
+        disk_io.ops.write_text(state_dir() / RECENT, json.dumps(paths[:5]))
     except OSError:
         pass                               # a convenience, never a failure
 
@@ -187,11 +191,13 @@ class ApplyRunPage(Page):
 
     @work(thread=True, exclusive=True, group="site-apply", exit_on_error=False)
     def _run(self) -> None:
-        from mmw.site.apply import ApplyError, apply_bundle
+        from mmw.site.apply import ApplyError, apply_to_set
+        mset = self.app.mset
         try:
-            result = apply_bundle(self.app.home, self._choice.src, only=set(self._choice.only),
-                                  forward=set(self._choice.forward), progress=self._progress,
-                                  stop_event=self._stop, say=lambda *a: None)
+            # New hostnames go to the first root here (phase 3 lets you place them).
+            result = apply_to_set(mset, self._choice.src, place={"*": mset.roots[0].info.location},
+                                  only=set(self._choice.only), forward=set(self._choice.forward),
+                                  progress=self._progress, stop_event=self._stop, say=lambda *a: None).merged()
         except ApplyError as e:
             self.app.call_from_thread(self._failed, str(e))
             return

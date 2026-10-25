@@ -446,8 +446,9 @@ def _site_demo(tmp_path, monkeypatch):
     days = itertools.count(1)
     monkeypatch.setattr(_snaps, "now_stamp", lambda: f"202610{next(days):02d}T120000Z")
     cfg, net, md = _mmw(_tm.__wrapped__(tmp_path))
-    home = tmp_path / "site"
-    _h.init_site(home, tmp_path / "oak")
+    home = _h.init_root(tmp_path / "oak", name="oak", set_id="s1", network=net.name)
+    from mmw.site import recents
+    recents.remember(str(tmp_path / "oak"))
     quiet = lambda *a: None  # noqa: E731
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
     _change_a(md)
@@ -466,7 +467,8 @@ def test_snapshot_site_home(snap_compare, tmp_path, monkeypatch):
         from textual.widgets import DataTable
         await until(pilot, lambda: pilot.app.screen.query("#site-history")
                     and pilot.app.screen.query_one("#site-history", DataTable).row_count == 3)
-    assert snap_compare(SiteApp(home), terminal_size=SNAP_SIZE, run_before=ready)
+    from mmw.site.mset import open_set
+    assert snap_compare(SiteApp(open_set()), terminal_size=SNAP_SIZE, run_before=ready)
 
 
 def test_snapshot_site_apply_review(snap_compare):

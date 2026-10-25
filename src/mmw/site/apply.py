@@ -409,14 +409,17 @@ def _manifest_and_sizes(src: str, scratch: Path) -> dict[str, int]:
     return sizes
 
 
-def plan_apply(home: Path, src: str) -> ApplyPlan:
+def plan_apply(target, src: str) -> ApplyPlan:
     """What applying `src` would do, from its manifest and member sizes —
-    nothing is stored or checked beyond that."""
+    nothing is stored or checked beyond that. `target`: one root's home, or
+    a mirror set (each repository as the root holding it sees it)."""
+    import tempfile
     from mmw.core.repos import attribute
     if src == "-":
         raise ValueError("a bundle on stdin can't be planned — it can only be read once")
-    settings = load_site(home)
-    scratch = Path(home) / "plan-manifest.jsonl"
+    homes = [Path(target)] if isinstance(target, (str, Path)) else [r.home for r in target.roots]
+    tmpdir = tempfile.TemporaryDirectory()
+    scratch = Path(tmpdir.name) / "plan-manifest.jsonl"
     try:
         sizes = _manifest_and_sizes(src, scratch)
         header, rows = iter_manifest_v2(scratch)
@@ -424,7 +427,7 @@ def plan_apply(home: Path, src: str) -> ApplyPlan:
     except (ValueError, KeyError, TypeError) as e:
         raise ApplyError(2, f"its manifest can't be read: {e}") from None
     finally:
-        disk_io.ops.unlink(scratch, missing_ok=True)
+        tmpdir.cleanup()
     if (header.format or 1) < 2:
         raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
                             'or set far_side = "mmw" on the connected side and bundle again')
@@ -437,13 +440,19 @@ def plan_apply(home: Path, src: str) -> ApplyPlan:
             sent[repo][0] += 1
             sent[repo][1] += size
     out = []
-    with SiteDB(home) as db:
-        for repo, meta in sorted(repos.items(), key=lambda kv: kv[1]["label"].lower()):
-            st = db.repo_state(repo)
-            serving = st.serving.number if st and st.serving else None
-            out.append(PlanRow(repo, meta["label"], meta["from"], meta["to"], sent[repo][0], sent[repo][1],
-                               serving, bool(st and st.held), serving is not None and meta["to"] <= serving,
-                               Path(settings.root)))
+    found: dict[str, tuple] = {}
+    for home in homes:
+        with SiteDB(home) as db:
+            for repo in repos:
+                st = db.repo_state(repo)
+                if st is not None and repo not in found:
+                    found[repo] = (st, Path(load_site(home).root))
+    first_root = Path(load_site(homes[0]).root) if homes else None
+    for repo, meta in sorted(repos.items(), key=lambda kv: kv[1]["label"].lower()):
+        st, root = found.get(repo, (None, first_root))
+        serving = st.serving.number if st and st.serving else None
+        out.append(PlanRow(repo, meta["label"], meta["from"], meta["to"], sent[repo][0], sent[repo][1],
+                           serving, bool(st and st.held), serving is not None and meta["to"] <= serving, root))
     network = sum(1 for _p, _c, r in rows if r is None)
     return ApplyPlan(header.created, header.network, out, network,
                      sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))
@@ -552,6 +561,17 @@ class SetApplyResult:
     actions: list[str] = field(default_factory=list)
     created: str = ""
 
+    def merged(self) -> "ApplyResult":
+        """One `ApplyResult` for the whole set (what the TUI shows)."""
+        out = ApplyResult(created=self.created, lines=list(self.lines), actions=list(self.actions))
+        for r in self.per_root.values():
+            out.updated += r.updated
+            out.stored_held += r.stored_held
+            out.refused.update(r.refused)
+            out.stopped += r.stopped
+            out.network_changed = out.network_changed or r.network_changed
+        return out
+
 
 def _read_manifest_member(gen, scratch: Path):
     first = next(gen, None)
@@ -637,8 +657,8 @@ def _root_name(location: str, taken: set[str]) -> str:
 
 
 def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run: bool = False,
-                 forward: set[str] | None = None, forward_all: bool = False, progress=None,
-                 stop_event=None, say=print) -> SetApplyResult:
+                 forward: set[str] | None = None, forward_all: bool = False, only: set[str] | None = None,
+                 progress=None, stop_event=None, say=print) -> SetApplyResult:
     """Apply the bundle at `src` to a set of roots (`mset`; None for a first
     apply) in one pass. Each hostname goes to the root that holds it; a new
     one to `place[host]` or `place["*"]` (a root location). A hostname whose
@@ -771,7 +791,7 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         for name in order:
             repos = {r for h, t in targets.items() if t.info.name == name for r in plan.hosts[h]}
             ra = stack.enter_context(RootApply(roots[name].home, forward=forward, forward_all=forward_all,
-                                               progress=progress, stop_event=stop_event, say=say))
+                                               only=only, progress=progress, stop_event=stop_event, say=say))
             ra.begin(_filtered_manifest(header, rows, repos))
             appliers[name] = ra
         first = appliers[order[0]]

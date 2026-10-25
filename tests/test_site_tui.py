@@ -20,7 +20,8 @@ def _rows(app, table_id):
 
 def _run(home, check, size=(120, 40)):
     async def go():
-        app = SiteApp(home)
+        from mmw.site.mset import open_set
+        app = SiteApp(open_set())                   # the env root is remembered on this machine
         async with app.run_test(size=size) as pilot:
             await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage")
             await check(app, pilot)

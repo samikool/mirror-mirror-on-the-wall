@@ -180,6 +180,9 @@ def bundle_network(
     stdout=None,
     repos: list[str] | None = None,
     stage: bool = False,
+    runtime: bool = True,
+    runtime_wheel: Path | None = None,
+    fetcher=None,
 ) -> BundleResult:
     """One `.tar` that takes a far side from snapshot `from_ref` to
     snapshot `to_ref` — any two, forwards or backwards.
@@ -196,6 +199,11 @@ def bundle_network(
     everything and deletes every path any snapshot of this network ever had
     that the destination lacks — a far side of unknown state is repaired.
     The nginx config and TLS files are regenerated for the far side.
+
+    An mmw network's bundle carries mmw's own runtime (`.mmw/runtime/`) when
+    it starts from nothing, or when the mmw version or the runtime settings differ from
+    the last runtime sent — unless `runtime` is False. `runtime_wheel` is a
+    local mmw wheel for a version PyPI lacks; `fetcher` does the downloads.
     """
     from mmw.core.snapshots import (
         ensure_repo_versions, find_snapshot, import_ledger, recorded_bases, take_snapshot,
@@ -212,6 +220,18 @@ def bundle_network(
         import_ledger(pool, mirror_dir, network.name)
         ensure_repo_versions(pool, network.name)
         start = _resolve_from(pool, network.name, from_ref)
+        # mmw's runtime: built (or taken from the cache) before anything is
+        # written — no snapshot, no bundle, no ledger row if a download
+        # fails. Carried from nothing, or when what was last sent differs.
+        shipped_runtime, runtime_members = None, {}
+        if mmw_far_side and runtime:
+            from mmw.core import runtime as rt
+            want = rt.wanted(network, runtime_wheel)
+            if start is None or pool.runtime_sent(network.name) != want:
+                runtime_members = rt.runtime_files(
+                    network, cfg, mirror_dir, fetcher=fetcher or rt.default_fetcher(stop_event=stop_event),
+                    wheel=runtime_wheel, progress=progress, stop_event=stop_event)
+                shipped_runtime = want
         if to_ref != "now":
             dest = find_snapshot(pool, network.name, to_ref)
             if not dest.complete:
@@ -313,7 +333,7 @@ def bundle_network(
                           apply_script_bytes(), prune=network.prune and not mmw_far_side,
                           full=header.full if mmw_far_side else start is None, row_repo=row_repo,
                           progress=progress, tls_files=tls_files, stop_event=stop_event,
-                          writer=writer,
+                          writer=writer, runtime_files=runtime_members,
                           scratch_dir=ledger_dir(mirror_dir, network.name) if streaming or stage else None)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()
@@ -410,17 +430,20 @@ def bundle_network(
         pool.record_bundle(network.name, header.previous, dest.stamp, str(target),
                            sink.sent, sink.sent_bytes, len(sink.deleted),
                            kind="stage" if stage else "stream" if streaming else "bundle",
-                           repos=sent_repos)
+                           repos=sent_repos, runtime=shipped_runtime)
+    result.runtime = shipped_runtime
     return result
 
 
 def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir: Path | None = None,
                   progress=None, stop_event=None, mirror_start_callback=None, *,
-                  from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None) -> BundleResult:
+                  from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None,
+                  runtime: bool = True, runtime_wheel: Path | None = None, fetcher=None) -> BundleResult:
     """`mmw stage`: the bundle `bundle_network` would write, laid out as a
     directory `{out_dir or bundle_dir}/{network}-{name}/` of hardlinks to the
     pool instead of a tar. For mmw networks only."""
     from mmw.core.far_side import require_mmw
     require_mmw(network, "mmw stage")
     return bundle_network(network, cfg, mirror_dir, out_dir, progress, stop_event, mirror_start_callback,
-                          from_ref=from_ref, to_ref=to_ref, repos=repos, stage=True)
+                          from_ref=from_ref, to_ref=to_ref, repos=repos, stage=True,
+                          runtime=runtime, runtime_wheel=runtime_wheel, fetcher=fetcher)

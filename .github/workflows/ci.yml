@@ -167,6 +167,28 @@ jobs:
             .superpowers/work/pypi-client-e2e/**/*.log
             .superpowers/work/pypi-client-e2e/**/probe.json
 
+  runtime-bootstrap:
+    # mmw's own runtime, built for real from PyPI and python-build-standalone,
+    # then bootstrapped in RHEL 8 with no Python and no network (`--network none`).
+    name: mmw runtime bootstraps on Rocky Linux 8 (offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Sync test dependencies
+        run: uv sync --python 3.13
+
+      - name: Prepare the far-side image
+        run: docker pull rockylinux:8
+
+      - name: Build a runtime and bootstrap it
+        env:
+          MMW_RUNTIME_E2E: "1"
+        run: uv run --python 3.13 pytest -q tests/test_runtime_e2e.py
+
   apply-script-compat:
     # `resources/apply.py` and `resources/sign.py` are the only parts of mmw
     # that run on the far side of an airgap: no mmw install, no pip, sometimes

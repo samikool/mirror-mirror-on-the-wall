@@ -182,7 +182,8 @@ CREATE TABLE IF NOT EXISTS bundles (
     sent_bytes  INTEGER NOT NULL DEFAULT 0,
     removed     INTEGER NOT NULL DEFAULT 0,      -- paths the far side deletes
     made        TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now')),
-    kind        TEXT NOT NULL DEFAULT 'bundle'   -- 'bundle' | 'stream' | 'stage'
+    kind        TEXT NOT NULL DEFAULT 'bundle',  -- 'bundle' | 'stream' | 'stage'
+    runtime     TEXT                             -- JSON: the mmw runtime it carried, if any
 );
 
 -- A repository's content at one moment, per network: what the far side
@@ -753,6 +754,8 @@ class Pool:
             bcols = {r[1] for r in self._conn.execute("PRAGMA table_info(bundles)")}
             if "kind" not in bcols:
                 self._conn.execute("ALTER TABLE bundles ADD COLUMN kind TEXT NOT NULL DEFAULT 'bundle'")
+            if "runtime" not in bcols:
+                self._conn.execute("ALTER TABLE bundles ADD COLUMN runtime TEXT")
             mcols = {r[1] for r in self._conn.execute("PRAGMA table_info(mirrors)")}
             if "dims" not in mcols:
                 self._conn.execute("ALTER TABLE mirrors ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'")
@@ -1614,15 +1617,18 @@ class Pool:
     def record_bundle(self, network: str, from_stamp: str | None, to_stamp: str,
                       out_path: str, sent: int, sent_bytes: int, removed: int, *,
                       kind: str = "bundle",
-                      repos: "dict[str, tuple[int | None, int]] | None" = None) -> int:
+                      repos: "dict[str, tuple[int | None, int]] | None" = None,
+                      runtime: dict | None = None) -> int:
         """Log one completed transfer and, per repository, which version it
-        took the far side from and to (ids; from None: in full)."""
+        took the far side from and to (ids; from None: in full). `runtime`:
+        the mmw runtime it carried ({mmw, python, arches}), if any."""
         with self._lock:
             try:
                 cur = self._conn.execute(
                     "INSERT INTO bundles (network, from_stamp, to_stamp, out_path, sent, "
-                    "sent_bytes, removed, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (network, from_stamp, to_stamp, out_path, sent, sent_bytes, removed, kind))
+                    "sent_bytes, removed, kind, runtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (network, from_stamp, to_stamp, out_path, sent, sent_bytes, removed, kind,
+                     json.dumps(runtime, sort_keys=True) if runtime is not None else None))
                 bid = cur.lastrowid
                 self._conn.executemany(
                     "INSERT INTO bundle_repos (bundle, repo, from_version, to_version) VALUES (?, ?, ?, ?)",
@@ -1632,6 +1638,15 @@ class Pool:
                 self._conn.rollback()
                 raise
         return bid
+
+    def runtime_sent(self, network: str) -> dict | None:
+        """The mmw runtime the newest bundle that carried one carried."""
+        with self._read() as c:
+            if "runtime" not in {r[1] for r in c.execute("PRAGMA table_info(bundles)")}:
+                return None
+            row = c.execute("SELECT runtime FROM bundles WHERE network = ? AND runtime IS NOT NULL "
+                            "ORDER BY id DESC LIMIT 1", (network,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def bundles(self, network: str) -> list[BundleInfo]:
         """Newest first."""

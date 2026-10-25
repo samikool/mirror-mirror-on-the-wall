@@ -134,6 +134,8 @@ class BundlePickPage(Page):
         last = status.last_bundle.to_stamp if status.last_bundle else next(
             (s.stamp for s in status.snapshots if s.kind == "imported"), None)
         self._last = last
+        # mmw's runtime, if the bundle would carry it: (from nothing, a delta).
+        self._runtime: tuple[str | None, str | None] = (None, None)
 
     def compose_body(self) -> ComposeResult:
         froms = ([(escape(f"Where the last bundle went — {self._status.name(self._last)}"), "last")]
@@ -166,6 +168,25 @@ class BundlePickPage(Page):
     def on_mount(self) -> None:
         self._estimate_now()
         self.query_one("#btn-pick-go").focus()
+        if self._net.far_side == "mmw":
+            self._runtime_notes()
+
+    @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-runtime")
+    def _runtime_notes(self) -> None:
+        from mmw.core.runtime import pending
+        notes = (pending(self._net, self._mirror_dir, from_nothing=True),
+                 pending(self._net, self._mirror_dir, from_nothing=False))
+        self.app.call_from_thread(self._got_runtime, notes)
+
+    def _got_runtime(self, notes) -> None:
+        self._runtime = notes
+        self._estimate_now()
+
+    def _say(self, text: str, start: str | None) -> None:
+        """The estimate line, plus mmw's runtime when the bundle carries it."""
+        note = self._runtime[0 if start in (None, "none") else 1]
+        self.query_one("#pick-estimate", Label).update(
+            text + (f"\n[dim]Plus {escape(note)}.[/]" if note else ""))
 
     def _ends(self) -> tuple[str, str]:
         values = self.query_one(Form).values()
@@ -183,17 +204,17 @@ class BundlePickPage(Page):
     def _estimate_now(self) -> None:
         start, dest = self._ends()
         start = self._last if start == "last" else start
-        line = self.query_one("#pick-estimate", Label)
         if self._picked_repos() is not None:
-            line.update("[dim]What it sends is worked out per repository when it runs.[/]")
+            self._say("[dim]What it sends is worked out per repository when it runs.[/]", start)
             return
         if dest == "now":
-            line.update("[dim]What it sends is worked out once the snapshot is taken.[/]")
+            self._say("[dim]What it sends is worked out once the snapshot is taken.[/]", start)
             return
         if start == dest and not self._repos:
-            line.update("[$mmw-warn]From and To are the same snapshot — nothing to send.[/]")
+            self.query_one("#pick-estimate", Label).update(
+                "[$mmw-warn]From and To are the same snapshot — nothing to send.[/]")
             return
-        line.update("[dim]Estimating…[/]")
+        self._say("[dim]Estimating…[/]", start)
         self._estimate(None if start == "none" else start, dest)
 
     @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-estimate")
@@ -208,8 +229,7 @@ class BundlePickPage(Page):
         now_start = self._last if now_start == "last" else now_start
         if (None if now_start == "none" else now_start, now_dest) != (start, dest):
             return                                  # the choice moved on
-        self.query_one("#pick-estimate", Label).update(
-            f"Sends about [b]{files:,}[/] files · [b]{fmt_size(size)}[/]")
+        self._say(f"Sends about [b]{files:,}[/] files · [b]{fmt_size(size)}[/]", start)
 
     @on(Button.Pressed, "#btn-pick-cancel")
     def _cancel(self) -> None:

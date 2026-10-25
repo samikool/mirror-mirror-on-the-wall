@@ -67,6 +67,7 @@ dev = [
 # The project dir contains a multi-TB live mirror tree (mirror/) — never let
 # pytest collection walk it.
 testpaths = ["tests"]
+markers = ["network: downloads from the internet (opt-in end-to-end tests)"]
 
 [tool.ruff]
 line-length = 120

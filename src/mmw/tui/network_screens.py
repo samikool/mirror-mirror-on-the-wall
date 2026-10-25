@@ -216,6 +216,13 @@ class NetworkForm(Vertical):
                             net.far_side if net else "apply", id="far-side-pick",
                             hint="What runs on the airgapped side. mmw unlocks partial bundles, "
                                  "mmw stage and far-side history."),
+                TextField("Runtime arches", " ".join(net.runtime_arches) if net else "x86_64",
+                          id="inp-runtime-arches",
+                          hint="mmw far side: the machines mmw's shipped runtime runs on — "
+                               "x86_64, aarch64 or both."),
+                TextField("Runtime Python", net.runtime_python if net else config.DEFAULT_RUNTIME_PYTHON,
+                          id="inp-runtime-python",
+                          hint="mmw far side: the Python version shipped with it, like 3.12."),
             )
 
     def on_mount(self) -> None:
@@ -320,6 +327,14 @@ class NetworkForm(Vertical):
         except ValueError as e:
             return None, str(e), "inp-retention"
         bundle = self._value("inp-bundle-dir")
+        arches = self._value("inp-runtime-arches").replace(",", " ").split() or ["x86_64"]
+        if bad := [a for a in arches if a not in ("x86_64", "aarch64")]:
+            return None, f"runtime arches are x86_64 and aarch64, not {', '.join(bad)}", "inp-runtime-arches"
+        python = self._value("inp-runtime-python") or config.DEFAULT_RUNTIME_PYTHON
+        try:
+            config.check_runtime_python(python)
+        except ValueError as e:
+            return None, str(e), "inp-runtime-python"
         return config.NetworkConfig.model_validate({
             **(self._network.model_dump() if self._network else {}),
             "name": self.network_name(),
@@ -332,6 +347,8 @@ class NetworkForm(Vertical):
             "nginx": self._flag("nginx-switch"),
             "retention": retention,
             "far_side": self.query_one("#far-side-pick", Select).value,
+            "runtime_arches": arches,
+            "runtime_python": python,
         }), None, None
 
 

@@ -470,6 +470,13 @@ class TransferView(Vertical):
                 phase = status.split(":", 1)[1]
                 self._phase = "" if phase == "done" else f"Gallery image · {IMAGE} · {phase}"
                 self._log_pending.append(f"  [dim]Gallery image · {IMAGE} · {escape(phase)}[/]")
+            elif status.startswith("runtime:"):
+                # mmw's own runtime being built for an mmw far side: minutes
+                # of downloads the first time, nothing once cached.
+                message = status.split(":", 1)[1]
+                self._phase = "" if message == "done" else f"mmw runtime · {message}"
+                if message != "done":
+                    self._log_pending.append(f"  [dim]mmw runtime · {escape(message)}[/]")
             elif status.startswith("preflight:"):
                 # The bundle's pre-flight stat of every blob it will send.
                 _, done, total = status.split(":")

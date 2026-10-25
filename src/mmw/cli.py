@@ -579,12 +579,15 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
                    forward_all: bool = typer.Option(False, "--forward-all",
                                                     help="Move every held repository forward"),
                    dry_run: bool = typer.Option(False, "--dry-run", help="Check it; change nothing"),
+                   yes: bool = typer.Option(False, "--yes", help="Apply even into a root that held a mirror and "
+                                                                 "is empty now (else it asks: it may be an "
+                                                                 "unmounted share)"),
                    break_lock: bool = _BREAK_LOCK):
     """Apply a bundle: each hostname goes to its root, everything is checked
     before anything served changes, and held repositories keep serving what
     they serve. The first apply makes the roots it names."""
     from mmw.commands.site import apply
-    raise typer.Exit(apply(src, root, forward, forward_all, dry_run, break_lock))
+    raise typer.Exit(apply(src, root, forward, forward_all, dry_run, break_lock, yes))
 
 
 @site_app.command("open")

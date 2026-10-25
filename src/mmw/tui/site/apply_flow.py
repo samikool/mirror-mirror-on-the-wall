@@ -133,6 +133,7 @@ class ApplyRunPage(Page):
         self._choice = choice
         self.subtitle = Path(choice.src).name
         self._stop = threading.Event()
+        self._anyway: set[str] = set()          # empty former roots the person said to apply into
         self.finished = False
         self._read = 0
         self._started = time.monotonic()
@@ -249,17 +250,20 @@ class ApplyRunPage(Page):
 
     @work(thread=True, exclusive=True, group="site-apply", exit_on_error=False)
     def _run(self) -> None:
-        from mmw.site.apply import ApplyError, apply_to_set, nginx_steps
+        from mmw.site.apply import ApplyError, MaybeUnmounted, apply_to_set, nginx_steps
         mset = self.app.mset
         place = self._choice.place
         if place is None:
             place = {"*": mset.roots[0].info.location} if mset is not None else {}
         try:
-            result = apply_to_set(mset, self._choice.src, place=place,
+            result = apply_to_set(mset, self._choice.src, place=place, apply_anyway=self._anyway,
                                   only=set(self._choice.only), forward=set(self._choice.forward),
                                   progress=self._progress, stop_event=self._stop, say=lambda *a: None)
             steps = nginx_steps(result)
             result = result.merged()
+        except MaybeUnmounted as e:
+            self.app.call_from_thread(self._ask_anyway, e)
+            return
         except ApplyError as e:
             self.app.call_from_thread(self._failed, str(e))
             return
@@ -267,6 +271,19 @@ class ApplyRunPage(Page):
             self.app.call_from_thread(self._failed, str(e))
             return
         self.app.call_from_thread(self._done, result, steps)
+
+    def _ask_anyway(self, e) -> None:
+        """A former root that's empty now may be an unmounted share: asked, never assumed."""
+        from mmw.tui.ui.dialog import ConfirmDialog
+
+        def answered(ok) -> None:
+            if ok:
+                self._anyway |= set(e.locations)
+                self._run()
+            else:
+                self._failed(str(e))
+        self.app.push_screen(ConfirmDialog("Apply anyway?", str(e), confirm_label="Apply anyway",
+                                           confirm_variant="warning", cancel_variant="default"), answered)
 
     def _finish(self) -> None:
         self.finished = True

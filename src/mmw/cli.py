@@ -649,6 +649,28 @@ def cmd_site_manage(home: Path = _SITE_HOME):
     raise typer.Exit(manage(home))
 
 
+site_root_app = typer.Typer(help="The roots a site serves from.", no_args_is_help=True)
+site_app.add_typer(site_root_app, name="root")
+
+
+@site_root_app.command("add")
+def cmd_site_root_add(name: str = typer.Argument(..., help="A short name for the root"),
+                      path: Path = typer.Argument(..., help="Where this machine sees it"),
+                      serve_path: Path = typer.Option(None, "--serve-path",
+                                                      help="Where the serving host sees it (default: PATH)"),
+                      home: Path = _SITE_HOME):
+    """Add a root: another disk or export to place repositories in."""
+    from mmw.commands.site import root_add
+    raise typer.Exit(root_add(name, path, serve_path, home))
+
+
+@site_root_app.command("list")
+def cmd_site_root_list(home: Path = _SITE_HOME):
+    """The site's roots; the first is the primary."""
+    from mmw.commands.site import root_list
+    raise typer.Exit(root_list(home))
+
+
 snapshot_app = typer.Typer(
     help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
     no_args_is_help=True,

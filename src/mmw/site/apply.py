@@ -23,7 +23,8 @@ from mmw.site.home import load_site
 from mmw.site.lock import SiteLock
 from mmw.site.reader import SourceError, open_source
 from mmw.site.store import Store
-from mmw.site.switch import resume_switches, switch_repo
+from mmw.site.roots import Roots
+from mmw.site.switch import resume_switches, switch_in
 
 
 class ApplyError(Exception):
@@ -111,13 +112,14 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
     before anything changes, a stop raises; once repositories are switching,
     the ones not reached yet are stored and held."""
     settings = load_site(home)
-    root = Path(settings.root)
-    store = Store(root)
+    roots = Roots(settings)
+    root = Path(roots.primary.path)
+    store = roots.store(roots.primary)
     result = ApplyResult()
     with SiteLock(home), SiteDB(home) as db:
         if not dry_run:
             store.sweep_tmp()
-            resume_switches(db, store, root)
+            resume_switches(db, roots)
         manifest_path = Path(home) / "incoming-manifest.jsonl"
         try:
             got, tls = _receive(src, store, manifest_path, dry_run, progress, stop_event)
@@ -229,7 +231,7 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
                 continue
             if progress:
                 progress("switch", repo=repo, label=meta["label"])
-            switch_repo(db, store, root, repo, vid)
+            switch_in(db, roots, repo, vid)
             result.updated.append(repo)
             result.lines.append(f"  {meta['label']}  {f'v{was}' if was else 'full'} → v{meta['to']}")
         for repo, why in result.refused.items():
@@ -239,7 +241,7 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         db.record_applied(header.created, header.previous, "full" if header.full else "delta")
         if settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
-            apply_retention(db, store, settings.keep_versions)
+            apply_retention(db, roots, settings.keep_versions)
         if progress:
             progress("done")
         if result.network_changed:

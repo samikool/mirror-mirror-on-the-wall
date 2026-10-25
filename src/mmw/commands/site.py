@@ -138,8 +138,9 @@ def space(home: Path | None = None) -> int:
             tag = "serving" if v.serving else f"frees {fmt_size(v.frees)}"
             label = f" {v.snap_label}" if v.snap_label else ""
             print(f"  v{v.number:<4} {v.stamp}{label}  {fmt_size(v.total):>10}  {tag}")
-    print(f"root: {fmt_size(rep.used)} used, {fmt_size(rep.free)} free; "
-          f"old versions hold {fmt_size(rep.history_bytes)}")
+    for name, (used, free) in rep.roots.items():
+        print(f"root {name}: {fmt_size(used)} used, {fmt_size(free)} free")
+    print(f"old versions hold {fmt_size(rep.history_bytes)}")
     return 0
 
 
@@ -252,4 +253,26 @@ def manage(home: Path | None = None) -> int:
         return 1
     from mmw.tui.site.app import SiteApp
     SiteApp(h).run()
+    return 0
+
+
+def root_add(name: str, path: Path, serve_path: Path | None = None, home: Path | None = None) -> int:
+    try:
+        r = site_home.add_root(_home(home, False), name, path, serve_path)
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"root {r.name}: {r.path} (the serving host sees {r.serve_path})")
+    return 0
+
+
+def root_list(home: Path | None = None) -> int:
+    try:
+        s = site_home.load_site(_home(home, False))
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    for i, r in enumerate(s.roots):
+        primary = "  (primary)" if i == 0 else ""
+        print(f"  {r.name:<12} {r.path}  serving host: {r.serve_path}{primary}")
     return 0

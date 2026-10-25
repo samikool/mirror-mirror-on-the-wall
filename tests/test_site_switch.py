@@ -12,6 +12,12 @@ from mmw.site.switch import resume_switches, switch_repo
 BASE = "h/ubuntu"
 
 
+def _roots(root):
+    from mmw.site.home import RootConfig, SiteSettings
+    from mmw.site.roots import Roots
+    return Roots(SiteSettings(roots=[RootConfig(name="main", path=root, serve_path=root)]))
+
+
 def _setup(tmp_path, versions):
     root = tmp_path / "root"
     store = Store(root)
@@ -74,7 +80,7 @@ def test_switch_resumes_after_interruption(tmp_path, monkeypatch):
         switch_repo(db, store, root, "R", v2)
     assert db.pending_switches()[0][:3] == ("R", v1, v2)
     monkeypatch.setattr(Store, "place", real_place)
-    assert resume_switches(db, store, root) == ["R"]
+    assert resume_switches(db, _roots(root)) == ["R"]
     assert _tree(root) == V2 and db.pending_switches() == [] and db.repo_state("R").serving.id == v2
 
 

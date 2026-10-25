@@ -34,6 +34,14 @@ if [ -z "$from" ]; then
     case $0 in */*) from=${0%/*} ;; *) from=. ;; esac
 fi
 case $home in /*) ;; *) home=$(pwd)/$home ;; esac
+# The launcher holds DIR inside double quotes: refuse what would end them.
+nl='
+'
+case $home in
+    *[\"\$\`\\]*|*"$nl"*)
+        echo "--home $home: the launcher can't hold a path with \", \$, \`, \\ or a newline — pick another" >&2
+        exit 64 ;;
+esac
 case $from in /*) ;; *) from=$(pwd)/$from ;; esac
 
 arch=$(uname -m)

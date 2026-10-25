@@ -143,3 +143,11 @@ def test_a_rebuilt_wheel_installs_beside(tmp_path):
     assert r.returncode == 0 and log.count("pip install") == 2 and first != second
     assert (home / f"runtime/{first}-{ARCH}/.complete").exists()
     assert (home / f"runtime/{second}-{ARCH}/mmw.whl").read_bytes() == b"rebuilt"
+
+
+@pytest.mark.parametrize("bad", ['si"te', "si$te", "si`te`", "si\\te", "si\nte"])
+def test_a_home_the_launcher_cannot_hold_is_refused(tmp_path, bad):
+    rt, home = _runtime(tmp_path), tmp_path / bad
+    r, log = _run(rt, home)
+    assert r.returncode == 64 and "can't hold" in r.stderr
+    assert not home.exists() and log == ""

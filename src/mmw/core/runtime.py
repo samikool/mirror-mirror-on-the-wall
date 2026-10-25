@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Protocol
@@ -183,6 +184,17 @@ def verify(d: Path) -> dict | None:
     return meta
 
 
+def _reap_abandoned(cache: Path, name: str, older_than: float = 86400) -> None:
+    """Builds of `name` a crash left behind (no build runs for a day)."""
+    import time
+    for p in disk_io.ops.glob(cache, f"{name}.tmp-*"):
+        try:
+            if disk_io.ops.stat(p).st_mtime < time.time() - older_than:
+                disk_io.ops.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetcher: Fetcher,
                   wheel: Path | None = None, progress=None, stop_event=None) -> Path:
     """`{cache}/{mmw_version}-py{python}-{arch}/`, built if it isn't there
@@ -203,11 +215,13 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
     d = cache / f"{mmw_version}-py{python}-{arch}{build}"
     if verify(d) is not None:
         return d
-    tmp = cache / f"{d.name}.tmp"
-    for stale in (tmp, d):
-        if disk_io.ops.exists(stale):
-            disk_io.ops.rmtree(stale)
-    disk_io.ops.mkdir(tmp, parents=True)
+    disk_io.ops.mkdir(cache, parents=True, exist_ok=True)
+    _reap_abandoned(cache, d.name)
+    if disk_io.ops.exists(d) and verify(d) is None:
+        disk_io.ops.rmtree(d)                         # damaged: built again
+    # Each build in its own directory, renamed into place whole: two bundles
+    # building the same runtime at once never write into each other's.
+    tmp = Path(tempfile.mkdtemp(dir=cache, prefix=f"{d.name}.tmp-"))
     try:
         uv = uv_version()
         step(f"uv {uv} for {arch}…")
@@ -229,7 +243,12 @@ def build_runtime(cache: Path, *, arch: str, python: str, mmw_version: str, fetc
                 "arch": arch, "files": files}
         disk_io.ops.write_text(tmp / "RUNTIME.json", json.dumps(meta, indent=2, sort_keys=True) + "\n")
         step("done")
-        disk_io.ops.rename(tmp, d)
+        try:
+            disk_io.ops.rename(tmp, d)
+        except OSError:
+            if verify(d) is None:
+                raise
+            disk_io.ops.rmtree(tmp)                   # another build got there first
     except BaseException:
         disk_io.ops.rmtree(tmp, ignore_errors=True)
         raise

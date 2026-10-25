@@ -155,3 +155,17 @@ def test_runtime_phase_shows_in_the_tui():
     assert "mmw runtime" in view._phase and "Python 3.12" in view._phase
     view.record("", "runtime:done")
     assert view._phase == ""
+
+
+def test_two_builds_at_once_both_succeed(tmp_path):
+    """A second build of the same runtime (a cron bundle while the TUI
+    bundles) runs to the end in the middle of the first."""
+    cache = tmp_path / "cache"
+
+    class Interleaved(FakeFetcher):
+        def wheels(self, requirement, python, arch, dest):
+            R.build_runtime(cache, arch=arch, python=python, mmw_version="1.2.0", fetcher=FakeFetcher())
+            return super().wheels(requirement, python, arch, dest)
+    d = R.build_runtime(cache, arch="x86_64", python="3.12", mmw_version="1.2.0", fetcher=Interleaved())
+    assert R.verify(d) is not None
+    assert [p.name for p in cache.iterdir()] == [d.name]          # no temporary directory left

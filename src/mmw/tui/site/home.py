@@ -314,18 +314,28 @@ class SiteHomePage(Page):
 
     @work(thread=True, exclusive=True, group="site-plan", exit_on_error=False)
     def _plan(self, path: str) -> None:
-        from mmw.site.apply import plan_apply
+        from mmw.site.apply import plan_apply, plan_set_apply
         self.app.call_from_thread(self.set_status, f"reading {path}…")
         try:
             plan = plan_apply(self.app.mset, path)
+            placing = plan_set_apply(self.app.mset, path)
         except Exception as e:  # noqa: BLE001 — not a bundle, and the like
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._review, plan, path)
+        self.app.call_from_thread(self._review, plan, path, placing)
 
-    def _review(self, plan, path: str) -> None:
+    def _review(self, plan, path: str, placing=None) -> None:
         from mmw.tui.site.apply_flow import ApplyReviewPage, remember
         remember(path)
+        here = placing.locations if placing is not None else {}
+        if placing is not None and any(o not in here for o in placing.owner.values()):
+            # A new hostname needs a root, or a root is missing: place first.
+            from mmw.tui.site.place import PlacePage
+            self.set_status("")
+            self.app.push_screen(PlacePage(placing, path, self.app.mset),
+                                 lambda c: c and self.app.push_screen(
+                                     ApplyReviewPage(plan, path), lambda r: self._chosen(r, c.place)))
+            return
         banner = self.query_one("#site-banner", Static)
         banner.update(f"▶ {Path(path).name}: {plan.network} → {plan.created} · "
                       f"{sum(1 for r in plan.rows if not r.unchanged)} repositories change")
@@ -333,9 +343,12 @@ class SiteHomePage(Page):
         self.set_status("")
         self.app.push_screen(ApplyReviewPage(plan, path), self._chosen)
 
-    def _chosen(self, choice) -> None:
+    def _chosen(self, choice, place=None) -> None:
         if choice is None:
             return
+        if place is not None:
+            from dataclasses import replace
+            choice = replace(choice, place=place)
         self.app.push_screen(_run_page(choice), lambda _r: self._load())
 
 

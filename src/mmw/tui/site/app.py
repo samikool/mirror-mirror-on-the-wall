@@ -31,5 +31,9 @@ class SiteApp(ThemedApp):
         return on_repo(self.mset, repo)[0]
 
     def on_mount(self) -> None:
+        if self.mset is None:
+            from mmw.tui.site.start import StartPage
+            self.push_screen(StartPage())
+            return
         from mmw.tui.site.home import SiteHomePage
         self.push_screen(SiteHomePage())

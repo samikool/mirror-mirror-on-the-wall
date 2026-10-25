@@ -48,6 +48,7 @@ class ApplyChoice:
     total_bytes: int = 0
     labels: tuple = ()          # (repo, label) of every repository the bundle changes
     forward: frozenset[str] = frozenset()   # held repositories ticked: serve their new version
+    place: dict | None = None               # new hostname → root location (None: the first root here)
 
 
 class ApplyReviewPage(Page):
@@ -193,9 +194,11 @@ class ApplyRunPage(Page):
     def _run(self) -> None:
         from mmw.site.apply import ApplyError, apply_to_set
         mset = self.app.mset
+        place = self._choice.place
+        if place is None:
+            place = {"*": mset.roots[0].info.location} if mset is not None else {}
         try:
-            # New hostnames go to the first root here (phase 3 lets you place them).
-            result = apply_to_set(mset, self._choice.src, place={"*": mset.roots[0].info.location},
+            result = apply_to_set(mset, self._choice.src, place=place,
                                   only=set(self._choice.only), forward=set(self._choice.forward),
                                   progress=self._progress, stop_event=self._stop, say=lambda *a: None).merged()
         except ApplyError as e:

@@ -72,9 +72,12 @@ class MirrorSet:
                 states = db.repo_states()
                 have += [s.label for s in states]
                 try:
-                    return r, resolve_repo(db, ref)
+                    key = resolve_repo(db, ref)
                 except LookupError:
                     continue
+                if db.get_meta(f"moving_in:{key}"):
+                    continue                        # a move's copy, cut short: its home is the old root
+                return r, key
         raise KeyError(f"no repository {ref!r} — this mirror has: {', '.join(sorted(have, key=str.lower))}")
 
 

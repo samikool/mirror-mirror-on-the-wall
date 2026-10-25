@@ -361,6 +361,16 @@ def move_repo(mset, ref: str, to_root: str) -> MoveResult:
                              "a hostname lives in one root; move them together")
         sstore, dstore = src.store(), dst.store()
         dpath = dst.info.path
+        lacking = {c for v in sdb.versions(key) for c in sdb.version_files(v.id).values() if not dstore.has(c)}
+        need = sum(disk_io.ops.stat(sstore.path(c)).st_size for c in lacking)
+        free = dst.free_bytes()
+        if need > free:
+            from mmw.core.format import fmt_size
+            raise ValueError(f"moving {state.label} needs {fmt_size(need)} in {dst.info.name}, which has "
+                             f"{fmt_size(free)} free — nothing was copied")
+        # Until the old root lets go, the copy here is not the repository's
+        # home: a move cut short runs again from the old root.
+        ddb.set_meta(f"moving_in:{key}", src.info.name)
         copied = files = 0
         served_new = None
         for v in sorted(sdb.versions(key), key=lambda v: v.number):
@@ -392,6 +402,7 @@ def move_repo(mset, ref: str, to_root: str) -> MoveResult:
         sdb.set_meta(f"moved:{key}", json.dumps({"to": dst.info.name, "label": state.label,
                                                  "files": served_files}))
         sdb.drop_repo(key)
+        ddb.set_meta(f"moving_in:{key}", "")
         changed = []
         for db_, roots_, name in ((sdb, sroots, src.info.name), (ddb, droots, dst.info.name)):
             if roots_.multi and db_.get_meta("settings") and write_root_nginx(db_, roots_):

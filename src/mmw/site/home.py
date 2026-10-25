@@ -184,4 +184,5 @@ def hostnames(home: Path) -> set[str]:
     """Every hostname a root holds: the first component of its repositories' bases."""
     from mmw.site.db import SiteDB
     with SiteDB(home) as db:
-        return {b.split("/", 1)[0] for st in db.repo_states() for b in st.bases}
+        return {b.split("/", 1)[0] for st in db.repo_states() for b in st.bases
+                if not db.get_meta(f"moving_in:{st.repo}")}         # a move's copy not yet its home

@@ -173,6 +173,14 @@ class RootApply:
         return list(groups.values())
 
     def finish(self) -> "ApplyResult":
+        """Check everything, then (unless a dry run) record and switch."""
+        result = self.check()
+        return result if self.dry_run else self.commit()
+
+    def check(self) -> "ApplyResult":
+        """Everything checked against the manifest, nothing changed: each
+        repository's new version is complete (or refused alone), and so are
+        the network files. A set checks every root before any commits."""
         self._settle()
         db, roots, store, root, progress, stop_event = (self.db, self.roots, self.store, self.root,
                                                         self.progress, self.stop_event)
@@ -236,9 +244,19 @@ class RootApply:
                 result.lines.append(f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
             if "runtime" in self.seen:
                 result.lines.append(f"  {RUNTIME_NOTE}")
-            return result
+        self._checked = (header, rows, result, planned, network, sizes)
+        return result
 
-        if stop_event is not None and stop_event.is_set():
+    def commit(self, *, others_changed: bool = False) -> "ApplyResult":
+        """Record the checked versions, place the network files, switch each
+        hostname whole. A stop before anything changed anywhere raises; once
+        another root of the set has changed (`others_changed`), a stop
+        stores and holds instead."""
+        header, rows, result, planned, network, sizes = self._checked
+        db, roots, store, root, progress, stop_event = (self.db, self.roots, self.store, self.root,
+                                                        self.progress, self.stop_event)
+        say = self.say
+        if stop_event is not None and stop_event.is_set() and not others_changed:
             raise ApplyError(5, "stopped before anything changed — what arrived is stored")
         recorded: dict[str, int] = {}
         try:
@@ -757,6 +775,18 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                 result.lines.append(f"  {h}: held back — {why}")
             return result
 
+        # Never a new root where a root of a mirror was (an unmounted share's
+        # empty mount point), nor while a root of this mirror is missing.
+        new_locs = sorted({t for t in targets.values() if isinstance(t, str)})
+        seen_here = {str(Path(k).expanduser().resolve()) for k in recents.known()}
+        for loc in new_locs:
+            if read_root(loc) is None and str(Path(loc).expanduser().resolve()) in seen_here:
+                raise ApplyError(5, f"{loc} was a root of a mirror on this machine but holds none now — "
+                                    "is it mounted? Nothing was written")
+        if mset is not None and mset.missing and any(read_root(loc) is None for loc in new_locs):
+            raise ApplyError(5, f"root(s) {', '.join(mset.missing)} of this mirror aren't here — mount them "
+                                "(mmw site open PATH) before a new hostname starts a new root; nothing was written")
+
         # New roots, then every root's view of the set.
         taken = set(present) | set(mset.missing if mset else [])
         made: dict[str, LocalRoot] = {}
@@ -771,10 +801,13 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         for h, t in list(targets.items()):
             if isinstance(t, str):
                 targets[h] = made[t]
-        roots: dict[str, LocalRoot] = {r.info.name: r for r in targets.values()}
         everyone = [*present.values(), *[r for r in made.values() if r.info.name not in present]]
-        members = list(dict.fromkeys([*(mset.missing if mset else []), *(m for r in everyone
-                                                                        for m in r.info.members),
+        # Every root here takes part: the network files (and its nginx) reach
+        # each one, even one none of this bundle's hostnames go to.
+        roots: dict[str, LocalRoot] = {r.info.name: r for r in [*targets.values(), *everyone]}
+        # The set's order stays as it was (its first root serves the
+        # network's own hostnames); new roots join at the end.
+        members = list(dict.fromkeys([*(mset.roots[0].info.members if mset else []),
                                       *(r.info.name for r in everyone)]))
         hosts_map: dict[str, str] = {}
         for r in everyone:
@@ -867,7 +900,11 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
             raise ApplyError(5, f"bundle is truncated: expected {header.file_count} file(s), "
                                 f"got {received} — copy it again")
         for name in order:
-            r = appliers[name].finish()
+            appliers[name].check()                 # every root checked before any changes
+        changed = False
+        for name in order:
+            r = appliers[name].commit(others_changed=changed)
+            changed = changed or bool(r.updated or r.stored_held or r.stopped) or r.network_changed
             result.per_root[name] = r
             if len(order) > 1:
                 result.lines.append(f"  [{name}]")

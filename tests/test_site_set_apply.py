@@ -185,3 +185,109 @@ def test_cli_open_and_roots(hosts, tmp_path):
     assert CliRunner().invoke(cli.app, ["site", "open", str(r2)]).exit_code == 0
     out = CliRunner().invoke(cli.app, ["site", "roots"]).output
     assert "MISSING" not in out and HOST_B in out
+
+
+# ── review findings ──────────────────────────────────────────────────────────
+
+def _split(hosts, tmp_path):
+    cfg, net, md = hosts
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={HOST_A: str(r1), HOST_B: str(r2)}, say=quiet)
+    return cfg, net, md, r1, r2
+
+
+def _serving(root, label):
+    with SiteDB(read_root(str(root)).home) as db:
+        return next(s.serving.number for s in db.repo_states() if s.label == label)
+
+
+def _damage(bundle, host, out):
+    """The same bundle with one of `host`'s files' bytes changed."""
+    import io
+    with tarfile.open(bundle) as t:
+        members = [(m, t.extractfile(m).read() if m.isreg() else None) for m in t.getmembers()]
+    done = False
+    with tarfile.open(out, "w") as t:
+        for m, data in members:
+            if not done and m.isreg() and m.name.startswith(host + "/") and m.name.endswith(".deb"):
+                data, done = bytes(x ^ 1 for x in data), True
+            t.addfile(m, io.BytesIO(data) if data is not None else None)
+    assert done
+    return out
+
+
+def test_damage_for_one_root_changes_no_root(hosts, tmp_path):
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    _change_a(md)
+    _change_b(md)
+    bad = _damage(_bundle(cfg, net, md, tmp_path / "2"), HOST_B, tmp_path / "bad.tar")
+    with pytest.raises(ApplyError):
+        apply_to_set(open_set(), str(bad), say=quiet)
+    assert (_serving(r1, "a"), _serving(r2, "b")) == (1, 1)          # checked everywhere before any switch
+
+
+def test_stop_while_one_root_switches_holds_the_others(hosts, tmp_path):
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    _change_a(md)
+    _change_b(md)
+    stop = threading.Event()
+    r = apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet,
+                     progress=lambda event, **kw: event == "switch" and stop.set(), stop_event=stop)
+    merged = r.merged()
+    assert len(merged.updated) == 1 and len(merged.stopped) == 1      # recorded and held, not an error
+
+
+def test_network_files_and_nginx_reach_every_root(hosts, tmp_path):
+    """A bundle carrying only the second root's hostname still brings the
+    first root its network files, and each root's nginx serves only its own."""
+    from test_snapshot_repo_versions import _key
+    cfg, net, md = hosts
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None, repos=[_key(cfg, "a")])),
+                 place={"*": str(r1)}, say=quiet)
+    apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2", from_ref=None, repos=[_key(cfg, "b")])),
+                 place={HOST_B: str(r2)}, say=quiet)
+    homes = [read_root(str(r)).home for r in (r1, r2)]
+    with SiteDB(homes[0]) as a, SiteDB(homes[1]) as b:
+        assert a.network_files() == b.network_files()
+    conf1, conf2 = ((r / "nginx" / "mirror.conf").read_text() for r in (r1, r2))
+    assert HOST_A in conf1 and HOST_B not in conf1
+    assert HOST_B in conf2 and HOST_A not in conf2
+
+
+def test_an_unmounted_root_is_never_made_again(hosts, tmp_path):
+    cfg, net, md = hosts
+    r1 = tmp_path / "r1"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={"*": str(r1)}, say=quiet)
+    (r1 / ".mmw").rename(tmp_path / "aside")                     # the share isn't mounted
+    with pytest.raises(ApplyError, match="mounted") as e:
+        apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "2", from_ref=None)),
+                     place={"*": str(r1)}, say=quiet)
+    assert e.value.code == 5 and not (r1 / ".mmw").exists()
+
+
+def test_no_new_root_while_one_is_missing(hosts, tmp_path):
+    """A new hostname can't start a new root while a root of the mirror is
+    missing: it may be the one that hostname belongs in, or the mount point."""
+    from test_snapshot_repo_versions import _key
+    from mmw.site.home import load_site, save_settings
+    cfg, net, md = hosts
+    r1 = tmp_path / "r1"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None, repos=[_key(cfg, "a")])),
+                 place={"*": str(r1)}, say=quiet)
+    home = read_root(str(r1)).home
+    save_settings(home, load_site(home).model_copy(update={"members": ["r1", "nas"]}))
+    with pytest.raises(ApplyError, match="nas") as e:
+        apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2", from_ref=None, repos=[_key(cfg, "b")])),
+                     place={HOST_B: str(tmp_path / "r3")}, say=quiet)
+    assert e.value.code == 5 and not (tmp_path / "r3").exists()
+
+
+def test_members_keep_their_order_while_one_is_missing(hosts, tmp_path):
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    before = read_root(str(r1)).members
+    (r2 / ".mmw").rename(tmp_path / "aside")
+    _change_a(md)
+    apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
+    assert read_root(str(r1)).members == before

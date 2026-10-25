@@ -80,3 +80,25 @@ def test_ca_location_lives_on_this_machine(hosts, tmp_path):  # noqa: F811
     signed = C.sign_set(open_set(), password=None)
     assert sorted(x.root for x in signed) == ["r1", "r2"]
     assert (r2 / ".mmw" / "tls" / "mirror.crt").exists()
+
+
+def test_a_move_cut_short_runs_again(hosts, tmp_path, monkeypatch):  # noqa: F811
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    real = SiteDB.drop_repo
+    monkeypatch.setattr(SiteDB, "drop_repo", lambda self, repo: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        ops.move_repo(open_set(), "b", "r1")
+    recents.remember(str(r1))                                   # the destination now first in order
+    assert open_set().owner(HOST_B).info.name == "r2"           # the partial copy never takes the hostname
+    monkeypatch.setattr(SiteDB, "drop_repo", real)
+    ops.move_repo(open_set(), "b", "r1")
+    assert sorted((root, st.label) for root, st in ops.set_status(open_set())) == [("r1", "a"), ("r1", "b")]
+
+
+def test_move_checks_space_first(hosts, tmp_path, monkeypatch):  # noqa: F811
+    from mmw.site.mset import LocalRoot
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    monkeypatch.setattr(LocalRoot, "free_bytes", lambda self: 1)
+    with pytest.raises(ValueError, match="free"):
+        ops.move_repo(open_set(), "b", "r1")
+    assert [label for root, st in ops.set_status(open_set()) for label in [st.label] if root == "r1"] == ["a"]

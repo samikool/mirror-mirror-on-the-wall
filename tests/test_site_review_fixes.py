@@ -151,7 +151,7 @@ def test_cli_verify_repair(env, tmp_path):  # noqa: F811
     from mmw import cli
     _cfg, home, root, _ = _three(env, tmp_path)
     (root / "example.com/a/Packages").unlink()
-    run = lambda *a: CliRunner().invoke(cli.app, ["site", "verify", *a, "--home", str(home)])  # noqa: E731
+    run = lambda *a: CliRunner().invoke(cli.app, ["site", "verify", *a])  # noqa: E731
     r = run()
     assert r.exit_code == 4 and "--repair" in r.output
     r = run("--repair")

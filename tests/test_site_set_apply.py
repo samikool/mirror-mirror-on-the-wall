@@ -155,3 +155,33 @@ def test_old_manifest_without_sizes_still_plans(hosts, tmp_path):
     plan = plan_set_apply(None, str(old))
     assert plan.sizes[HOST_A] > 0 and plan.sizes[HOST_B] > 0
     assert plan.hosts.keys() == {HOST_A, HOST_B} and plan.owner == {HOST_A: None, HOST_B: None}
+
+
+def test_cli_first_apply_then_status(hosts, tmp_path):
+    from typer.testing import CliRunner
+
+    from mmw import cli
+    cfg, net, md = hosts
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    r1 = tmp_path / "r1"
+    r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--root", f"*={r1}"])
+    assert r.exit_code == 0, r.output
+    out = CliRunner().invoke(cli.app, ["site", "status"]).output
+    assert "a " in out and "b " in out and "current" in out
+
+
+def test_cli_open_and_roots(hosts, tmp_path):
+    from typer.testing import CliRunner
+
+    from mmw import cli
+    cfg, net, md = hosts
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={HOST_A: str(r1), HOST_B: str(r2)}, say=quiet)
+    recents.forget(str(r2))
+    out = CliRunner().invoke(cli.app, ["site", "roots"]).output
+    assert "r2" in out and "MISSING" in out
+    assert CliRunner().invoke(cli.app, ["site", "open", str(tmp_path)]).exit_code == 1    # no mirror there
+    assert CliRunner().invoke(cli.app, ["site", "open", str(r2)]).exit_code == 0
+    out = CliRunner().invoke(cli.app, ["site", "roots"]).output
+    assert "MISSING" not in out and HOST_B in out

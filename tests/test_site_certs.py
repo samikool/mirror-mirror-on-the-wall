@@ -50,7 +50,7 @@ def test_load_encrypted_asks(site, tmp_path):
 
 
 def test_cli_ca_make_and_show(site, tmp_path):
-    run = lambda *a: CliRunner().invoke(cli.app, ["site", "ca", *a, "--home", str(site)])  # noqa: E731
+    run = lambda *a: CliRunner().invoke(cli.app, ["site", "ca", *a])  # noqa: E731
     r = run("make", "--out", str(tmp_path / "ca"), "--name", "Lab CA")
     assert r.exit_code == 0, r.output
     assert "trust" in r.output.lower() and (tmp_path / "ca/ca.crt").exists()
@@ -106,11 +106,11 @@ def test_force_resigns(env, tmp_path):  # noqa: F811
 def test_encrypted_ca_needs_passphrase(env, tmp_path, monkeypatch):  # noqa: F811
     home, root = _applied(env, tmp_path, password=b"pw")
     monkeypatch.delenv("MMW_CA_PASSPHRASE", raising=False)
-    r = CliRunner().invoke(cli.app, ["site", "certs", "--home", str(home)])
+    r = CliRunner().invoke(cli.app, ["site", "certs"])
     assert r.exit_code == 1 and "MMW_CA_PASSPHRASE" in r.output and "terminal" in r.output
     assert not (root / ".mmw/tls/mirror.crt").exists()
     monkeypatch.setenv("MMW_CA_PASSPHRASE", "pw")
-    r = CliRunner().invoke(cli.app, ["site", "certs", "--home", str(home)])
+    r = CliRunner().invoke(cli.app, ["site", "certs"])
     assert r.exit_code == 0, r.output
     assert "signed" in r.output and "recreate nginx" in r.output
 
@@ -190,7 +190,7 @@ def test_ca_make_encrypt_asks_twice(site, tmp_path, monkeypatch):
     monkeypatch.setattr(getpass, "getpass", lambda prompt="": next(answers))
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     from mmw.commands import site as cmd
-    assert cmd.ca_make(tmp_path / "ca", "Lab CA", encrypt=True, home=site) == 1
+    assert cmd.ca_make(tmp_path / "ca", "Lab CA", encrypt=True) == 1
     assert not (tmp_path / "ca/ca.key").exists()
 
 

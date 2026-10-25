@@ -53,10 +53,10 @@ def test_lock_refuses_second_holder(tmp_path):
         pass
 
 
-def test_cli_init_prints_export(tmp_path):
-    r = CliRunner().invoke(cli.app, ["site", "init", "--root", str(tmp_path / "root")])
-    assert r.exit_code == 0, r.output
-    assert f"export MMW_SITE_HOME={tmp_path / 'root' / '.mmw' / 'site'}" in r.output
+def test_cli_rejects_init(tmp_path):
+    """No init: the first apply makes the roots it names."""
+    assert CliRunner().invoke(cli.app, ["site", "init", "--root", str(tmp_path / "root")]).exit_code != 0
+    assert " init " not in CliRunner().invoke(cli.app, ["site", "--help"]).output
 
 
 # ── v2: every root its own site ──────────────────────────────────────────────

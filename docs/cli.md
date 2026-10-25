@@ -142,22 +142,22 @@ source checkout it ships that checkout's own build, never PyPI's.
 ### `mmw site`
 
 mmw on the far side of the airgap, for networks with `far_side = "mmw"`.
-Every command takes `--home` (default `$MMW_SITE_HOME`); the ones that change
-the site take `--break-lock`. See [far-side.md](far-side.md).
+Every command takes `--root PATH` (any root of the mirror; by default the
+mirror this machine has opened); the ones that change a root take
+`--break-lock`. See [far-side.md](far-side.md).
 
 | Command | What it does |
 |---|---|
-| `mmw site init --root DIR [--home DIR]` | Make a site: a root to serve, a home for its state (default `DIR/.mmw/site`) |
-| `mmw site apply SRC [--forward REPO]… [--forward-all] [--place REPO=ROOT]… [--dry-run]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin) |
+| `mmw site apply SRC [--root HOST=PATH]… [--forward REPO]… [--forward-all] [--dry-run]` | Apply a bundle (`.tar`, stage directory, or `-` for stdin); a new hostname goes to the root at PATH (`'*'=PATH`: every new one) |
+| `mmw site open PATH` / `mmw site roots` | Remember a root on this machine / the mirror's roots, their hostnames, or MISSING |
 | `mmw site manage` | The far-side TUI: repositories, their history, applying bundles |
 | `mmw site status` | What each repository serves, the newest kept, held or current |
 | `mmw site history REPO` | A repository's kept versions, sizes, what each would free |
 | `mmw site serve REPO VERSION [--yes]` | Serve any kept version; anything but the newest holds it |
 | `mmw site hold REPO` / `mmw site forward [REPO] [--all]` | Hold a repository / move it to its newest version |
-| `mmw site root add NAME PATH [--serve-path P]` / `mmw site root list` | Another root to place repositories in; the roots |
-| `mmw site move REPO ROOT [--yes]` | Move a repository, every kept version, to another root |
+| `mmw site move REPO ROOTNAME [--yes]` | Move a repository, every kept version, to another root of the mirror |
 | `mmw site tidy` | Clear moved repositories' old copies, once nginx has been recreated |
-| `mmw site ca load --cert C --key K` / `ca make --out DIR [--name N] [--encrypt]` / `ca show` | The site's CA, recorded by path only |
+| `mmw site ca load --cert C --key K` / `ca make --out DIR [--name N] [--encrypt]` / `ca show` | The CA, recorded by path only, on this machine |
 | `mmw site certs [--days N] [--force]` | Sign every root's certificate with the site's CA; HTTPS on |
 | `mmw site space` | Each version's size and what deleting it frees; the root's free space |
 | `mmw site delete REPO VERSION [--yes]` | Delete a kept version (never the served one, nor a held repository's newest) |

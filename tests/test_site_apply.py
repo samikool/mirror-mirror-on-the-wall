@@ -21,8 +21,9 @@ from test_snapshot_repo_versions import _change_a, _key
 @pytest.fixture
 def env(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
-    home = tmp_path / "site"
-    H.init_site(home, tmp_path / "srv")
+    home = H.init_root(tmp_path / "srv", name="main", set_id="s1", network=net.name)
+    from mmw.site import recents
+    recents.remember(str(tmp_path / "srv"))
     return cfg, net, md, home, tmp_path / "srv"
 
 
@@ -188,7 +189,9 @@ def test_cli_apply(env, tmp_path):
     from mmw import cli
     cfg, net, md, home, root = env
     b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
-    r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--home", str(home)])
+    r = CliRunner().invoke(cli.app, ["site", "apply", str(b)])
+    assert r.exit_code == 1 and "--root" in r.output                # a new hostname needs a root
+    r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--root", f"*={root}"])
     assert r.exit_code == 0, r.output
     assert "a  full → v1" in r.output and "recreate nginx" in r.output
 

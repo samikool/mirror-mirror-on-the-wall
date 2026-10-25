@@ -198,7 +198,7 @@ def test_review_of_a_non_bundle_is_a_status(env, tmp_path):  # noqa: F811
 async def _review_and_go(app, pilot, bundle):
     await _choose(app, pilot, bundle)
     app.screen.query_one("#btn-review-go").press()
-    await until(pilot, lambda: type(app.screen).__name__ == "ApplyRunPage")
+    await until(pilot, lambda: type(app.screen).__name__ == "ApplyRunPage" and app.screen.query("#btn-run-stop"))
 
 
 def test_apply_flow_end_to_end(env, tmp_path):  # noqa: F811

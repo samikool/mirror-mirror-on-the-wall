@@ -610,6 +610,7 @@ class BundleSink:
         self._seen: set[str] = set()
         self.deleted: list[str] = []
         self.errors: list[str] = []
+        self.archive_sha256: str | None = None     # the written tar's, when it is a file
 
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
         if rel in self._seen:
@@ -940,6 +941,7 @@ class BundleSink:
                 self._progress("", f"archive-done:{files_written}:{raw_written}")
             writer.commit()
             committed = True
+            self.archive_sha256 = getattr(writer, "sha256", None)
         finally:
             disk_io.ops.unlink(tmp_manifest, missing_ok=True)
             if not committed:

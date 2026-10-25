@@ -79,7 +79,7 @@ def bundle_output_path(network: NetworkConfig, created: str,
 
 
 
-def _write_checksum_file(target: Path) -> Path:
+def _write_checksum_file(target: Path, digest: str | None = None) -> Path:
     """Write `{target}.sha256` beside the bundle, in `sha256sum -c` format.
 
     The far side can then tell a bad *transfer* from a bad *bundle* in seconds,
@@ -90,8 +90,10 @@ def _write_checksum_file(target: Path) -> Path:
 
     Written tmp-then-rename for the same reason the tarball and the manifest
     are: a half-written checksum file that happens to parse is worse than none.
+    `digest` is the one taken while the tar was written; without it the
+    file is read back.
     """
-    digest = disk_io.hash_file(target)
+    digest = digest or disk_io.hash_file(target)
     dest = target.with_name(target.name + ".sha256")
     tmp = dest.with_name(dest.name + ".tmp")
     disk_io.ops.write_text(tmp, f"{digest}  {target.name}\n")
@@ -413,7 +415,9 @@ def bundle_network(
         if tls_files:
             for script in ("sign.py", "make-ca.py"):
                 disk_io.ops.write_bytes(target.parent / script, tls_files[script])
-        result.checksum_path = _write_checksum_file(target)
+        if progress:
+            progress("", "step:writing the checksum…")
+        result.checksum_path = _write_checksum_file(target, sink.archive_sha256)
     result.manifest_path = manifest_path
     result.sent = sink.sent
     result.sent_bytes = sink.sent_bytes

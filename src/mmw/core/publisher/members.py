@@ -29,13 +29,18 @@ class MemberWriter(Protocol):
 class TarMembers:
     """A streaming (`w|`) tar over `fileobj`. With `final_path`/`tmp_path`,
     `fileobj` is the open tmp file: commit renames it into place, abort
-    unlinks it. Without them (stdout), commit only flushes."""
+    unlinks it. Without them (stdout), commit only flushes.
+
+    A file is hashed as it is written: after commit, `sha256` is the
+    archive's digest, so a bundle of any size is never read back to hash it."""
 
     def __init__(self, fileobj: BinaryIO, *, final_path: Path | None = None,
                  tmp_path: Path | None = None, copybufsize: int = _COPY_CHUNK):
         self._fh = fileobj
         self._final, self._tmp = final_path, tmp_path
-        self._tar = tarfile.open(fileobj=fileobj, mode="w|", copybufsize=copybufsize)
+        self._hashing = HashingWriter(fileobj) if tmp_path is not None else None
+        self.sha256: str | None = None
+        self._tar = tarfile.open(fileobj=self._hashing or fileobj, mode="w|", copybufsize=copybufsize)
 
     def add_bytes(self, name: str, data: bytes, mode: int = 0o644) -> None:
         ti = tarfile.TarInfo(name)
@@ -59,6 +64,8 @@ class TarMembers:
     def commit(self) -> None:
         self._tar.close()
         self._fh.flush()
+        if self._hashing is not None:
+            self.sha256 = self._hashing.hexdigest()
         if self._tmp is not None:
             self._fh.close()
             disk_io.ops.replace(self._tmp, self._final)

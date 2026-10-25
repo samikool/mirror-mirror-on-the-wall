@@ -250,3 +250,48 @@ def test_apply_flow_stop_before_switch(env, tmp_path, monkeypatch):  # noqa: F81
         assert "stopped" in str(app.screen.query_one("#run-done").render())
     _run(home, check)
     assert _tree(root) == before
+
+
+def test_root_column_with_two_roots(two_mirrors, tmp_path):  # noqa: F811
+    import pytest as _p  # noqa: F401
+    from test_site_roots import split_env as _split  # noqa: F401
+    from mmw.site import home as H
+    from mmw.site.apply import apply_bundle
+    from test_site_apply import _bundle
+    cfg, net, md, home, main, second = _split.__wrapped__(tmp_path)
+    kb = next(s.identity for s in cfg.sources if s.name == "b")
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={kb: "second"},
+                 say=lambda *a: None)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        cols = [str(c.label) for c in app.screen.query_one("#site-repos", DataTable).columns.values()]
+        assert "Root" in cols
+        rows = {r[0]: r for r in _rows(app, "site-repos")}
+        assert rows["b"][cols.index("Root")] == "second" and rows["a"][cols.index("Root")] == "main"
+    _run(home, check)
+    assert H.load_site(home).roots[1].name == "second"
+
+
+def test_move_key(two_mirrors, tmp_path):  # noqa: F811
+    from textual.widgets import Select
+    from test_site_roots import split_env as _split
+    from mmw.site.apply import apply_bundle
+    from mmw.site.db import SiteDB
+    from test_site_apply import _bundle
+    cfg, net, md, home, main, second = _split.__wrapped__(tmp_path)
+    kb = next(s.identity for s in cfg.sources if s.name == "b")
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
+
+    async def check(app, pilot):
+        await _pick(app, pilot, "b")
+        app.screen.query_one("#site-repos", DataTable).focus()
+        await pilot.press("m")
+        await until(pilot, lambda: type(app.screen).__name__ == "MoveRootPage")
+        app.screen.query_one("#move-root", Select).value = "second"
+        app.screen.query_one("#btn-move-go").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
+                    and "moved" in str(app.screen.query_one("#page-status").render()))
+    _run(home, check)
+    with SiteDB(home) as db:
+        assert db.repo_state(kb).root == "second"

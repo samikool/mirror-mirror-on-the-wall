@@ -12,6 +12,7 @@ from mmw.core.format import fmt_size
 from mmw.site import ops
 from mmw.tui.ui.list_detail import ListDetail
 from mmw.tui.ui.page import Page
+from mmw.tui.ui.widgets import Button
 
 
 def _date(stamp: str) -> str:
@@ -35,6 +36,7 @@ class SiteHomePage(Page):
         Binding("h", "hold", "Hold"),
         Binding("d", "delete", "Delete version"),
         Binding("a", "apply", "Apply bundle"),
+        Binding("m", "move", "Move to root"),
         Binding("r", "refresh", "Refresh"),
     ]
 
@@ -52,8 +54,8 @@ class SiteHomePage(Page):
     def on_mount(self) -> None:
         self.query_one("#site-banner").display = False
         t = self.query_one("#site-repos", DataTable)
-        # Root joins these once a site has more than one (placements, phase 4).
-        t.add_columns("Repository", "Serving", "Newest", "State")
+        self._multi = len(self.app.settings.roots) > 1
+        t.add_columns("Repository", *(["Root"] if self._multi else []), "Serving", "Newest", "State")
         self.query_one("#site-history", DataTable).add_columns("Version", "Date", "Size", "")
         t.focus()
         self.action_refresh()
@@ -84,7 +86,8 @@ class SiteHomePage(Page):
         t.clear()
         for s in states:
             serving = f"v{s.serving.number} · {_date(s.serving.stamp)}" if s.serving else "—"
-            t.add_row(Text(s.label), serving, f"v{newest.get(s.repo, '?')}",
+            root = [s.root or self.app.settings.primary.name] if self._multi else []
+            t.add_row(Text(s.label), *root, serving, f"v{newest.get(s.repo, '?')}",
                       "held" if s.held else "current", key=s.repo)
         if keep is not None and keep in {s.repo for s in states}:
             t.move_cursor(row=t.get_row_index(keep))
@@ -212,6 +215,23 @@ class SiteHomePage(Page):
         self._load()
         self.set_status(done, "ok")
 
+    def action_move(self) -> None:
+        repo = self.selected_repo()
+        if repo is None:
+            return
+        if len(self.app.settings.roots) < 2:
+            self.set_status("This site has one root — `mmw site root add` makes another.", "error")
+            return
+        state = next(s for s in self._states if s.repo == repo)
+        current = state.root or self.app.settings.primary.name
+
+        def chosen(root):
+            if root and root != current:
+                self._act(f"moved {state.label} to {root} — recreate nginx in both roots",
+                          ops.move, self.app.home, repo, root)
+        self.app.push_screen(MoveRootPage(state.label, current, [r.name for r in self.app.settings.roots]),
+                             chosen)
+
     def action_apply(self) -> None:
         from mmw.tui.path_pick import PathPickPage
         from mmw.tui.site.apply_flow import recent_paths
@@ -255,6 +275,37 @@ def _run_page(choice):
 
 def ops_newest(history) -> int | None:
     return history[0][0].number if history else None
+
+
+class MoveRootPage(Page):
+    """Which root a repository should live in."""
+
+    TITLE = "Move"
+
+    def __init__(self, label: str, current: str, roots: list[str]):
+        super().__init__()
+        self.subtitle = f"{label} · now in {current}"
+        self._current, self._roots = current, roots
+
+    def compose_body(self) -> ComposeResult:
+        from mmw.tui.ui.form import ChoiceField, Form
+        yield Form(ChoiceField("Root", [(r, r) for r in self._roots], self._current, id="move-root",
+                               hint="Every kept version's files are copied there first; nothing is served "
+                                    "from it until the copy is complete."))
+
+    def compose_actions(self) -> ComposeResult:
+        from mmw.tui.ui.widgets import Button
+        yield Button("Cancel", id="btn-move-cancel", compact=True)
+        yield Button("Move", id="btn-move-go", variant="primary", compact=True)
+
+    @on(Button.Pressed, "#btn-move-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-move-go")
+    def _go(self) -> None:
+        from textual.widgets import Select
+        self.dismiss(self.query_one("#move-root", Select).value)
 
 
 class _HistoryPane(Static):

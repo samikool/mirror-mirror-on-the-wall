@@ -25,14 +25,32 @@ def _home(home: Path | None, break_lock: bool) -> Path:
     return h
 
 
+def _placements(h: Path, src: str, specs: list[str]) -> dict[str, str]:
+    """`REPO=ROOT` (a repository's name or URL) → {key: root}; names come
+    from the bundle itself, since a new repository isn't in the site yet."""
+    from mmw.core.repos import resolve_repo_refs
+    from mmw.site.apply import plan_apply
+    available = {r.repo: r.label for r in plan_apply(h, src).rows} if src != "-" else {}
+    out = {}
+    for spec in specs:
+        ref, sep, root = spec.partition("=")
+        if not sep or not root:
+            raise ValueError(f"--place wants REPO=ROOT, not {spec!r}")
+        key = ref if src == "-" else resolve_repo_refs([ref], available)[0]
+        out[key] = root
+    return out
+
+
 def apply(src: str, home: Path | None = None, forward: list[str] | None = None,
-          forward_all: bool = False, dry_run: bool = False, break_lock: bool = False) -> int:
+          forward_all: bool = False, dry_run: bool = False, break_lock: bool = False,
+          place: list[str] | None = None) -> int:
     from mmw.site.apply import ApplyError, apply_bundle
     from mmw.site.lock import LockHeld
     try:
         h = _home(home, break_lock)
         keys = _repo_keys(h, forward) if forward else None
-        r = apply_bundle(h, src, forward=keys, forward_all=forward_all, dry_run=dry_run)
+        placed = _placements(h, src, place) if place else None
+        r = apply_bundle(h, src, forward=keys, forward_all=forward_all, dry_run=dry_run, place=placed)
     except ApplyError as e:
         eprint(str(e))
         return e.code

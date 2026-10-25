@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS network_files (path TEXT PRIMARY KEY, blob INTEGER NO
 CREATE TABLE IF NOT EXISTS switches (
     repo TEXT PRIMARY KEY, from_version INTEGER, to_version INTEGER NOT NULL,
     phase TEXT NOT NULL DEFAULT 'pkg');
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applied (
     id INTEGER PRIMARY KEY, created TEXT NOT NULL, previous TEXT, kind TEXT NOT NULL,
     applied_at TEXT NOT NULL);
@@ -178,9 +179,10 @@ class SiteDB:
                            (version_id, int(held), repo))
         self._conn.commit()
 
-    def set_root(self, repo: str, root: str | None) -> None:
+    def set_root(self, repo: str, root: str | None, *, commit: bool = True) -> None:
         self._conn.execute("UPDATE repos SET root = ? WHERE repo = ?", (root, repo))
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
 
     def set_held(self, repo: str, held: bool) -> None:
         self._conn.execute("UPDATE repos SET held = ? WHERE repo = ?", (int(held), repo))
@@ -223,6 +225,14 @@ class SiteDB:
             "SELECT repo, from_version, to_version, phase FROM switches ORDER BY repo").fetchall()]
 
     # ── log, sizes, references ───────────────────────────────────────────────
+
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        self._conn.commit()
 
     def record_applied(self, created: str, previous: str | None, kind: str) -> None:
         self._conn.execute("INSERT INTO applied (created, previous, kind, applied_at) VALUES (?, ?, ?, ?)",

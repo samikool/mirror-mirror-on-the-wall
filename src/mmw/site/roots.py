@@ -1,4 +1,5 @@
 """Which root each repository lives in, and that root's store."""
+import json
 from pathlib import Path
 
 from mmw.core import disk_io
@@ -36,11 +37,32 @@ class Roots:
     def placed_in(self, db, root: RootConfig) -> set[str]:
         return {s.repo for s in db.repo_states() if self.of(s).name == root.name}
 
+    @property
+    def multi(self) -> bool:
+        return len(self.all) > 1
+
+    def network_files(self, db, root: RootConfig) -> dict[str, str]:
+        """The network-level files this root serves from its store. One root
+        serves them all, as shipped. With several, nginx's text files are
+        generated per root instead (`generated`), the primary serves the rest,
+        and every other root also gets the keys and the nginx image."""
+        files = db.network_files()
+        if not self.multi:
+            return files
+        if root.name == self.primary.name:
+            return {p: c for p, c in files.items() if not _nginx_text(p)}
+        return {p: c for p, c in files.items()
+                if p.startswith(EVERY_ROOT) or (p.startswith("nginx/") and p.endswith(".tar"))}
+
+    def generated(self, db, root: RootConfig) -> dict[str, str]:
+        """nginx files generated for this root: path → sha256."""
+        return json.loads(db.get_meta(f"nginx:{root.name}", "{}"))
+
     def referenced(self, db, root: RootConfig) -> set[str]:
         """Every blob this root's store must keep."""
-        primary = root.name == self.primary.name
-        out = db.referenced_checksums(self.placed_in(db, root), network=primary)
-        if not primary:
-            for prefix in EVERY_ROOT:
-                out |= db.referenced_checksums(set(), network=True, network_prefix=prefix)
-        return out
+        return (db.referenced_checksums(self.placed_in(db, root), network=False)
+                | set(self.network_files(db, root).values()))
+
+
+def _nginx_text(path: str) -> bool:
+    return path.startswith("nginx/") and not path.endswith(".tar")

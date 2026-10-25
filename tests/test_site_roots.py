@@ -1,10 +1,12 @@
 """A site with several roots: repositories placed in each, moved between
 them, every root with its own store and its own nginx."""
+import pytest
 from typer.testing import CliRunner
 
 from mmw import cli
 from mmw.site import home as H
 from mmw.site import ops
+from mmw.site.apply import apply_bundle
 from mmw.site.db import SiteDB
 
 from test_site_apply import _bundle, _tree, env  # noqa: F401
@@ -52,3 +54,114 @@ def test_space_reports_each_root(env, tmp_path):  # noqa: F811
     (tmp_path / "second/.mmw/store").mkdir(parents=True)
     rep = ops.space(home)
     assert set(rep.roots) == {"main", "second"} and all(free > 0 for _used, free in rep.roots.values())
+
+
+# ── several roots ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def split_env(tmp_path):
+    """An mmw network of two repositories on two hostnames, and a site with
+    two roots: main and second."""
+    from mmw.core import config
+    from mmw.core.pool import KIND_META, KIND_PKG, Pool
+    from test_dry_run_totals import SHARED, ONLY_A, ONLY_B, _index, _sha
+    md = tmp_path / "mirror"
+    sources, contents = [], {"a": {"shared.deb": SHARED, "a.deb": ONLY_A}, "b": {"shared.deb": SHARED, "b.deb": ONLY_B}}
+    with Pool(md) as pool:
+        for name, files in contents.items():
+            refs = []
+            for fname, data in {**files, "Packages": _index(files)}.items():
+                pool.add(data, _sha(data), "sha256", fname, len(data))
+                refs.append((_sha(data), fname, KIND_META if fname == "Packages" else KIND_PKG))
+            pool.reconcile_refs(name, refs)
+            sources.append(config.SourceConfig(name=name, label="custom", provider="apt-flat",
+                                               url=f"https://{name}.example.com/{name}/"))
+    net = config.NetworkConfig(name="oak", root=tmp_path / "pub", far_side="mmw")
+    cfg = config.Config(settings=config.Settings(mirror_dir=md), sources=sources, networks=[net])
+    home = tmp_path / "site"
+    H.init_site(home, tmp_path / "srv")
+    H.add_root(home, "second", tmp_path / "srv2", serve_path="/export/second")
+    return cfg, net, md, home, tmp_path / "srv", tmp_path / "srv2"
+
+
+def _files(root):
+    return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
+            and not p.relative_to(root).as_posix().startswith(".mmw/")}
+
+
+def test_two_roots_each_serve_their_repos(split_env, tmp_path):
+    cfg, net, md, home, main, second = split_env
+    kb = next(s.identity for s in cfg.sources if s.name == "b")
+    r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={kb: "second"},
+                     say=quiet)
+    assert sorted(r.updated) == sorted(s.identity for s in cfg.sources)
+    assert any(f.startswith("a.example.com/") for f in _files(main))
+    assert not any(f.startswith("b.example.com/") for f in _files(main))
+    assert any(f.startswith("b.example.com/") for f in _files(second))
+    assert not any(f.startswith("a.example.com/") for f in _files(second))
+    conf_main = (main / "nginx/mirror.conf").read_text()
+    conf_second = (second / "nginx/mirror.conf").read_text()
+    assert "a.example.com" in conf_main and "b.example.com" not in conf_main
+    assert "b.example.com" in conf_second and "a.example.com" not in conf_second
+    assert "/export/second" in (second / "nginx/compose.yaml").read_text()
+    assert any(f.startswith("keys/") for f in _files(second)) == any(f.startswith("keys/") for f in _files(main))
+    assert ops.verify(home) == []
+    with SiteDB(home) as db:
+        assert db.repo_state(kb).root == "second"
+
+
+def test_shared_host_must_share_root(env, tmp_path):  # noqa: F811
+    cfg, net, md, home, root = env
+    H.add_root(home, "second", tmp_path / "srv2")
+    with pytest.raises(ValueError, match="must share a root"):
+        apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                     place={_key(cfg, "b"): "second"}, say=quiet)
+    with SiteDB(home) as db:
+        assert db.repo_states() == []
+
+
+def test_unmounted_root_refused(split_env, tmp_path):
+    import shutil
+    from mmw.site.apply import ApplyError
+    cfg, net, md, home, main, second = split_env
+    kb = next(s.identity for s in cfg.sources if s.name == "b")
+    shutil.rmtree(second)
+    with pytest.raises(ApplyError, match="not mounted") as e:
+        apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={kb: "second"},
+                     say=quiet)
+    assert e.value.code == 5 and not _files(main)
+
+
+def test_new_repo_goes_to_primary_or_place(split_env, tmp_path):
+    cfg, net, md, home, main, second = split_env
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
+    with SiteDB(home) as db:
+        assert all(s.root is None for s in db.repo_states())          # the primary
+    assert not any(f.startswith(("a.example.com/", "b.example.com/")) for f in _files(second))
+
+
+def test_old_bundle_without_settings_refused_on_multi_root(split_env, tmp_path):
+    from mmw.site.apply import ApplyError
+    from test_site_apply import _rewrite
+    import json
+    cfg, net, md, home, main, second = split_env
+    good = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+
+    def strip(m, d):
+        if m.name != ".mmw/manifest.jsonl":
+            return d
+        lines = d.decode().splitlines()
+        header = json.loads(lines[0])
+        header.pop("settings")
+        return ("\n".join([json.dumps(header), *lines[1:]]) + "\n").encode()
+    with pytest.raises(ApplyError, match="nginx per root") as e:
+        apply_bundle(home, str(_rewrite(good, tmp_path / "old.tar", strip)), say=quiet)
+    assert e.value.code == 5
+
+
+def test_cli_apply_place(split_env, tmp_path):
+    cfg, net, md, home, main, second = split_env
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--place", "b=second", "--home", str(home)])
+    assert r.exit_code == 0, r.output
+    assert any(f.startswith("b.example.com/") for f in _files(second))

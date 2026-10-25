@@ -221,12 +221,8 @@ def history(home: Path, ref: str) -> list[tuple[VersionInfo, int, int, bool]]:
 
 def _expected(db: SiteDB, roots: Roots) -> dict[str, dict[str, str]]:
     """Root name → {path: checksum} it should serve."""
-    from mmw.site.roots import EVERY_ROOT
-    out: dict[str, dict[str, str]] = {r.name: {} for r in roots.all}
-    network = db.network_files()
-    out[roots.primary.name].update(network)
-    for r in roots.all[1:]:
-        out[r.name].update({p: c for p, c in network.items() if p.startswith(EVERY_ROOT)})
+    out: dict[str, dict[str, str]] = {r.name: {**roots.network_files(db, r), **roots.generated(db, r)}
+                                      for r in roots.all}
     for st in db.repo_states():
         if st.serving is not None:
             out[roots.of(st).name].update(db.version_files(st.serving.id))
@@ -274,6 +270,8 @@ def repair(home: Path) -> int:
         for r in roots.all:
             root, store = Path(r.path), roots.store(r)
             for rel, checksum, _why in list(_wrong(root, store, _expected(db, roots)[r.name])):
+                if not store.has(checksum):
+                    continue                              # generated nginx: the next apply rewrites it
                 if disk_io.ops.exists(root / rel):
                     disk_io.ops.remove(root / rel)        # never write through a damaged link
                 place_served_file(store, root, rel, checksum, network=rel in network)

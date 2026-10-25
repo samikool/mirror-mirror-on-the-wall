@@ -169,3 +169,51 @@ def test_two_builds_at_once_both_succeed(tmp_path):
     d = R.build_runtime(cache, arch="x86_64", python="3.12", mmw_version="1.2.0", fetcher=Interleaved())
     assert R.verify(d) is not None
     assert [p.name for p in cache.iterdir()] == [d.name]          # no temporary directory left
+
+
+class _Dist:
+    def __init__(self, direct_url):
+        self._direct_url = direct_url
+
+    def read_text(self, name):
+        return self._direct_url if name == "direct_url.json" else None
+
+
+def test_source_checkout_found_for_editable_install(monkeypatch):
+    monkeypatch.setattr(R, "_distribution",
+                        lambda: _Dist('{"url":"file:///x/mmw","dir_info":{"editable":true}}'))
+    assert R.source_checkout() == Path("/x/mmw")
+
+
+def test_no_checkout_for_a_release(monkeypatch):
+    monkeypatch.setattr(R, "_distribution", lambda: _Dist(None))
+    assert R.source_checkout() is None
+
+
+def test_resolve_wheel_prefers_explicit(monkeypatch, tmp_path):
+    monkeypatch.setattr(R, "source_checkout", lambda: tmp_path)
+    monkeypatch.setattr(R, "checkout_wheel", lambda *a, **k: pytest.fail("built a wheel"))
+    explicit = tmp_path / "mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl"
+    assert R.resolve_wheel(explicit, tmp_path / "build") == explicit
+
+
+def test_resolve_wheel_is_none_for_a_release(monkeypatch, tmp_path):
+    monkeypatch.setattr(R, "source_checkout", lambda: None)
+    assert R.resolve_wheel(None, tmp_path / "build") is None
+
+
+def test_checkout_wheel_reflects_working_tree(monkeypatch, tmp_path):
+    """Uncommitted edits ride in the wheel: never the last commit, never PyPI."""
+    import zipfile
+    proj = tmp_path / "proj"
+    (proj / "src" / "mmw").mkdir(parents=True)
+    (proj / "pyproject.toml").write_text(
+        '[project]\nname = "mirror-mirror-on-the-wall"\nversion = "1.2.0"\n'
+        '[build-system]\nrequires = ["uv_build>=0.11.14,<0.12.0"]\nbuild-backend = "uv_build"\n'
+        '[tool.uv.build-backend]\nmodule-name = "mmw"\n')
+    (proj / "src" / "mmw" / "__init__.py").write_text('MARK = "edited-not-committed"\n')
+    monkeypatch.setattr(R, "source_checkout", lambda: proj)
+    wheel = R.checkout_wheel(tmp_path / "build")
+    assert wheel.name.startswith("mirror_mirror_on_the_wall-")
+    with zipfile.ZipFile(wheel) as z:
+        assert b"edited-not-committed" in z.read("mmw/__init__.py")

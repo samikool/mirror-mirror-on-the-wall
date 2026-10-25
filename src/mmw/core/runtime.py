@@ -48,6 +48,58 @@ def mmw_version() -> str:
     return version(DIST)
 
 
+def _distribution():
+    from importlib.metadata import distribution
+    return distribution(DIST)
+
+
+def source_checkout() -> Path | None:
+    """The project root when this mmw runs from a source checkout (an
+    editable install), else None: an installed release."""
+    raw = _distribution().read_text("direct_url.json")
+    if not raw:
+        return None
+    try:
+        info = json.loads(raw)
+    except ValueError:
+        return None
+    if not (info.get("dir_info") or {}).get("editable"):
+        return None
+    from urllib.parse import unquote, urlparse
+    url = urlparse(info.get("url", ""))
+    return Path(unquote(url.path)) if url.scheme == "file" else None
+
+
+def checkout_wheel(build_dir: Path, *, stop_event=None) -> Path:
+    """Build this checkout's wheel, working tree as it is, into `build_dir`."""
+    import sys
+    root = source_checkout()
+    if root is None:
+        raise RuntimeUnavailable("mmw isn't running from a source checkout — nothing to build")
+    disk_io.ops.mkdir(build_dir, parents=True, exist_ok=True)
+    for old in disk_io.ops.glob(build_dir, "mirror_mirror_on_the_wall-*.whl"):
+        disk_io.ops.unlink(old, missing_ok=True)
+    r = subprocess.run([sys.executable, "-m", "uv", "build", "--wheel", "-o", str(build_dir)],
+                       cwd=root, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeUnavailable(f"building mmw's wheel from {root} failed: "
+                                 f"{(r.stderr or r.stdout).strip().splitlines()[-1:] or ['uv build']}")
+    wheels = list(disk_io.ops.glob(build_dir, "mirror_mirror_on_the_wall-*.whl"))
+    if len(wheels) != 1:
+        raise RuntimeUnavailable(f"uv build left {len(wheels)} mmw wheels in {build_dir}")
+    return wheels[0]
+
+
+def resolve_wheel(explicit: Path | None, build_dir: Path, *, stop_event=None) -> Path | None:
+    """The mmw wheel to ship: `explicit`, else this checkout's own build,
+    else None — an installed release, fetched from PyPI."""
+    if explicit is not None:
+        return explicit
+    if source_checkout() is not None:
+        return checkout_wheel(build_dir, stop_event=stop_event)
+    return None
+
+
 def uv_version() -> str:
     from importlib.metadata import version
     return version("uv")

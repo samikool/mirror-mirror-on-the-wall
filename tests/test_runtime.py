@@ -226,3 +226,88 @@ def test_a_path_install_of_a_checkout_builds_from_it(monkeypatch, tmp_path):
     assert R.source_checkout() == tmp_path
     monkeypatch.setattr(R, "_distribution", lambda: _Dist(f'{{"url":"file://{tmp_path}/gone","dir_info":{{}}}}'))
     assert R.source_checkout() is None                      # the checkout is gone: a release
+
+
+def _zip_wheel(path, requires=("httpx>=0.27",), body=b"one"):
+    import zipfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mirror_mirror_on_the_wall-1.2.0.dist-info/METADATA",
+                   "Metadata-Version: 2.1\nName: mirror-mirror-on-the-wall\nVersion: 1.2.0\n"
+                   + "".join(f"Requires-Dist: {r}\n" for r in requires))
+        z.writestr("mmw/__init__.py", body)
+    return path
+
+
+def test_a_rebuilt_dev_wheel_reuses_the_downloads(tmp_path):
+    """Each edit of a checkout is a new wheel: only it changes — uv, Python
+    and the dependency wheels come from the last build, so no download and
+    it works offline."""
+    a = _zip_wheel(tmp_path / "a" / "mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl", body=b"one")
+    R.build_runtime(tmp_path / "c", arch="x86_64", python="3.12", mmw_version="1.2.0",
+                    fetcher=FakeFetcher(), wheel=a)
+
+    class Offline(FakeFetcher):
+        def uv_binary(self, *a):
+            raise R.FetchError("offline")
+    b = _zip_wheel(tmp_path / "b" / "mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl", body=b"two")
+    d = R.build_runtime(tmp_path / "c", arch="x86_64", python="3.12", mmw_version="1.2.0",
+                       fetcher=Offline(), wheel=b)
+    assert R.verify(d) is not None
+    assert (d / "wheels" / b.name).read_bytes() == b.read_bytes()
+    assert (d / "uv").stat().st_mode & 0o111                      # still runnable
+    assert (d / "wheels" / "cryptography-45.0-cp311-abi3-manylinux_2_28_x86_64.whl").exists()
+
+
+def test_changed_dependencies_download_again(tmp_path):
+    a = _zip_wheel(tmp_path / "a" / "mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl")
+    R.build_runtime(tmp_path / "c", arch="x86_64", python="3.12", mmw_version="1.2.0",
+                    fetcher=FakeFetcher(), wheel=a)
+    b = _zip_wheel(tmp_path / "b" / "mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl",
+                   requires=("httpx>=0.27", "rich"))
+    f = FakeFetcher()
+    R.build_runtime(tmp_path / "c", arch="x86_64", python="3.12", mmw_version="1.2.0", fetcher=f, wheel=b)
+    assert any(c[0] == "wheels" for c in f.calls)
+
+
+def test_old_dev_builds_are_reaped(tmp_path):
+    for i in range(4):
+        w = _zip_wheel(tmp_path / str(i) / "mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl", body=str(i).encode())
+        R.build_runtime(tmp_path / "c", arch="x86_64", python="3.12", mmw_version="1.2.0",
+                        fetcher=FakeFetcher(), wheel=w)
+    assert len(list((tmp_path / "c").glob("1.2.0-py3.12-x86_64-*"))) == R.KEEP_DEV_BUILDS
+
+
+def test_two_checkout_builds_never_delete_each_other(monkeypatch, tmp_path):
+    proj = tmp_path / "proj"
+    (proj / "src" / "mmw").mkdir(parents=True)
+    (proj / "pyproject.toml").write_text(
+        '[project]\nname = "mirror-mirror-on-the-wall"\nversion = "1.2.0"\n'
+        '[build-system]\nrequires = ["uv_build>=0.11.14,<0.12.0"]\nbuild-backend = "uv_build"\n'
+        '[tool.uv.build-backend]\nmodule-name = "mmw"\n')
+    (proj / "src" / "mmw" / "__init__.py").write_text("")
+    monkeypatch.setattr(R, "source_checkout", lambda: proj)
+    first = R.checkout_wheel(tmp_path / "build")
+    second = R.checkout_wheel(tmp_path / "build")
+    assert first.exists() and second.exists() and first != second
+
+
+def test_checkout_build_stops_when_asked(monkeypatch, tmp_path):
+    import threading
+    import time
+    monkeypatch.setattr(R, "source_checkout", lambda: tmp_path)
+    monkeypatch.setattr(R, "_uv_build_cmd", lambda out: ["sleep", "30"])
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    started = time.monotonic()
+    with pytest.raises(InterruptedError):
+        R.checkout_wheel(tmp_path / "build", stop_event=stop)
+    assert time.monotonic() - started < 5
+
+
+def test_checkout_build_times_out(monkeypatch, tmp_path):
+    monkeypatch.setattr(R, "source_checkout", lambda: tmp_path)
+    monkeypatch.setattr(R, "_uv_build_cmd", lambda out: ["sleep", "30"])
+    monkeypatch.setattr(R, "UV_BUILD_TIMEOUT", 0.3)
+    with pytest.raises(R.RuntimeUnavailable, match="took longer than"):
+        R.checkout_wheel(tmp_path / "build")

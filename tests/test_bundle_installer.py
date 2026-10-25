@@ -240,3 +240,38 @@ def test_transfer_summary_names_the_installer(tmp_path):
     view.mark_done(BundleResult(network_name="lab", out_path=tmp_path / "lab-x.tar", sent=1,
                                 installers=[tmp_path / "mmw-1.2.0-x86_64.tar"]), stopped=False)
     assert f"mmw installer → {tmp_path / 'mmw-1.2.0-x86_64.tar'}" in view.summary()
+
+
+def test_installer_for_every_network_skips_apply_ones_and_writes_each_once(monkeypatch, tmp_path):
+    """`mmw bundle --installer` with no -n: an apply network gets its bundle
+    without one; networks sharing a directory and runtime get one installer."""
+    from mmw.commands import bundle as bundle_cmd
+    from mmw.core import config
+    from mmw.core.publisher.results import BundleResult
+    out = Path("/tmp/out")
+    nets = [config.NetworkConfig(name="apt", bundle_dir=out),
+            config.NetworkConfig(name="lab", bundle_dir=out, far_side="mmw"),
+            config.NetworkConfig(name="dev", bundle_dir=out, far_side="mmw")]
+    monkeypatch.setattr(config, "load", lambda d: config.Config(
+        settings=config.Settings(mirror_dir=Path("/tmp/pool")), sources=[], networks=nets))
+    monkeypatch.setattr(bundle_cmd, "preflight_ok", lambda *a, **k: True)
+    seen = {}
+
+    def fake(net, cfg, mirror_dir, out_path=None, from_ref=None, to_ref="now", **kw):
+        seen[net.name] = kw.get("installer", False)
+        return BundleResult(network_name=net.name, out_path=out / f"{net.name}.tar")
+    monkeypatch.setattr(bundle_cmd, "bundle_network", fake)
+    (tmp_path / "mmw.toml").write_text("")
+    assert bundle_cmd.run(tmp_path, installer=True) == 0
+    assert seen == {"apt": False, "lab": True, "dev": False}
+
+
+def test_installer_command_uses_the_default_python(monkeypatch, tmp_path):
+    from mmw.commands import installer as inst_cmd
+    from mmw.core import config
+    got = {}
+    monkeypatch.setattr(config, "DEFAULT_RUNTIME_PYTHON", "3.13")
+    monkeypatch.setattr(inst_cmd, "write_installers", lambda out, **kw: got.update(kw) or [])
+    (tmp_path / "mmw.toml").write_text(f'[settings]\nmirror_dir = "{tmp_path / "pool"}"\n')
+    assert inst_cmd.run(tmp_path, out=tmp_path / "o") == 0
+    assert got["python"] == "3.13"

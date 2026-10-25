@@ -69,6 +69,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
     start = None if from_ref == "none" else (from_ref or _LAST)
     mirror_dir = cfg.settings.mirror_dir
     ok = True
+    installers_written: set[tuple] = set()      # (directory, arches, python): one installer each
     for net in networks:
         # A bundle destination is `out` (this run) or `net.bundle_dir` (the
         # config). Naming the network with `-n` and finding neither is an
@@ -108,8 +109,17 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
         try:
             picked = {"repos": keys} if keys else {}
-            if installer:
-                picked["installer"] = True
+            if installer and net.far_side != "mmw":
+                if network:
+                    eprint(f"Network '{net.name}': the mmw installer is for a far side running mmw "
+                           f"(far_side = \"mmw\") — write one on its own with `mmw installer --out DIR`")
+                    return 1
+                say(f"  {net.name}: no mmw installer — its far side runs apply.py")
+            elif installer:
+                where = (str(out or net.bundle_dir), tuple(sorted(net.runtime_arches)), net.runtime_python)
+                if where not in installers_written:
+                    picked["installer"] = True
+                    installers_written.add(where)
             if runtime_wheel is not None:
                 picked["runtime_wheel"] = runtime_wheel
             # A warning the run raises before its long part (a stage that will

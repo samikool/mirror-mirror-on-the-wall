@@ -28,6 +28,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -n "$prefix" ] || prefix=${HOME:?HOME is not set — pass --prefix DIR}/.local
+# One spelling of the path, so the PATH check and the launcher agree.
+while :; do
+    case $prefix in
+        *//*) prefix=${prefix%%//*}/${prefix#*//} ;;
+        ?*/) prefix=${prefix%/} ;;
+        *) break ;;
+    esac
+done
 case $0 in */*) from=${0%/*} ;; *) from=. ;; esac
 case $prefix in /*) ;; *) prefix=$(pwd)/$prefix ;; esac
 # The launcher holds PREFIX inside double quotes: refuse what would end them.

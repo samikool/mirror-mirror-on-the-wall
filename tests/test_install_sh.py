@@ -172,3 +172,18 @@ def test_a_prefix_the_launcher_cannot_hold_is_refused(tmp_path, bad):
     r, log = _run(rt, prefix)
     assert r.returncode == 64 and "can't hold" in r.stderr
     assert not prefix.exists() and log == ""
+
+
+def test_a_home_with_a_trailing_slash_is_on_path(tmp_path):
+    rt = _runtime(tmp_path)
+    home = tmp_path / "h"
+    r, _log = _run(rt, home=f"{home}/", path=f"{home}/.local/bin:/usr/bin:/bin")
+    assert r.returncode == 0, r.stderr
+    assert f"installed — {home}/.local/bin/mmw" in r.stdout and "add it to your PATH" not in r.stdout
+
+
+def test_a_prefix_with_doubled_slashes_is_one_path(tmp_path):
+    rt = _runtime(tmp_path)
+    r, _log = _run(rt, f"{tmp_path}//pre//", path=f"{tmp_path}/pre/bin:/usr/bin:/bin")
+    assert r.returncode == 0, r.stderr
+    assert f"installed — {tmp_path}/pre/bin/mmw" in r.stdout and "add it to your PATH" not in r.stdout

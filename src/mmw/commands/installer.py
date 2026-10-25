@@ -4,6 +4,7 @@ import platform
 from pathlib import Path
 
 from mmw.commands.common import eprint, load_config_or_none
+from mmw.core import config
 from mmw.core import runtime as rt
 from mmw.core.installer import write_installers
 from mmw.core.runtime import default_fetcher
@@ -14,7 +15,7 @@ def run(cfg_dir: Path, out: Path, network: str | None = None, runtime_wheel: Pat
     if cfg is None:
         return 1
     arch = {"arm64": "aarch64"}.get(platform.machine(), platform.machine())
-    arches, python = [arch], "3.12"
+    arches, python = [arch], config.DEFAULT_RUNTIME_PYTHON
     if network is not None:
         net = next((n for n in cfg.networks if n.name == network), None)
         if net is None:

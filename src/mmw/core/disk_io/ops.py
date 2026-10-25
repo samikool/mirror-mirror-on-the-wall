@@ -144,6 +144,11 @@ def link_into(src, dst) -> bool:
     return True
 
 
+def disk_usage(path):
+    """`shutil.disk_usage`: (total, used, free) bytes of the filesystem holding `path`."""
+    return shutil.disk_usage(path)
+
+
 def copy_file(src, dst) -> None:
     shutil.copyfile(src, dst)
 

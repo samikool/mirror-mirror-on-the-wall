@@ -45,7 +45,10 @@ if mode == "down":
 # logging what crosses so a test can prove what never did.
 import threading
 
-proc = subprocess.Popen(["sh", "-c", " ".join(rest)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+env = dict(os.environ)
+if os.environ.get("FAKE_REMOTE_HOME"):          # the remote user's home (its ~/.local/bin)
+    env["HOME"] = os.environ["FAKE_REMOTE_HOME"]
+proc = subprocess.Popen(["sh", "-c", " ".join(rest)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
 
 
 def pump(src, dst, tag, close):

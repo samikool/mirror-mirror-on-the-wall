@@ -9,6 +9,7 @@ own stderr is never echoed."""
 import re
 import shlex
 import subprocess
+from pathlib import Path
 
 KEY_AUTH = "{host} needs key-based ssh access for mmw (a security requirement) — configure it and try again"
 HOST_KEY = ("{host}'s host key isn't known (or changed) — connect once with plain ssh to check it; "
@@ -74,3 +75,73 @@ def popen(host: str, remote: list[str]) -> subprocess.Popen:
     kept from the terminal and never shown."""
     return subprocess.Popen(ssh_argv(host, remote), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE)
+
+
+# ── the mmw on the other end ─────────────────────────────────────────────────
+
+# A non-interactive ssh session rarely has ~/.local/bin on its PATH: the
+# installer's default home for mmw is put first.
+REMOTE_MMW = 'PATH="$HOME/.local/bin:$PATH"; exec mmw "$@"'
+INSTALL = 'd=$(mktemp -d) && tar -xf - -C "$d" && sh "$d"/mmw-*/install.sh && rm -rf "$d"'
+
+
+class RemoteMmw(ValueError):
+    """The remote host has no mmw, or one too old to talk to."""
+
+
+def mmw_argv(*args: str) -> list[str]:
+    return ["sh", "-c", REMOTE_MMW, "mmw", *args]
+
+
+_checked: set[str] = set()
+
+
+def forget_checked() -> None:
+    _checked.clear()
+
+
+def check_remote_mmw(host: str) -> None:
+    """The remote's mmw is there and no older than this one (checked once per
+    host); a `RemoteMmw` that says how to install it otherwise."""
+    if host in _checked:
+        return
+    from packaging.version import InvalidVersion, Version
+
+    from mmw.core.runtime import mmw_version
+    here = mmw_version()
+    hint = (f"— carry mmw-{here}-<arch>.tar across and: mmw site open {host}:/PATH --install "
+            f"mmw-{here}-<arch>.tar (it is pushed over this same key-based ssh)")
+    try:
+        out = run(host, mmw_argv("--version")).decode().strip()
+    except RemoteFailed:
+        raise RemoteMmw(f"mmw isn't installed on {host} {hint}") from None
+    there = out.split()[-1] if out else ""
+    try:
+        older = Version(there) < Version(here)
+    except InvalidVersion:
+        raise RemoteMmw(f"mmw on {host} says {out!r}, not a version {hint}") from None
+    if older:
+        raise RemoteMmw(f"mmw on {host} is older ({there} < {here}) {hint}")
+    _checked.add(host)
+
+
+def install_remote(host: str, installer) -> None:
+    """Stream an installer tar (`mmw-<version>-<arch>.tar`) to `host` and run
+    its install.sh there — over the same key-based ssh, nothing copied first."""
+    from mmw.core import disk_io
+    proc = popen(host, ["sh", "-c", INSTALL])
+    try:
+        with disk_io.ops.open_rb(installer) as fh:
+            while chunk := fh.read(1 << 20):
+                proc.stdin.write(chunk)
+        proc.stdin.close()
+    except BrokenPipeError:
+        pass
+    proc.stdout.read()
+    proc.wait()
+    if proc.returncode == 255:
+        raise SshError(UNREACHABLE.format(host=host))
+    if proc.returncode != 0:
+        raise RemoteMmw(f"installing mmw on {host} failed (exit {proc.returncode}) — "
+                        f"run the installer there by hand: tar -xf {Path(str(installer)).name} && sh mmw-*/install.sh")
+    _checked.discard(host)

@@ -90,10 +90,17 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
     return 3 if any(x.refused for x in r.per_root.values()) else 0
 
 
-def open_root(path: str) -> int:
-    from mmw.site import recents
+def open_root(path: str, install: Path | None = None) -> int:
+    from mmw.site import recents, ssh
     from mmw.site.mset import root_at
     try:
+        kind, host, _p = ssh.parse_location(str(path))
+        if install is not None:
+            if kind != "ssh":
+                raise ValueError("--install pushes mmw to an ssh root (host:/path); here, run install.sh yourself")
+            ssh.check_access(host)
+            ssh.install_remote(host, install)
+            print(f"mmw installed on {host}")
         found = root_at(str(path))
     except _ERRORS as e:
         return _fail(e)

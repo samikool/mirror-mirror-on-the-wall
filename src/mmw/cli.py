@@ -588,10 +588,12 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
 
 
 @site_app.command("open")
-def cmd_site_open(path: str = typer.Argument(..., help="A root of a mirror: a folder, or [user@]host:/path over ssh")):
+def cmd_site_open(path: str = typer.Argument(..., help="A root of a mirror: a folder, or [user@]host:/path over ssh"),
+                  install: Path = typer.Option(None, "--install", help="Push this mmw installer (mmw-<version>-<arch>.tar) "
+                                                                       "to the ssh host first, over the same key-based ssh")):
     """Remember a root on this machine, so commands and the TUI find its mirror."""
     from mmw.commands.site import open_root
-    raise typer.Exit(open_root(path))
+    raise typer.Exit(open_root(path, install))
 
 
 @site_app.command("roots")

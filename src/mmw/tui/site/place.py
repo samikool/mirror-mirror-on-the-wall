@@ -63,8 +63,14 @@ class PlacePage(Page):
         self._refresh()
 
     def add_root(self, path: str) -> None:
-        from mmw.site.home import read_root
-        info = read_root(path)
+        from mmw.site.mset import root_at
+        from mmw.site.ssh import SshError
+        try:
+            found = root_at(path)                   # a folder, or host:/path over ssh
+        except (SshError, ValueError) as e:
+            self.set_status(str(e), "error")        # key auth, host key, or mmw missing there: said plainly
+            return
+        info = found.info if found is not None else None
         if info is not None:
             mine = self._mset.set_id if self._mset else None
             if mine is None or info.set_id != mine:

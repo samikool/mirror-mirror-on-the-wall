@@ -29,7 +29,7 @@ def _version(d):
 
 def _call(host: str, verb: str, path: str, *args: str, input: bytes | None = None):
     try:
-        out = ssh.run(host, ["mmw", "site", "_root", verb, path, *args], input=input)
+        out = ssh.run(host, ssh.mmw_argv("site", "_root", verb, path, *args), input=input)
     except ssh.RemoteFailed as e:
         last = [json.loads(x) for x in e.stdout.decode().splitlines() if x.strip()][-1:] or [{}]
         raise _remote_error(last[0], e.code) from None
@@ -48,6 +48,7 @@ def _remote_error(event: dict, code: int):
 def remote_info(location: str) -> dict | None:
     """The root at an ssh location (`_root info`), or None: no mirror there."""
     _kind, host, path = ssh.parse_location(location)
+    ssh.check_remote_mmw(host)
     try:
         return _call(host, "info", path)
     except ValueError as e:
@@ -167,12 +168,12 @@ class SshRoot:
         self._call("set-moving-in", key, src)
 
     def export_blob(self, checksum: str):
-        proc = ssh.popen(self.host, ["mmw", "site", "_root", "export", self.path, checksum])
+        proc = ssh.popen(self.host, ssh.mmw_argv("site", "_root", "export", self.path, checksum))
         proc.stdin.close()
         return _ProcReader(proc, self.host)
 
     def import_blob(self, fh, checksum: str) -> None:
-        proc = ssh.popen(self.host, ["mmw", "site", "_root", "import", self.path, checksum])
+        proc = ssh.popen(self.host, ssh.mmw_argv("site", "_root", "import", self.path, checksum))
         while chunk := fh.read(1 << 20):
             proc.stdin.write(chunk)
         proc.stdin.close()
@@ -230,7 +231,7 @@ class RemoteApply:
         self._done = False
 
     def __enter__(self) -> "RemoteApply":
-        args = ["mmw", "site", "_root", "apply", self.root.path]
+        args = ssh.mmw_argv("site", "_root", "apply", self.root.path)
         for k in self.opts["forward"]:
             args += ["--forward", k]
         if self.opts["forward_all"]:

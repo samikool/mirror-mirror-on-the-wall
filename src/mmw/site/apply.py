@@ -7,6 +7,7 @@ the store. Only then are versions recorded and repositories switched — a
 held one keeps serving what it served, its new version stored for later.
 """
 import io
+import shutil
 import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ from mmw.resources.apply import (
     MANIFEST_MEMBER, ROOT_PLACEHOLDER, TLS_PREFIX, _install_tls, _nginx_root_config,
     _prune_empty_parents, render_derived,
 )
+from mmw.site import runtime as site_runtime
 from mmw.site.db import SiteDB
 from mmw.site.home import load_site
 from mmw.site.lock import SiteLock
@@ -46,10 +48,11 @@ class ApplyResult:
 
 
 def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progress=None, stop_event=None,
-             on_manifest=None):
+             on_manifest=None, runtime_dir: Path | None = None):
     """Stream the members in: (name → (checksum, size), TLS files). Once the
     manifest has arrived, `on_manifest(path)` may return `route(name) ->
-    Store`, the store each later member belongs in (its repository's root)."""
+    Store`, the store each later member belongs in (its repository's root).
+    mmw's runtime (`.mmw/runtime/…`) goes under `runtime_dir`, if given."""
     route = None
     got: dict[str, tuple[str, int]] = {}
     links: dict[str, str] = {}
@@ -68,6 +71,14 @@ def _receive(src: str, store: Store, manifest_path: Path, dry_run: bool, progres
                     route = on_manifest(manifest_path)
             elif m.name.startswith(TLS_PREFIX):
                 tls[m.name[len(TLS_PREFIX):]] = m.fh.read()
+            elif m.name.startswith(site_runtime.PREFIX) and runtime_dir is not None and m.kind != "link":
+                try:
+                    dest = site_runtime.member_path(runtime_dir, m.name)
+                except ValueError as e:
+                    raise ApplyError(2, str(e)) from None
+                disk_io.ops.mkdir(dest.parent, parents=True, exist_ok=True)
+                with disk_io.ops.open_file(dest, "wb") as out:
+                    shutil.copyfileobj(m.fh, out)
             elif m.name.startswith(".mmw/"):
                 continue                        # the bundle's own apply.py and the like
             elif m.kind == "link":
@@ -111,22 +122,30 @@ def _size(store: Store, checksum: str, sizes: dict[str, int]) -> int:
 
 def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forward_all: bool = False,
                  dry_run: bool = False, say=print, only: set[str] | None = None, progress=None,
-                 stop_event=None, place: dict[str, str] | None = None) -> ApplyResult:
+                 stop_event=None, place: dict[str, str] | None = None,
+                 allow_downgrade: bool = False) -> ApplyResult:
     """Apply the bundle at `src`. `only`: the repositories to switch; the
     others in the bundle are stored and held. `progress(event, **data)`:
     receive(name, bytes), check, switch(repo, label), done. `stop_event`:
     before anything changes, a stop raises; once repositories are switching,
     the ones not reached yet are stored and held. `place`: repository →
-    root name for repositories new to this site (default: the primary)."""
+    root name for repositories new to this site (default: the primary).
+    A newer mmw runtime in the bundle is installed once the apply is done
+    (an older one only with `allow_downgrade`)."""
     settings = load_site(home)
     roots = Roots(settings)
     root = Path(roots.primary.path)
     store = roots.store(roots.primary)
     result = ApplyResult()
     with SiteLock(home), SiteDB(home) as db:
+        incoming = None
         if not dry_run:
             store.sweep_tmp()
             resume_switches(db, roots)
+            # A failed apply's runtime is left here; never installed, cleared now.
+            incoming = site_runtime.incoming_dir(home)
+            if disk_io.ops.exists(incoming):
+                disk_io.ops.rmtree(incoming)
         manifest_path = Path(home) / "incoming-manifest.jsonl"
         placement: dict[str, object] = {}
 
@@ -144,7 +163,7 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
             return lambda name: roots.store(placement.get(attribute(name, bases), roots.primary))
         try:
             got, tls = _receive(src, store, manifest_path, dry_run, progress, stop_event,
-                                on_manifest=on_manifest)
+                                on_manifest=on_manifest, runtime_dir=incoming)
             header, rows = iter_manifest_v2(manifest_path)
             rows = list(rows)
         finally:
@@ -299,6 +318,9 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if result.network_changed:
             result.actions.append("nginx config changed — recreate nginx on the serving host "
                                   "(docker compose … up -d --force-recreate)")
+        if incoming is not None and disk_io.ops.exists(incoming / "RUNTIME.json"):
+            # Last: the apply finished with the mmw that started it.
+            result.actions.extend(site_runtime.update_runtime(home, incoming, allow_downgrade=allow_downgrade))
     return result
 
 

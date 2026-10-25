@@ -165,8 +165,9 @@ class LocalRoot:
 class MirrorSet:
     set_id: str
     network: str
-    roots: list[LocalRoot]
+    roots: list
     missing: list[str] = field(default_factory=list)
+    missing_reason: dict[str, str] = field(default_factory=dict)
 
     def root_named(self, name: str) -> LocalRoot:
         for r in self.roots:
@@ -196,19 +197,50 @@ class MirrorSet:
         raise KeyError(f"no repository {ref!r} — this mirror has: {', '.join(sorted(have, key=str.lower))}")
 
 
+def root_at(location: str):
+    """The root at `location` — a local folder or `[user@]host:/path` — or
+    None when there is no mirror there. An ssh host mmw can't use raises
+    `ssh.SshError` (in fixed words)."""
+    from mmw.site import ssh
+    kind, _host, _path = ssh.parse_location(location)
+    if kind == "ssh":
+        from mmw.site.sshroot import SshRoot, remote_info
+        info = remote_info(location)
+        if info is None:
+            return None
+        recents.seen(location, info["set_id"], info["name"])
+        return SshRoot(location, info)
+    info = read_root(location)
+    if info is None:
+        return None
+    if info.set_id is not None:
+        recents.seen(location, info.set_id, info.name)
+    return LocalRoot(info)
+
+
 def open_set(locations: list[str] | None = None, set_id: str | None = None) -> MirrorSet:
     """The set the given (default: recent) locations hold. More than one set
-    and no `set_id` is an error that names them."""
-    groups: dict[str, list[LocalRoot]] = {}
+    and no `set_id` is an error that names them. An ssh root that can't be
+    reached is missing, with why."""
+    from mmw.site import ssh
+    groups: dict[str, list] = {}
     seen: set[tuple[str | None, str]] = set()
+    unreachable: dict[str, dict[str, str]] = {}          # set id → root name → why
     for loc in (recents.known() if locations is None else locations):
-        info = read_root(loc)
-        if info is None or info.set_id is None:
+        try:
+            root = root_at(loc)
+        except ssh.SshError as e:
+            last = recents.last_seen(loc)
+            if last:
+                unreachable.setdefault(last["set_id"], {})[last["name"]] = str(e)
             continue
+        if root is None or root.info.set_id is None:
+            continue
+        info = root.info
         if (info.set_id, info.name) in seen:
             continue                                    # the same root by another path
         seen.add((info.set_id, info.name))
-        groups.setdefault(info.set_id, []).append(LocalRoot(info))
+        groups.setdefault(info.set_id, []).append(root)
     if set_id is not None:
         groups = {k: v for k, v in groups.items() if k == set_id}
     if not groups:
@@ -221,4 +253,6 @@ def open_set(locations: list[str] | None = None, set_id: str | None = None) -> M
     for r in roots:
         members += [m for m in r.info.members if m not in members]
     present = {r.info.name for r in roots}
-    return MirrorSet(sid, roots[0].info.network or "", roots, [m for m in members if m not in present])
+    missing = [m for m in members if m not in present]
+    reasons = {m: unreachable.get(sid, {}).get(m, "not opened on this machine") for m in missing}
+    return MirrorSet(sid, roots[0].info.network or "", roots, missing, reasons)

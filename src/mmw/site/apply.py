@@ -705,8 +705,8 @@ def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
     a screen recomputing on every keypress checks each store once."""
     cache = {} if cache is None else cache
     every = {c for by_cs in plan.host_checksums.values() for c in by_cs}
-    from mmw.site.home import read_root
-    from mmw.site.mset import LocalRoot
+    from mmw.site import ssh
+    from mmw.site.mset import root_at
     present = {r.info.name: r for r in (mset.roots if mset else [])}
     by_root: dict[str, list[str]] = {name: [] for name in present}
     for h, t in targets.items():
@@ -716,10 +716,12 @@ def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
         if key not in cache:
             root = present.get(key)
             if root is None:
-                info = read_root(key)
-                root = LocalRoot(info) if info is not None else None
+                root = root_at(key)
             if root is not None:
                 cache[key] = (root.has(every), root.free_bytes())
+            elif ssh.parse_location(key)[0] == "ssh":
+                from mmw.site.sshroot import free_at
+                cache[key] = (set(), free_at(key))
             else:
                 parent = Path(key).expanduser()
                 while not disk_io.ops.exists(parent):
@@ -789,8 +791,9 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
     from mmw.core.format import fmt_size
     from mmw.core.publisher.manifest import iter_manifest_sized
     from mmw.site import recents
-    from mmw.site.home import init_root, load_site, new_set_id, read_root, root_home, save_settings
-    from mmw.site.mset import LocalRoot
+    from mmw.site import ssh
+    from mmw.site.home import init_root, new_set_id
+    from mmw.site.mset import root_at
     place = dict(place or {})
     result = SetApplyResult()
     with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
@@ -830,18 +833,17 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
             raise ApplyError(1, f"new hostname(s) with no root yet: {', '.join(sorted(unplaced))} — "
                                 "choose one: --root HOST=PATH (or --root '*'=PATH)")
         locations = {loc for loc in targets.values() if isinstance(loc, str)}
-        found = {loc: read_root(loc) for loc in locations}
+        found = {loc: root_at(loc) for loc in locations}
         set_id = mset.set_id if mset else next(
-            (i.set_id for i in found.values() if i is not None), None) or new_set_id()
-        for loc, info in found.items():
-            if info is not None and info.set_id != set_id:
-                raise ApplyError(5, f"{loc} already holds the mirror of network {info.network!r} — pick another root")
-            if info is not None and info.name in present:
-                found[loc] = None                    # a path to a root already open
-                targets.update({h: present[info.name] for h, t in targets.items() if t == loc})
+            (r.info.set_id for r in found.values() if r is not None), None) or new_set_id()
+        for loc, r in list(found.items()):
+            if r is not None and r.info.set_id != set_id:
+                raise ApplyError(5, f"{loc} already holds the mirror of network {r.info.network!r} — pick another root")
+            if r is not None and r.info.name in present:
+                targets.update({h: present[r.info.name] for h, t in targets.items() if t == loc})
 
         # Space, per root, before anything is written.
-        placed = {h: (t.info.name if isinstance(t, LocalRoot) else t) for h, t in targets.items()}
+        placed = {h: (t if isinstance(t, str) else t.info.name) for h, t in targets.items()}
         needs = placement_needs(mset, plan, placed) if plan.sized else {}
         if not dry_run:
             for key, (need, free) in needs.items():
@@ -867,26 +869,32 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         # Never a new root where a root of a mirror was (an unmounted share's
         # empty mount point), nor while a root of this mirror is missing.
         new_locs = sorted({t for t in targets.values() if isinstance(t, str)})
-        seen_here = {str(Path(k).expanduser().resolve()) for k in recents.known()}
+        def norm(loc: str) -> str:
+            return loc if ssh.parse_location(loc)[0] == "ssh" else str(Path(loc).expanduser().resolve())
+        seen_here = {norm(k) for k in recents.known()}
         for loc in new_locs:
-            if read_root(loc) is None and str(Path(loc).expanduser().resolve()) in seen_here:
+            if found.get(loc) is None and norm(loc) in seen_here:
                 raise ApplyError(5, f"{loc} was a root of a mirror on this machine but holds none now — "
                                     "is it mounted? Nothing was written")
-        if mset is not None and mset.missing and any(read_root(loc) is None for loc in new_locs):
+        if mset is not None and mset.missing and any(found.get(loc) is None for loc in new_locs):
             raise ApplyError(5, f"root(s) {', '.join(mset.missing)} of this mirror aren't here — mount them "
                                 "(mmw site open PATH) before a new hostname starts a new root; nothing was written")
 
         # New roots, then every root's view of the set.
         taken = set(present) | set(mset.missing if mset else [])
-        made: dict[str, LocalRoot] = {}
+        made: dict = {}
         for loc in sorted({t for t in targets.values() if isinstance(t, str)}):
-            info = read_root(loc)
-            if info is None:
+            r = found.get(loc)
+            if r is None:
                 name = _root_name(loc, taken)
                 taken.add(name)
-                init_root(Path(loc).expanduser(), name=name, set_id=set_id, network=header.network)
-                info = read_root(loc)
-            made[loc] = LocalRoot(info)
+                if ssh.parse_location(loc)[0] == "ssh":
+                    from mmw.site.sshroot import init_remote
+                    init_remote(loc, name=name, set_id=set_id, network=header.network)
+                else:
+                    init_root(Path(loc).expanduser(), name=name, set_id=set_id, network=header.network)
+                r = root_at(loc)
+            made[loc] = r
         for h, t in list(targets.items()):
             if isinstance(t, str):
                 targets[h] = made[t]

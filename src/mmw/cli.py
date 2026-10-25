@@ -562,7 +562,8 @@ site_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(site_app, name="site")
-_ROOT = typer.Option(None, "--root", help="Any root of the mirror (default: the one this machine has opened)")
+_ROOT = typer.Option(None, "--root", help="Any root of the mirror — a folder or [user@]host:/path "
+                                          "(default: the one this machine has opened)")
 _BREAK_LOCK = typer.Option(False, "--break-lock", help="Clear a lock a dead run left behind")
 _REPO = typer.Argument(..., help="Repository (URL or name)")
 _YES = typer.Option(False, "--yes", help="Don't ask")
@@ -587,7 +588,7 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
 
 
 @site_app.command("open")
-def cmd_site_open(path: Path = typer.Argument(..., help="A root of a mirror (a folder holding .mmw/site)")):
+def cmd_site_open(path: str = typer.Argument(..., help="A root of a mirror: a folder, or [user@]host:/path over ssh")):
     """Remember a root on this machine, so commands and the TUI find its mirror."""
     from mmw.commands.site import open_root
     raise typer.Exit(open_root(path))

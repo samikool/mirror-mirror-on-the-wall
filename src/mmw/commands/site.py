@@ -8,15 +8,14 @@ from mmw.commands.common import eprint
 def _set(root: Path | None, break_lock: bool = False):
     """The mirror: the set `root` belongs to, or the one this machine has opened."""
     from mmw.site import recents
-    from mmw.site.home import read_root
-    from mmw.site.mset import open_set
+    from mmw.site.mset import open_set, root_at
     set_id = None
     if root is not None:
-        info = read_root(str(root))
-        if info is None:
+        found = root_at(str(root))
+        if found is None:
             raise FileNotFoundError(f"no mirror at {root}")
         recents.remember(str(root))
-        set_id = info.set_id
+        set_id = found.info.set_id
     mset = open_set(set_id=set_id)
     if break_lock:
         for r in mset.roots:
@@ -37,7 +36,12 @@ def _fail(e: Exception) -> int:
     return 5 if isinstance(e, LockHeld) else 1
 
 
-_ERRORS = (ValueError, LookupError, FileNotFoundError, KeyError)
+def _ssh_error():
+    from mmw.site.ssh import SshError
+    return SshError
+
+
+_ERRORS = (ValueError, LookupError, FileNotFoundError, KeyError, _ssh_error())
 
 
 def _place(specs: list[str]) -> dict[str, str]:
@@ -54,11 +58,11 @@ def _place(specs: list[str]) -> dict[str, str]:
 def apply(src: str, root: list[str] | None = None, forward: list[str] | None = None,
           forward_all: bool = False, dry_run: bool = False, break_lock: bool = False) -> int:
     from mmw.site.apply import ApplyError, apply_to_set
-    from mmw.site.home import read_root
     from mmw.site.lock import LockHeld
+    from mmw.site.mset import root_at
     try:
         place = _place(root or [])
-        at = next((Path(loc) for loc in place.values() if read_root(loc) is not None), None)
+        at = next((loc for loc in place.values() if root_at(loc) is not None), None)
         try:
             mset = _set(at, break_lock)
         except LookupError:
@@ -86,15 +90,18 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
     return 3 if any(x.refused for x in r.per_root.values()) else 0
 
 
-def open_root(path: Path) -> int:
+def open_root(path: str) -> int:
     from mmw.site import recents
-    from mmw.site.home import read_root
-    info = read_root(str(path))
-    if info is None:
+    from mmw.site.mset import root_at
+    try:
+        found = root_at(str(path))
+    except _ERRORS as e:
+        return _fail(e)
+    if found is None:
         eprint(f"no mirror at {path}")
         return 1
     recents.remember(str(path))
-    print(f"opened {info.name} — a root of {info.network}")
+    print(f"opened {found.info.name} — a root of {found.info.network}")
     return 0
 
 

@@ -50,3 +50,17 @@ def ca_paths() -> tuple[Path, Path] | None:
 
 def set_ca_paths(cert: Path, key: Path) -> None:
     _write("ca.json", {"cert": str(cert), "key": str(key)})
+
+
+def seen(location: str, set_id: str, name: str) -> None:
+    """What a location was last seen as — so a root that can't be reached
+    now (an ssh host that's down) is still named as missing."""
+    got = _read("seen.json", {})
+    got = got if isinstance(got, dict) else {}
+    got[location] = {"set_id": set_id, "name": name}
+    _write("seen.json", got)
+
+
+def last_seen(location: str) -> dict | None:
+    got = _read("seen.json", {})
+    return got.get(location) if isinstance(got, dict) else None

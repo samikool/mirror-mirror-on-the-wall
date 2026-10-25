@@ -119,6 +119,8 @@ def serve_root_command(argv: list[str], stdin: BinaryIO, stdout: BinaryIO) -> in
         _emit(stdout, {"event": "error", "code": 1, "message": "usage: mmw site _root VERB PATH …"})
         return 1
     verb, path, args = argv[0], argv[1], argv[2:]
+    if verb in ("init", "free"):
+        return _pre_root(verb, path, args, stdout)
     info = read_root(path)
     if info is None:
         _emit(stdout, {"event": "error", "code": 1, "message": f"no mirror at {path}"})
@@ -141,6 +143,26 @@ def serve_root_command(argv: list[str], stdin: BinaryIO, stdout: BinaryIO) -> in
         return 5
     except (ValueError, LookupError, FileNotFoundError, OSError) as e:
         _emit(stdout, {"event": "error", "code": 1, "message": str(e).strip("'\"")})
+        return 1
+
+
+def _pre_root(verb: str, path: str, args: list[str], stdout) -> int:
+    """Verbs for a root that may not exist yet: make one, or how much room."""
+    from mmw.core import disk_io
+    from mmw.site.home import init_root
+    try:
+        if verb == "init":
+            name, set_id, network = args
+            init_root(Path(path), name=name, set_id=set_id, network=network)
+            _emit(stdout, {"ok": True})
+        else:
+            parent = Path(path)
+            while not disk_io.ops.exists(parent):
+                parent = parent.parent
+            _emit(stdout, {"free": disk_io.ops.disk_usage(parent).free})
+        return 0
+    except (ValueError, OSError) as e:
+        _emit(stdout, {"event": "error", "code": 1, "message": str(e)})
         return 1
 
 
@@ -198,11 +220,15 @@ def _apply(root, args, stdin, stdout) -> int:
                 ra.take(m)
         checked = ra.check()
         _emit(stdout, {"event": "checked", "result": checked, "first_time": not ra.db.applied()})
-        control = stdin.readline().decode().strip()
-        if control not in ("commit", "commit others"):
+        control = stdin.readline().decode().strip().split()
+        if not control or control[0] != "commit":
             _emit(stdout, {"event": "aborted"})
             return 0
-        result = ra.commit(others_changed=control == "commit others")
+        if "stopped" in control:
+            import threading
+            ra.stop_event = threading.Event()
+            ra.stop_event.set()                    # another root's stop: store and hold the rest here
+        result = ra.commit(others_changed="others" in control)
         _emit(stdout, {"event": "result", "result": result, "first_time": ra.first_time})
     return 0
 

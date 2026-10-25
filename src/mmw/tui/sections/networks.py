@@ -38,8 +38,8 @@ class NetworksPage(Page):
         Binding("a", "add", "Add"),
         Binding("e", "edit", "Edit"),
         Binding("d", "remove", "Remove"),
-        Binding("p", "verb('publish')", "Publish"),
         Binding("r", "verb('dry_run')", "Dry run"),
+        Binding("p", "verb('publish')", "Publish"),
         Binding("t", "verb('bundle')", "Transfer"),
         # Off the footer (it must fit 80 columns): a once-per-network job,
         # still a button, and listed by ?.
@@ -59,13 +59,15 @@ class NetworksPage(Page):
         yield ListDetail(ListView(id="net-list"), NetworkDetail(), id="net-panes")
 
     def compose_actions(self) -> ComposeResult:
+        # Editing the network · moving it (the dry run before what it
+        # previews) · occasional tools. One primary: see `_primary`.
         yield Button("Add", id="btn-net-add", compact=True)
         yield Button("Edit", id="btn-net-edit", compact=True)
         yield Button("Remove", id="btn-net-remove", variant="error", compact=True)
-        yield Button("Snapshots", id="btn-net-snapshots", compact=True)
-        yield Button("Publish", id="btn-net-publish", variant="success", compact=True)
         yield Button("Dry run", id="btn-net-dry-run", compact=True)
+        yield Button("Publish", id="btn-net-publish", variant="primary", compact=True)
         yield Button("Transfer…", id="btn-net-bundle", compact=True)
+        yield Button("Snapshots", id="btn-net-snapshots", compact=True)
         yield Button("Certs", id="btn-net-certs", compact=True)
 
     async def on_mount(self) -> None:
@@ -116,7 +118,17 @@ class NetworksPage(Page):
             self._show_detail()
 
     def _show_detail(self, *, force: bool = False) -> None:
-        self.query_one(NetworkDetail).show(self.highlighted(), self.app.cfg, force=force)
+        net = self.highlighted()
+        self.query_one(NetworkDetail).show(net, self.app.cfg, force=force)
+        self._primary(net)
+
+    def _primary(self, net) -> None:
+        """The main way this network leaves: Publish when it has a publish
+        root (or neither destination), Transfer when it only has a transfer
+        output."""
+        transfer = net is not None and net.root is None and net.bundle_dir is not None
+        self.query_one("#btn-net-publish", Button).variant = "default" if transfer else "primary"
+        self.query_one("#btn-net-bundle", Button).variant = "primary" if transfer else "default"
 
     @on(ListView.Highlighted, "#net-list")
     def _highlighted(self) -> None:

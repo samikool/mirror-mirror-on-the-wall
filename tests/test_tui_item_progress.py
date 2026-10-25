@@ -122,3 +122,36 @@ def test_a_step_after_the_packages_keeps_its_status_line_alive(monkeypatch):
     card.flush()
     card.flush()
     assert lines[-1] == "  → next.deb"              # a package line ends the step's turn
+
+
+def test_the_selected_card_never_looks_done():
+    """Green says a mirror finished syncing; the selected card has its own
+    look, so a finished card that is selected is still told apart."""
+    import asyncio
+
+    from textual.app import ComposeResult
+
+    from mmw.tui import sync as tsync
+    from mmw.tui.ui.base import ThemedApp
+
+    def card(name):
+        return tsync.MirrorCard(config.MirrorConfig(name=name, provider='apt',
+                                                    source_url=f'https://example.test/{name}'))
+
+    class Host(ThemedApp):
+        def compose(self) -> ComposeResult:
+            yield card("one")
+            yield card("two")
+
+    async def run():
+        app = Host()
+        async with app.run_test() as pilot:
+            one, two = app.query(tsync.MirrorCard)
+            one.add_class("done")
+            two.add_class("done")
+            one.focus()
+            await pilot.pause()
+            assert one.styles.border_top != two.styles.border_top
+            from textual.color import Color
+            assert two.styles.border_top[1] == Color.parse(app.get_css_variables()["mmw-ok"])
+    asyncio.run(run())

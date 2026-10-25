@@ -352,3 +352,38 @@ def test_cli_prints_nginx_steps(hosts, tmp_path):
     b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
     out = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--root", f"*={tmp_path / 'r1'}"]).output
     assert "start nginx in r1" in out and "docker compose up -d" in out
+
+
+def _damage_network(bundle, out):
+    import io
+    with tarfile.open(bundle) as t:
+        members = [(m, t.extractfile(m).read() if m.isreg() else None) for m in t.getmembers()]
+    done = False
+    with tarfile.open(out, "w") as t:
+        for m, data in members:
+            if not done and m.isreg() and m.name.startswith("nginx/") and data:
+                data, done = bytes(x ^ 1 for x in data), True
+            t.addfile(m, io.BytesIO(data) if data is not None else None)
+    assert done
+    return out
+
+
+def test_a_damaged_network_file_is_refused_cleanly_across_roots(hosts, tmp_path):
+    cfg, net, md = hosts
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    bad = _damage_network(b, tmp_path / "bad.tar")
+    with pytest.raises(ApplyError, match="manifest") as e:
+        apply_to_set(None, str(bad), place={HOST_A: str(tmp_path / "r1"), HOST_B: str(tmp_path / "r2")}, say=quiet)
+    assert e.value.code == 2
+
+
+def test_a_damaged_held_back_file_is_refused_cleanly(hosts, tmp_path):
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    (r2 / ".mmw").rename(tmp_path / "aside")
+    _change_a(md)
+    _change_b(md)
+    bad = _damage(_bundle(cfg, net, md, tmp_path / "2"), HOST_B, tmp_path / "bad.tar")
+    try:
+        apply_to_set(open_set(), str(bad), say=quiet)
+    except ApplyError as e:
+        assert e.code == 2

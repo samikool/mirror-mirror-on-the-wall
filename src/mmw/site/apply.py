@@ -24,7 +24,7 @@ from mmw.site.db import SiteDB
 from mmw.site.home import load_site
 from mmw.site.lock import SiteLock
 from mmw.site.reader import SourceError, open_source
-from mmw.site.store import Store
+from mmw.site.store import ChecksumMismatch, Store
 from mmw.site.roots import Roots
 from mmw.site.switch import resume_switches, switch_in
 
@@ -106,6 +106,7 @@ class RootApply:
         self.seen: set[str] = set()
         self.manifest_path = self.home / "incoming-manifest.jsonl"
         self._manifest = False
+        self.expected: dict[str, str] | None = None     # path → checksum, shared by a set's roots
 
     def __enter__(self) -> "RootApply":
         self.settings = load_site(self.home)
@@ -150,25 +151,29 @@ class RootApply:
             want = self._expected().get(m.name)
             try:
                 self.got[m.name] = self.store.add_stream(m.fh, expect=want)
-            except ValueError:
-                # Damaged on the way: hashed again, so the check after says
-                # which file and the whole apply is refused.
-                self.got[m.name] = ("damaged:" + m.name, m.size)
+            except ChecksumMismatch:
+                # Damaged on the way: refused here, before anything changed
+                # anywhere, and nothing of it kept.
+                raise ApplyError(2, f"{m.name} does not match the manifest — the bundle is damaged; copy it again") from None
 
     def _expected(self) -> dict[str, str]:
-        """The manifest's checksum for each path (what the store may already have)."""
-        if getattr(self, "_want", None) is None:
-            self._want = {}
-            if self._manifest:
-                _header, rows = iter_manifest_v2(self.manifest_path)
-                self._want = {p: c for p, c, _r in rows}
-        return self._want
+        """The manifest's checksum for each path (what the store may already
+        have). A set hands every root its one shared map (`self.expected`)."""
+        if self.expected is not None:
+            return self.expected
+        if getattr(self, "_want", None) is None and self._manifest:
+            _header, rows = iter_manifest_v2(self.manifest_path)
+            self._want = {p: c for p, c, _r in rows}
+        return getattr(self, "_want", None) or {}
 
     def take_blob(self, name: str, checksum: str, size: int, from_store: Store | None) -> None:
         """A member another root of the set received: its blob copied from there."""
         if not self.dry_run and not self.store.has(checksum) and from_store is not None:
-            with disk_io.ops.open_rb(from_store.path(checksum)) as fh:
-                self.store.add_stream(fh, expect=checksum)
+            try:
+                with disk_io.ops.open_rb(from_store.path(checksum)) as fh:
+                    self.store.add_stream(fh, expect=checksum)
+            except ChecksumMismatch:
+                raise ApplyError(2, f"{name} is damaged in another root's store — mmw site verify --repair") from None
         self.got[name] = (checksum, size)
 
     def _settle(self) -> None:
@@ -196,6 +201,7 @@ class RootApply:
         """Everything checked against the manifest, nothing changed: each
         repository's new version is complete (or refused alone), and so are
         the network files. A set checks every root before any commits."""
+        self._want = None                          # the arrivals' map isn't needed past here
         self._settle()
         db, roots, store, root, progress, stop_event = (self.db, self.roots, self.store, self.root,
                                                         self.progress, self.stop_event)
@@ -902,6 +908,9 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                                                only=only, progress=progress, stop_event=stop_event, say=say))
             ra.begin(_filtered_manifest(header, rows, repos))
             appliers[name] = ra
+        cs_all = {p: c for p, c, _r, _s in rows}
+        for ra in appliers.values():
+            ra.expected = cs_all                   # one map for every root, not one each
         first = appliers[order[0]]
         repo_of = {p: r for p, _c, r, _s in rows}
         cs_of = {p: c for p, c, _r, _s in rows}
@@ -940,7 +949,10 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                         c = cs_of.get(m.name)
                         if m.kind != "link" and c in needed_in:
                             store = appliers[needed_in[c]].store
-                            kept[m.name] = (*store.add_stream(m.fh, expect=c), store)
+                            try:
+                                kept[m.name] = (*store.add_stream(m.fh, expect=c), store)
+                            except ChecksumMismatch:
+                                raise ApplyError(2, f"{m.name} does not match the manifest — the bundle is damaged; copy it again") from None
                         continue                           # its root isn't here
                     if progress and repo not in started:
                         started.add(repo)

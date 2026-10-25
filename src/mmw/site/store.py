@@ -12,6 +12,10 @@ from mmw.core import disk_io
 _CHUNK = 1024 * 1024
 
 
+class ChecksumMismatch(ValueError):
+    """Bytes that don't hash to what the manifest says: damaged on the way."""
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = Path(root)
@@ -32,7 +36,7 @@ class Store:
         if expect is not None and self.has(expect):
             checksum, size = disk_io.ops.hash_fh(fh)
             if checksum != expect:
-                raise ValueError(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
+                raise ChecksumMismatch(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
             return checksum, size
         disk_io.ops.mkdir(self.tmp, parents=True, exist_ok=True)
         tmp = self.tmp / f"in-{os.getpid()}-{id(fh)}"
@@ -45,7 +49,7 @@ class Store:
                     size += len(chunk)
             checksum = h.hexdigest()
             if expect is not None and checksum != expect:
-                raise ValueError(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
+                raise ChecksumMismatch(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
             dest = self.path(checksum)
             if disk_io.ops.exists(dest):
                 return checksum, size

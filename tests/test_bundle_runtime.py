@@ -150,6 +150,11 @@ def test_tui_edits_runtime_settings(tmp_path, monkeypatch):
         await edit(app, pilot, "sparc", "3.13")
         await until(pilot, lambda: any("runtime arches" in str(n) for n in app.notes))
         assert isinstance(app.screen, EditNetworkPage)
+        app.screen.query_one("#inp-runtime-arches", Input).value = "x86_64"
+        app.screen.query_one("#inp-runtime-python", Input).value = "3.9"
+        app.screen.query_one("#btn-save", Button).press()
+        await until(pilot, lambda: any("mmw needs Python" in str(n) for n in app.notes))
+        assert isinstance(app.screen, EditNetworkPage)
     _run(tmp_path, check, cfg=_cfg(tmp_path, "lab"), monkeypatch=monkeypatch)
 
 

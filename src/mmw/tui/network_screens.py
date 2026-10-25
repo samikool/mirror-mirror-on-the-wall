@@ -331,8 +331,10 @@ class NetworkForm(Vertical):
         if bad := [a for a in arches if a not in ("x86_64", "aarch64")]:
             return None, f"runtime arches are x86_64 and aarch64, not {', '.join(bad)}", "inp-runtime-arches"
         python = self._value("inp-runtime-python") or config.DEFAULT_RUNTIME_PYTHON
-        if not re.fullmatch(r"3\.\d+", python):
-            return None, f"runtime Python is a version like 3.12, not {python}", "inp-runtime-python"
+        try:
+            config.check_runtime_python(python)
+        except ValueError as e:
+            return None, str(e), "inp-runtime-python"
         return config.NetworkConfig.model_validate({
             **(self._network.model_dump() if self._network else {}),
             "name": self.network_name(),

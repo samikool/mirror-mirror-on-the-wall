@@ -117,11 +117,27 @@ class RealFetcher:
         except (OSError, subprocess.SubprocessError) as e:
             raise FetchError(f"couldn't download wheels for {requirement}: {e}") from e
         if r.returncode != 0:
-            if f"No matching distribution found for {requirement}" in r.stderr:
-                raise NotOnIndex(requirement)
-            raise FetchError(f"couldn't download wheels for {requirement} ({arch}): "
-                             f"{(r.stderr.strip().splitlines() or ['pip failed'])[-1]}")
+            raise pip_failure(r.stderr, requirement, python, arch)
         return sorted(disk_io.ops.glob(dest, "*.whl"))
+
+
+_OFFLINE = ("NewConnectionError", "Failed to establish a new connection", "Temporary failure in name resolution",
+            "Name or service not known", "Network is unreachable", "ConnectTimeoutError", "ProxyError")
+
+
+def pip_failure(stderr: str, requirement: str, python: str, arch: str) -> Exception:
+    """What a failed `pip download` means. pip says "No matching
+    distribution" both when the release doesn't exist and when it couldn't
+    look: only the first is a dev build that needs a local wheel."""
+    if any(s in stderr for s in _OFFLINE):
+        return FetchError(f"couldn't reach the index for {requirement} ({arch}) — is this side online?")
+    if "require a different python version" in stderr:
+        return RuntimeUnavailable(f"{requirement} doesn't run on Python {python} — "
+                                  "pick another runtime_python for the network")
+    if f"No matching distribution found for {requirement}" in stderr:
+        return NotOnIndex(requirement)
+    return FetchError(f"couldn't download wheels for {requirement} ({arch}): "
+                      f"{(stderr.strip().splitlines() or ['pip failed'])[-1]}")
 
 
 def _sha256(path: Path) -> str:

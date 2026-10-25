@@ -906,6 +906,18 @@ _LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port
 
 DEFAULT_RETENTION = "90d"
 DEFAULT_RUNTIME_PYTHON = "3.12"
+
+
+def check_runtime_python(value: str) -> None:
+    """A Python version mmw's shipped runtime can run on, or ValueError."""
+    if not re.fullmatch(r"3\.\d+", value):
+        raise ValueError(f"runtime_python is a Python version like 3.12, not {value!r}")
+    from importlib.metadata import metadata
+
+    from packaging.specifiers import SpecifierSet
+    needs = metadata("mirror-mirror-on-the-wall")["Requires-Python"] or ""
+    if needs and f"{value}.0" not in SpecifierSet(needs):
+        raise ValueError(f"mmw needs Python {needs} — runtime_python {value} can't run it")
 _RETENTION_RE = re.compile(r"([1-9]\d*)d")
 
 
@@ -951,8 +963,7 @@ class NetworkConfig(_StrictModel):
     @field_validator("runtime_python")
     @classmethod
     def _valid_runtime_python(cls, value):
-        if not re.fullmatch(r"3\.\d+", value):
-            raise ValueError(f"runtime_python is a Python version like 3.12, not {value!r}")
+        check_runtime_python(value)
         return value
 
     @field_validator("runtime_arches")

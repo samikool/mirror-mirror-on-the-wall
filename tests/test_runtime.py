@@ -76,3 +76,28 @@ def test_dev_version_needs_a_wheel(tmp_path):
     d = R.build_runtime(tmp_path, arch="x86_64", python="3.12", mmw_version="1.3.0.dev0", fetcher=f, wheel=wheel)
     assert (d / "wheels" / wheel.name).exists()
     assert ("wheels", str(wheel), "3.12", "x86_64") in f.calls
+
+
+# ── review minors ────────────────────────────────────────────────────────────
+
+def test_runtime_python_must_run_mmw():
+    from mmw.core import config
+    with pytest.raises(ValueError, match="mmw needs Python >=3.10"):
+        config.NetworkConfig(name="x", runtime_python="3.9")
+    assert config.NetworkConfig(name="x", runtime_python="3.13").runtime_python == "3.13"
+
+
+def test_pip_failures_are_told_apart():
+    req = f"{R.DIST}==1.2.0"
+    miss = f"ERROR: No matching distribution found for {req}\n"
+    offline = ("WARNING: Retrying (Retry(total=4)) after connection broken by 'NewConnectionError(...: "
+               "Failed to establish a new connection: [Errno -3] Temporary failure in name resolution')\n" + miss)
+    too_old = ("ERROR: Ignored the following versions that require a different python version: "
+               "1.2.0 Requires-Python >=3.10\n" + miss)
+    assert isinstance(R.pip_failure(miss, req, "3.12", "x86_64"), R.NotOnIndex)
+    e = R.pip_failure(offline, req, "3.12", "x86_64")
+    assert isinstance(e, R.FetchError) and "couldn't reach the index" in str(e)
+    e = R.pip_failure(too_old, req, "3.9", "x86_64")
+    assert isinstance(e, R.RuntimeUnavailable) and "doesn't run on Python 3.9" in str(e)
+    e = R.pip_failure("ERROR: something else\n", req, "3.12", "x86_64")
+    assert isinstance(e, R.FetchError) and "something else" in str(e)

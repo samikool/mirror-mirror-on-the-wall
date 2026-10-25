@@ -63,11 +63,14 @@ class Offline(FakeFetcher):
 def test_offline_build_refuses_cleanly(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
     out = tmp_path / "out"
+    with Pool(md, read_only=True) as pool:
+        snaps = len(pool.snapshots(net.name))
     with pytest.raises(R.FetchError, match="couldn't fetch https://pypi.org"):
         bundle_network(net, cfg, md, out_path=out, from_ref=None, fetcher=Offline())
     assert not out.exists() or not list(out.iterdir())
     with Pool(md, read_only=True) as pool:
         assert pool.bundles(net.name) == []
+        assert len(pool.snapshots(net.name)) == snaps             # no snapshot left behind either
     r = bundle_network(net, cfg, md, out_path=out, from_ref=None, fetcher=Offline(), runtime=False)
     assert _runtime_names(_members(r.out_path)[0]) == []
     # Not sent, so the next bundle still carries it.

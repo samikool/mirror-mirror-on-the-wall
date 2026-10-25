@@ -201,7 +201,7 @@ def bundle_network(
     The nginx config and TLS files are regenerated for the far side.
 
     An mmw network's bundle carries mmw's own runtime (`.mmw/runtime/`) when
-    it is full, or when the mmw version or the runtime settings differ from
+    it starts from nothing, or when the mmw version or the runtime settings differ from
     the last runtime sent — unless `runtime` is False. `runtime_wheel` is a
     local mmw wheel for a version PyPI lacks; `fetcher` does the downloads.
     """
@@ -220,6 +220,18 @@ def bundle_network(
         import_ledger(pool, mirror_dir, network.name)
         ensure_repo_versions(pool, network.name)
         start = _resolve_from(pool, network.name, from_ref)
+        # mmw's runtime: built (or taken from the cache) before anything is
+        # written — no snapshot, no bundle, no ledger row if a download
+        # fails. Carried from nothing, or when what was last sent differs.
+        shipped_runtime, runtime_members = None, {}
+        if mmw_far_side and runtime:
+            from mmw.core import runtime as rt
+            want = rt.wanted(network, runtime_wheel)
+            if start is None or pool.runtime_sent(network.name) != want:
+                runtime_members = rt.runtime_files(network, cfg, mirror_dir,
+                                                   fetcher=fetcher or rt.default_fetcher(),
+                                                   wheel=runtime_wheel)
+                shipped_runtime = want
         if to_ref != "now":
             dest = find_snapshot(pool, network.name, to_ref)
             if not dest.complete:
@@ -301,17 +313,6 @@ def bundle_network(
                 for rel in prev:
                     if rel.startswith("nginx/") and not rel.endswith(".tar"):
                         prev[rel] = ""
-        # mmw's runtime: built (or taken from the cache) before anything is
-        # written, so a download that fails leaves no bundle and no ledger row.
-        shipped_runtime, runtime_members = None, {}
-        if mmw_far_side and runtime:
-            from mmw.core import runtime as rt
-            want = rt.wanted(network, runtime_wheel)
-            if header.full or pool.runtime_sent(network.name) != want:
-                runtime_members = rt.runtime_files(network, cfg, mirror_dir,
-                                                   fetcher=fetcher or rt.default_fetcher(),
-                                                   wheel=runtime_wheel)
-                shipped_runtime = want
         streaming = is_stdout(out_path) and not stage
         hashing = None
         writer = None

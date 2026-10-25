@@ -291,3 +291,35 @@ def test_members_keep_their_order_while_one_is_missing(hosts, tmp_path):
     _change_a(md)
     apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
     assert read_root(str(r1)).members == before
+
+
+# ── phase 3: what each root needs for a placement ────────────────────────────
+
+def test_placement_needs_counts_what_each_root_lacks(hosts, tmp_path):
+    from mmw.site.apply import placement_needs
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    r1 = tmp_path / "r1"
+    plan = plan_set_apply(None, b)
+    needs = placement_needs(None, plan, {HOST_A: str(r1), HOST_B: str(r1)})
+    need, free = needs[str(r1)]
+    unique = {c: size for by_cs in plan.host_checksums.values() for c, size in by_cs.items()}
+    assert need == sum(unique.values()) and free > 0                  # each distinct content once
+    apply_to_set(None, b, place={"*": str(r1)}, say=quiet)
+    m = open_set()
+    plan = plan_set_apply(m, b)
+    assert placement_needs(m, plan, {h: "r1" for h in plan.hosts})["r1"][0] == 0     # all here already
+
+
+def test_cli_dry_run_shows_the_placement(hosts, tmp_path):
+    from typer.testing import CliRunner
+
+    from mmw import cli
+    cfg, net, md = hosts
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--dry-run",
+                                     "--root", f"{HOST_A}={tmp_path / 'r1'}", "--root", f"{HOST_B}={tmp_path / 'r2'}"])
+    assert r.exit_code == 0, r.output
+    assert f"{HOST_A}  (1 repo," in r.output and "→ new root at" in r.output
+    assert "needs" in r.output and "free ✓" in r.output
+    assert not (tmp_path / "r1").exists()

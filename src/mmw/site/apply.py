@@ -569,6 +569,11 @@ class SetApplyPlan:
     network_bytes: int
     missing: list[str] = field(default_factory=list)
     sized: bool = True                          # sizes known (a tar on stdin, without "s": not)
+    repo_sizes: dict[str, int] = field(default_factory=dict)
+    # hostname (None: the network's own files) → checksum → size: what any
+    # placement needs is worked out from this, never by reading the bundle again.
+    host_checksums: dict = field(default_factory=dict)
+    locations: dict[str, str] = field(default_factory=dict)     # root name → location, for the roots here
 
 
 @dataclass
@@ -615,11 +620,15 @@ def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPla
         else:
             known = _manifest_and_sizes(src, scratch_dir / "sizes-manifest.jsonl")
             rows = [(p, c, r, known.get(p, 0)) for p, c, r, _s in rows]
-    for _p, _c, r, s in rows:
+    repo_sizes = {r: 0 for r in repos}
+    host_checksums: dict = {}
+    for _p, c, r, s in rows:
         if r is None:
             network_bytes += s or 0
         elif r in host_of:
             sizes[host_of[r]] += s or 0
+            repo_sizes[r] += s or 0
+        host_checksums.setdefault(host_of.get(r) if r is not None else None, {})[c] = s or 0
     owner: dict[str, str | None] = {}
     named: dict[str, str] = {}
     for root in (mset.roots if mset else []):
@@ -628,8 +637,43 @@ def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPla
         held = mset.owner(h) if mset else None
         owner[h] = held.info.name if held else named.get(h)
     plan = SetApplyPlan(header.network, header.created, hosts, {k: m["label"] for k, m in repos.items()},
-                        owner, sizes, network_bytes, list(mset.missing) if mset else [], sized)
+                        owner, sizes, network_bytes, list(mset.missing) if mset else [], sized,
+                        repo_sizes, host_checksums,
+                        {r.info.name: r.info.location for r in (mset.roots if mset else [])})
     return plan, {"rows": rows, "host_of": host_of}
+
+
+def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str]) -> dict[str, tuple[int, int]]:
+    """For a placement (hostname → a root's name, or a location for a new
+    one): each root's (bytes it needs, bytes free). What a root's store
+    already holds doesn't count; the network's own files count in every
+    root, including roots none of the hostnames go to."""
+    from mmw.site.home import read_root
+    from mmw.site.mset import LocalRoot
+    present = {r.info.name: r for r in (mset.roots if mset else [])}
+    by_root: dict[str, list[str]] = {name: [] for name in present}
+    for h, t in targets.items():
+        by_root.setdefault(t, []).append(h)
+    out = {}
+    for key, hs in by_root.items():
+        root = present.get(key)
+        if root is None:
+            info = read_root(key)
+            root = LocalRoot(info) if info is not None else None
+        store = root.store() if root is not None else None
+        need_cs = dict(plan.host_checksums.get(None, {}))
+        for h in hs:
+            need_cs.update(plan.host_checksums.get(h, {}))
+        need = sum(size for c, size in need_cs.items() if store is None or not store.has(c))
+        if root is not None:
+            free = root.free_bytes()
+        else:
+            parent = Path(key).expanduser()
+            while not disk_io.ops.exists(parent):
+                parent = parent.parent
+            free = disk_io.ops.disk_usage(parent).free
+        out[key] = (need, free)
+    return out
 
 
 def plan_set_apply(mset, src: str) -> SetApplyPlan:
@@ -740,39 +784,27 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                 targets.update({h: present[info.name] for h, t in targets.items() if t == loc})
 
         # Space, per root, before anything is written.
-        cs_host = {}
-        for p, c, r, s in rows:
-            cs_host.setdefault(host_of.get(r), {})[c] = s or 0
-        by_root: dict[str, list[str]] = {}
-        for h, t in targets.items():
-            by_root.setdefault(t.info.name if isinstance(t, LocalRoot) else t, []).append(h)
-        if plan.sized and not dry_run:
-            for key, hs in by_root.items():
-                root = present.get(key)
-                store = root.store() if root else None
-                need_cs = {**cs_host.get(None, {})}
-                for h in hs:
-                    need_cs.update(cs_host.get(h, {}))
-                need = sum(s for c, s in need_cs.items() if store is None or not store.has(c))
-                if root is not None:
-                    free, label = root.free_bytes(), f"{key!r} ({root.info.location})"
-                else:
-                    parent = Path(key)
-                    while not disk_io.ops.exists(parent):
-                        parent = parent.parent
-                    free, label = disk_io.ops.disk_usage(parent).free, key
+        placed = {h: (t.info.name if isinstance(t, LocalRoot) else t) for h, t in targets.items()}
+        needs = placement_needs(mset, plan, placed) if plan.sized else {}
+        if not dry_run:
+            for key, (need, free) in needs.items():
                 if need > free:
-                    raise ApplyError(5, f"root {label} needs {fmt_size(need)} but has {fmt_size(free)} free — "
+                    where = f"{key!r} ({present[key].info.location})" if key in present else key
+                    raise ApplyError(5, f"root {where} needs {fmt_size(need)} but has {fmt_size(free)} free — "
                                         "nothing was written; free space or place its hostnames elsewhere")
         if dry_run:
             for h in plan.hosts:
-                t = targets.get(h)
-                where = t.info.name if isinstance(t, LocalRoot) else (f"new root at {t}" if t else None)
-                if where:
-                    labels = ", ".join(plan.labels[r] for r in plan.hosts[h])
-                    result.lines.append(f"  {h} ({labels}) → {where}")
+                t = placed.get(h)
+                if t is None:
+                    continue
+                n = len(plan.hosts[h])
+                where = t if t in present else f"new root at {t}"
+                result.lines.append(f"  {h}  ({n} repo{'s' if n != 1 else ''}, {fmt_size(plan.sizes[h])}) → {where}")
             for h, why in result.held_back.items():
                 result.lines.append(f"  {h}: held back — {why}")
+            for key, (need, free) in needs.items():
+                result.lines.append(f"  root {key}: needs {fmt_size(need)} of {fmt_size(free)} free "
+                                    f"{'✓' if need <= free else '✗'}")
             return result
 
         # Never a new root where a root of a mirror was (an unmounted share's

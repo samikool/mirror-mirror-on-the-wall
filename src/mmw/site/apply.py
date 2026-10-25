@@ -746,10 +746,8 @@ def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
                 from mmw.site.sshroot import free_at
                 cache[key] = (set(), free_at(key))
             else:
-                parent = Path(key).expanduser()
-                while not disk_io.ops.exists(parent):
-                    parent = parent.parent
-                cache[key] = (set(), disk_io.ops.disk_usage(parent).free)
+                from mmw.site.space import real_free
+                cache[key] = (set(), real_free(key))
         have, free = cache[key]
         need_cs = dict(plan.host_checksums.get(None, {}))
         for h in hs:

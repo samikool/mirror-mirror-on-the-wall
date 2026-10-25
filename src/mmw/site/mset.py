@@ -31,7 +31,8 @@ class LocalRoot:
         return self._hostnames
 
     def free_bytes(self) -> int:
-        return disk_io.ops.disk_usage(self.info.path).free
+        from mmw.site.space import real_free
+        return real_free(self.info.path)
 
     def store(self) -> Store:
         return Store(self.info.path)

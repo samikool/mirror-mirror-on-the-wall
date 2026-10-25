@@ -251,3 +251,25 @@ def test_progress_from_another_thread(tmp_path):
             await until(pilot, lambda: "switching" in str(page.query_one("#run-repos").render()))
             t.join()
     asyncio.run(go())
+
+
+# WSL: the Linux disk says ~1 TB free whatever the Windows drive has — Sam's
+# second WSL fill-up. The smaller of the two is the truth.
+def test_wsl_free_space_counts_the_windows_drive(monkeypatch, tmp_path):
+    from collections import namedtuple
+
+    from mmw.core import disk_io
+    from mmw.site import space
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(space, "_wsl", lambda: True)
+    monkeypatch.setattr(space, "_windows_drive_free", lambda: 50 * 10**9)
+    monkeypatch.setattr(disk_io.ops, "disk_usage", lambda p: Usage(10**13, 0, 10**12))
+    assert space.real_free(tmp_path) == 50 * 10**9                    # the Windows drive, not WSL's 1 TB
+    monkeypatch.setattr(space, "_existing", lambda p: Path("/mnt/d/mirror"))
+    monkeypatch.setattr(Path, "resolve", lambda self: self)
+    assert space.real_free(Path("/mnt/d/mirror")) == 10**12           # a Windows drive itself: as reported
+    monkeypatch.undo()
+    monkeypatch.setattr(space, "_wsl", lambda: False)
+    monkeypatch.setattr(disk_io.ops, "disk_usage", lambda p: Usage(10**13, 0, 10**12))
+    monkeypatch.setattr(space, "_wsl", lambda: False)
+    assert space.real_free(tmp_path) == 10**12

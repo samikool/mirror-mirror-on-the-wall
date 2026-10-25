@@ -156,10 +156,8 @@ def _pre_root(verb: str, path: str, args: list[str], stdout) -> int:
             init_root(Path(path), name=name, set_id=set_id, network=network)
             _emit(stdout, {"ok": True})
         else:
-            parent = Path(path)
-            while not disk_io.ops.exists(parent):
-                parent = parent.parent
-            _emit(stdout, {"free": disk_io.ops.disk_usage(parent).free})
+            from mmw.site.space import real_free
+            _emit(stdout, {"free": real_free(path)})
         return 0
     except (ValueError, OSError) as e:
         _emit(stdout, {"event": "error", "code": 1, "message": str(e)})

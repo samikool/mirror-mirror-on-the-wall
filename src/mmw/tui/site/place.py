@@ -32,6 +32,7 @@ class PlacePage(Page):
                                                for h, o in plan.owner.items()}
         self.held_back = {h for h, o in plan.owner.items() if o is not None and o not in plan.locations}
         self.ticked = set(plan.hosts) - self.held_back
+        self._cache: dict = {}                     # each root's store hits and free space, checked once
 
     def compose_body(self) -> ComposeResult:
         yield DataTable(id="place-hosts", cursor_type="row")
@@ -74,13 +75,18 @@ class PlacePage(Page):
             path = info.name
         if path not in self.roots:
             self.roots.append(path)
-        self.set_status(f"root {path} added — enter on a new hostname picks it")
+        for h in self._plan.hosts:                  # new hostnames with no root yet go here
+            if not self._known(h) and h not in self.held_back and self.targets.get(h) is None:
+                self.targets[h] = path
+        self.set_status(f"root {path} added — enter on a new hostname moves it between roots")
         self._refresh()
 
     def _needs(self) -> dict[str, tuple[int, int]]:
         from mmw.site.apply import placement_needs
-        placed = {h: t for h, t in self.targets.items() if t is not None and h in self.ticked}
-        return placement_needs(self._mset, self._plan, placed)
+        # Every placed hostname lands in its root, ticked or not (unticked:
+        # stored and held), so every one counts toward that root's needs.
+        placed = {h: t for h, t in self.targets.items() if t is not None}
+        return placement_needs(self._mset, self._plan, placed, cache=self._cache)
 
     def hosts_text(self) -> str:
         t = self.query_one("#place-hosts", DataTable)
@@ -110,7 +116,7 @@ class PlacePage(Page):
             where = self._plan.locations.get(key, "new root")
             lines.append(f"{'✓' if ok else '✗'} {key}  ({where})  needs {fmt_size(need)} · {fmt_size(free)} free")
         self.query_one("#place-roots", Static).update(Text("Roots\n" + ("\n".join(lines) or "  none yet")))
-        unplaced = [h for h in self.ticked if self.targets.get(h) is None]
+        unplaced = [h for h in self._plan.hosts if h not in self.held_back and self.targets.get(h) is None]
         self.query_one("#btn-place-go", Button).disabled = bool(unplaced) or any(
             need > free for need, free in needs.values()) or not self.ticked
 
@@ -128,6 +134,10 @@ class PlacePage(Page):
             return
         self.ticked ^= {h}
         self._refresh()
+
+    @on(DataTable.RowSelected, "#place-hosts")
+    def _row_selected(self, _event) -> None:
+        self.action_cycle()               # the table takes enter for itself: this is that enter
 
     def action_cycle(self) -> None:
         h = self._cursor_host()
@@ -152,7 +162,7 @@ class PlacePage(Page):
         from mmw.tui.site.apply_flow import ApplyChoice
         locations = self._plan.locations
         place = {h: locations.get(t, t) for h, t in self.targets.items()
-                 if t is not None and h in self.ticked and not self._known(h)}
+                 if t is not None and not self._known(h)}
         only = frozenset(r for h in self.ticked for r in self._plan.hosts[h])
         labels = tuple((r, self._plan.labels[r]) for h in self._plan.hosts for r in self._plan.hosts[h])
         total = sum(self._plan.sizes.values()) + self._plan.network_bytes

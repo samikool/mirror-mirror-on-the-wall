@@ -135,7 +135,7 @@ async def _choose(app, pilot, path):
     await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")
     app.screen.query_one("#path-input", Input).value = str(path)
     app.screen.query_one("#btn-use").press()
-    await until(pilot, lambda: type(app.screen).__name__ == "ApplyReviewPage")
+    await until(pilot, lambda: type(app.screen).__name__ == "ApplyReviewPage" and app.screen.query("#btn-review-go"))
 
 
 def _delta_site(env, tmp_path, hold_a=False):  # noqa: F811

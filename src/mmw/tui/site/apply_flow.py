@@ -294,6 +294,9 @@ class ApplyRunPage(Page):
             self._state[repo] = "refused"
         for repo in result.stopped:
             self._state[repo] = "not switched (stopped) · held"
+        for repo, state in self._state.items():
+            if state in ("waiting", "received", "receiving"):
+                self._state[repo] = "unchanged"
         self.query_one("#run-repos", Static).update(self._repo_lines())
         lines = [f"[b $success]✓ applied {result.created}[/]", *map(escape_markup, result.lines)]
         lines += [f"[b $warning]! {escape_markup(a)}[/]" for a in result.actions]

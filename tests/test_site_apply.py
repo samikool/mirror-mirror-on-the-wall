@@ -193,7 +193,7 @@ def test_cli_apply(env, tmp_path):
     assert r.exit_code == 1 and "--root" in r.output                # a new hostname needs a root
     r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--root", f"*={root}"])
     assert r.exit_code == 0, r.output
-    assert "a  full → v1" in r.output and "recreate nginx" in r.output
+    assert "a  full → v1" in r.output and "start nginx in main" in r.output
 
 
 def test_root_apply_takes_members_pushed_to_it(env, tmp_path):

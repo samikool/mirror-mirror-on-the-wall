@@ -258,6 +258,8 @@ class RootApply:
         say = self.say
         if stop_event is not None and stop_event.is_set() and not others_changed:
             raise ApplyError(5, "stopped before anything changed — what arrived is stored")
+        # Nothing applied here before: nginx was never started for this root.
+        self.first_time = not db.applied()
         recorded: dict[str, int] = {}
         try:
             for repo, plan in planned.items():
@@ -663,11 +665,16 @@ def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPla
     return plan, {"rows": rows, "host_of": host_of}
 
 
-def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str]) -> dict[str, tuple[int, int]]:
+def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
+                    cache: dict | None = None) -> dict[str, tuple[int, int]]:
     """For a placement (hostname → a root's name, or a location for a new
     one): each root's (bytes it needs, bytes free). What a root's store
     already holds doesn't count; the network's own files count in every
-    root, including roots none of the hostnames go to."""
+    root, including roots none of the hostnames go to. `cache` (kept by
+    the caller across calls) holds each root's store hits and free space, so
+    a screen recomputing on every keypress checks each store once."""
+    cache = {} if cache is None else cache
+    every = {c for by_cs in plan.host_checksums.values() for c in by_cs}
     from mmw.site.home import read_root
     from mmw.site.mset import LocalRoot
     present = {r.info.name: r for r in (mset.roots if mset else [])}
@@ -676,23 +683,24 @@ def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str]) -> dict[s
         by_root.setdefault(t, []).append(h)
     out = {}
     for key, hs in by_root.items():
-        root = present.get(key)
-        if root is None:
-            info = read_root(key)
-            root = LocalRoot(info) if info is not None else None
-        store = root.store() if root is not None else None
+        if key not in cache:
+            root = present.get(key)
+            if root is None:
+                info = read_root(key)
+                root = LocalRoot(info) if info is not None else None
+            if root is not None:
+                store = root.store()
+                cache[key] = ({c for c in every if store.has(c)}, root.free_bytes())
+            else:
+                parent = Path(key).expanduser()
+                while not disk_io.ops.exists(parent):
+                    parent = parent.parent
+                cache[key] = (set(), disk_io.ops.disk_usage(parent).free)
+        have, free = cache[key]
         need_cs = dict(plan.host_checksums.get(None, {}))
         for h in hs:
             need_cs.update(plan.host_checksums.get(h, {}))
-        need = sum(size for c, size in need_cs.items() if store is None or not store.has(c))
-        if root is not None:
-            free = root.free_bytes()
-        else:
-            parent = Path(key).expanduser()
-            while not disk_io.ops.exists(parent):
-                parent = parent.parent
-            free = disk_io.ops.disk_usage(parent).free
-        out[key] = (need, free)
+        out[key] = (sum(size for c, size in need_cs.items() if c not in have), free)
     return out
 
 
@@ -842,10 +850,8 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         # New roots, then every root's view of the set.
         taken = set(present) | set(mset.missing if mset else [])
         made: dict[str, LocalRoot] = {}
-        read_root_was_new: dict[str, bool] = {}
         for loc in sorted({t for t in targets.values() if isinstance(t, str)}):
             info = read_root(loc)
-            read_root_was_new[loc] = info is None
             if info is None:
                 name = _root_name(loc, taken)
                 taken.add(name)
@@ -957,11 +963,12 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         for name in order:
             appliers[name].check()                 # every root checked before any changes
         changed = False
-        result.made = [r.info.name for loc, r in made.items() if loc in new_locs and read_root_was_new.get(loc)]
         result.paths = {name: str(roots[name].info.path) for name in order}
         for name in order:
             r = appliers[name].commit(others_changed=changed)
             changed = changed or bool(r.updated or r.stored_held or r.stopped) or r.network_changed
+            if appliers[name].first_time:
+                result.made.append(name)               # its nginx is started for the first time
             r.actions = [a for a in r.actions if not a.startswith("nginx config changed — recreate nginx on the serving host")]   # nginx_steps says it
             result.per_root[name] = r
             if len(order) > 1:

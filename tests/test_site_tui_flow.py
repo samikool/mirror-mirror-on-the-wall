@@ -213,3 +213,99 @@ def test_stop_before_switch_changes_nothing(hosts, tmp_path, monkeypatch):  # no
         assert "stored" in str(page.query_one("#run-done").render())
     _run(open_set(), check)
     assert _tree(r1) == before
+
+
+# ── review findings ──────────────────────────────────────────────────────────
+
+def test_keys_place_a_first_bundle(hosts, tmp_path):  # noqa: F811
+    """A person, not a test, places hostnames: Add a root, then Enter."""
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+
+    async def check(app, pilot, page):
+        page.add_root(str(r1))                                     # the first root: every new hostname
+        await until(pilot, lambda: page.targets == {HOST_A: str(r1), HOST_B: str(r1)})
+        page.add_root(str(r2))
+        page.query_one("#place-hosts").focus()
+        await pilot.press("enter")                                 # cycles the first hostname's root
+        await until(pilot, lambda: page.targets[HOST_A] == str(r2))
+        assert not page.query_one("#btn-place-go").disabled
+    _place_page(None, b, check)
+
+
+def test_an_unticked_new_hostname_is_stored_and_held(hosts, tmp_path):  # noqa: F811
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    r1 = tmp_path / "r1"
+    chosen = []
+
+    async def check(app, pilot, page):
+        page.add_root(str(r1))
+        page.query_one("#place-hosts").focus()
+        await pilot.press("space")                                 # untick the first hostname
+        await until(pilot, lambda: HOST_A not in page.ticked)
+        page.dismiss = chosen.append
+        page.query_one("#btn-place-go").press()
+        await until(pilot, lambda: chosen)
+    _place_page(None, b, check)
+    (c,) = chosen
+    assert set(c.place) == {HOST_A, HOST_B}                        # placed either way
+    r = apply_to_set(None, b, place=c.place, only=set(c.only), say=quiet)
+    merged = r.merged()
+    assert len(merged.updated) == 1 and len(merged.stored_held) == 1
+
+
+def test_a_root_left_by_a_stopped_first_apply_still_starts(hosts, tmp_path):  # noqa: F811
+    import threading
+
+    import pytest
+
+    from mmw.site.apply import ApplyError, nginx_steps
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    r1 = tmp_path / "r1"
+    stop = threading.Event()
+    with pytest.raises(ApplyError, match="stopped"):
+        apply_to_set(None, b, place={"*": str(r1)}, say=quiet, stop_event=stop,
+                     progress=lambda event, **kw: event == "receive" and stop.set())
+    r = apply_to_set(open_set(), b, say=quiet)
+    ((name, cmds),) = nginx_steps(r)
+    assert cmds[-1].endswith("docker compose up -d")               # a first start, never "recreate"
+
+
+def test_needs_check_each_store_once(hosts, tmp_path, monkeypatch):  # noqa: F811
+    from mmw.site.apply import placement_needs
+    from mmw.site.store import Store
+    cfg, net, md, r1 = _applied(hosts, tmp_path)
+    b = str(_bundle(cfg, net, md, tmp_path / "x", from_ref=None))
+    m = open_set()
+    plan = plan_set_apply(m, b)
+    calls = []
+    real = Store.has
+    monkeypatch.setattr(Store, "has", lambda self, c: calls.append(c) or real(self, c))
+    cache = {}
+    for _ in range(5):                                             # five keypresses
+        placement_needs(m, plan, {h: "r1" for h in plan.hosts}, cache=cache)
+    distinct = {c for d in plan.host_checksums.values() for c in d}
+    assert len(calls) <= len(distinct)
+
+
+def test_unchanged_rows_end_unchanged(tmp_path):
+    from mmw.site.apply import ApplyResult
+    from mmw.tui.site.apply_flow import ApplyChoice, ApplyRunPage
+    from mmw.tui.ui.base import ThemedApp
+
+    class Quiet(ApplyRunPage):
+        def _run(self):
+            pass
+
+    async def go():
+        app = ThemedApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            page = Quiet(ApplyChoice("b.tar", frozenset(), 1, (("ka", "a"), ("kb", "b"))))
+            app.push_screen(page)
+            await until(pilot, lambda: page.query("#run-repos"))
+            page._done(ApplyResult(updated=["ka"]))
+            assert "waiting" not in str(page.query_one("#run-repos").render())
+    asyncio.run(go())

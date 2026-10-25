@@ -234,6 +234,9 @@ def _apply(root, args, stdin, stdout) -> int:
 
 
 def _export(root, args, stdin, stdout) -> int:
+    if not root.has({args[0]}):
+        raise FileNotFoundError(f"no blob {args[0][:12]}… in {root.info.name}")
+    _emit(stdout, {"ok": True})                    # the header: an error line instead is never bytes
     with root.export_blob(args[0]) as fh:
         while chunk := fh.read(1 << 20):
             stdout.write(chunk)

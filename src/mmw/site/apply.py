@@ -367,7 +367,7 @@ class RootApply:
 
 def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forward_all: bool = False,
                  dry_run: bool = False, say=print, only: set[str] | None = None, progress=None,
-                 stop_event=None, place: dict[str, str] | None = None) -> "ApplyResult":
+                 stop_event=None) -> "ApplyResult":
     """Apply the bundle at `src` to the one root whose home is `home` (see
     `RootApply`). `progress` also gets receive(name, bytes) per member.
     An mmw runtime in the bundle is ignored, with a note."""
@@ -533,48 +533,6 @@ def plan_apply(target, src: str) -> ApplyPlan:
 
 
 # ── several roots ────────────────────────────────────────────────────────────
-
-def _ensure(roots: Roots, target: Store, checksum: str) -> None:
-    """Make `checksum` present in `target`, copying it from another root's
-    store when that is where it is."""
-    if target.has(checksum):
-        return
-    for r in roots.all:
-        other = roots.store(r)
-        if other is not target and other.has(checksum):
-            with disk_io.ops.open_rb(other.path(checksum)) as fh:
-                target.add_stream(fh, expect=checksum)
-            return
-
-
-def _hosts(bases: list[str]) -> set[str]:
-    return {b.split("/", 1)[0] for b in bases}
-
-
-def _place(db, roots: Roots, repos: dict, place: dict[str, str]) -> dict:
-    """Repository → its root: where it already is, else `place`, else the
-    primary. Two repositories sharing a hostname must share a root."""
-    out = {}
-    labels, bases = {}, {}
-    for st in db.repo_states():
-        out[st.repo] = roots.of(st)
-        labels[st.repo], bases[st.repo] = st.label, st.bases
-    for repo, meta in repos.items():
-        labels[repo], bases[repo] = meta["label"], meta["bases"]
-        if repo not in out:
-            out[repo] = roots.named(place.get(repo)) if place.get(repo) else roots.primary
-    check_shared_hosts(out, labels, bases)
-    return {k: v for k, v in out.items() if k in repos}
-
-
-def check_shared_hosts(placement: dict, labels: dict, bases: dict) -> None:
-    by_host: dict[str, tuple[str, str]] = {}
-    for repo, root in placement.items():
-        for host in _hosts(bases.get(repo, [])):
-            seen = by_host.setdefault(host, (repo, root.name))
-            if seen[1] != root.name:
-                raise ValueError(f"{labels[seen[0]]} and {labels[repo]} both serve {host} — nginx routes a "
-                                 "hostname to one place, so they must share a root (move them together)")
 
 
 def write_root_nginx(db, roots: Roots) -> bool:
@@ -1017,7 +975,10 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
             r.set_identity(members=members, hosts=hosts_map)
             recents.remember(r.info.location)
 
-        # One pass over the bundle: each member to its hostname's root.
+        # One pass over the bundle: each member to its hostname's root. Each
+        # root's lock is taken as its applier opens, in placement order; a
+        # root's name is its id, so a move (name order) and this never wait
+        # on each other — locks don't block, a second run is refused.
         order = list(roots)
         appliers = {}
         for name in order:

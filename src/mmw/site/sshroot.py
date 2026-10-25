@@ -214,6 +214,17 @@ class _ProcReader:
         return self._proc.stdout.read(n)
 
     def __enter__(self):
+        head = self._proc.stdout.readline()
+        try:
+            event = json.loads(head) if head else {}
+        except ValueError:
+            event = {}
+        if not event.get("ok"):
+            self._proc.stdout.close()
+            self._proc.wait()
+            if self._proc.returncode == 255:
+                raise ssh.SshError(ssh.UNREACHABLE.format(host=self._host))
+            raise ValueError(event.get("message") or f"{self._host} couldn't send the blob")
         return self
 
     def __exit__(self, *exc) -> None:
@@ -280,6 +291,11 @@ class RemoteApply:
         except OSError:
             pass
         self._proc.wait()
+        self._reader.join(timeout=5)
+        while not self._events.empty():               # the remote's own error, if it said one
+            event = self._events.get_nowait()
+            if event.get("event") == "error":
+                return _remote_error(event, event.get("code", 1))
         if self._proc.returncode == 255:
             return ssh.SshError(ssh.UNREACHABLE.format(host=self.root.host))
         name = self.root.info.name

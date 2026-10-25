@@ -326,6 +326,7 @@ def move(repo: str, to_root: str, root: Path | None = None, yes: bool = False, b
     from mmw.site.lock import LockHeld
     try:
         mset = _set(root, break_lock)
+        print(f"moving {repo} to {to_root} copies {fmt_size(ops.move_size(mset, repo, to_root))} first")
         if not yes:
             if not sys.stdin.isatty():
                 eprint("pass --yes to move it (no terminal to ask on)")

@@ -176,6 +176,9 @@ mmw site apply oak.tar --root pypi.org=lnxp005:/data/mirror
 - **Certificates:** the remote root makes its own key and request; only the
   request comes back to be signed, and only the certificate goes out. The
   CA key never moves.
+- The remote account's login shell must be a POSIX shell (sh, bash,
+  dash, zsh): mmw quotes every remote command for one. fish and csh are
+  untested.
 - The remote's mmw must be the same version or newer; `--install` pushes
   the installer over the same ssh. A host that can't be reached shows as
   MISSING (*can't reach lnxp005*) and its hostnames are held back.

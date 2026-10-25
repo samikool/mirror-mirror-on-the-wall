@@ -271,8 +271,6 @@ def repair(home: Path) -> int:
         for r in roots.all:
             root, store = Path(r.path), roots.store(r)
             for rel, checksum, _why in list(_wrong(root, store, _expected(db, roots)[r.name])):
-                from mmw.site.apply import _ensure
-                _ensure(roots, store, checksum)
                 if not store.has(checksum):
                     continue                              # generated nginx: the next apply rewrites it
                 if disk_io.ops.exists(root / rel):
@@ -424,6 +422,14 @@ def tidy_here(home: Path) -> list[str]:
             done.append(rec.get("label", k.split(":", 1)[1]))
         roots.store(roots.primary).gc(roots.referenced(db, roots.primary))
     return done
+
+
+def move_size(mset, ref: str, to_root: str) -> int:
+    """Bytes moving `ref` to `to_root` copies (what that root lacks)."""
+    src, key = mset.root_for_repo(ref)
+    info = src.move_out_info(key)
+    sizes = {c: size for v in info["versions"] for _rel, c, size in v["files"]}
+    return sum(sizes[c] for c in set(sizes) - mset.root_named(to_root).has(set(sizes)))
 
 
 def move_repo(mset, ref: str, to_root: str) -> MoveResult:

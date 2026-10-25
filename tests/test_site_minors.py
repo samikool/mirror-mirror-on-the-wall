@@ -206,3 +206,48 @@ def test_shared_content_crosses_roots(hosts, tmp_path):  # noqa: F811
     """shared.deb is in both repositories, under two hostnames in two roots."""
     cfg, net, md, r1, r2, _ = _split(hosts, tmp_path)
     assert (r1 / "example.com" / "a" / "shared.deb").read_bytes() == (r2 / "example.org" / "b" / "shared.deb").read_bytes()
+
+
+# 11 — a move says how much it copies before it starts
+def test_move_size_before_moving(hosts, tmp_path):  # noqa: F811
+    cfg, net, md, r1, r2, _ = _split(hosts, tmp_path)
+    assert 0 < ops.move_size(open_set(), "b", "r1")
+
+
+# 19 — a remote's own error reaches the user, never as "damaged"
+def test_remote_export_error_is_said(hosts, tmp_path, monkeypatch):  # noqa: F811
+    from test_site_ssh_set import FAKE
+    monkeypatch.setenv("PATH", f"{FAKE}:{os.environ['PATH']}")
+    cfg, net, md = hosts
+    r2 = tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={"*": f"farhost:{r2}"},
+                 say=quiet)
+    root = open_set().roots[0]
+    with pytest.raises(ValueError, match="no blob"):
+        with root.export_blob("ab" * 32) as fh:
+            fh.read()
+
+
+# 23 — progress from a reader thread lands on the screen
+def test_progress_from_another_thread(tmp_path):
+    import asyncio
+
+    from mmw.tui.site.apply_flow import ApplyChoice, ApplyRunPage
+    from mmw.tui.ui.base import ThemedApp
+    from waiting import until
+
+    class Quiet(ApplyRunPage):
+        def _run(self):
+            pass
+
+    async def go():
+        app = ThemedApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            page = Quiet(ApplyChoice("b.tar", frozenset(), 1, (("ka", "a"),)))
+            app.push_screen(page)
+            await until(pilot, lambda: page.query("#run-repos"))
+            t = threading.Thread(target=page._progress, args=("switch",), kwargs={"repo": "ka", "label": "a"})
+            t.start()
+            await until(pilot, lambda: "switching" in str(page.query_one("#run-repos").render()))
+            t.join()
+    asyncio.run(go())

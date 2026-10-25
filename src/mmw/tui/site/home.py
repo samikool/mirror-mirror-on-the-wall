@@ -256,9 +256,14 @@ class SiteHomePage(Page):
             if not root or root == current:
                 return
             from mmw.tui.ui.dialog import ConfirmDialog
+            try:
+                size = fmt_size(ops.move_size(self.app.mset, repo, root))
+            except Exception as e:  # noqa: BLE001
+                self.set_status(str(e), "error")
+                return
             self.app.push_screen(
                 ConfirmDialog(f"Move {state.label} to {root}?",
-                              f"Copies every kept version into {root}'s store first. The old copy stays "
+                              f"Copies {size} (every kept version) into {root}'s store first. The old copy stays "
                               "served until you tidy (t) after recreating nginx.",
                               confirm_label="Move", confirm_variant="primary", cancel_variant="default"),
                 lambda ok: ok and self._act(f"moved {state.label} to {root} — recreate nginx in {current} and "

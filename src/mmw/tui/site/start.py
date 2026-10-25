@@ -10,16 +10,21 @@ from mmw.tui.ui.widgets import Button
 
 class StartPage(Page):
     TITLE = "mmw · far side"
-    HELP = ("Apply a bundle: pick the .tar (or stage folder), then where each hostname goes.\n"
-            "Open a mirror: a folder mmw already serves from (its roots find each other).")
+    HELP = ("Apply a bundle: pick the .tar (or stage folder), then choose where each hostname goes —\n"
+            "an empty folder becomes a new root. Open a mirror: a folder that already holds one.")
+
+    def __init__(self):
+        super().__init__()
+        self._suggested: list[str] = []          # empty folders offered as roots for the first apply
 
     def compose_body(self) -> ComposeResult:
         from mmw.site import recents
         yield Static("No mirror opened on this machine yet.", id="start-none")
         yield Button("Apply a bundle…", id="start-apply", variant="primary")
-        yield Static("[dim]  a .tar or a stage folder[/]")
+        yield Static("[dim]  first time: pick the bundle, then choose the folder(s) it goes in[/]")
         yield Button("Open a mirror…", id="start-open")
-        yield Static("[dim]  a folder mmw already serves from[/]")
+        yield Static("[dim]  a folder that already holds a mirror[/]")
+        yield Static("", id="start-note")
         recent = recents.known()
         yield Static("Recent: " + (", ".join(recent) if recent else "none"), id="start-recent", markup=False)
 
@@ -47,7 +52,12 @@ class StartPage(Page):
         from mmw.site.mset import open_set
         info = read_root(path)
         if info is None:
-            self.set_status(f"no mirror at {path}", "error")
+            # Not a mirror yet — most likely where one should go: offered as
+            # the root when a bundle is applied, never an error to puzzle over.
+            if path not in self._suggested:
+                self._suggested.append(path)
+            self._note(f"{path} holds no mirror yet. To start one there: Apply a bundle… — this folder "
+                       "is offered as the root for its hostnames.")
             return
         recents.remember(path)
         self.app.mset = open_set(set_id=info.set_id)
@@ -55,23 +65,44 @@ class StartPage(Page):
         from mmw.tui.site.home import SiteHomePage
         self.app.switch_screen(SiteHomePage())
 
-    @work(thread=True, exclusive=True, group="start-plan", exit_on_error=False)
+    def _note(self, text: str) -> None:
+        self.query_one("#start-note", Static).update(text)
+
+    def _busy(self, on: bool) -> None:
+        for b in ("#start-apply", "#start-open"):
+            self.query_one(b, Button).disabled = on
+
     def apply_path(self, path: str) -> None:
-        from mmw.site.apply import plan_set_apply
-        self.app.call_from_thread(self.set_status, f"reading {path}…")
+        from pathlib import Path
+        self._busy(True)
+        self._note(f"Reading {Path(path).name}… — its list of files and hostnames. A big bundle made before "
+                   "sizes were recorded takes a minute or two (its headers are read); newer ones are instant.")
+        self._plan_bundle(path)
+
+    @work(thread=True, exclusive=True, group="start-plan", exit_on_error=False)
+    def _plan_bundle(self, path: str) -> None:
+        from mmw.site import apply as A
         try:
-            plan = plan_set_apply(None, path)
+            plan = A.plan_set_apply(None, path)
         except Exception as e:  # noqa: BLE001 — not a bundle, and the like
-            self.app.call_from_thread(self.set_status, str(e), "error")
+            self.app.call_from_thread(self._failed, str(e))
             return
         self.app.call_from_thread(self._place, plan, path)
+
+    def _failed(self, message: str) -> None:
+        self._busy(False)
+        self._note("")
+        self.set_status(message, "error")
 
     def _place(self, plan, path: str) -> None:
         from mmw.tui.site.apply_flow import remember
         from mmw.tui.site.place import PlacePage
         remember(path)
         self.set_status("")
-        self.app.push_screen(PlacePage(plan, path, None), self._placed)
+        self._busy(False)
+        self._note("")
+        page = PlacePage(plan, path, None, suggest=self._suggested)
+        self.app.push_screen(page, self._placed)
 
     def _placed(self, choice) -> None:
         if choice is None:

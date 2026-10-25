@@ -42,8 +42,8 @@ def test_open_a_mirror_from_the_start_page(hosts, tmp_path):  # noqa: F811
 
     async def check(app, pilot):
         await until(pilot, lambda: _name(app) == "StartPage")
-        app.screen.open_path(str(tmp_path))                        # no mirror there
-        await until(pilot, lambda: "no mirror at" in app.screen.status_text())
+        app.screen.open_path(str(tmp_path))                        # no mirror there: offered as a root
+        await until(pilot, lambda: "holds no mirror yet" in str(app.screen.query_one("#start-note").render()))
         app.screen.open_path(str(r1))
         await until(pilot, lambda: _name(app) == "SiteHomePage")
         assert app.mset is not None and str(r1) in recents.known()
@@ -309,3 +309,54 @@ def test_unchanged_rows_end_unchanged(tmp_path):
             page._done(ApplyResult(updated=["ka"]))
             assert "waiting" not in str(page.query_one("#run-repos").render())
     asyncio.run(go())
+
+
+# ── first launch, clearer (Sam's first try) ──────────────────────────────────
+
+def test_an_empty_folder_from_open_becomes_the_suggested_root(hosts, tmp_path):  # noqa: F811
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    where = tmp_path / "mirror-here"
+    where.mkdir()
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "StartPage")
+        app.screen.open_path(str(where))
+        note = lambda: str(app.screen.query_one("#start-note").render())  # noqa: E731
+        await until(pilot, lambda: "no mirror yet" in note() and "Apply a bundle" in note())
+        app.screen.apply_path(b)
+        await until(pilot, lambda: _name(app) == "PlacePage" and "mirror-here" in app.screen.hosts_text())
+        assert app.screen.targets == {HOST_A: str(where), HOST_B: str(where)}
+    _run(None, check)
+
+
+def test_reading_a_bundle_is_said_plainly(hosts, tmp_path, monkeypatch):  # noqa: F811
+    import threading
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    gate = threading.Event()
+    import mmw.site.apply as A
+    real = A.plan_set_apply
+    monkeypatch.setattr(A, "plan_set_apply", lambda *a, **k: gate.wait(10) and real(*a, **k))
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "StartPage")
+        app.screen.apply_path(b)
+        busy = lambda: str(app.screen.query_one("#start-note").render())  # noqa: E731
+        await until(pilot, lambda: "Reading" in busy() and "1" in busy())
+        assert app.screen.query_one("#start-apply").disabled
+        gate.set()
+        await until(pilot, lambda: _name(app) == "PlacePage")
+    _run(None, check)
+
+
+def test_placement_says_what_to_do_when_a_hostname_has_no_root(hosts, tmp_path):  # noqa: F811
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+
+    async def check(app, pilot, page):
+        hint = lambda: str(page.query_one("#place-hint").render())  # noqa: E731
+        await until(pilot, lambda: "Add a root" in hint() and "empty" in hint())
+        page.add_root(str(tmp_path / "r1"))
+        await until(pilot, lambda: hint() == "")
+    _place_page(None, b, check)

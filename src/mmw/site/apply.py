@@ -523,3 +523,336 @@ def write_root_nginx(db, roots: Roots) -> bool:
             changed = True
             db.set_meta(f"nginx:{r.name}", json.dumps(after, sort_keys=True))
     return changed
+
+
+# ── a set of roots: one pass, routed by hostname ─────────────────────────────
+
+def _host(meta: dict, repo: str) -> str:
+    return (meta.get("bases") or [repo])[0].split("/", 1)[0]
+
+
+@dataclass
+class SetApplyPlan:
+    network: str
+    created: str
+    hosts: dict[str, list[str]]                 # hostname → repository keys
+    labels: dict[str, str]                      # repository key → label
+    owner: dict[str, str | None]                # hostname → root name (None: new to the mirror)
+    sizes: dict[str, int]                       # hostname → bytes of its files
+    network_bytes: int
+    missing: list[str] = field(default_factory=list)
+    sized: bool = True                          # sizes known (a tar on stdin, without "s": not)
+
+
+@dataclass
+class SetApplyResult:
+    per_root: dict[str, "ApplyResult"] = field(default_factory=dict)
+    held_back: dict[str, str] = field(default_factory=dict)      # hostname → why
+    lines: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
+    created: str = ""
+
+
+def _read_manifest_member(gen, scratch: Path):
+    first = next(gen, None)
+    if first is None or first.name != MANIFEST_MEMBER:
+        raise ApplyError(2, "bundle is malformed: its first member isn't .mmw/manifest.jsonl")
+    data = first.fh.read()
+    disk_io.ops.write_bytes(scratch, data)
+    return data
+
+
+def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPlan", dict]:
+    from mmw.site.home import load_site
+    repos = header.repos or {}
+    hosts: dict[str, list[str]] = {}
+    for repo, meta in sorted(repos.items()):
+        hosts.setdefault(_host(meta, repo), []).append(repo)
+    host_of = {repo: _host(meta, repo) for repo, meta in repos.items()}
+    sizes = {h: 0 for h in hosts}
+    network_bytes, sized = 0, True
+    if any(s is None for _p, _c, _r, s in rows):
+        if src == "-":
+            sized = False
+        else:
+            known = _manifest_and_sizes(src, scratch_dir / "sizes-manifest.jsonl")
+            rows = [(p, c, r, known.get(p, 0)) for p, c, r, _s in rows]
+    for _p, _c, r, s in rows:
+        if r is None:
+            network_bytes += s or 0
+        elif r in host_of:
+            sizes[host_of[r]] += s or 0
+    owner: dict[str, str | None] = {}
+    named: dict[str, str] = {}
+    for root in (mset.roots if mset else []):
+        named.update(load_site(root.home).hosts)
+    for h in hosts:
+        held = mset.owner(h) if mset else None
+        owner[h] = held.info.name if held else named.get(h)
+    plan = SetApplyPlan(header.network, header.created, hosts, {k: m["label"] for k, m in repos.items()},
+                        owner, sizes, network_bytes, list(mset.missing) if mset else [], sized)
+    return plan, {"rows": rows, "host_of": host_of}
+
+
+def plan_set_apply(mset, src: str) -> SetApplyPlan:
+    """What applying `src` to `mset` (None: a first apply) would do — read
+    from the bundle's manifest alone (its first member)."""
+    import tempfile
+    from mmw.core.publisher.manifest import iter_manifest_sized
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp) / "manifest.jsonl"
+        gen = members_of(src)
+        try:
+            _read_manifest_member(gen, scratch)
+        finally:
+            gen.close()
+        header, rows = iter_manifest_sized(scratch)
+        plan, _ = _plan(mset, header, list(rows), src, Path(tmp))
+    return plan
+
+
+def _filtered_manifest(header, rows, repos: set[str]) -> bytes:
+    """This root's part of the manifest: its repositories and every
+    network-level file. `file_count` is checked for the whole set instead."""
+    from dataclasses import asdict, replace
+    head = replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in repos},
+                   file_count=None)
+    fields = asdict(head)
+    for optional in ("format", "repos", "settings"):
+        if fields[optional] is None:
+            del fields[optional]
+    out = [json.dumps(fields, sort_keys=True)]
+    for p, c, r, _s in rows:
+        if r is None or r in repos:
+            out.append(json.dumps({"p": p, "c": c, **({"r": r} if r is not None else {})}))
+    return ("\n".join(out) + "\n").encode()
+
+
+def _root_name(location: str, taken: set[str]) -> str:
+    base = Path(location.rstrip("/")).name or "root"
+    name, n = base, 2
+    while name in taken:
+        name, n = f"{base}-{n}", n + 1
+    return name
+
+
+def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run: bool = False,
+                 forward: set[str] | None = None, forward_all: bool = False, progress=None,
+                 stop_event=None, say=print) -> SetApplyResult:
+    """Apply the bundle at `src` to a set of roots (`mset`; None for a first
+    apply) in one pass. Each hostname goes to the root that holds it; a new
+    one to `place[host]` or `place["*"]` (a root location). A hostname whose
+    root isn't here is held back; the rest apply. Each root's space is
+    checked before anything is written."""
+    import tempfile
+    from contextlib import ExitStack
+
+    from mmw.core.format import fmt_size
+    from mmw.core.publisher.manifest import iter_manifest_sized
+    from mmw.site import recents
+    from mmw.site.home import init_root, load_site, new_set_id, read_root, root_home, save_settings
+    from mmw.site.mset import LocalRoot
+    place = dict(place or {})
+    result = SetApplyResult()
+    with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+        scratch = Path(tmp) / "manifest.jsonl"
+        gen = members_of(src)
+        stack.callback(gen.close)
+        with _truncation():
+            _read_manifest_member(gen, scratch)
+        header, rows = iter_manifest_sized(scratch)
+        rows = list(rows)
+        if (header.format or 1) < 2:
+            raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
+                                'or set far_side = "mmw" on the connected side and bundle again')
+        if mset is not None and header.network != mset.network:
+            raise ApplyError(5, f"this bundle is for network {header.network!r} — this mirror holds "
+                                f"{mset.network!r}; nothing was applied")
+        plan, extra = _plan(mset, header, rows, src, Path(tmp))
+        result.created = header.created
+        rows, host_of = extra["rows"], extra["host_of"]
+
+        # Where each hostname goes.
+        present = {r.info.name: r for r in (mset.roots if mset else [])}
+        targets: dict[str, object] = {}            # hostname → LocalRoot, or a location to make one at
+        unplaced = []
+        for h in plan.hosts:
+            name = plan.owner[h]
+            if name in present:
+                targets[h] = present[name]
+            elif name is not None:
+                result.held_back[h] = (f"its root {name!r} isn't here — mount it, then: mmw site open PATH "
+                                       "(the rest applied)")
+            elif h in place or "*" in place:
+                targets[h] = place.get(h, place.get("*"))
+            else:
+                unplaced.append(h)
+        if unplaced:
+            raise ApplyError(1, f"new hostname(s) with no root yet: {', '.join(sorted(unplaced))} — "
+                                "choose one: --root HOST=PATH (or --root '*'=PATH)")
+        locations = {loc for loc in targets.values() if isinstance(loc, str)}
+        found = {loc: read_root(loc) for loc in locations}
+        set_id = mset.set_id if mset else next(
+            (i.set_id for i in found.values() if i is not None), None) or new_set_id()
+        for loc, info in found.items():
+            if info is not None and info.set_id != set_id:
+                raise ApplyError(5, f"{loc} already holds the mirror of network {info.network!r} — pick another root")
+            if info is not None and info.name in present:
+                found[loc] = None                    # a path to a root already open
+                targets.update({h: present[info.name] for h, t in targets.items() if t == loc})
+
+        # Space, per root, before anything is written.
+        cs_host = {}
+        for p, c, r, s in rows:
+            cs_host.setdefault(host_of.get(r), {})[c] = s or 0
+        by_root: dict[str, list[str]] = {}
+        for h, t in targets.items():
+            by_root.setdefault(t.info.name if isinstance(t, LocalRoot) else t, []).append(h)
+        if plan.sized and not dry_run:
+            for key, hs in by_root.items():
+                root = present.get(key)
+                store = root.store() if root else None
+                need_cs = {**cs_host.get(None, {})}
+                for h in hs:
+                    need_cs.update(cs_host.get(h, {}))
+                need = sum(s for c, s in need_cs.items() if store is None or not store.has(c))
+                if root is not None:
+                    free, label = root.free_bytes(), f"{key!r} ({root.info.location})"
+                else:
+                    parent = Path(key)
+                    while not disk_io.ops.exists(parent):
+                        parent = parent.parent
+                    free, label = disk_io.ops.disk_usage(parent).free, key
+                if need > free:
+                    raise ApplyError(5, f"root {label} needs {fmt_size(need)} but has {fmt_size(free)} free — "
+                                        "nothing was written; free space or place its hostnames elsewhere")
+        if dry_run:
+            for h in plan.hosts:
+                t = targets.get(h)
+                where = t.info.name if isinstance(t, LocalRoot) else (f"new root at {t}" if t else None)
+                if where:
+                    labels = ", ".join(plan.labels[r] for r in plan.hosts[h])
+                    result.lines.append(f"  {h} ({labels}) → {where}")
+            for h, why in result.held_back.items():
+                result.lines.append(f"  {h}: held back — {why}")
+            return result
+
+        # New roots, then every root's view of the set.
+        taken = set(present) | set(mset.missing if mset else [])
+        made: dict[str, LocalRoot] = {}
+        for loc in sorted({t for t in targets.values() if isinstance(t, str)}):
+            info = read_root(loc)
+            if info is None:
+                name = _root_name(loc, taken)
+                taken.add(name)
+                init_root(Path(loc).expanduser(), name=name, set_id=set_id, network=header.network)
+                info = read_root(loc)
+            made[loc] = LocalRoot(info)
+        for h, t in list(targets.items()):
+            if isinstance(t, str):
+                targets[h] = made[t]
+        roots: dict[str, LocalRoot] = {r.info.name: r for r in targets.values()}
+        everyone = [*present.values(), *[r for r in made.values() if r.info.name not in present]]
+        members = list(dict.fromkeys([*(mset.missing if mset else []), *(m for r in everyone
+                                                                        for m in r.info.members),
+                                      *(r.info.name for r in everyone)]))
+        hosts_map: dict[str, str] = {}
+        for r in everyone:
+            hosts_map.update(load_site(r.home).hosts)
+        hosts_map.update({h: t.info.name for h, t in targets.items()})
+        for r in everyone:
+            s = load_site(r.home)
+            save_settings(r.home, s.model_copy(update={"members": members, "hosts": hosts_map}))
+            recents.remember(r.info.location)
+
+        # One pass over the bundle: each member to its hostname's root.
+        order = list(roots)
+        appliers = {}
+        for name in order:
+            repos = {r for h, t in targets.items() if t.info.name == name for r in plan.hosts[h]}
+            ra = stack.enter_context(RootApply(roots[name].home, forward=forward, forward_all=forward_all,
+                                               progress=progress, stop_event=stop_event, say=say))
+            ra.begin(_filtered_manifest(header, rows, repos))
+            appliers[name] = ra
+        first = appliers[order[0]]
+        repo_of = {p: r for p, _c, r, _s in rows}
+        cs_of = {p: c for p, c, _r, _s in rows}
+        # Content a held-back hostname shares with one that applies: kept,
+        # in the root that needs it (a later member may link to it).
+        needed_in: dict[str, str] = {}
+        for p, c, r, _s in rows:
+            h = host_of.get(r) if r is not None else None
+            if r is None:
+                needed_in.setdefault(c, order[0])
+            elif h not in result.held_back and h in targets:
+                needed_in.setdefault(c, targets[h].info.name)
+        kept: dict[str, tuple] = {}                        # held-back member → (checksum, size, store)
+        started: set[str] = set()
+        received = 0
+        with _truncation():
+            for m in gen:
+                if stop_event is not None and stop_event.is_set():
+                    raise ApplyError(5, "stopped before anything was applied")
+                if progress:
+                    progress("receive", name=m.name, bytes=m.size)
+                if m.name.startswith(TLS_PREFIX):
+                    data = m.fh.read()
+                    for ra in appliers.values():
+                        ra.tls[m.name[len(TLS_PREFIX):]] = data
+                    continue
+                if m.name.startswith(".mmw/"):
+                    first.take(m)
+                    continue
+                received += 1
+                repo = repo_of.get(m.name)
+                if repo is not None:
+                    h = host_of.get(repo)
+                    if h in result.held_back:
+                        c = cs_of.get(m.name)
+                        if m.kind != "link" and c in needed_in:
+                            store = appliers[needed_in[c]].store
+                            kept[m.name] = (*store.add_stream(m.fh, expect=c), store)
+                        continue                           # its root isn't here
+                    if progress and repo not in started:
+                        started.add(repo)
+                        progress("repo", repo=repo, label=plan.labels.get(repo, repo), host=h)
+                    appliers[targets[h].info.name].take(m)
+                    continue
+                first.take(m)                              # network-level: every root gets it
+                if m.kind == "link":
+                    for ra in appliers.values():
+                        if ra is not first:
+                            ra.links[m.name] = m.linkname
+                    continue
+                checksum, size = first.got[m.name]
+                for ra in appliers.values():
+                    if ra is not first:
+                        ra.take_blob(m.name, checksum, size, None if first.dry_run else first.store)
+        # A member may link to one that went to another root (shared content).
+        for ra in appliers.values():
+            for name, target in list(ra.links.items()):
+                if target in ra.got or target in ra.links:
+                    continue
+                src_ra = next((o for o in appliers.values() if target in o.got), None)
+                if src_ra is not None:
+                    c, size = src_ra.got[target]
+                    ra.take_blob(name, c, size, src_ra.store)
+                elif target in kept:
+                    c, size, store = kept[target]
+                    ra.take_blob(name, c, size, store)
+                else:
+                    continue                               # RootApply says it is malformed
+                del ra.links[name]
+        if header.file_count is not None and received != header.file_count:
+            raise ApplyError(5, f"bundle is truncated: expected {header.file_count} file(s), "
+                                f"got {received} — copy it again")
+        for name in order:
+            r = appliers[name].finish()
+            result.per_root[name] = r
+            if len(order) > 1:
+                result.lines.append(f"  [{name}]")
+            result.lines += r.lines
+            result.actions += [a for a in r.actions if a not in result.actions]
+        for h, why in result.held_back.items():
+            result.lines.append(f"  {h}: held back — {why}")
+    return result

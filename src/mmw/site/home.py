@@ -39,6 +39,7 @@ class SiteSettings(BaseModel):
     network: str | None = None
     name: str | None = None
     members: list[str] = []
+    hosts: dict[str, str] = {}          # hostname → the name of the root holding it, set-wide
 
     @property
     def primary(self) -> RootConfig:
@@ -91,6 +92,8 @@ def save_settings(home: Path, settings: SiteSettings) -> None:
             data[key] = getattr(settings, key)
     if settings.members:
         data["members"] = list(settings.members)
+    if settings.hosts:
+        data["hosts"] = dict(sorted(settings.hosts.items()))
     if settings.keep_versions is not None:
         data["keep_versions"] = settings.keep_versions
     if settings.ca_cert is not None:

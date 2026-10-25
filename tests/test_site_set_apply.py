@@ -1,0 +1,157 @@
+"""A bundle applied to a set of roots in one pass, routed by hostname."""
+import json
+import tarfile
+import threading
+
+import pytest
+
+from mmw.site import recents
+from mmw.site.apply import ApplyError, apply_to_set, plan_set_apply
+from mmw.site.db import SiteDB
+from mmw.site.home import read_root
+from mmw.site.mset import LocalRoot, open_set
+
+from test_bundle_mmw import _change_b, _mmw
+from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
+from test_site_apply import _bundle
+from test_snapshot_repo_versions import _change_a
+
+quiet = lambda *a: None  # noqa: E731
+HOST_A, HOST_B = "example.com", "example.org"
+
+
+@pytest.fixture(autouse=True)
+def _state(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+
+@pytest.fixture
+def hosts(two_mirrors):  # noqa: F811
+    """Repository a under example.com, b under example.org."""
+    cfg, net, md = _mmw(two_mirrors)
+    b = cfg.sources[1].model_copy(update={"url": "https://example.org/b/"})
+    return cfg.model_copy(update={"sources": [cfg.sources[0], b]}), net, md
+
+
+def _repos(root):
+    with SiteDB(read_root(str(root)).home) as db:
+        return {s.label for s in db.repo_states()}
+
+
+def test_first_apply_places_every_host(hosts, tmp_path):
+    cfg, net, md = hosts
+    r1 = tmp_path / "r1"
+    r = apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                     place={"*": str(r1)}, say=quiet)
+    info = read_root(str(r1))
+    assert info.network == net.name and str(r1) in recents.known()
+    assert _repos(r1) == {"a", "b"} and not r.held_back
+
+
+def test_split_across_two_roots(hosts, tmp_path):
+    cfg, net, md = hosts
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={HOST_A: str(r1), HOST_B: str(r2)}, say=quiet)
+    assert (_repos(r1), _repos(r2)) == ({"a"}, {"b"})
+    i1, i2 = read_root(str(r1)), read_root(str(r2))
+    assert i1.set_id == i2.set_id and set(i1.members) == set(i2.members) == {i1.name, i2.name}
+    for r in (r1, r2):
+        assert (r / "nginx").is_dir()                             # network files in every root
+
+
+def test_next_bundle_routes_itself(hosts, tmp_path):
+    cfg, net, md = hosts
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={HOST_A: str(r1), HOST_B: str(r2)}, say=quiet)
+    _change_a(md)
+    _change_b(md)
+    r = apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
+    assert sorted(len(x.updated) for x in r.per_root.values()) == [1, 1]
+
+
+def test_new_host_without_place_is_an_error(hosts, tmp_path):
+    cfg, net, md = hosts
+    with pytest.raises(ApplyError, match=HOST_A):
+        apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
+    assert not list(tmp_path.glob("r*"))
+
+
+def test_missing_root_holds_back_its_hostnames(hosts, tmp_path):
+    cfg, net, md = hosts
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={HOST_A: str(r1), HOST_B: str(r2)}, say=quiet)
+    name2 = read_root(str(r2)).name
+    (r2 / ".mmw").rename(tmp_path / "aside")                     # not mounted
+    _change_a(md)
+    _change_b(md)
+    r = apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
+    assert name2 in r.held_back[HOST_B] and len(next(iter(r.per_root.values())).updated) == 1
+    assert not (r2 / ".mmw").exists()                             # nothing written where it isn't
+
+
+def test_space_checked_per_root_before_writing(hosts, tmp_path, monkeypatch):
+    cfg, net, md = hosts
+    r1 = tmp_path / "r1"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={"*": str(r1)}, say=quiet)
+    _change_a(md)
+    monkeypatch.setattr(LocalRoot, "free_bytes", lambda self: 10)
+    blobs = set((r1 / ".mmw" / "store").rglob("*"))
+    with pytest.raises(ApplyError, match=r"needs .* free") as e:
+        apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
+    assert read_root(str(r1)).name in str(e.value) and e.value.code == 5
+    assert set((r1 / ".mmw" / "store").rglob("*")) == blobs
+
+
+def test_bundle_from_another_network_is_refused(hosts, tmp_path):
+    cfg, net, md = hosts
+    r1 = tmp_path / "r1"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={"*": str(r1)}, say=quiet)
+    other = net.model_copy(update={"name": "elm"})
+    cfg2 = cfg.model_copy(update={"networks": [other]})
+    with pytest.raises(ApplyError, match="elm.*oak|oak.*elm") as e:
+        apply_to_set(open_set(), str(_bundle(cfg2, other, md, tmp_path / "x", from_ref=None)), say=quiet)
+    assert e.value.code == 5
+
+
+def test_stop_never_half_switches_a_hostname(hosts, tmp_path):
+    cfg, net, md = hosts
+    r1 = tmp_path / "r1"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={"*": str(r1)}, say=quiet)
+    _change_a(md)
+    _change_b(md)
+    stop = threading.Event()
+
+    def progress(event, **kw):
+        if event == "switch":
+            stop.set()                          # as the first hostname starts switching
+    r = apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet,
+                     progress=progress, stop_event=stop)
+    (res,) = r.per_root.values()
+    assert len(res.updated) == 1 and len(res.stopped) == 1
+    assert any("stopped" in line for line in r.lines)
+
+
+def test_old_manifest_without_sizes_still_plans(hosts, tmp_path):
+    cfg, net, md = hosts
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    with tarfile.open(b) as t:
+        members = [(m, t.extractfile(m).read() if m.isreg() else None) for m in t.getmembers()]
+    old = tmp_path / "old.tar"
+    with tarfile.open(old, "w") as t:
+        for m, data in members:
+            if m.name == ".mmw/manifest.jsonl":
+                lines = data.decode().splitlines()
+                rows = [json.dumps({k: v for k, v in json.loads(x).items() if k != "s"}) for x in lines[1:]]
+                data = ("\n".join([lines[0], *rows]) + "\n").encode()
+                m.size = len(data)
+            import io
+            t.addfile(m, io.BytesIO(data) if data is not None else None)
+    plan = plan_set_apply(None, str(old))
+    assert plan.sizes[HOST_A] > 0 and plan.sizes[HOST_B] > 0
+    assert plan.hosts.keys() == {HOST_A, HOST_B} and plan.owner == {HOST_A: None, HOST_B: None}

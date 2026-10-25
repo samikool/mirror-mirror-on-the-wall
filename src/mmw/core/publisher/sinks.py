@@ -607,12 +607,14 @@ class BundleSink:
         self.deleted: list[str] = []
         self.errors: list[str] = []
         self.archive_sha256: str | None = None     # the written tar's, when it is a file
+        self._sizes: dict[str, int] = {}           # rel → size, for the manifest's "s"
 
     def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
         if rel in self._seen:
             return "skipped"
         self._seen.add(rel)
         self.manifest_rows.append((rel, checksum))
+        self._sizes[rel] = size
         # `and checksum` is a deliberate divergence from manifest.delta()'s
         # pure `prev.get(rel) != cs` set difference: an empty checksum has no
         # content hash to trust an "unchanged, skip resend" judgement on, so
@@ -629,6 +631,7 @@ class BundleSink:
         checksum = hashlib.sha256(data).hexdigest()
         self._seen.add(rel)
         self.manifest_rows.append((rel, checksum))
+        self._sizes[rel] = len(data)
         if unchanged(self._prev, rel, checksum, self._full):
             return
         self._generated[rel] = data
@@ -938,7 +941,7 @@ class BundleSink:
         `row_repo` is set."""
         if self.row_repo is None:
             return self.manifest_rows
-        return [(p, c, self.row_repo(p)) for p, c in self.manifest_rows]
+        return [(p, c, self.row_repo(p), self._sizes.get(p)) for p, c in self.manifest_rows]
 
     def _tar_writer(self):
         from mmw.core.publisher.members import TarMembers

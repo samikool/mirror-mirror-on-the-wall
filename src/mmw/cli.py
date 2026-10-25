@@ -543,7 +543,7 @@ def cmd_stage(
 
 @app.command("installer")
 def cmd_installer(
-    out: Path = typer.Option(..., "--out", "-o", help="Directory to write mmw-<version>-<arch>.tar into"),
+    out: Path = typer.Option(Path("."), "--out", "-o", help="Directory to write mmw-<version>-<arch>.tar into (default: here)"),
     network: str = typer.Option(
         None, "--network", "-n", help="Take the architectures and Python from this network's "
                                       "runtime_arches and runtime_python"),

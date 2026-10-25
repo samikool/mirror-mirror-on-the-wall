@@ -300,8 +300,7 @@ class ApplyRunPage(Page):
         self.query_one("#run-repos", Static).update(self._repo_lines())
         lines = [f"[b $success]✓ applied {result.created}[/]", *map(escape_markup, result.lines)]
         lines += [f"[b $warning]! {escape_markup(a)}[/]" for a in result.actions]
-        for name, cmds in steps:
-            verb = "start" if any("docker load" in c for c in cmds) or cmds[-1].endswith("up -d") else "recreate"
+        for name, verb, cmds in steps:
             lines.append(f"[b $warning]! {verb} nginx in {escape_markup(name)} on the serving host:[/]")
             lines += [f"    {escape_markup(c)}" for c in cmds]
         self.query_one("#run-done", Static).update("\n".join(lines))

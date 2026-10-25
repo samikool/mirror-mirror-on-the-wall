@@ -34,11 +34,13 @@ class Store:
     def has(self, checksum: str) -> bool:
         return disk_io.ops.exists(self.path(checksum))
 
-    def add_stream(self, fh: BinaryIO, expect: str | None = None) -> tuple[str, int]:
+    def add_stream(self, fh: BinaryIO, expect: str | None = None, size: int | None = None) -> tuple[str, int]:
         """Store `fh`'s bytes; (checksum, size). With `expect`, bytes that do
         not hash to it are refused and nothing is kept — and content the
         store already has is only hashed to check it, never written again."""
-        if expect is not None and self.has(expect):
+        # Already here (and the right size, so no bitrot cut it short): checked, not written.
+        if expect is not None and self.has(expect) and (
+                size is None or disk_io.ops.stat(self.path(expect)).st_size == size):
             checksum, size = disk_io.ops.hash_fh(fh)
             if checksum != expect:
                 raise ChecksumMismatch(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
@@ -56,8 +58,8 @@ class Store:
             if expect is not None and checksum != expect:
                 raise ChecksumMismatch(f"content hashes to {checksum[:12]}…, expected {expect[:12]}…")
             dest = self.path(checksum)
-            if disk_io.ops.exists(dest):
-                return checksum, size
+            if disk_io.ops.exists(dest) and disk_io.ops.stat(dest).st_size == size:
+                return checksum, size                   # a damaged copy (wrong size) is replaced below
             disk_io.ops.mkdir(dest.parent, parents=True, exist_ok=True)
             disk_io.ops.replace(tmp, dest)
             return checksum, size

@@ -50,11 +50,16 @@ def remote_info(location: str) -> dict | None:
     _kind, host, path = ssh.parse_location(location)
     ssh.check_remote_mmw(host)
     try:
-        return _call(host, "info", path)
+        info = _call(host, "info", path)
     except ValueError as e:
         if "no mirror at" in str(e):
             return None
         raise
+    from mmw.site.remote import PROTOCOL
+    if info.get("protocol") != PROTOCOL:
+        raise ssh.RemoteMmw(f"mmw on {host} speaks protocol {info.get('protocol')}, this one {PROTOCOL} — "
+                            "install the same mmw on both")
+    return info
 
 
 def init_remote(location: str, *, name: str, set_id: str, network: str) -> None:

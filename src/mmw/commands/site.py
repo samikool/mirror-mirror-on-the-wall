@@ -83,8 +83,8 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
         print(line)
     for action in r.actions:
         print(f"! {action}")
-    for name, cmds in nginx_steps(r):
-        print(f"! start nginx in {name}:" if name in r.made else f"! recreate nginx in {name}:")
+    for name, verb, cmds in nginx_steps(r):
+        print(f"! {verb} nginx in {name}:")
         for cmd in cmds:
             print(f"    {cmd}")
     return 3 if any(x.refused for x in r.per_root.values()) else 0

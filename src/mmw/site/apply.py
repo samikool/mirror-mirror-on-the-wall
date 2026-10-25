@@ -8,6 +8,7 @@ held one keeps serving what it served, its new version stored for later.
 """
 import io
 import json
+import os
 import tarfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -150,7 +151,7 @@ class RootApply:
         else:
             want = self._expected().get(m.name)
             try:
-                self.got[m.name] = self.store.add_stream(m.fh, expect=want)
+                self.got[m.name] = self.store.add_stream(m.fh, expect=want, size=m.size)
             except ChecksumMismatch:
                 # Damaged on the way: refused here, before anything changed
                 # anywhere, and nothing of it kept.
@@ -418,8 +419,8 @@ class ApplyPlan:
     bytes: int
 
 
-def _manifest_and_sizes(src: str, scratch: Path) -> dict[str, int]:
-    """Write the bundle's manifest to `scratch`; the sizes of its members."""
+def _scan_sizes(src: str, scratch: Path) -> dict[str, int]:
+    """Write the bundle's manifest to `scratch`; the sizes of its members (one pass)."""
     from mmw.resources.apply import is_safe_path
     path = Path(src)
     sizes: dict[str, int] = {}
@@ -447,6 +448,29 @@ def _manifest_and_sizes(src: str, scratch: Path) -> dict[str, int]:
         raise ApplyError(5, f"{path} is not a bundle, or is truncated: {e}") from None
     if not found:
         raise ApplyError(2, f"{path} has no {MANIFEST_MEMBER} — it is not an mmw bundle")
+    return sizes
+
+
+_SIZES: dict[tuple, tuple[bytes, dict[str, int]]] = {}
+
+
+def _manifest_and_sizes(src: str, scratch: Path) -> dict[str, int]:
+    """Write the bundle's manifest to `scratch`; the sizes of its members.
+    Read once per bundle per process: a header scan of an old 120 GB tar takes
+    minutes, and the home screen and the placement both ask."""
+    try:
+        st = disk_io.ops.stat(src)
+        key = (str(Path(src).resolve()), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None and key in _SIZES:
+        manifest, sizes = _SIZES[key]
+        disk_io.ops.write_bytes(scratch, manifest)
+        return dict(sizes)
+    sizes = _scan_sizes(src, scratch)
+    if key is not None and not disk_io.ops.is_dir(Path(src)):
+        _SIZES.clear()                              # one bundle at a time is plenty
+        _SIZES[key] = (disk_io.ops.read_bytes(scratch), dict(sizes))
     return sizes
 
 
@@ -630,7 +654,7 @@ class SetApplyResult:
         return out
 
 
-def nginx_steps(result: "SetApplyResult") -> list[tuple[str, list[str]]]:
+def nginx_steps(result: "SetApplyResult") -> list[tuple[str, str, list[str]]]:
     """What a person runs on the serving host after an apply, per root: a new
     root's first start (load the image, start it), a changed one's recreate."""
     out = []
@@ -642,9 +666,9 @@ def nginx_steps(result: "SetApplyResult") -> list[tuple[str, list[str]]]:
         if name in result.made:
             images = sorted(p.name for p in disk_io.ops.glob(nginx, "*.tar"))
             cmds = [f"docker load -i {nginx}/{images[0]}"] if images else []
-            out.append((name, cmds + [f"cd {nginx} && docker compose up -d"]))
+            out.append((name, "start", cmds + [f"cd {nginx} && docker compose up -d"]))
         elif r.network_changed:
-            out.append((name, [f"cd {nginx} && docker compose up -d --force-recreate"]))
+            out.append((name, "recreate", [f"cd {nginx} && docker compose up -d --force-recreate"]))
     return out
 
 
@@ -1023,7 +1047,11 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                 if h in targets and h not in result.held_back:
                     needs.setdefault(c, set()).add(targets[h].info.name)
         shared = {c for c, names in needs.items() if len(names) > 1}
-        spool = _Spool(Path(tmp) / "spool")
+        from mmw.site.mset import LocalRoot
+        beside = next((r for r in roots.values() if isinstance(r, LocalRoot)), None)
+        spool_dir = (beside.store().tmp / f"spool-{os.getpid()}") if beside is not None else Path(tmp) / "spool"
+        stack.callback(disk_io.ops.rmtree, spool_dir, ignore_errors=True)
+        spool = _Spool(spool_dir)
         started: set[str] = set()
         received = 0
         runtime_seen = False

@@ -121,3 +121,88 @@ def test_identity_written_under_the_lock(hosts, tmp_path):  # noqa: F811
     with SiteLock(read_root(str(r2)).home):
         with pytest.raises(LockHeld):
             root.set_identity(members=["r1", "r2"])
+
+
+# 14 — nginx_steps says start or recreate itself
+def test_nginx_steps_carry_their_verb(tmp_path):
+    from mmw.site.apply import ApplyResult, SetApplyResult, nginx_steps
+    r = SetApplyResult(per_root={"oak": ApplyResult(network_changed=True), "new": ApplyResult()},
+                       paths={"oak": "/srv/oak", "new": "/srv/new"}, made=["new"])
+    got = {name: verb for name, verb, _cmds in nginx_steps(r)}
+    assert got == {"oak": "recreate", "new": "start"}
+
+
+# 15, 18 — a bundle's sizes are read once per process, not per screen
+def test_bundle_sizes_read_once(hosts, tmp_path, monkeypatch):  # noqa: F811
+    import json
+    import tarfile
+    from mmw.site import apply as A
+    cfg, net, md = hosts
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    calls = []
+    real = A._scan_sizes
+    monkeypatch.setattr(A, "_scan_sizes", lambda *a: calls.append(1) or real(*a))
+    A._manifest_and_sizes(str(b), tmp_path / "m1.jsonl")
+    A._manifest_and_sizes(str(b), tmp_path / "m2.jsonl")
+    assert len(calls) == 1 and (tmp_path / "m2.jsonl").exists()
+
+
+# 17 — a stored blob whose size is wrong is replaced, not trusted
+def test_a_damaged_stored_blob_is_replaced(tmp_path):
+    import hashlib
+    import io
+    from mmw.site.store import Store
+    s = Store(tmp_path)
+    data = b"x" * 1000
+    c, _ = s.add_stream(io.BytesIO(data))
+    s.path(c).chmod(0o644)
+    s.path(c).write_bytes(b"x" * 10)                                 # bitrot: truncated
+    assert s.add_stream(io.BytesIO(data), expect=c, size=1000) == (c, 1000)        # as an apply calls it
+    assert hashlib.sha256(s.path(c).read_bytes()).hexdigest() == c
+
+
+# 20 — a remote speaking another protocol is refused
+def test_protocol_mismatch_is_refused(monkeypatch):
+    from mmw.site import ssh, sshroot
+    monkeypatch.setattr(ssh, "check_remote_mmw", lambda host: None)
+    monkeypatch.setattr(sshroot, "_call", lambda *a, **k: {"protocol": 99, "name": "x"})
+    with pytest.raises(ssh.RemoteMmw, match="protocol"):
+        sshroot.remote_info("farhost:/x")
+
+
+# 21 — shared content is spooled beside a root, not in /tmp
+def test_spool_lives_beside_a_root(hosts, tmp_path, monkeypatch):  # noqa: F811
+    from mmw.site import apply as A
+    cfg, net, md = hosts
+    seen = []
+    real = A._Spool.__init__
+    monkeypatch.setattr(A._Spool, "__init__", lambda self, path: seen.append(path) or real(self, path))
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={HOST_A: str(tmp_path / "a"), HOST_B: str(tmp_path / "b")}, say=quiet)
+    assert seen and str(seen[0]).startswith(str(tmp_path))
+
+
+# 10 — what the deleted v1 tests covered, covered again at set level
+def test_tidy_keeps_files_still_served(hosts, tmp_path):  # noqa: F811
+    from test_site_apply import _tree
+    cfg, net, md, r1, r2, _ = _split(hosts, tmp_path)
+    ops.move_repo(open_set(), "b", "r1")
+    keys_before = {p for p in _tree(r2) if p.startswith("keys/")}
+    ops.tidy_set(open_set())
+    assert {p for p in _tree(r2) if p.startswith("keys/")} == keys_before
+
+
+def test_stdin_bundle_to_a_set(hosts, tmp_path, monkeypatch):  # noqa: F811
+    import io
+    import sys
+    cfg, net, md = hosts
+    b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b.read_bytes())))
+    r = apply_to_set(None, "-", place={"*": str(tmp_path / "r")}, say=quiet)
+    assert len(r.merged().updated) == 2
+
+
+def test_shared_content_crosses_roots(hosts, tmp_path):  # noqa: F811
+    """shared.deb is in both repositories, under two hostnames in two roots."""
+    cfg, net, md, r1, r2, _ = _split(hosts, tmp_path)
+    assert (r1 / "example.com" / "a" / "shared.deb").read_bytes() == (r2 / "example.org" / "b" / "shared.deb").read_bytes()

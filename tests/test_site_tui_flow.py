@@ -270,7 +270,7 @@ def test_a_root_left_by_a_stopped_first_apply_still_starts(hosts, tmp_path):  # 
         apply_to_set(None, b, place={"*": str(r1)}, say=quiet, stop_event=stop,
                      progress=lambda event, **kw: event == "receive" and stop.set())
     r = apply_to_set(open_set(), b, say=quiet)
-    ((name, cmds),) = nginx_steps(r)
+    ((name, _verb, cmds),) = nginx_steps(r)
     assert cmds[-1].endswith("docker compose up -d")               # a first start, never "recreate"
 
 

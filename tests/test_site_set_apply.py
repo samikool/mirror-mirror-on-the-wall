@@ -332,7 +332,7 @@ def test_new_root_gets_first_start_commands(hosts, tmp_path):
     cfg, net, md = hosts
     r1 = tmp_path / "r1"
     r = apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={"*": str(r1)}, say=quiet)
-    ((name, cmds),) = nginx_steps(r)
+    ((name, _verb, cmds),) = nginx_steps(r)
     assert name == "r1" and cmds[-1] == f"cd {r1.resolve()}/nginx && docker compose up -d"
     assert not any("recreate" in a for a in r.actions)            # said as steps, not a vague note
 
@@ -341,7 +341,7 @@ def test_changed_root_gets_recreate(tmp_path):
     from mmw.site.apply import ApplyResult, SetApplyResult, nginx_steps
     r = SetApplyResult(per_root={"oak": ApplyResult(network_changed=True), "elm": ApplyResult()},
                        paths={"oak": "/srv/oak", "elm": "/srv/elm"})
-    assert nginx_steps(r) == [("oak", ["cd /srv/oak/nginx && docker compose up -d --force-recreate"])]
+    assert nginx_steps(r) == [("oak", "recreate", ["cd /srv/oak/nginx && docker compose up -d --force-recreate"])]
 
 
 def test_cli_prints_nginx_steps(hosts, tmp_path):

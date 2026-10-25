@@ -32,3 +32,8 @@ def pypi_render_bytes() -> bytes:
 def gallery_script_bytes() -> bytes:
     """The far-side VS Code gallery (run by the stock python image)."""
     return _GALLERY.read_bytes()
+
+
+BOOTSTRAP = Path(__file__).with_name("bootstrap.sh")
+"""The far side's first-contact installer (POSIX sh), shipped in every
+runtime as `.mmw/runtime/bootstrap.sh`."""

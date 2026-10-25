@@ -305,10 +305,12 @@ MirrorCard {
     padding: 0 1;
     border: round $panel;
 }
-MirrorCard:focus { border: round $accent; }
 MirrorCard.done { border: round $mmw-ok; }
 MirrorCard.warn { border: round $mmw-warn; }
 MirrorCard.error { border: round $mmw-error; }
+/* After the states: the selected card keeps its own look (heavy, the
+   selection colour), so a finished card that is selected isn't just green. */
+MirrorCard:focus { border: heavy $mmw-selected; }
 MirrorCard .card-header { height: 1; text-style: bold; }
 MirrorCard ProgressBar { margin: 0; padding: 0; }
 MirrorCard .card-stats, MirrorCard .card-pkg, MirrorCard .card-inflight {

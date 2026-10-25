@@ -411,6 +411,9 @@ does not cover it; run `sign.py` again.
 This puts the private key on your transfer media. A network whose media must
 not hold it keeps `certs` off, and its far side is served over HTTP only.
 
+A network with `far_side = "mmw"` never does: its far side makes its own keys
+(`mmw site certs`, see [far-side.md](far-side.md#https)), so its bundles carry none.
+
 If your CA is reachable from the connected side instead,
 `mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs there and the
 certificate rides every bundle too.

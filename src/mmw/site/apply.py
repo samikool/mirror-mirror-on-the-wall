@@ -292,6 +292,8 @@ def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forwa
         if settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
             apply_retention(db, roots, settings.keep_versions)
+        from mmw.site.certs import tls_notes
+        result.actions.extend(tls_notes(home))
         if progress:
             progress("done")
         if result.network_changed:

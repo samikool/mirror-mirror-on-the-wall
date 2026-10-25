@@ -289,6 +289,7 @@ class MoveResult:
     copied_bytes: int
     files: int
     nginx_changed: list[str]
+    tls_notes: list[str] = field(default_factory=list)
 
 
 def move_size(home: Path, ref: str, root_name: str) -> int:
@@ -349,7 +350,8 @@ def move(home: Path, ref: str, root_name: str) -> MoveResult:
         if roots.multi and db.get_meta("settings") and write_root_nginx(db, roots):
             changed = [src.name, dst.name]
         _render(roots)
-        return MoveResult(copied, files, changed)
+    from mmw.site.certs import tls_notes
+    return MoveResult(copied, files, changed, tls_notes(home))
 
 
 def tidy(home: Path) -> list[str]:

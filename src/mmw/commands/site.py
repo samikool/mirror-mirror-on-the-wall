@@ -319,6 +319,8 @@ def move(repo: str, root: str, home: Path | None = None, yes: bool = False, brea
         eprint(str(e))
         return 1
     print(f"moved: {r.files} file(s), {fmt_size(r.copied_bytes)} copied")
+    for note in r.tls_notes:
+        print(f"! {note}")
     if r.nginx_changed:
         print(f"! nginx changed in {', '.join(r.nginx_changed)} — recreate them on the serving host")
     print("the old root still serves its copy until you run `mmw site tidy` (the next apply does it too)")
@@ -337,4 +339,104 @@ def tidy(home: Path | None = None, break_lock: bool = False) -> int:
         eprint(str(e))
         return 1
     print(f"cleared the old copies of: {', '.join(done)}" if done else "nothing to tidy")
+    return 0
+
+
+def _passphrase(prompt: str = "CA key passphrase: ", confirm: bool = False) -> bytes | None:
+    import getpass
+    import os
+    import sys
+    env = os.environ.get("MMW_CA_PASSPHRASE")
+    if env:
+        return env.encode()
+    if not sys.stdin.isatty():
+        return None
+    first = getpass.getpass(prompt)
+    if confirm and getpass.getpass("Again: ") != first:
+        eprint("the two passphrases differ — nothing made")
+        return None
+    return first.encode()
+
+
+def ca_load(cert: Path, key: Path, home: Path | None = None) -> int:
+    from mmw.core.certs import CAKeyEncrypted
+    from mmw.site import certs
+    try:
+        h = _home(home, False)
+        try:
+            subject = certs.load_ca(h, cert, key, None)
+        except CAKeyEncrypted:
+            password = _passphrase()
+            if password is None:
+                eprint(f"{key} is encrypted — run this in a terminal, or set MMW_CA_PASSPHRASE")
+                return 1
+            subject = certs.load_ca(h, cert, key, password)
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"CA {subject} loaded (mmw keeps only where it is: {cert}, {key})")
+    return 0
+
+
+def ca_make(out: Path, name: str, encrypt: bool = False, home: Path | None = None) -> int:
+    from mmw.site import certs
+    try:
+        h = _home(home, False)
+        password = None
+        if encrypt:
+            password = _passphrase("Passphrase for the new CA key: ", confirm=True)
+            if not password:
+                eprint("--encrypt needs a passphrase: run this in a terminal, or set MMW_CA_PASSPHRASE")
+                return 1
+        crt, key = certs.make_ca(out, name, password)
+        certs.load_ca(h, crt, key, password)
+    except (ValueError, FileExistsError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    print(f"made CA {name!r}: {crt}, {key}")
+    print(certs.TRUST.format(crt=crt, key=key, name=name))
+    return 0
+
+
+def ca_show(home: Path | None = None) -> int:
+    from mmw.site import certs
+    try:
+        info = certs.show_ca(_home(home, False))
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    if info is None:
+        print("no CA yet — mmw site ca load --cert … --key …, or mmw site ca make --out …")
+        return 0
+    subject, expires, crt, key = info
+    print(f"{subject}\n  expires {expires:%Y-%m-%d}\n  certificate {crt}\n  key {key}")
+    return 0
+
+
+def certs(home: Path | None = None, days: int = 730, force: bool = False) -> int:
+    from mmw.core.certs import CAKeyEncrypted
+    from mmw.site import certs as site_certs
+    try:
+        h = _home(home, False)
+        try:
+            results = site_certs.sign_roots(h, password=None, days=days, force=force)
+        except CAKeyEncrypted:
+            password = _passphrase()
+            if password is None:
+                eprint("the CA key is encrypted — run this in a terminal, or set MMW_CA_PASSPHRASE")
+                return 1
+            results = site_certs.sign_roots(h, password=password, days=days, force=force)
+    except (ValueError, FileNotFoundError) as e:
+        eprint(str(e))
+        return 1
+    recreate = []
+    for r in results:
+        hosts = f" ({len(r.hostnames)} hostname(s))" if r.hostnames else ""
+        print(f"  {r.root:<12} {r.action}{hosts}")
+        for note in r.notes:
+            print(f"    {note}")
+        if r.action == "signed" or any("recreate" in n for n in r.notes):
+            recreate.append(r.root)
+    if recreate:
+        print(f"! recreate nginx in {', '.join(recreate)} on the serving host")
     return 0

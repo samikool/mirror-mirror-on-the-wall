@@ -27,6 +27,9 @@ class RootConfig(BaseModel):
 class SiteSettings(BaseModel):
     roots: list[RootConfig]             # the first is the primary
     keep_versions: int | None = None    # per repository; None keeps every version
+    # The site's CA, by path only: mmw never copies the key, never keeps its passphrase.
+    ca_cert: Path | None = None
+    ca_key: Path | None = None
 
     @property
     def primary(self) -> RootConfig:
@@ -76,6 +79,8 @@ def save_settings(home: Path, settings: SiteSettings) -> None:
                             for r in settings.roots]}
     if settings.keep_versions is not None:
         data["keep_versions"] = settings.keep_versions
+    if settings.ca_cert is not None:
+        data["ca_cert"], data["ca_key"] = str(settings.ca_cert), str(settings.ca_key)
     disk_io.ops.atomic_write(Path(home) / SETTINGS, tomli_w.dumps(data).encode())
 
 

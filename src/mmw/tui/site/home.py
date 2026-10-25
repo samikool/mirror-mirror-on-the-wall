@@ -54,6 +54,9 @@ class SiteHomePage(Page):
             DataTable(cursor_type="row", zebra_stripes=True, id="site-repos"),
             _HistoryPane(), id="site-split")
 
+    def _is_root(self) -> bool:
+        return True                     # the far side's home: nothing to go back to (q quits)
+
     def on_mount(self) -> None:
         self.query_one("#site-banner").display = False
         t = self.query_one("#site-repos", DataTable)

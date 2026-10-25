@@ -1,10 +1,13 @@
 """`SiteApp` — mmw's TUI on the far side, for one mirror (a set of roots)."""
 from pathlib import Path
 
+from textual.binding import Binding
+
 from mmw.tui.ui.base import ThemedApp
 
 
 class SiteApp(ThemedApp):
+    BINDINGS = [Binding("q", "quit", "Quit")]
     def __init__(self, mset):
         super().__init__()
         self.mset = mset
@@ -31,10 +34,11 @@ class SiteApp(ThemedApp):
         """The root holding `repo` (its interface: local now, ssh too)."""
         return self.mset.root_for_repo(repo)[0]
 
-    def on_mount(self) -> None:
+    def get_default_screen(self):
+        """The first page is the app's own bottom screen: nothing is behind
+        it, so Esc never leaves a blank screen with the app still running."""
         if self.mset is None:
             from mmw.tui.site.start import StartPage
-            self.push_screen(StartPage())
-            return
+            return StartPage()
         from mmw.tui.site.home import SiteHomePage
-        self.push_screen(SiteHomePage())
+        return SiteHomePage()

@@ -63,7 +63,7 @@ class StartPage(Page):
         self.app.mset = open_set(set_id=info.set_id)
         self.app._titles()
         from mmw.tui.site.home import SiteHomePage
-        self.app.switch_screen(SiteHomePage())
+        self.app.push_screen(SiteHomePage())
 
     def _note(self, text: str) -> None:
         self.query_one("#start-note", Static).update(text)
@@ -119,4 +119,4 @@ class StartPage(Page):
             return                                   # it failed before making a root
         self.app._titles()
         from mmw.tui.site.home import SiteHomePage
-        self.app.switch_screen(SiteHomePage())
+        self.app.push_screen(SiteHomePage())

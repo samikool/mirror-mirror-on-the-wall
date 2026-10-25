@@ -360,3 +360,30 @@ def test_placement_says_what_to_do_when_a_hostname_has_no_root(hosts, tmp_path):
         page.add_root(str(tmp_path / "r1"))
         await until(pilot, lambda: hint() == "")
     _place_page(None, b, check)
+
+
+def test_q_quits_and_escape_never_blanks_the_screen(tmp_path):
+    async def go():
+        app = SiteApp(None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: _name(app) == "StartPage")
+            await pilot.press("escape")
+            await pilot.pause()
+            assert _name(app) == "StartPage"                         # the first page has nothing behind it
+            await pilot.press("q")
+            await until(pilot, lambda: app.return_code is not None or not app.is_running)
+    asyncio.run(go())
+
+
+def test_escape_on_home_after_opening_stays_home(hosts, tmp_path):  # noqa: F811
+    cfg, net, md, r1 = _applied(hosts, tmp_path)
+    recents.forget(str(r1))
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "StartPage")
+        app.screen.open_path(str(r1))
+        await until(pilot, lambda: _name(app) == "SiteHomePage")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert _name(app) == "SiteHomePage"
+    _run(None, check)

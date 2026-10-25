@@ -143,3 +143,31 @@ def test_no_ca_yet(env, tmp_path):  # noqa: F811
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
     with pytest.raises(ValueError, match="no CA yet"):
         C.sign_roots(home, password=None)
+
+
+def test_apply_reports_uncovered_hostname(split_env, tmp_path):  # noqa: F811
+    from mmw.site.apply import apply_bundle
+    from test_bundle_mmw import _change_b
+    cfg, net, md, home, main, second = split_env
+    ka = next(s.identity for s in cfg.sources if s.name == "a")
+    # a alone first, signed; then b arrives in the same root, with its own hostname
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None, repos=[ka])), say=lambda *a: None)
+    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
+    C.load_ca(home, crt, key, None)
+    C.sign_roots(home, password=None)
+    _change_b(md)
+    r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2")), say=lambda *a: None)
+    assert any("main" in a and "b.example.com" in a and "mmw site certs" in a for a in r.actions), r.actions
+    C.sign_roots(home, password=None)
+    assert _sans(main / ".mmw/tls/mirror.crt") == ["a.example.com", "b.example.com"]
+
+
+def test_mmw_bundle_carries_no_tls_key(two_mirrors, tmp_path):  # noqa: F811
+    import tarfile
+    from test_bundle_mmw import _mmw
+    from mmw.core.publisher.bundle import bundle_network
+    cfg, net, md = _mmw(two_mirrors)
+    assert net.certs
+    r = bundle_network(net, cfg, md, out_path=tmp_path, from_ref=None)
+    with tarfile.open(r.out_path) as tar:
+        assert not [n for n in tar.getnames() if n.startswith(".mmw/tls/")]

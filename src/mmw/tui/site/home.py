@@ -37,14 +37,16 @@ class SiteHomePage(Page):
         Binding("d", "delete", "Delete version"),
         Binding("a", "apply", "Apply bundle"),
         Binding("m", "move", "Move to root"),
+        Binding("c", "certs", "Certificates"),
         Binding("t", "tidy", "Tidy", show=False),
-        Binding("r", "refresh", "Refresh"),
+        Binding("r", "refresh", "Refresh", show=False),
     ]
 
     def __init__(self):
         super().__init__()
         self._states = []
         self._history = []
+        self._history_repo = None
 
     def compose_body(self) -> ComposeResult:
         yield Static("", id="site-banner")
@@ -133,13 +135,19 @@ class SiteHomePage(Page):
             return
         self._history = rows
         t = self.query_one("#site-history", DataTable)
+        # The same repository again (a reload): keep the row the user is on.
+        same = repo == self._history_repo
+        keep = t.cursor_row if same else None
+        self._history_repo = repo
         t.clear()
         for v, total, frees, serving in rows:
             date = _date(v.stamp) + (f" {v.snap_label}" if v.snap_label else "")
             t.add_row(f"{'▶ ' if serving else '  '}v{v.number}", Text(date), fmt_size(total),
                       "serving" if serving else f"frees {fmt_size(frees)}", key=str(v.number))
-            if serving:
+            if serving and keep is None:
                 t.move_cursor(row=t.row_count - 1)
+        if keep is not None and t.row_count:
+            t.move_cursor(row=min(keep, t.row_count - 1))
         state = next((s for s in self._states if s.repo == repo), None)
         note = ""
         if state and state.held and rows:
@@ -250,6 +258,31 @@ class SiteHomePage(Page):
         self.app.push_screen(MoveRootPage(state.label, current, [r.name for r in self.app.settings.roots]),
                              chosen)
 
+    def action_certs(self, password: bytes | None = None) -> None:
+        self._sign(password)
+
+    @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
+    def _sign(self, password: bytes | None) -> None:
+        from mmw.core.certs import CAKeyEncrypted
+        from mmw.site.certs import sign_roots
+        self.app.call_from_thread(self.set_status, "signing…")
+        try:
+            results = sign_roots(self.app.home, password=password)
+        except CAKeyEncrypted:
+            self.app.call_from_thread(self._ask_passphrase)
+            return
+        except Exception as e:  # noqa: BLE001 — no CA yet, a wrong passphrase: said on the page
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        signed = [r.root for r in results if r.action == "signed"]
+        text = "; ".join(f"{r.root} {r.action}" for r in results)
+        if signed:
+            text += f" — recreate nginx in {', '.join(signed)}"
+        self.app.call_from_thread(self.set_status, text, "ok")
+
+    def _ask_passphrase(self) -> None:
+        self.app.push_screen(PassphrasePage(), lambda pw: pw and self.action_certs(pw.encode()))
+
     def action_tidy(self) -> None:
         self._act("cleared moved repositories' old copies", ops.tidy, self.app.home)
 
@@ -296,6 +329,32 @@ def _run_page(choice):
 
 def ops_newest(history) -> int | None:
     return history[0][0].number if history else None
+
+
+class PassphrasePage(Page):
+    """The CA key's passphrase, for this signing only — never kept."""
+
+    TITLE = "CA passphrase"
+
+    def compose_body(self) -> ComposeResult:
+        from textual.widgets import Input
+        yield Input(password=True, placeholder="passphrase", id="ca-pass")
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Cancel", id="btn-pass-cancel", compact=True)
+        yield Button("Sign", id="btn-pass-go", variant="primary", compact=True)
+
+    @on(Button.Pressed, "#btn-pass-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_input_submitted(self, _event) -> None:
+        self._go()
+
+    @on(Button.Pressed, "#btn-pass-go")
+    def _go(self) -> None:
+        from textual.widgets import Input
+        self.dismiss(self.query_one("#ca-pass", Input).value or None)
 
 
 class MoveRootPage(Page):

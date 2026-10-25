@@ -106,6 +106,29 @@ mmw site root list
   and run `mmw site tidy` (the next apply tidies too).
 - A root that isn't mounted stops an apply or a move before anything changes.
 
+## HTTPS
+
+The far side makes its own keys: an mmw network's bundles never carry a
+private key. Point the site at your CA (or make one), then sign:
+
+```bash
+mmw site ca load --cert /root/site-ca/ca.crt --key /root/site-ca/ca.key
+mmw site ca make --out /root/site-ca --name "Lab CA" [--encrypt]   # no CA yet
+mmw site certs                       # every root: key, request, certificate, HTTPS on
+```
+
+- mmw records **where** the CA is, nothing more: the key is never copied
+  and its passphrase never kept — it is asked for each time (or read from
+  `MMW_CA_PASSPHRASE`).
+- Each root gets one certificate for exactly the hostnames its nginx serves,
+  in `{root}/.mmw/tls/` (key 0600, directory 0700). A certificate that still
+  fits, covers every hostname and isn't expiring within 30 days is kept;
+  `--force` re-signs. The key is never regenerated.
+- HTTPS turns on in a root's nginx only once its certificate fits its key;
+  plain HTTP never stops. Recreate nginx in the roots the command names.
+- An apply that brings a new hostname says which root's certificate doesn't
+  cover it; `mmw site certs` puts it right. In the TUI, **c** signs.
+
 ## Space
 
 ```bash

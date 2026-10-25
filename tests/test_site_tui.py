@@ -298,3 +298,20 @@ def test_move_key(two_mirrors, tmp_path):  # noqa: F811
     _run(home, check)
     with SiteDB(home) as db:
         assert db.repo_state(kb).root == "second"
+
+
+def test_tui_c_signs(env, tmp_path):  # noqa: F811
+    from mmw.site import certs as C
+    from mmw.site.apply import apply_bundle
+    from test_site_apply import _bundle
+    cfg, net, md, home, root = env
+    apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
+    crt, key = C.make_ca(tmp_path / "ca", "Lab CA", None)
+    C.load_ca(home, crt, key, None)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        await pilot.press("c")
+        await until(pilot, lambda: "signed" in str(app.screen.query_one("#page-status").render()))
+    _run(home, check)
+    assert (root / ".mmw/tls/mirror.crt").exists()

@@ -233,7 +233,9 @@ def bundle_network(
     # A certs network's key and signing request ride every bundle; the CA
     # lives on the far side, which signs there (sign.py) — nothing has to come
     # back. A certificate signed on this side rides along too.
-    tls_files = bundle_tls_files(network, cfg) if network.certs else {}
+    # A far side running mmw makes its own keys (`mmw site certs`): an mmw
+    # network's bundles never put a private key on the transfer media.
+    tls_files = bundle_tls_files(network, cfg) if network.certs and not mmw_far_side else {}
 
     name = dest.stamp if start is None else f"{start.stamp}-to-{dest.stamp}"
     target = _free_stage_dir(network, name, out_path) if stage else _free_target(network, name, out_path)

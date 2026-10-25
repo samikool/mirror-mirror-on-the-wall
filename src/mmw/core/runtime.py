@@ -279,7 +279,9 @@ def runtime_files(network, cfg, mirror_dir: Path, *, fetcher: Fetcher,
     from mmw.resources import BOOTSTRAP
     want = wanted(network, wheel)
     out: dict[str, bytes | Path] = {
-        ".mmw/runtime/bootstrap.sh": BOOTSTRAP,
+        # Bytes, never the file: a stage hardlinks files, and a link to the
+        # installed package's own copy would let an edit reach it.
+        ".mmw/runtime/bootstrap.sh": disk_io.ops.read_bytes(BOOTSTRAP),
         ".mmw/runtime/RUNTIME.json": (json.dumps(want, sort_keys=True) + "\n").encode(),
     }
     for arch in want["arches"]:

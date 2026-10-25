@@ -231,3 +231,19 @@ def test_cli_says_what_the_runtime_build_is_doing(monkeypatch, tmp_path, capsys)
     assert bundle_cmd.run(tmp_path, network="lab") == 0
     err = capsys.readouterr().err
     assert "mmw runtime: uv 0.11.33 for x86_64…" in err and "runtime:done" not in err
+
+
+def test_a_stage_never_links_into_the_installation(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
+    import shutil
+
+    import mmw.resources
+    from mmw.core.publisher.bundle import stage_network
+    BOOTSTRAP = tmp_path / "site-packages" / "bootstrap.sh"      # mmw installed on the stage's filesystem
+    BOOTSTRAP.parent.mkdir()
+    shutil.copy(mmw.resources.BOOTSTRAP, BOOTSTRAP)
+    monkeypatch.setattr(mmw.resources, "BOOTSTRAP", BOOTSTRAP)
+    cfg, net, md = _mmw(two_mirrors)
+    r = stage_network(net, cfg, md, tmp_path / "s", from_ref=None)
+    staged = r.out_path / ".mmw/runtime/bootstrap.sh"
+    assert staged.read_bytes() == BOOTSTRAP.read_bytes()
+    assert staged.stat().st_ino != BOOTSTRAP.stat().st_ino

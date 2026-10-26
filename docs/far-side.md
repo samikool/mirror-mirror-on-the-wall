@@ -134,8 +134,25 @@ usual.
 ```bash
 mmw site history debian         # every version kept here
 mmw site serve debian v6        # relinks; asks first (--yes to skip)
+mmw site serve debian 28oct     # the same, by the bundle that brought it
 mmw site status                 # what each repository serves, held or current
 ```
+
+A version is `v6` (or `6`), or the bundle that brought it: its date
+(`28oct`, `oct 28`, `28/10`, `2026-10-28`), the start of its stamp
+(`20261028T09`), or its label. Two bundles on one day are not guessed
+between — the error names both, and the stamp picks one.
+
+To put the whole mirror back to how it was after one bundle:
+
+```bash
+mmw site serve-bundle 28oct     # every repository at its newest version from then
+```
+
+A repository that bundle didn't change serves its version from before it;
+one that first arrived later is left as it is. It lists each change and
+asks first (`--yes` to skip). The TUI's **Serve bundle…** (**b**) does the
+same.
 
 Anything but the newest version **holds** the repository there: later
 bundles store its new versions without serving them. `mmw site apply …
@@ -266,7 +283,8 @@ and Delete under them. Keys: **Enter** on a version serves it (after a
 confirmation saying what changes), **f** forwards, **h** holds, **d** deletes
 a version, **a** applies a bundle, **r** adds a root (an empty folder or
 `host:/path` becomes a new root of this mirror), **m** moves a repository to
-another root, **c** manages certificates, **t** tidies, **ctrl+r** refreshes.
+another root, **b** serves the whole mirror as of a bundle, **c** manages
+certificates, **t** tidies, **ctrl+r** refreshes.
 The buttons along the bottom do the same.
 
 Applying from the TUI: pick the bundle (a `.tar` or a stage directory; the

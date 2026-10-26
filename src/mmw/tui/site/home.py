@@ -45,6 +45,7 @@ class SiteHomePage(Page):
         Binding("d", "delete", "Delete version"),
         Binding("a", "apply", "Apply bundle"),
         Binding("r", "add_root", "Add root"),
+        Binding("b", "serve_bundle", "Serve bundle", show=False),
         Binding("m", "move", "Move to root"),
         Binding("c", "certs", "Certificates"),
         Binding("t", "tidy", "Tidy", show=False),
@@ -56,6 +57,7 @@ class SiteHomePage(Page):
         self._states = []
         self._root_of: dict[str, str] = {}
         self._kept: dict[str, tuple[int, int]] = {}
+        self._bundles: list[tuple[str, str | None, int]] = []     # (stamp, label, repositories it changed)
         self._history = []
         self._history_repo = None
 
@@ -64,11 +66,13 @@ class SiteHomePage(Page):
         # pane), so both rows fit at 80 columns. Apply is the main thing here.
         yield Button("Apply bundle…", id="btn-site-apply", variant="primary", compact=True)
         yield Button("Add root…", id="btn-site-add-root", compact=True)
+        yield Button("Serve bundle…", id="btn-site-serve-bundle", compact=True)
         yield Button("Move…", id="btn-site-move", compact=True)
         yield Button("Certificates", id="btn-site-certs", compact=True)
         yield Button("Tidy", id="btn-site-tidy", compact=True)
 
-    _BUTTONS = {"btn-site-apply": "apply", "btn-site-add-root": "add_root", "btn-site-serve": "serve",
+    _BUTTONS = {"btn-site-apply": "apply", "btn-site-add-root": "add_root", "btn-site-serve-bundle": "serve_bundle",
+                "btn-site-serve": "serve",
                 "btn-site-forward": "forward", "btn-site-hold": "hold", "btn-site-delete": "delete",
                 "btn-site-move": "move", "btn-site-certs": "certs", "btn-site-tidy": "tidy"}
 
@@ -156,7 +160,7 @@ class SiteHomePage(Page):
             rows = ops.set_status(self.app.mset)
             # Built here, kept on the page only by _loaded: a load that fails
             # part-way leaves the last good one in place.
-            states, newest, root_of, kept = [], {}, {}, {}
+            states, newest, root_of, kept, bundles = [], {}, {}, {}, {}
             for name, st in rows:
                 states.append(st)
                 root_of[st.repo] = name
@@ -165,16 +169,20 @@ class SiteHomePage(Page):
                     newest[st.repo] = history[0][0].number
                 # For the card: how many versions are kept here, and their size.
                 kept[st.repo] = (len(history), max((total for _v, total, _f, _s in history), default=0))
+                for v, *_ in history:            # every bundle still kept here, for Serve bundle…
+                    _stamp, label, count = bundles.get(v.stamp, (v.stamp, v.snap_label, 0))
+                    bundles[v.stamp] = (v.stamp, label, count + 1)
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._loaded, states, newest, done, root_of, kept)
+        self.app.call_from_thread(self._loaded, states, newest, done, root_of, kept,
+                                  sorted(bundles.values(), reverse=True))
 
-    def _loaded(self, states, newest, done: str | None = None, root_of=None, kept=None) -> None:
+    def _loaded(self, states, newest, done: str | None = None, root_of=None, kept=None, bundles=None) -> None:
         if not self.is_attached:
             return
         self._states = states
-        self._root_of, self._kept = root_of or {}, kept or {}
+        self._root_of, self._kept, self._bundles = root_of or {}, kept or {}, bundles or []
         t = self.query_one("#site-repos", DataTable)
         keep = self.selected_repo()
         t.clear()
@@ -360,6 +368,37 @@ class SiteHomePage(Page):
     def _acted(self, done: str) -> None:
         self._load(done)
 
+    def action_serve_bundle(self) -> None:
+        if not self._bundles:
+            self.set_status("No bundle applied here yet.", "error")
+            return
+        self.app.push_screen(ServeBundlePage(self._bundles), lambda stamp: stamp and self._bundle_plan(stamp))
+
+    @work(thread=True, exclusive=True, group="site-plan", exit_on_error=False)
+    def _bundle_plan(self, stamp: str) -> None:
+        self.app.call_from_thread(self.set_status, "reading every repository's versions…")
+        try:
+            steps = ops.bundle_plan(self.app.mset, stamp)
+        except Exception as e:  # noqa: BLE001 — an ssh root down: said on the page
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(self._confirm_bundle, stamp, steps)
+
+    def _confirm_bundle(self, stamp: str, steps) -> None:
+        from mmw.tui.ui.dialog import ConfirmDialog
+        when = _date(stamp)
+        if not any(s.changes for s in steps):
+            self.set_status(f"Every repository already serves what it had after the {when} bundle.", "ok")
+            return
+        self.set_status("")
+        self.app.push_screen(
+            ConfirmDialog(f"Serve the mirror as of the {when} bundle?",
+                          "Each repository serves its newest version from then; those that came later stay "
+                          "as they are. Any not on its newest is held until you forward it.",
+                          confirm_label="Serve", confirm_variant="primary", cancel_variant="default",
+                          details="\n".join(s.line() for s in steps)),
+            lambda ok: ok and self._act(f"serving the mirror as of the {when} bundle", ops.serve_bundle, steps))
+
     def action_move(self) -> None:
         repo = self.selected_repo()
         if repo is None:
@@ -511,6 +550,38 @@ class PassphrasePage(Page):
     def _go(self) -> None:
         from textual.widgets import Input
         self.dismiss(self.query_one("#ca-pass", Input).value or None)
+
+
+class ServeBundlePage(Page):
+    """Which bundle to serve the whole mirror as of."""
+
+    TITLE = "Serve bundle"
+
+    def __init__(self, bundles: list[tuple[str, str | None, int]]):
+        super().__init__()
+        self.subtitle = "every repository at its newest version from then"
+        self._bundles = bundles
+
+    def compose_body(self) -> ComposeResult:
+        from mmw.tui.ui.form import ChoiceField, Form
+        options = [(" · ".join([_date(stamp), *([label] if label else []),
+                                f"{n} repositor{'y' if n == 1 else 'ies'}"]), stamp)
+                   for stamp, label, n in self._bundles]
+        yield Form(ChoiceField("Bundle", options, self._bundles[0][0], id="bundle-pick",
+                               hint="A repository the bundle didn't change serves its version from before it."))
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Cancel", id="btn-bundle-cancel", compact=True)
+        yield Button("Review…", id="btn-bundle-go", variant="primary", compact=True)
+
+    @on(Button.Pressed, "#btn-bundle-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-bundle-go")
+    def _go(self) -> None:
+        from textual.widgets import Select
+        self.dismiss(self.query_one("#bundle-pick", Select).value)
 
 
 class MoveRootPage(Page):

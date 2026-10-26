@@ -43,14 +43,20 @@ class StartPage(Page):
     @on(Button.Pressed, "#start-open")
     def _pick_root(self) -> None:
         from mmw.tui.path_pick import PathPickPage
-        self.app.push_screen(PathPickPage("Open a mirror", "a root: a folder mmw serves from"),
+        self.app.push_screen(PathPickPage("Open a mirror", "a root: a folder mmw serves from, "
+                                          "or type host:/path for one over ssh", remote=True),
                              lambda path: path and self.open_path(path))
 
     def open_path(self, path: str) -> None:
+        from mmw.site import mset as _mset
         from mmw.site import recents
-        from mmw.site.home import read_root
-        from mmw.site.mset import open_set
-        info = read_root(path)
+        from mmw.site.ssh import SshError
+        try:
+            found = _mset.root_at(path)              # a folder, or host:/path over ssh
+        except (SshError, ValueError, LookupError) as e:
+            self._note(str(e))                       # key auth, host key, mmw missing there: said plainly
+            return
+        info = found.info if found is not None else None
         if info is None:
             # Not a mirror yet — most likely where one should go: offered as
             # the root when a bundle is applied, never an error to puzzle over.
@@ -60,7 +66,7 @@ class StartPage(Page):
                        "is offered as the root for its hostnames.")
             return
         recents.remember(path)
-        self.app.mset = open_set(set_id=info.set_id)
+        self.app.mset = _mset.open_set(set_id=info.set_id)
         self.app._titles()
         from mmw.tui.site.home import SiteHomePage
         self.app.push_screen(SiteHomePage())

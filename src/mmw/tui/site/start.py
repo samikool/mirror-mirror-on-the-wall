@@ -50,9 +50,16 @@ class StartPage(Page):
     def open_path(self, path: str) -> None:
         from mmw.site import mset as _mset
         from mmw.site import recents
-        from mmw.site.ssh import SshError
+        from mmw.site.ssh import RemoteMmw, SshError
         try:
             found = _mset.root_at(path)              # a folder, or host:/path over ssh
+        except RemoteMmw as e:
+            if not e.installable:
+                self._note(str(e))
+                return
+            from mmw.tui.site.install_flow import offer_install
+            offer_install(self, path, e, lambda: self.open_path(path), lambda text, _kind: self._note(text))
+            return
         except (SshError, ValueError, LookupError) as e:
             self._note(str(e))                       # key auth, host key, mmw missing there: said plainly
             return

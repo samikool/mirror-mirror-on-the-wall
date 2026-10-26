@@ -90,7 +90,14 @@ INSTALL = 'd=$(mktemp -d) && tar -xf - -C "$d" && sh "$d"/mmw-*/install.sh && rm
 
 
 class RemoteMmw(ValueError):
-    """The remote host has no mmw, or one too old to talk to."""
+    """The remote host has no mmw, or one too old to talk to. `reason` is
+    the problem without the how-to (the TUI offers the install instead);
+    `installable` when installing this mmw there would fix it."""
+
+    def __init__(self, message: str, *, reason: str | None = None, installable: bool = False):
+        super().__init__(message)
+        self.reason = reason or message
+        self.installable = installable
 
 
 def mmw_argv(*args: str) -> list[str]:
@@ -118,15 +125,24 @@ def check_remote_mmw(host: str) -> None:
     try:
         out = run(host, mmw_argv("--version")).decode().strip()
     except RemoteFailed:
-        raise RemoteMmw(f"mmw isn't installed on {host} {hint}") from None
+        reason = f"mmw isn't installed on {host}"
+        raise RemoteMmw(f"{reason} {hint}", reason=reason, installable=True) from None
     there = out.split()[-1] if out else ""
     try:
         older = Version(there) < Version(here)
     except InvalidVersion:
-        raise RemoteMmw(f"mmw on {host} says {out!r}, not a version {hint}") from None
+        reason = f"mmw on {host} says {out!r}, not a version"
+        raise RemoteMmw(f"{reason} {hint}", reason=reason, installable=True) from None
     if older:
-        raise RemoteMmw(f"mmw on {host} is older ({there} < {here}) {hint}")
+        reason = f"mmw on {host} is older ({there} < {here})"
+        raise RemoteMmw(f"{reason} {hint}", reason=reason, installable=True)
     _checked.add(host)
+
+
+def remote_arch(host: str) -> str:
+    """The remote machine's architecture, as installers name it (`uname -m`)."""
+    m = run(host, ["uname", "-m"]).decode().strip()
+    return {"arm64": "aarch64"}.get(m, m)
 
 
 def install_remote(host: str, installer) -> None:

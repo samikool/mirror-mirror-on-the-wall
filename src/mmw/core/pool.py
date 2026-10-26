@@ -1639,6 +1639,16 @@ class Pool:
                 raise
         return bid
 
+    def mark_installer_sent(self, network: str, sent: dict) -> None:
+        """The newest bundle of `network` went with mmw's installer (`sent`: {mmw, …})."""
+        with self._lock:
+            c = self._conn
+            if "runtime" not in {r[1] for r in c.execute("PRAGMA table_info(bundles)")}:
+                return
+            c.execute("UPDATE bundles SET runtime = ? WHERE id = (SELECT max(id) FROM bundles WHERE network = ?)",
+                      (json.dumps(sent, sort_keys=True), network))
+            c.commit()
+
     def runtime_sent(self, network: str) -> dict | None:
         """The mmw runtime the newest bundle that carried one carried."""
         with self._read() as c:

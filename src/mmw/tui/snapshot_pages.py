@@ -156,7 +156,7 @@ class BundlePickPage(Page):
                            hint="A folder costs almost no disk; tar, rsync or copy it across yourself.")]
               if self._repos else []),
             *([ChoiceField("mmw installer", [("Include mmw installer", "yes"), ("Not this time", "no")],
-                           "no" if self._last else "yes", id="pick-installer",
+                           "yes" if self._installer_due() else "no", id="pick-installer",
                            hint="Written beside it: the far side installs mmw from it, offline.")]
               if self._net.far_side == "mmw" else []),
             id="pick-form")
@@ -185,6 +185,13 @@ class BundlePickPage(Page):
     def _got_installer(self, note: str) -> None:
         self._installer_note = note
         self._estimate_now()
+
+    def _installer_due(self) -> bool:
+        from mmw.core import runtime as rt
+        try:
+            return rt.installer_due(self._net, self._mirror_dir)
+        except Exception:  # noqa: BLE001 — a default, never a failure
+            return not self._last
 
     def _installer(self) -> bool:
         return self.query_one(Form).values().get("pick-installer") == "yes"

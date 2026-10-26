@@ -126,6 +126,20 @@ networks whose far side runs mmw (`far_side = "mmw"`).
 | `--installer` |  | Include mmw installer: write `mmw-<version>-<arch>.tar` beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
 
+### `mmw update`
+
+Update mmw to the newest release on PyPI, the way it was installed:
+`uv tool upgrade`, `pipx upgrade`, or the virtualenv's pip. A system
+Python that refuses changes, or a source checkout, is told the command
+instead. `--yes` skips the question.
+
+On the connected side every command also checks PyPI when it starts, in the
+background, and offers a newer mmw when it's done: `update now? [Y/n]` in a
+terminal (`[y/N]` for a new major version), one line on stderr otherwise —
+never a prompt in cron or a pipe. The TUI asks when it opens. No is asked
+again next time. `MMW_NO_UPDATE_CHECK=1`, or `update_check = false` in
+`mmw.toml`, turns it off. `mmw site …` never checks a network.
+
 ### `mmw installer`
 
 Write mmw's installer on its own: one `mmw-<version>-<arch>.tar` per

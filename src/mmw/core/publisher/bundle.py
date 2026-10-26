@@ -453,6 +453,11 @@ def _write_installers(result, network, mirror_dir: Path, out_dir: Path, wheel, f
             progress=(lambda m: progress("", f"runtime:{m}")) if progress else None, stop_event=stop_event)
     except (rt.RuntimeUnavailable, OSError, InterruptedError, ValueError) as e:
         result.warnings.append(f"mmw installer not written ({e})")
+        return
+    if result.installers:
+        from mmw.core.installer import _version
+        with Pool(mirror_dir) as pool:            # so the next transfer knows this mmw went across
+            pool.mark_installer_sent(network.name, {"mmw": _version(wheel)})
 
 
 def _check_wheel(wheel: Path) -> None:

@@ -169,7 +169,7 @@ def _info(root, args, stdin, stdout) -> int:
     i = root.info
     _emit(stdout, {"name": i.name, "set_id": i.set_id, "network": i.network, "members": list(i.members),
                    "hosts": root.hosts_map(), "hosts_at": root.hosts_at(), "hostnames": sorted(root.hostnames()), "free": root.free_bytes(),
-                   "path": str(i.path), "mmw": mmw_version(), "protocol": PROTOCOL})
+                   "path": str(i.path), "mmw": mmw_version(), "arch": root.arch(), "protocol": PROTOCOL})
     return 0
 
 

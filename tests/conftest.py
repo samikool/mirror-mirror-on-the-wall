@@ -112,3 +112,5 @@ def _isolated_mmw_state(tmp_path_factory, monkeypatch):
     """This machine's mmw state (recent roots, the CA's location) per test —
     never the real ~/.local/state/mmw."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state")))
+    # Never a real PyPI check from a test; the update tests turn it back on.
+    monkeypatch.setenv("MMW_NO_UPDATE_CHECK", "1")

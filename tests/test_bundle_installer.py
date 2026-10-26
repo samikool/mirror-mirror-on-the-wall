@@ -179,14 +179,15 @@ def _never_sent():
     return replace(snapshot_status_demo(), last_bundle=None)
 
 
-def test_transfer_page_offers_installer(tmp_path):
+def test_transfer_page_offers_installer(tmp_path, monkeypatch):
     from mmw.tui.ui.form import Form
     from test_tui_sweep import snapshot_status_demo
 
     async def value(app, pilot):
         return app.screen.query_one(Form).values().get("pick-installer")
-    assert _pick_page(tmp_path, _never_sent(), value) == "yes"          # first transfer: on
-    assert _pick_page(tmp_path, snapshot_status_demo(), value) == "no"  # sent before: off
+    assert _pick_page(tmp_path, _never_sent(), value) == "yes"          # first transfer: on (no pool, never sent)
+    monkeypatch.setattr(R, "installer_due", lambda network, mirror_dir: False)
+    assert _pick_page(tmp_path, snapshot_status_demo(), value) == "no"  # this mmw already went across: off
 
     async def absent(app, pilot):
         return app.screen.query("#pick-installer")
@@ -290,3 +291,24 @@ def test_cli_installer_defaults_to_the_current_folder(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["--config", str(tmp_path), "installer"])
     assert r.exit_code == 0, r.output
     assert list(work.glob("mmw-*.tar"))
+
+
+# ── the newest mmw rides along by default ────────────────────────────────────
+
+def test_installer_due_first_time_and_after_an_upgrade(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
+    cfg, net, md = _mmw(two_mirrors)
+    assert R.installer_due(net, md)                                   # never sent
+    bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None, installer=True, fetcher=FakeFetcher())
+    assert not R.installer_due(net, md)                               # this mmw went with it
+    monkeypatch.setattr(R, "mmw_version", lambda: "99.0.0")
+    assert R.installer_due(net, md)                                   # a newer mmw here now
+
+
+def test_transfer_page_defaults_installer_from_the_ledger(tmp_path, monkeypatch):
+    from mmw.tui.ui.form import Form
+    from test_tui_sweep import snapshot_status_demo
+    monkeypatch.setattr(R, "installer_due", lambda network, mirror_dir: True)
+
+    async def value(app, pilot):
+        return app.screen.query_one(Form).values().get("pick-installer")
+    assert _pick_page(tmp_path, snapshot_status_demo(), value) == "yes"   # sent before, but this mmw is newer

@@ -19,7 +19,7 @@ def _run_tui(app):
         saved_tc = None
     saved_sigwinch = signal.getsignal(signal.SIGWINCH)
     try:
-        return app.run()
+        result = app.run()
     finally:
         if saved_tc is not None:
             try:
@@ -40,6 +40,12 @@ def _run_tui(app):
             "\x1b[?1049l"   # leave alternate screen (no-op if already normal)
         )
         sys.stdout.flush()
+    # An update finished inside the app: the new mmw starts only now, with the
+    # terminal already restored above.
+    from mmw.tui.update_flow import relaunch_if_updated
+    relaunch_if_updated(app)
+    return result
+
 
 app = typer.Typer(
     name="mmw",
@@ -82,6 +88,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def _main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False, "--version", "-V", callback=_version_callback, is_eager=True,
         help="Show the version and exit.",
@@ -98,6 +105,33 @@ def _main(
     bug is often on the far side of an airgap, with no `git log`, no network
     and no way to tell which build produced the bundle it is holding.
     """
+    _start_update_check(ctx)
+
+
+def _start_update_check(ctx: typer.Context) -> None:
+    """Check PyPI for a newer mmw in the background; offered when the command
+    is done. Never for the far side (`mmw site …`), `mmw update` itself, or
+    the TUI (it asks for itself)."""
+    from mmw.commands.update import NEVER, after_command
+    from mmw.core import update as U
+    import sys
+    if ctx.invoked_subcommand in NEVER or ctx.invoked_subcommand is None or ctx.resilient_parsing:
+        return
+    if {"--help", "-h"} & set(sys.argv[1:]):
+        return                                     # help is never followed by a question
+    cfg = None
+    try:
+        from mmw.core import config
+        cfg = config.load(_cfg_dir())
+    except Exception:  # noqa: BLE001 — no mmw.toml here: checks stay on
+        pass
+    if U.checks_disabled(cfg):
+        return
+    checker = U.Checker().start()
+    mirror_dir = cfg.settings.mirror_dir if cfg is not None else None
+    # Inside the context's exit: exc_info is what is propagating (Exit on
+    # success, or Ctrl-C, a usage error, a crash — no offer after those).
+    ctx.call_on_close(lambda: after_command(checker, mirror_dir, exc=sys.exc_info()[1]))
 
 
 def _load_config_or_exit(cfg_dir: Path):
@@ -803,6 +837,13 @@ def cmd_snapshot_clean(network: str = _SNAP_NET,
     """Delete all but the newest N snapshots (previews unless --yes)."""
     from mmw.commands.snapshot import clean
     raise typer.Exit(clean(_cfg_dir(), network, keep, yes))
+
+
+@app.command("update")
+def cmd_update(yes: bool = typer.Option(False, "--yes", help="Don't ask")):
+    """Update mmw to the newest release, the way it was installed (uv tool, pipx, pip)."""
+    from mmw.commands.update import run
+    raise typer.Exit(run(_cfg_dir(), yes))
 
 
 @app.command("verify")

@@ -422,6 +422,28 @@ def wanted(network, wheel: Path | None = None) -> dict:
     return {"mmw": version, "python": network.runtime_python, "arches": sorted(network.runtime_arches), **built}
 
 
+def installer_due(network, mirror_dir: Path) -> bool:
+    """Whether the next transfer should carry mmw's installer: never sent to
+    this network, or this mmw is newer than the last one sent (bundles carry
+    the newest mmw, so the far side can update from it)."""
+    if getattr(network, "far_side", None) != "mmw":
+        return False
+    from packaging.version import InvalidVersion, Version
+
+    from mmw.core.pool import Pool
+    try:
+        with Pool(mirror_dir, read_only=True) as pool:
+            sent = pool.runtime_sent(network.name)
+    except Exception:  # noqa: BLE001 — no pool yet: nothing was ever sent
+        return True
+    if not sent or not sent.get("mmw"):
+        return True
+    try:
+        return Version(mmw_version()) > Version(sent["mmw"])
+    except InvalidVersion:
+        return True
+
+
 def installer_note(network, mirror_dir: Path) -> str:
     """What "Include mmw installer" adds, said for an estimate: the cached
     runtimes' size, or the download it makes the first time."""

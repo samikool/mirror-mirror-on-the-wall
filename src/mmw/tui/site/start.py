@@ -73,6 +73,13 @@ class StartPage(Page):
             self.query_one(b, Button).disabled = on
 
     def apply_path(self, path: str) -> None:
+        """A newer mmw next to the bundle is offered first; then the bundle is read."""
+        self.app.offer_far_update(path, lambda: self._read_bundle(path))
+
+    def resume_bundle(self, path: str) -> None:
+        self._read_bundle(path)                    # just updated: carry on with the same bundle
+
+    def _read_bundle(self, path: str) -> None:
         from pathlib import Path
         self._busy(True)
         self._note(f"Reading {Path(path).name}… — its list of files and hostnames. A big bundle made before "

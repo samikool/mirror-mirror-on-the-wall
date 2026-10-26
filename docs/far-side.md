@@ -107,10 +107,27 @@ applied 20261031T101500Z
 
 ### Updates to mmw itself
 
-Install the newer installer file (above). Bundles made before the
-installer existed carried mmw's runtime inside them: it is ignored, with
-the note "this bundle carries an mmw runtime — ignored; install mmw from
-its installer file", and the content applies as usual.
+The far side never checks a network: its newer mmw is the installer file
+that travels next to a bundle. A transfer includes it whenever the
+connected side's mmw is newer than the last one sent to that network.
+
+When you apply a bundle with a newer `mmw-<version>-<arch>.tar` next to
+it, mmw asks first ("Update now?" in the TUI, `[Y/n]` in a terminal). Yes
+updates **every machine of the mirror** — each ssh root, then this one —
+restarts, and carries on applying the same bundle with the new mmw. If any
+root can't take it (no installer for its architecture next to the bundle,
+or it can't be reached), nothing is updated and the message says which.
+
+- A new major version (1.x → 2.x) warns that it may change how mmw works
+  and defaults to No.
+- No is asked again next time.
+- `MMW_NO_UPDATE_CHECK=1` turns the offer off (cron, scripts).
+- Older installs stay in place next to the new one.
+
+Bundles made before the installer existed carried mmw's runtime inside
+them: it is ignored, with the note "this bundle carries an mmw runtime —
+ignored; install mmw from its installer file", and the content applies as
+usual.
 
 ## Serve another version
 

@@ -15,7 +15,7 @@ from textual.widgets import Input, Label, Select
 
 from mmw.tui.theme import ordered_theme_names
 from mmw.tui.ui.dialog import ConfirmDialog
-from mmw.tui.ui.form import ActionField, ChoiceField, Form, PathField, TextField
+from mmw.tui.ui.form import ActionField, ChoiceField, Form, PathField, TextField, ToggleField
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
@@ -61,6 +61,11 @@ class SettingsPage(Page):
                 "Disk read-ahead (files)", str(s.disk_readahead),
                 id="settings-disk-readahead", integer_min=0,
                 hint="Files opened ahead of a bundle or hash stream. 0 turns it off.",
+            ),
+            ToggleField(
+                "Check for mmw updates", s.update_check, id="settings-update-check",
+                hint="On every start, ask PyPI for a newer mmw and offer it. "
+                     "MMW_NO_UPDATE_CHECK=1 also turns it off (for cron and CI).",
             ),
             ChoiceField(
                 "Theme", [(n, n) for n in names], self.app.theme, id="settings-theme",
@@ -112,6 +117,7 @@ class SettingsPage(Page):
                 disk_write_threads=v["settings-disk-write-threads"],
                 disk_read_threads=v["settings-disk-read-threads"],
                 disk_readahead=v["settings-disk-readahead"],
+                update_check=v["settings-update-check"],
                 theme=self.app.theme,
             )
         except Exception as e:  # noqa: BLE001 — reported on the page

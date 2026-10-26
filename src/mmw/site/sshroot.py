@@ -90,6 +90,14 @@ class SshRoot:
     def hostnames(self) -> set[str]:
         return set(self._info["hostnames"])
 
+    def arch(self) -> str:
+        """The remote machine's architecture — from its mmw, or (an older
+        mmw that doesn't say) `uname -m`; never assumed."""
+        if not self._info.get("arch"):
+            m = ssh.run(self.host, ["uname", "-m"]).decode().strip()
+            self._info["arch"] = {"arm64": "aarch64"}.get(m, m)
+        return self._info["arch"]
+
     def free_bytes(self) -> int:
         return int(self._call("info")["free"])
 

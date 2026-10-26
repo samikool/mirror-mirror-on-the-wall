@@ -6,6 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from textual.widgets import Static
+
+from mmw.tui.site.run_page import RunPage, escape_markup
+
 
 def offer_install(page, location: str, problem, then: Callable[[], None],
                   say: Callable[[str, str], None]) -> None:
@@ -59,19 +63,50 @@ def offer_install(page, location: str, problem, then: Callable[[], None],
         install(tar)
 
     def install(tar: Path) -> None:
-        say(f"installing mmw on {host}…", "info")
-        page.run_worker(lambda: push(tar), thread=True, group="site-install", exit_on_error=False)
-
-    def push(tar: Path) -> None:
-        try:
-            ssh.install_remote(host, tar)
-        except Exception as e:  # noqa: BLE001
-            page.app.call_from_thread(say, str(e), "error")
-            return
-        page.app.call_from_thread(done)
+        say("", "info")
+        page.app.push_screen(InstallRunPage(host, tar), lambda ok: ok and done())
 
     def done() -> None:
         say(f"mmw installed on {host}", "ok")
         then()
 
     page.run_worker(find, thread=True, group="site-install", exit_on_error=False)
+
+
+class InstallRunPage(RunPage):
+    """The installer going over ssh, then its install.sh running there."""
+
+    TITLE = "Installing mmw"
+    RATE = "sending"
+
+    def __init__(self, host: str, tar: Path):
+        from mmw.core import disk_io
+        super().__init__(disk_io.ops.stat(tar).st_size, [(host, f"mmw → {host}")], {host: 0})
+        self._host, self._tar = host, tar
+        self._sizes[host] = self._total
+        self.subtitle = f"{tar.name} → {host}"
+        self.ok = False
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#btn-run-stop").disabled = True     # an install half-run helps nobody
+
+    def updated_note(self) -> str:
+        return "installed"
+
+    def job(self, progress, stop):
+        from mmw.site import ssh
+        progress("repo", repo=self._host)
+        ssh.install_remote(self._host, self._tar, progress=lambda n: progress("receive", bytes=n))
+        progress("finished", repo=self._host)
+        progress("done")
+
+    def _done(self, _result) -> None:
+        self.ok = True
+        self.query_one("#run-done", Static).update(
+            f"[b $success]✓ mmw installed on {escape_markup(self._host)}[/] — Close carries on")
+        self.set_status("")
+        self._finish()
+
+    def close_value(self) -> bool:
+        return self.ok                      # installed: the action that needed it carries on

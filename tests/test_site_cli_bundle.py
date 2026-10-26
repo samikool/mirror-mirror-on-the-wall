@@ -110,10 +110,26 @@ def test_serve_bundle_failing_part_way_says_what_was_and_wasnt(env, tmp_path, mo
         def __init__(self, fails):
             self.fails = fails
 
-        def serve(self, key, number):
+        def serve(self, key, number, progress=None):
             if self.fails:
                 raise OSError("lock held")
     steps = [BundleStep(Root(False), "x", "x", None, v), BundleStep(Root(True), "y", "y", None, v),
              BundleStep(Root(False), "z", "z", None, v)]
     with pytest.raises(ValueError, match="served: x; not served: y, z"):
         ops.serve_bundle(steps)
+
+
+def test_serve_bundle_says_each_file_and_stops_between_repositories(env, tmp_path, monkeypatch):  # noqa: F811
+    import threading
+    import pytest
+    _cfg, home, root, trees = _dated(env, tmp_path, monkeypatch)
+    events = []
+    steps = ops.bundle_plan(open_set(), "2026-10-01")
+    ops.serve_bundle(steps, progress=lambda e, **d: events.append((e, d)))
+    kinds = [e for e, _ in events]
+    assert kinds[0] == "repo" and "receive" in kinds and "finished" in kinds and kinds[-1] == "done"
+
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(ValueError, match="stopped"):
+        ops.serve_bundle(ops.bundle_plan(open_set(), "2026-10-03"), stop_event=stop)

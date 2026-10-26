@@ -145,15 +145,18 @@ def remote_arch(host: str) -> str:
     return {"arm64": "aarch64"}.get(m, m)
 
 
-def install_remote(host: str, installer) -> None:
+def install_remote(host: str, installer, progress=None) -> None:
     """Stream an installer tar (`mmw-<version>-<arch>.tar`) to `host` and run
-    its install.sh there — over the same key-based ssh, nothing copied first."""
+    its install.sh there — over the same key-based ssh, nothing copied first.
+    `progress(bytes)` as each piece goes."""
     from mmw.core import disk_io
     proc = popen(host, ["sh", "-c", INSTALL])
     try:
         with disk_io.ops.open_rb(installer) as fh:
             while chunk := fh.read(1 << 20):
                 proc.stdin.write(chunk)
+                if progress:
+                    progress(len(chunk))
         proc.stdin.close()
     except BrokenPipeError:
         pass

@@ -220,3 +220,16 @@ def test_cli_move_says_the_whole_host_moves(two_mirrors, tmp_path):  # noqa: F81
     r = CliRunner().invoke(cli.app, ["site", "move", "a", "r2", "--yes"])
     assert r.exit_code == 0, r.output
     assert "can't move on its own: a, b move together" in r.output and "moved a, b" in r.output
+
+
+def test_serve_and_tidy_say_each_file(hosts, tmp_path):  # noqa: F811
+    _cfg, _net, _md, r1, r2 = _split(hosts, tmp_path)
+    m = open_set()
+    root, key = m.root_for_repo("b")
+    placed = []
+    root.serve(key, 1, progress=placed.append)
+    assert placed == []                                         # already serving v1: nothing to place
+    ops.move_repo(open_set(), "b", "r1")
+    removed = []
+    assert ops.tidy_set(open_set(), progress=removed.append) == ["b"]
+    assert removed and all(isinstance(p, str) for p in removed)

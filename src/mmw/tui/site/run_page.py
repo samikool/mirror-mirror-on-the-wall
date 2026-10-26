@@ -23,18 +23,22 @@ class RunPage(Page):
     takes:
 
     - `("repo", repo=)`: that repository's bytes start;
-    - `("receive"|"copy", bytes=, name=)`: bytes done;
+    - `("receive"|"copy", bytes=, name=)`: bytes (or files, by UNIT) done;
     - `("check")`: everything is in, being checked;
     - `("switch", repo=)`: that repository is switching;
+    - `("finished", repo=)`: that repository is done;
     - `("done")`: the job ended.
+
+    A total of None is not known beforehand: the bar runs without one.
     """
 
     SCROLLS = True
     RATE = "reading"                      # what the bytes are: "reading at 40 MB/s"
+    UNIT = "bytes"                        # or "files": a switch or a tidy counts files
     STOP_NOTE = ""                        # what Stop keeps, said while it runs
     UNCHANGED = ""                        # said after a failure that changed nothing
 
-    def __init__(self, total_bytes: int, rows: list[tuple[str, str]], sizes: dict[str, int] | None = None):
+    def __init__(self, total_bytes: int | None, rows: list[tuple[str, str]], sizes: dict[str, int] | None = None):
         super().__init__()
         self._stop = threading.Event()
         self.finished = False
@@ -51,7 +55,7 @@ class RunPage(Page):
         self._last_report = 0.0
 
     def compose_body(self) -> ComposeResult:
-        yield ProgressBar(total=max(self._total, 1), show_eta=False, id="run-bar")
+        yield ProgressBar(total=None if self._total is None else max(self._total, 1), show_eta=False, id="run-bar")
         yield Static("", id="run-rate")
         yield Static(self._repo_lines(), id="run-repos")
         yield Static("", id="run-file", markup=False)
@@ -96,8 +100,8 @@ class RunPage(Page):
                 got, size = self._got.get(r, 0), self._sizes.get(r, 0)
                 pct = f"  {100 * got // size}%" if size else ""
                 left = f" · ~{int((size - got) / rate)}s" if rate and size > got else ""
-                rows.append(f"  ▶ {label:<34} {fmt_size(got)} / {fmt_size(size)}{pct}"
-                            f"  [dim]· {fmt_size(int(rate))}/s{left}[/]")
+                of = f" / {self._fmt(size)}{pct}" if size else ""
+                rows.append(f"  ▶ {label:<34} {self._fmt(got)}{of}  [dim]· {self._fmt(int(rate))}/s{left}[/]")
             elif state == "switching":
                 rows.append(f"  ▶ {label:<34} switching")
             elif state == "received":
@@ -109,6 +113,11 @@ class RunPage(Page):
             else:
                 rows.append(f"  ◐ {label:<34} {state}")
         return "\n".join(rows)
+
+    def _fmt(self, n: int) -> str:
+        if self.UNIT == "files":
+            return f"{n:,} file{'' if n == 1 else 's'}"
+        return fmt_size(n)
 
     def received_note(self) -> str:
         return "received — switches once everything is checked"
@@ -159,9 +168,13 @@ class RunPage(Page):
             self.query_one("#run-bar", ProgressBar).update(progress=self._read)
             elapsed = max(time.monotonic() - self._started, 0.001)
             rate = self._read / elapsed
-            left = (self._total - self._read) / rate if rate else 0
-            self.query_one("#run-rate", Static).update(
-                f"{self.RATE} at {fmt_size(int(rate))}/s · about {int(left // 60)} min {int(left % 60)} s left")
+            text = f"{self.RATE} at {self._fmt(int(rate))}/s"
+            if self._total:
+                left = max(self._total - self._read, 0) / rate if rate else 0
+                text += f" · about {int(left // 60)} min {int(left % 60)} s left"
+            else:
+                text += f" · {self._fmt(self._read)} so far"
+            self.query_one("#run-rate", Static).update(text)
         elif event == "check":
             self.query_one("#run-rate", Static).update("checking everything against the manifest…")
         elif event == "switch":
@@ -173,6 +186,10 @@ class RunPage(Page):
             self._state[data["repo"]] = "switching"
             self.query_one("#run-repos", Static).update(self._repo_lines())
             self.query_one("#run-file", Static).update("")
+        elif event == "finished":
+            if data.get("repo") in self._state:
+                self._state[data["repo"]] = "updated"
+            self.query_one("#run-repos", Static).update(self._repo_lines())
         elif event == "done":
             for repo in list(self._state):
                 if self._state[repo] == "switching":
@@ -193,6 +210,13 @@ class RunPage(Page):
 
     def _finish(self) -> None:
         self.finished = True
+        took = int(time.monotonic() - self._started)
+        bar = self.query_one("#run-bar", ProgressBar)
+        if bar.total is None:
+            bar.update(total=max(self._read, 1), progress=max(self._read, 1))
+        did = f" · {self._fmt(self._read)}" if self._read else ""
+        self.query_one("#run-rate", Static).update(
+            f"done in {took // 60} min {took % 60} s{did}" if took >= 60 else f"done in {took} s{did}")
         self.query_one("#btn-run-stop", Button).disabled = True
         close = self.query_one("#btn-run-close", Button)
         close.disabled = False
@@ -213,10 +237,14 @@ class RunPage(Page):
         self._stop.set()
         self.set_status("stopping…")
 
+    def close_value(self):
+        """What the page hands back when it closes."""
+        return None
+
     @on(Button.Pressed, "#btn-run-close")
     def _close(self) -> None:
-        self.dismiss(None)
+        self.dismiss(self.close_value())
 
     def action_back(self) -> None:
         if self.finished:
-            self.dismiss(None)
+            self.dismiss(self.close_value())

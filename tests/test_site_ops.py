@@ -89,3 +89,10 @@ def test_cli_serve_needs_yes_without_tty(env, tmp_path):  # noqa: F811
     assert r.exit_code == 0 and _tree(root) == trees[2]
     r = run("hold", "a")
     assert r.exit_code == 0 and "held" in r.output
+
+
+def test_serve_says_each_file_it_places(env, tmp_path):  # noqa: F811
+    _cfg, home, _root, _ = _three(env, tmp_path)
+    placed = []
+    ops.serve(home, "a", 1, progress=placed.append)
+    assert placed and all(isinstance(p, str) for p in placed)

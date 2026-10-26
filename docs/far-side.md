@@ -188,10 +188,16 @@ mmw site tidy                       # once nginx is recreated in both: clear the
 
 - Each root gets its own `nginx/` (`mirror.conf` for just its hostnames,
   `compose.yaml`, the image). Recreate nginx in each root the command names.
-- Two repositories that share a hostname move together — nginx routes a
-  hostname to one place.
-- A move copies every kept version's files into the new root and places
-  them before anything is recorded; an interrupted move just runs again.
+- A hostname is served from one root, so a repository that shares one —
+  `deb.debian.org` carries both `debian` and `debian-security` — can't move
+  on its own: the whole host moves, every repository on it, and Move says
+  so before it asks.
+- A move copies every kept version's files into the new root first, then
+  switches them together; Stop during the copy switches nothing, and
+  moving again picks up from what was copied. An interrupted switch just
+  runs again. In the TUI (**m**) it runs on the same progress page as an
+  apply, and Move lists each root with where it is — *on HOST · /path* for
+  one over ssh.
   The old root keeps serving its copy until you recreate nginx in both
   roots and run `mmw site tidy`.
 - Every command takes `--root PATH` (any root of the mirror) when this
@@ -225,7 +231,11 @@ mmw site apply oak.tar --root pypi.org=lnxp005:/data/mirror
   dash, zsh): mmw quotes every remote command for one. fish and csh are
   untested.
 - The remote's mmw must be the same version or newer; `--install` pushes
-  the installer over the same ssh. A host that can't be reached shows as
+  the installer over the same ssh. In the TUI (Add root, Open a mirror,
+  placing a bundle's hostnames) a machine without mmw, or with an older
+  one, gets the offer instead: it finds `mmw-<version>-<arch>.tar` for
+  that machine beside a recently applied bundle — or asks for one — and
+  installs it before carrying on. A host that can't be reached shows as
   MISSING (*can't reach lnxp005*) and its hostnames are held back.
 
 ## HTTPS

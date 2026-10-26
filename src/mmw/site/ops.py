@@ -295,6 +295,22 @@ class MoveResult:
     files: int
     nginx_changed: list[str]
     tls_notes: list[str] = field(default_factory=list)
+    moved: list[str] = field(default_factory=list)        # labels: the repository, and any sharing its hostname
+
+
+@dataclass(frozen=True)
+class MovePreview:
+    """What a move takes, for its confirmation: the repositories (more than
+    the one asked for when they share a hostname), their hostnames, and the
+    bytes the target root lacks."""
+    labels: list[str]
+    hosts: list[str]
+    copies: int
+    repos: list[str] = field(default_factory=list)        # their keys, in the same order
+
+    @property
+    def whole_host(self) -> bool:
+        return len(self.labels) > 1
 
 
 # ── a set of roots ────────────────────────────────────────────────────────────
@@ -355,7 +371,8 @@ def move_out_info(home: Path, key: str) -> dict:
         return {"label": state.label, "bases": state.bases, "held": state.held,
                 "serving": state.serving.number if state.serving else None, "versions": versions,
                 "hosts": sorted(hosts),
-                "sharing": [s.label for s in db.repo_states() if s.repo != key and hosts & _hosts_of(s.bases)]}
+                "sharing": [s.label for s in db.repo_states() if s.repo != key and hosts & _hosts_of(s.bases)],
+                "sharing_keys": [s.repo for s in db.repo_states() if s.repo != key and hosts & _hosts_of(s.bases)]}
 
 
 def move_in(home: Path, key: str, info: dict) -> bool:
@@ -431,49 +448,96 @@ def tidy_here(home: Path) -> list[str]:
     return done
 
 
-def move_size(mset, ref: str, to_root: str) -> int:
-    """Bytes moving `ref` to `to_root` copies (what that root lacks)."""
-    src, key = mset.root_for_repo(ref)
-    info = src.move_out_info(key)
-    sizes = {c: size for v in info["versions"] for _rel, c, size in v["files"]}
-    return sum(sizes[c] for c in set(sizes) - mset.root_named(to_root).has(set(sizes)))
-
-
-def move_repo(mset, ref: str, to_root: str) -> MoveResult:
-    """Move a repository, every kept version, to another root of the set.
-    Its files are copied into the target's store and its served version
-    placed there before the old root lets go — a move cut short just runs
-    again. The old root keeps serving its copy (the nginx running there
-    still routes the hostname to it) until `tidy_set`, once nginx has been
-    recreated in both roots."""
-    from mmw.core.format import fmt_size
+def _move_plan(mset, ref: str, to_root: str):
+    """The repositories that move together — `ref` and every one in its root
+    sharing a hostname with it, directly or through another, since a
+    hostname is served from one root — with what each carries."""
     src, key = mset.root_for_repo(ref)
     dst = mset.root_named(to_root)
     if src.info.name == dst.info.name:
         raise ValueError(f"{ref} is already in {dst.info.name}")
-    info = src.move_out_info(key)
-    if info["sharing"]:
-        raise ValueError(f"{info['label']} shares {', '.join(info['hosts'])} with {', '.join(info['sharing'])} — "
-                         "a hostname lives in one root; move them together")
-    sizes = {c: size for v in info["versions"] for _rel, c, size in v["files"]}
+    infos: dict[str, dict] = {}
+    todo = [key]
+    while todo:
+        k = todo.pop()
+        if k in infos:
+            continue
+        info = src.move_out_info(k)
+        if info["sharing"] and "sharing_keys" not in info:      # an older mmw there can't say which
+            raise ValueError(f"{info['label']} shares {', '.join(info['hosts'])} with "
+                             f"{', '.join(info['sharing'])} — update mmw on {src.info.name} to move them together")
+        infos[k] = info
+        todo += info.get("sharing_keys", [])
+    group = sorted(infos, key=lambda k: infos[k]["label"].lower())
+    sizes = {c: size for info in infos.values() for v in info["versions"] for _rel, c, size in v["files"]}
     lacking = set(sizes) - dst.has(set(sizes))
+    return src, dst, group, infos, sizes, lacking
+
+
+def move_preview(mset, ref: str, to_root: str) -> MovePreview:
+    _src, _dst, group, infos, sizes, lacking = _move_plan(mset, ref, to_root)
+    return MovePreview([infos[k]["label"] for k in group],
+                       sorted({h for info in infos.values() for h in info["hosts"]}),
+                       sum(sizes[c] for c in lacking), list(group))
+
+
+def move_size(mset, ref: str, to_root: str) -> int:
+    """Bytes moving `ref` (with any repository sharing its hostname) to
+    `to_root` copies: what that root lacks."""
+    return move_preview(mset, ref, to_root).copies
+
+
+def move_repo(mset, ref: str, to_root: str, progress=None, stop_event=None) -> MoveResult:
+    """Move a repository, every kept version, to another root of the set —
+    and with it every repository sharing a hostname with it: a hostname is
+    served from one root, so the whole host moves.
+
+    Everything is copied into the target's store first (`progress("repo",
+    repo=, label=)`, then `("copy", bytes=)` per file); a stop there switches
+    nothing, and moving again picks up from what was copied. Then each
+    repository switches (`"switch"`): its served version placed there before
+    the old root lets go, so a move cut short runs again; then `"done"`. The
+    old root keeps serving its copy (the nginx running there still routes the
+    hostname to it) until `tidy_set`, once nginx has been recreated in both
+    roots."""
+    from mmw.core.format import fmt_size
+    say = progress or (lambda *a, **k: None)
+    src, dst, group, infos, sizes, lacking = _move_plan(mset, ref, to_root)
+    labels = ", ".join(infos[k]["label"] for k in group)
     need, free = sum(sizes[c] for c in lacking), dst.free_bytes()
     if need > free:
-        raise ValueError(f"moving {info['label']} needs {fmt_size(need)} in {dst.info.name}, which has "
+        raise ValueError(f"moving {labels} needs {fmt_size(need)} in {dst.info.name}, which has "
                          f"{fmt_size(free)} free — nothing was copied")
-    # Until the old root lets go, the copy is not the repository's home: a
+    # Until the old root lets go, a copy is not the repository's home: a
     # move cut short runs again from the old root.
-    dst.set_moving_in(key, src.info.name)
-    for c in sorted(lacking):
-        with src.export_blob(c) as fh:
-            dst.import_blob(fh, c)
-    changed = [dst.info.name] if dst.move_in(key, info) else []
-    if src.move_out_finish(key, dst.info.name, info):
-        changed.insert(0, src.info.name)
-    dst.set_moving_in(key, "")
+    left = set(lacking)
+    for k in group:
+        dst.set_moving_in(k, src.info.name)
+        say("repo", repo=k, label=infos[k]["label"])
+        for c in sorted({c for v in infos[k]["versions"] for _rel, c, _size in v["files"]} & left):
+            if stop_event is not None and stop_event.is_set():
+                raise ValueError(f"stopped — nothing switched; what was copied stays, and moving {labels} "
+                                 "again picks up from there")
+            with src.export_blob(c) as fh:
+                dst.import_blob(fh, c)
+            left.discard(c)
+            say("copy", bytes=sizes[c])
+    if stop_event is not None and stop_event.is_set():
+        raise ValueError(f"stopped — nothing switched; moving {labels} again picks up from there")
+    changed: list[str] = []
+    for k in group:
+        say("switch", repo=k)
+        if dst.move_in(k, infos[k]) and dst.info.name not in changed:
+            changed.append(dst.info.name)
+        if src.move_out_finish(k, dst.info.name, infos[k]) and src.info.name not in changed:
+            changed.insert(0, src.info.name)
+        dst.set_moving_in(k, "")
+    hosts = {h for info in infos.values() for h in info["hosts"]}
     for root in mset.roots:
-        root.set_identity(hosts={**root.hosts_map(), **{h: dst.info.name for h in info["hosts"]}})
-    return MoveResult(need, len(lacking), changed, dst.tls_notes() + src.tls_notes())
+        root.set_identity(hosts={**root.hosts_map(), **{h: dst.info.name for h in hosts}})
+    say("done")
+    return MoveResult(need, len(lacking), changed, dst.tls_notes() + src.tls_notes(),
+                      [infos[k]["label"] for k in group])
 
 
 def tidy_set(mset) -> list[str]:

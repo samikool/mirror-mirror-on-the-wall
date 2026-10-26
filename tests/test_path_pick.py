@@ -199,3 +199,42 @@ def test_path_pick_page_is_a_page():
     from mmw.tui.path_pick import PathPickPage
     from mmw.tui.ui.page import Page
     assert issubclass(PathPickPage, Page) and PathPickPage.SCROLLS is False
+
+
+# ── a place that isn't a local folder yet: Add root ─────────────────────────
+
+def _pick(tmp_path, typed, *, enter=False, **kw):
+    async def scenario():
+        app = _Harness(PathPickPage("Add a root", start=str(tmp_path), **kw))
+        async with app.run_test() as pilot:
+            await _settle(pilot)
+            box = app.screen.query_one("#path-input", Input)
+            box.value = typed
+            if enter:
+                box.focus()                  # where a person types it
+                await pilot.press("enter")
+                await _settle(pilot)
+            if app.result == "unset":
+                app.screen.query_one("#btn-use", Button).press()
+                await _settle(pilot)
+            status = str(app.screen.query_one("#path-status", Label).render()) if app.result == "unset" else ""
+            return app.result, status
+    return asyncio.run(scenario())
+
+
+def test_an_ssh_location_is_taken_as_typed_when_remote_is_allowed(tmp_path):
+    for enter in (False, True):
+        result, _ = _pick(tmp_path, "sam-server-remote:/12-tb/mirrors", enter=enter, remote=True, new=True)
+        assert result == "sam-server-remote:/12-tb/mirrors", enter
+
+
+def test_an_ssh_location_is_refused_where_only_local_paths_make_sense(tmp_path):
+    result, status = _pick(tmp_path, "sam-server-remote:/12-tb/mirrors")
+    assert result == "unset" and "does not exist" in status
+
+
+def test_a_new_folder_is_taken_when_new_is_allowed(tmp_path):
+    result, _ = _pick(tmp_path, str(tmp_path / "fresh"), remote=True, new=True)
+    assert result == str(tmp_path / "fresh")
+    result, status = _pick(tmp_path, str(tmp_path / "no" / "such" / "place"), remote=True, new=True)
+    assert result == "unset" and "no/such" in status            # its parent has to be there

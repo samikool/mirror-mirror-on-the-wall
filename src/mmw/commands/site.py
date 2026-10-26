@@ -421,17 +421,24 @@ def move(repo: str, to_root: str, root: Path | None = None, yes: bool = False, b
     from mmw.site.lock import LockHeld
     try:
         mset = _set(root, break_lock)
-        print(f"moving {repo} to {to_root} copies {fmt_size(ops.move_size(mset, repo, to_root))} first")
+        p = ops.move_preview(mset, repo, to_root)
+        what = repo
+        if p.whole_host:
+            # A hostname is served from one root: the whole host moves.
+            what = f"the whole host {', '.join(p.hosts)}"
+            print(f"{', '.join(p.hosts)} is served from one root, so {repo} can't move on its own: "
+                  f"{', '.join(p.labels)} move together, and switch together once everything is copied")
+        print(f"moving {what} to {to_root} copies {fmt_size(p.copies)} first")
         if not yes:
             if not sys.stdin.isatty():
                 eprint("pass --yes to move it (no terminal to ask on)")
                 return 1
-            if input(f"Move {repo} to {to_root}? [y/N] ").strip().lower() not in ("y", "yes"):
+            if input(f"Move {what} to {to_root}? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
         r = ops.move_repo(mset, repo, to_root)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
-    print(f"moved: {r.files} file(s), {fmt_size(r.copied_bytes)} copied")
+    print(f"moved {', '.join(r.moved)}: {r.files} file(s), {fmt_size(r.copied_bytes)} copied")
     for note in r.tls_notes:
         print(f"! {note}")
     if r.nginx_changed:

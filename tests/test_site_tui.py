@@ -483,3 +483,92 @@ def test_a_failed_action_reloads_what_did_happen(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: "lock was held" in str(page.query_one("#page-status").render()))
         await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
     _run(home, check)
+
+
+def _no_mmw_there(monkeypatch, tmp_path, *, installer: bool):
+    """ops.add_root meets a host without mmw once; an installer beside a recent bundle, or none."""
+    from mmw.core.runtime import mmw_version
+    from mmw.site import ssh
+    from mmw.tui.site import apply_flow
+    bundle = tmp_path / "carried" / "oak-20261101T000000Z.tar"
+    bundle.parent.mkdir()
+    bundle.write_bytes(b"bundle")
+    tar = bundle.parent / f"mmw-{mmw_version()}-x86_64.tar"
+    if installer:
+        tar.write_bytes(b"installer")
+    calls, installs = [], []
+
+    def add_root(mset, path):
+        calls.append(path)
+        if not installs:
+            raise ssh.RemoteMmw("mmw isn't installed on nas — carry …", reason="mmw isn't installed on nas",
+                                installable=True)
+        return "new root data at nas:/data"
+    monkeypatch.setattr(ops, "add_root", add_root)
+    monkeypatch.setattr(ssh, "remote_arch", lambda host: "x86_64")
+    monkeypatch.setattr(ssh, "install_remote", lambda host, t: installs.append((host, t)))
+    monkeypatch.setattr(apply_flow, "recent_paths", lambda: [str(bundle)])
+    return tar, calls, installs
+
+
+def test_add_root_offers_to_install_mmw_there(env, tmp_path, monkeypatch):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+    tar, calls, installs = _no_mmw_there(monkeypatch, tmp_path, installer=True)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        page = app.screen
+        page.add_root_path("nas:/data")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog"
+                    and app.screen.query("#confirm-details Label"))
+        assert str(app.screen.query_one("#confirm-title").render()) == "Install mmw on nas?"
+        assert tar.name in str(app.screen.query_one("#confirm-details Label").render())
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: "new root data" in str(page.query_one("#page-status").render()))
+        assert installs == [("nas", tar)] and calls == ["nas:/data", "nas:/data"]
+    _run(home, check)
+
+
+def test_without_an_installer_beside_a_bundle_it_asks_for_one(env, tmp_path, monkeypatch):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+    tar, calls, installs = _no_mmw_there(monkeypatch, tmp_path, installer=False)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        page = app.screen
+        page.add_root_path("nas:/data")
+        await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage" and app.screen.query("#path-tree"))
+        assert "nas" in app.screen.TITLE
+        wrong = tmp_path / "mmw-0.1.0-x86_64.tar"
+        wrong.write_bytes(b"old")
+        app.screen.dismiss(str(wrong))
+        await until(pilot, lambda: "isn't an installer for nas" in str(page.query_one("#page-status").render()))
+        assert installs == []
+    _run(home, check)
+
+
+def test_a_root_says_where_it_is():
+    from mmw.tui.site.home import where
+    assert where("sam-server-remote:/12-tb/mirrors") == "on sam-server-remote · /12-tb/mirrors"
+    assert where("sam@nas:/data") == "on sam@nas · /data"
+    assert where("/mnt/oak") == "/mnt/oak"
+
+
+def test_move_lists_each_root_with_where_it_is():
+    from textual.app import App
+    from textual.widgets import Select
+    from mmw.tui.site.home import MoveRootPage
+
+    class Harness(App):
+        def on_mount(self):
+            self.push_screen(MoveRootPage("a", "oak", [("oak", "/mnt/oak"),
+                                                      ("nas", "sam-server-remote:/12-tb/mirrors")]))
+
+    async def go():
+        app = Harness()
+        async with app.run_test() as pilot:
+            await until(pilot, lambda: app.screen.query("#move-root"))
+            labels = [str(p) for p, _v in app.screen.query_one("#move-root", Select)._options]
+            assert labels == ["oak — /mnt/oak", "nas — on sam-server-remote · /12-tb/mirrors"]
+            assert "/mnt/oak" in app.screen.subtitle
+    asyncio.run(go())

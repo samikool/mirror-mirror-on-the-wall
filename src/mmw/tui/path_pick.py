@@ -55,8 +55,13 @@ class PathPickPage(Page):
     SCROLLS = False
 
     def __init__(self, title: str, subtitle: str = "", start: str = "", *,
-                 dirs_only: bool = True, suffixes: "tuple[str, ...]" = ()):
+                 dirs_only: bool = True, suffixes: "tuple[str, ...]" = (),
+                 remote: bool = False, new: bool = False):
+        """`remote`: a typed `[user@]host:/path` is taken as it is (there is
+        nothing here to browse). `new`: a folder that doesn't exist yet is
+        taken, when the folder it would go in does."""
         super().__init__()
+        self._remote, self._new = remote, new
         self.TITLE = title
         self.subtitle = subtitle or "browse, or type a path and press enter"
         self._dirs_only = dirs_only
@@ -110,11 +115,17 @@ class PathPickPage(Page):
         raw = event.value.strip()
         if not raw:
             return
+        if self._is_remote(raw):
+            self.dismiss(raw)
+            return
         path = Path(raw).expanduser()
         if not disk_io.ops.exists(path):
-            self.query_one("#path-status", Label).update(
-                f"[$mmw-error]✗ {escape(str(path))} does not exist[/]"
-            )
+            if self._new and disk_io.ops.is_dir(path.parent):
+                self.query_one("#path-status", Label).update(
+                    f"{escape(str(path))} is new — Use this makes it")
+                self._reroot(path.parent)
+                return
+            self._missing(path)
             return
         self.query_one("#path-status", Label).update("")
         self._reroot(path if disk_io.ops.is_dir(path) else path.parent)
@@ -127,6 +138,14 @@ class PathPickPage(Page):
         parent = Path(tree.path).expanduser().resolve().parent
         self._reroot(parent)
         self._set_selected(parent)
+
+    def _is_remote(self, raw: str) -> bool:
+        from mmw.site.ssh import parse_location
+        return self._remote and bool(raw) and parse_location(raw)[0] == "ssh"
+
+    def _missing(self, path: Path) -> None:
+        gone = path.parent if self._new and not disk_io.ops.exists(path.parent) else path
+        self.query_one("#path-status", Label).update(f"[$mmw-error]✗ {escape(str(gone))} does not exist[/]")
 
     def _reroot(self, path: Path) -> None:
         self.query_one("#path-tree", DirectoryTree).path = path
@@ -142,11 +161,15 @@ class PathPickPage(Page):
     def _use(self, event: "Button.Pressed") -> None:
         event.stop()
         raw = self.query_one("#path-input", Input).value.strip()
+        if self._is_remote(raw):
+            self.dismiss(raw)
+            return
         path = Path(raw).expanduser() if raw else self._selected
         if not disk_io.ops.exists(path):
-            self.query_one("#path-status", Label).update(
-                f"[$mmw-error]✗ {escape(str(path))} does not exist[/]"
-            )
+            if self._new and disk_io.ops.is_dir(path.parent):
+                self.dismiss(str(path))
+                return
+            self._missing(path)
             return
         if self._dirs_only and not disk_io.ops.is_dir(path):
             path = path.parent

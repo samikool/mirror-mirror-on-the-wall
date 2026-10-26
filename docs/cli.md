@@ -170,7 +170,7 @@ mirror this machine has opened); the ones that change a root take
 | `mmw site serve REPO VERSION [--yes]` | Serve any kept version (`v3`, or its bundle's date like `28oct`, stamp or label); anything but the newest holds it |
 | `mmw site serve-bundle WHEN [--yes]` | Serve every repository as it was after that bundle (its date, stamp or label) |
 | `mmw site hold REPO` / `mmw site forward [REPO] [--all]` | Hold a repository / move it to its newest version |
-| `mmw site move REPO ROOTNAME [--yes]` | Move a repository, every kept version, to another root of the mirror |
+| `mmw site move REPO ROOTNAME [--yes]` | Move a repository, every kept version, to another root of the mirror — with every repository sharing its hostname (the whole host moves) |
 | `mmw site tidy` | Clear moved repositories' old copies, once nginx has been recreated |
 | `mmw site ca load --cert C --key K` / `ca make --out DIR [--name N] [--encrypt]` / `ca show` | The CA, recorded by path only, on this machine |
 | `mmw site certs [--days N] [--force]` | Sign every root's certificate with the site's CA; HTTPS on |

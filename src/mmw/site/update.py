@@ -56,6 +56,23 @@ def installer_beside(src: str, arch: str) -> tuple[Path, str] | None:
     return (found[newest], newest) if newest else None
 
 
+def installer_for(arch: str, near: list[str], at_least: str) -> Path | None:
+    """An installer for `arch`, of `at_least` or newer (a remote mmw may not be
+    older than this one), beside any of the bundles in `near` — where they
+    travel. The newest wins."""
+    from packaging.version import InvalidVersion, Version
+    best: tuple[Version, Path] | None = None
+    for src in near:
+        for version, archs in _installers_beside(src).items():
+            try:
+                v = Version(version)
+                if arch in archs and v >= Version(at_least) and (best is None or v > best[0]):
+                    best = (v, archs[arch])
+            except InvalidVersion:
+                continue
+    return best[1] if best else None
+
+
 @dataclass
 class FarOffer:
     offer: U.Offer

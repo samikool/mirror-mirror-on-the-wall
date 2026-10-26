@@ -167,7 +167,8 @@ mirror this machine has opened); the ones that change a root take
 | `mmw site manage` | The far-side TUI: repositories, their history, applying bundles |
 | `mmw site status` | What each repository serves, the newest kept, held or current |
 | `mmw site history REPO` | A repository's kept versions, sizes, what each would free |
-| `mmw site serve REPO VERSION [--yes]` | Serve any kept version; anything but the newest holds it |
+| `mmw site serve REPO VERSION [--yes]` | Serve any kept version (`v3`, or its bundle's date like `28oct`, stamp or label); anything but the newest holds it |
+| `mmw site serve-bundle WHEN [--yes]` | Serve every repository as it was after that bundle (its date, stamp or label) |
 | `mmw site hold REPO` / `mmw site forward [REPO] [--all]` | Hold a repository / move it to its newest version |
 | `mmw site move REPO ROOTNAME [--yes]` | Move a repository, every kept version, to another root of the mirror |
 | `mmw site tidy` | Clear moved repositories' old copies, once nginx has been recreated |

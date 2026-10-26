@@ -208,6 +208,12 @@ def status(home: Path):
         return db.repo_states()
 
 
+def deleted_stamps(home: Path, ref: str) -> list[str]:
+    """When the bundles that brought a repository's deleted versions were made."""
+    with SiteDB(home) as db:
+        return db.deleted_stamps(resolve_repo(db, ref))
+
+
 def history(home: Path, ref: str) -> list[tuple[VersionInfo, int, int, bool]]:
     """A repository's kept versions, newest first: (version, total bytes,
     bytes deleting it frees, serving)."""
@@ -542,3 +548,73 @@ def root_details(home: Path) -> dict:
         created, _prev, kind, _at = applied[0]
         out["last_apply"], out["last_apply_kind"] = created, kind
     return out
+
+
+@dataclass(frozen=True)
+class BundleStep:
+    """One repository's part in serving the mirror as it was after a bundle."""
+    root: object
+    key: str
+    label: str
+    current: "VersionInfo | None"
+    target: "VersionInfo | None"          # None: left as it is (note says why)
+    note: str | None = None
+
+    @property
+    def changes(self) -> bool:
+        return self.target is not None and (self.current is None or self.current.number != self.target.number)
+
+    def line(self) -> str:
+        if self.note:
+            return f"{self.label}: {self.note}"
+        if self.target is None:
+            return f"{self.label}: not here yet then — left as it is"
+        if not self.changes:
+            return f"{self.label}: already v{self.target.number}"
+        now = f"v{self.current.number}" if self.current else "nothing"
+        return f"{self.label}: {now} → v{self.target.number}"
+
+
+def bundle_plan(mset, when: str) -> list[BundleStep]:
+    """Every repository here, as it was once the bundle `when` names (its date,
+    stamp or label) was applied: its newest version at or before that bundle."""
+    from mmw.site.versionref import as_of, bundle_stamp, when_list
+    repos = [(root, st, [v for v, *_ in root.history(st.repo)], root.deleted(st.repo))
+             for root in mset.roots for st in root.status()]
+    # A bundle whose versions were all deleted since is still a moment to name.
+    gone = [VersionInfo(0, st.repo, 0, st.label, "", d, None) for _r, st, _v, deleted in repos for d in deleted]
+    stamp = bundle_stamp([*(v for *_, versions, _d in repos for v in versions), *gone], when)
+    steps = []
+    for root, st, versions, deleted in repos:
+        target = as_of(versions, stamp)
+        # A version from between `target` and that bundle was deleted here:
+        # what it served then is gone, and an older one would be a guess.
+        lost = [d for d in deleted if d <= stamp and (target is None or d > target.stamp)]
+        note = None
+        if lost:
+            target, note = None, f"its version from then ({when_list([max(lost)])[0]}) was deleted — left as it is"
+        steps.append(BundleStep(root, st.repo, st.label, st.serving, target, note))
+    steps.sort(key=lambda s: s.label.lower())
+    for name in mset.missing:
+        why = mset.missing_reason.get(name) or "not here"
+        steps.append(BundleStep(None, "", f"root {name}", None, None,
+                                f"{why} — its repositories are left as they are"))
+    return steps
+
+
+def serve_bundle(steps: list[BundleStep]) -> list[str]:
+    """Serve each step that changes something; the labels served. A failure
+    part-way says which were already served."""
+    done = []
+    for s in steps:
+        if not s.changes:
+            continue
+        try:
+            s.root.serve(s.key, s.target.number)
+        except Exception as e:
+            if not done:
+                raise
+            rest = [t.label for t in steps if t.changes and t.label not in done]
+            raise ValueError(f"{s.label}: {e} — served: {', '.join(done)}; not served: {', '.join(rest)}") from e
+        done.append(s.label)
+    return done

@@ -134,8 +134,36 @@ usual.
 ```bash
 mmw site history debian         # every version kept here
 mmw site serve debian v6        # relinks; asks first (--yes to skip)
+mmw site serve debian 28oct     # the same, by the bundle that brought it
 mmw site status                 # what each repository serves, held or current
 ```
+
+A version is `v6` (or `6`), or the bundle that brought it: its label (any
+case), its date (`28oct`, `oct 28`, `28 October`, `28/10` — day first —
+or `2026-10-28`), or the start of its stamp (`20261028T09`). A day and
+month alone means the most recent one, up to today; an older year has to
+be said (`2024-10-28`), and the error says when one exists. Dates are the
+bundle's stamp, in UTC. Two bundles on one day are not guessed between —
+the error names both, and the stamp picks one.
+
+To put the whole mirror back to how it was after one bundle:
+
+```bash
+mmw site serve-bundle 28oct     # every repository at its newest version from then
+```
+
+- A repository that bundle didn't change serves its version from before it.
+- One that first arrived later, or whose version from then has since been
+  deleted, is left as it is, and the list says which.
+- A root that isn't here is named, and its repositories are left as they are.
+- It lists each change and asks first (`--yes` to skip). The TUI's **As of…**
+  (**b**) does the same.
+
+Every repository it moves off its newest version is held there; those
+already at their newest are not, so the next bundle moves them on.
+`mmw site forward --all` moves the held ones on too. If one switch fails
+part-way (a lock, an ssh root dropping), the ones before it stay switched,
+and the error says which were served and which were not.
 
 Anything but the newest version **holds** the repository there: later
 bundles store its new versions without serving them. `mmw site apply …
@@ -266,7 +294,8 @@ and Delete under them. Keys: **Enter** on a version serves it (after a
 confirmation saying what changes), **f** forwards, **h** holds, **d** deletes
 a version, **a** applies a bundle, **r** adds a root (an empty folder or
 `host:/path` becomes a new root of this mirror), **m** moves a repository to
-another root, **c** manages certificates, **t** tidies, **ctrl+r** refreshes.
+another root, **b** serves the whole mirror as of a bundle, **c** manages
+certificates, **t** tidies, **ctrl+r** refreshes.
 The buttons along the bottom do the same.
 
 Applying from the TUI: pick the bundle (a `.tar` or a stage directory; the

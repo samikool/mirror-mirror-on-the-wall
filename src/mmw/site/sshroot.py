@@ -143,6 +143,14 @@ class SshRoot:
     def history(self, key: str):
         return [(_version(r["version"]), r["total"], r["frees"], r["serving"]) for r in self._call("history", key)]
 
+    def deleted(self, key: str) -> list[str]:
+        try:
+            return self._call("deleted", key)["stamps"]
+        except ValueError as e:
+            if "unknown verb" in str(e):    # an older mmw there: nothing recorded
+                return []
+            raise
+
     def serve_preview(self, key: str, number: int):
         return _ns(self._call("serve-preview", key, str(number)))
 

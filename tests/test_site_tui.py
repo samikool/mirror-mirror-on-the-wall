@@ -414,3 +414,72 @@ def test_actions_wait_while_one_is_running(env, tmp_path, monkeypatch):  # noqa:
         await until(pilot, lambda: not page.query_one("#btn-site-tidy", Button).disabled)
         assert calls == ["lnxp005:/data"]
     _run(home, check)
+
+
+def test_serve_bundle_from_the_home(env, tmp_path, monkeypatch):  # noqa: F811
+    import itertools
+    from textual.widgets import Select
+    from mmw.core import snapshots as _snaps
+    days = itertools.count(1)
+    monkeypatch.setattr(_snaps, "now_stamp", lambda: f"202610{next(days):02d}T120000Z")
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        await pilot.press("b")
+        await until(pilot, lambda: type(app.screen).__name__ == "ServeBundlePage")
+        pick = app.screen.query_one("#bundle-pick", Select)
+        labels = [str(p) for p, _v in pick._options]
+        assert "01 Oct" in labels[-1] and "2 repositories" in labels[-1]   # oldest last; it brought a and b
+        pick.value = "20261001T120000Z"
+        app.screen.query_one("#btn-bundle-go").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        details = str(app.screen.query_one("#confirm-details Label").render())
+        assert "v3 → v1" in details and "already v1" in details
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage")
+        await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
+        assert "as of the 01 Oct" in str(app.screen.query_one("#page-status").render())
+    _run(home, check)
+
+
+def test_page_buttons_fit_the_action_bar_at_80(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+
+        def fits():
+            bar = app.screen.query_one("#page-actions").region
+            buttons = [b.region for b in app.screen.query("#page-actions Button")]
+            return buttons and all(b.width > 0 and b.right <= bar.right for b in buttons)
+        await until(pilot, fits)
+        assert app.screen.query_one("#btn-site-serve-bundle")
+        assert app.screen.query_one("#page-status").region.width >= len("2 repositories")
+    _run(home, check, size=(80, 24))
+
+
+def test_bundles_are_told_apart_by_year_and_time():
+    import time
+    from mmw.tui.site.home import _bundle_when
+    this = time.gmtime().tm_year
+    stamps = [f"{this}1028T150000Z", f"{this}1028T090000Z", f"{this - 1}1028T120000Z"]
+    assert _bundle_when(stamps[0], stamps) == "28 Oct 15:00"
+    assert _bundle_when(stamps[2], stamps) == f"28 Oct {this - 1}"
+    assert _bundle_when(f"{this}1001T120000Z", stamps) == "01 Oct"
+
+
+def test_a_failed_action_reloads_what_did_happen(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        page = app.screen
+
+        def half(repo):
+            ops.serve(home, repo, 1)                 # one change lands…
+            raise OSError("then the lock was held")  # …and the next is refused
+        page._act("never said", half, "a")
+        await until(pilot, lambda: "lock was held" in str(page.query_one("#page-status").render()))
+        await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
+    _run(home, check)

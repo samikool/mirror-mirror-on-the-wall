@@ -24,6 +24,14 @@ def _esc(text: str) -> str:
     return str(text).replace("[", "\\[")
 
 
+def where(location: str) -> str:
+    """Where a root is, as a person needs it: a root over ssh says which
+    machine it's on; a local one, its path."""
+    from mmw.site.ssh import parse_location
+    kind, host, path = parse_location(location)
+    return f"on {host} · {path}" if kind == "ssh" else location
+
+
 def _bundle_when(stamp: str, stamps: list[str]) -> str:
     """A bundle as a person tells it apart: its day, the year when not this
     one, and the time when another bundle shares the day."""
@@ -284,7 +292,7 @@ class SiteHomePage(Page):
         hosts = ", ".join(sorted({b.split("/", 1)[0] for b in state.bases}))
         lines = [
             f"[b]{_esc(state.label)}[/]",
-            f"[dim]root[/]       {_esc(details.get('root', ''))}  [dim]({_esc(details.get('location', ''))})[/]",
+            f"[dim]root[/]       {_esc(details.get('root', ''))}  [dim]({_esc(where(details.get('location', '')))})[/]",
             f"[dim]hostname[/]   {_esc(hosts)}",
             f"[dim]serving[/]    {_esc(serving)}",
             "[dim]newest[/]     " + (f"v{newest.number} · {_date(newest.stamp)}" if newest else "—")
@@ -429,6 +437,7 @@ class SiteHomePage(Page):
         if repo is None:
             return
         names = [r.info.name for r in self.app.mset.roots]
+        place = {r.info.name: where(r.info.location) for r in self.app.mset.roots}
         if len(names) < 2:
             self.set_status("This mirror has one root here — a bundle's new hostnames can go to another "
                             "(mmw site apply … --root HOST=PATH).", "error")
@@ -446,14 +455,15 @@ class SiteHomePage(Page):
                 self.set_status(str(e), "error")
                 return
             self.app.push_screen(
-                ConfirmDialog(f"Move {state.label} to {root}?",
+                ConfirmDialog(f"Move {state.label} to {root} ({place[root]})?",
                               f"Copies {size} (every kept version) into {root}'s store first. The old copy stays "
                               "served until you tidy (t) after recreating nginx.",
                               confirm_label="Move", confirm_variant="primary", cancel_variant="default"),
                 lambda ok: ok and self._act(f"moved {state.label} to {root} — recreate nginx in {current} and "
                                             f"{root}, then t tidies the old copy",
                                             ops.move_repo, self.app.mset, repo, root))
-        self.app.push_screen(MoveRootPage(state.label, current, names), chosen)
+        self.app.push_screen(MoveRootPage(state.label, current,
+                                          [(r.info.name, r.info.location) for r in self.app.mset.roots]), chosen)
 
     def action_certs(self, password: bytes | None = None) -> None:
         self._sign(password)
@@ -615,14 +625,18 @@ class MoveRootPage(Page):
 
     TITLE = "Move"
 
-    def __init__(self, label: str, current: str, roots: list[str]):
+    def __init__(self, label: str, current: str, roots: list[tuple[str, str]]):
+        """`roots`: (name, location) — each shown with where it is, so a root
+        on another machine never passes for a local one."""
         super().__init__()
-        self.subtitle = f"{label} · now in {current}"
+        here = dict(roots).get(current)
+        self.subtitle = f"{label} · now in {current}" + (f" ({where(here)})" if here else "")
         self._current, self._roots = current, roots
 
     def compose_body(self) -> ComposeResult:
         from mmw.tui.ui.form import ChoiceField, Form
-        yield Form(ChoiceField("Root", [(r, r) for r in self._roots], self._current, id="move-root",
+        yield Form(ChoiceField("Root", [(f"{name} — {where(loc)}", name) for name, loc in self._roots],
+                               self._current, id="move-root",
                                hint="Every kept version's files are copied there first; nothing is served "
                                     "from it until the copy is complete."))
 

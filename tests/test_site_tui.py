@@ -44,7 +44,7 @@ def test_lists_repos_and_history(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         rows = _rows(app, "site-repos")
         a = next(r for r in rows if r[0] == "a")
-        assert "v2" in a[1] and "newest v3" in a[1] and a[1].endswith("held")
+        assert "v2" in a[1] and a[1].endswith("held · newest v3")
         app.screen.query_one("#site-repos", DataTable).move_cursor(row=[r[0] for r in rows].index("a"))
         await until(pilot, lambda: len(_rows(app, "site-history")) == 3)
         hist = _rows(app, "site-history")
@@ -83,10 +83,18 @@ def test_serve_from_history_confirms_then_switches(env, tmp_path):  # noqa: F811
         details = str(app.screen.query_one("#confirm-details Label").render())
         assert "now serving v3" in details and "nothing to copy" in details and "indexes switch last" in details
         app.screen.query_one("#confirm").press()
-        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
-                    and any(r[0] == "a" and r[1].endswith("held") for r in _rows(app, "site-repos")))
+        await _ran(app, pilot, "SwitchRunPage")
+        await until(pilot, lambda: any(r[0] == "a" and "held" in r[1] for r in _rows(app, "site-repos")))
     _run(home, check)
     assert _tree(root) == trees[0]
+
+
+async def _ran(app, pilot, page):
+    """`page` (a progress page) ran to its end: closed, back home."""
+    await until(pilot, lambda: type(app.screen).__name__ == page and app.screen.query("#btn-run-close")
+                and not app.screen.query_one("#btn-run-close").disabled)
+    app.screen.query_one("#btn-run-close").press()
+    await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage")
 
 
 def test_forward_and_hold_keys(env, tmp_path):  # noqa: F811
@@ -97,8 +105,10 @@ def test_forward_and_hold_keys(env, tmp_path):  # noqa: F811
         await _pick(app, pilot, "a")
         app.screen.query_one("#site-repos", DataTable).focus()
         await pilot.press("f")
+        await _ran(app, pilot, "SwitchRunPage")
         await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("current") and "v3" in r[1]
                                        for r in _rows(app, "site-repos")))
+        app.screen.query_one("#site-repos", DataTable).focus()
         await pilot.press("h")
         await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("held") for r in _rows(app, "site-repos")))
     _run(home, check)
@@ -287,7 +297,7 @@ def test_cards_show_root_versions_and_size(env, tmp_path):  # noqa: F811
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         card = next(c for c in _cards(app) if c.startswith("a\n"))
-        assert "example.com" in card and "versions" in card and ("B" in card)
+        assert "versions" in card and ("B" in card)                # its hostname is in the detail
     _run(home, check)
 
 
@@ -437,9 +447,10 @@ def test_serve_bundle_from_the_home(env, tmp_path, monkeypatch):  # noqa: F811
         details = str(app.screen.query_one("#confirm-details Label").render())
         assert "v3 → v1" in details and "already v1" in details
         app.screen.query_one("#confirm").press()
-        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage")
+        await until(pilot, lambda: type(app.screen).__name__ == "SwitchRunPage")
+        assert "As of the 01 Oct" in app.screen.TITLE
+        await _ran(app, pilot, "SwitchRunPage")
         await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
-        assert "as of the 01 Oct" in str(app.screen.query_one("#page-status").render())
     _run(home, check)
 
 
@@ -506,7 +517,7 @@ def _no_mmw_there(monkeypatch, tmp_path, *, installer: bool):
         return "new root data at nas:/data"
     monkeypatch.setattr(ops, "add_root", add_root)
     monkeypatch.setattr(ssh, "remote_arch", lambda host: "x86_64")
-    monkeypatch.setattr(ssh, "install_remote", lambda host, t: installs.append((host, t)))
+    monkeypatch.setattr(ssh, "install_remote", lambda host, t, progress=None: installs.append((host, t)))
     monkeypatch.setattr(apply_flow, "recent_paths", lambda: [str(bundle)])
     return tar, calls, installs
 
@@ -524,6 +535,7 @@ def test_add_root_offers_to_install_mmw_there(env, tmp_path, monkeypatch):  # no
         assert str(app.screen.query_one("#confirm-title").render()) == "Install mmw on nas?"
         assert tar.name in str(app.screen.query_one("#confirm-details Label").render())
         app.screen.query_one("#confirm").press()
+        await _ran(app, pilot, "InstallRunPage")
         await until(pilot, lambda: "new root data" in str(page.query_one("#page-status").render()))
         assert installs == [("nas", tar)] and calls == ["nas:/data", "nas:/data"]
     _run(home, check)

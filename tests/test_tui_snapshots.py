@@ -514,8 +514,11 @@ def test_snapshot_site_apply_done(snap_compare):
 
     async def done(pilot):
         await until(pilot, lambda: type(pilot.app.screen).__name__ == "Shown")
-        pilot.app.screen.query_one("#run-bar").update(progress=28_900_000_000)
-        pilot.app.screen._done(result)
+        import time
+        page = pilot.app.screen
+        page.query_one("#run-bar").update(progress=28_900_000_000)
+        page._read, page._started = 28_900_000_000, time.monotonic() - 754.5   # a fixed "done in"
+        page._done(result)
     assert snap_compare(_app(lambda: Shown(choice)), terminal_size=SNAP_SIZE, run_before=done)
 
 

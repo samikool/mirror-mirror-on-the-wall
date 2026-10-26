@@ -53,6 +53,15 @@ class ApplyChoice:
     sizes: tuple = ()                       # (repo, bytes) from the manifest, for each row's progress
 
 
+def _row_text(r, location: str) -> str:
+    """A repository the bundle changes, and the root it lands in — on which
+    machine, for one over ssh."""
+    from mmw.tui.site.home import where
+    start = f"v{r.from_number}" if r.from_number else "full"
+    return (f"{r.label}  {start} → v{r.to_number}  ·  {r.files_sent:,} files  "
+            f"{fmt_size(r.bytes_sent)}  ·  {where(location)}")
+
+
 class ApplyReviewPage(Page):
     """Step 1: every repository the bundle brings, ticked unless held."""
 
@@ -67,9 +76,9 @@ class ApplyReviewPage(Page):
         self._changed = [r for r in plan.rows if not r.unchanged]
 
     def _line(self, r) -> str:
-        start = f"v{r.from_number}" if r.from_number else "full"
-        return (f"{r.label}  {start} → v{r.to_number}  ·  {r.files_sent:,} files  "
-                f"{fmt_size(r.bytes_sent)}  ·  {r.root}")
+        mset = getattr(self.app, "mset", None)          # none in a bare harness: the path as it is
+        where_is = {str(x.info.path): x.info.location for x in (mset.roots if mset else [])}
+        return _row_text(r, where_is.get(str(r.root), str(r.root)))
 
     def compose_body(self) -> ComposeResult:
         yield JumpSelectionList(*[Selection(Text(self._line(r)), r.repo, not r.held) for r in self._changed],

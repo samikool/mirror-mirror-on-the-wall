@@ -730,18 +730,36 @@ def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPla
     return plan, {"rows": rows, "host_of": host_of}
 
 
+def root_space(mset, plan: SetApplyPlan, key: str) -> tuple[set, int]:
+    """What a root (a present root's name, or a location for a new one)
+    already holds of this bundle, and its free space — over ssh for a root
+    on another machine, so a screen asks it off its own thread."""
+    from mmw.site import ssh
+    from mmw.site.mset import root_at
+    every = {c for by_cs in plan.host_checksums.values() for c in by_cs}
+    root = {r.info.name: r for r in (mset.roots if mset else [])}.get(key)
+    if root is None:
+        root = root_at(key)
+    if root is not None:
+        return root.has(every), root.free_bytes()
+    if ssh.parse_location(key)[0] == "ssh":
+        from mmw.site.sshroot import free_at
+        return set(), free_at(key)
+    from mmw.site.space import real_free
+    return set(), real_free(key)
+
+
 def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
-                    cache: dict | None = None) -> dict[str, tuple[int, int]]:
+                    cache: dict | None = None, fetch: bool = True) -> dict[str, tuple[int, int]]:
     """For a placement (hostname → a root's name, or a location for a new
     one): each root's (bytes it needs, bytes free). What a root's store
     already holds doesn't count; the network's own files count in every
     root, including roots none of the hostnames go to. `cache` (kept by
     the caller across calls) holds each root's store hits and free space, so
-    a screen recomputing on every keypress checks each store once."""
+    a screen recomputing on every keypress checks each store once. With
+    `fetch` False, only what's in `cache` is used: a root not in it yet is
+    left out (a screen fills it off its own thread with `root_space`)."""
     cache = {} if cache is None else cache
-    every = {c for by_cs in plan.host_checksums.values() for c in by_cs}
-    from mmw.site import ssh
-    from mmw.site.mset import root_at
     present = {r.info.name: r for r in (mset.roots if mset else [])}
     by_root: dict[str, list[str]] = {name: [] for name in present}
     for h, t in targets.items():
@@ -749,17 +767,9 @@ def placement_needs(mset, plan: SetApplyPlan, targets: dict[str, str],
     out = {}
     for key, hs in by_root.items():
         if key not in cache:
-            root = present.get(key)
-            if root is None:
-                root = root_at(key)
-            if root is not None:
-                cache[key] = (root.has(every), root.free_bytes())
-            elif ssh.parse_location(key)[0] == "ssh":
-                from mmw.site.sshroot import free_at
-                cache[key] = (set(), free_at(key))
-            else:
-                from mmw.site.space import real_free
-                cache[key] = (set(), real_free(key))
+            if not fetch:
+                continue
+            cache[key] = root_space(mset, plan, key)
         have, free = cache[key]
         need_cs = dict(plan.host_checksums.get(None, {}))
         for h in hs:

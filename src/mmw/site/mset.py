@@ -101,6 +101,10 @@ class LocalRoot:
         from mmw.site import ops
         return ops.history(self.home, key)
 
+    def deleted(self, key: str) -> list[str]:
+        from mmw.site import ops
+        return ops.deleted_stamps(self.home, key)
+
     def serve_preview(self, key: str, number: int):
         from mmw.site import ops
         return ops.serve_preview(self.home, key, number)

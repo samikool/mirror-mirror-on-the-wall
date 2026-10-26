@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS switches (
     repo TEXT PRIMARY KEY, from_version INTEGER, to_version INTEGER NOT NULL,
     phase TEXT NOT NULL DEFAULT 'pkg');
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS deleted (repo TEXT NOT NULL, number INTEGER NOT NULL, stamp TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applied (
     id INTEGER PRIMARY KEY, created TEXT NOT NULL, previous TEXT, kind TEXT NOT NULL,
     applied_at TEXT NOT NULL);
@@ -154,6 +155,9 @@ class SiteDB:
 
     def delete_version(self, version_id: int) -> None:
         c = self._conn
+        # Remembered, so "as of a bundle" can tell a deleted version from one never here.
+        c.execute("INSERT INTO deleted (repo, number, stamp) SELECT repo, number, stamp FROM versions "
+                  "WHERE id = ?", (version_id,))
         c.execute("DELETE FROM version_files WHERE version = ?", (version_id,))
         c.execute("DELETE FROM versions WHERE id = ?", (version_id,))
         c.commit()
@@ -251,6 +255,10 @@ class SiteDB:
         self._conn.execute("INSERT INTO applied (created, previous, kind, applied_at) VALUES (?, ?, ?, ?)",
                            (created, previous, kind, time.strftime("%Y-%m-%dT%H:%M:%S")))
         self._conn.commit()
+
+    def deleted_stamps(self, repo: str) -> list[str]:
+        """The bundle stamps of a repository's versions deleted here."""
+        return [s for (s,) in self._conn.execute("SELECT stamp FROM deleted WHERE repo = ?", (repo,))]
 
     def applied(self) -> list[tuple[str, str | None, str, str]]:
         """Newest first."""

@@ -300,6 +300,7 @@ _VERBS = {
     "break-lock": _simple(_break_lock),
     "tidy": _simple(lambda r, a, i: r.tidy()),
     "tls-notes": _simple(lambda r, a, i: r.tls_notes()),
+    "details": _simple(lambda r, a, i: r.details()),
     "csr": _simple(_csr),
     "cert": _simple(_cert),
     "move-out-info": _simple(lambda r, a, i: r.move_out_info(a[0])),

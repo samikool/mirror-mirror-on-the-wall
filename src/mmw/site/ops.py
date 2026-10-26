@@ -474,3 +474,56 @@ def tidy_set(mset) -> list[str]:
     """Clear moved repositories' old copies (once nginx has been recreated);
     the labels tidied."""
     return [label for root in mset.roots for label in root.tidy()]
+
+
+def add_root(mset, location: str) -> str:
+    """Add a root to the mirror from the TUI's Add root…: a root of this
+    mirror is opened; an empty folder (or one with no mirror) becomes a new,
+    empty root of it; another mirror's root is refused. What happened."""
+    from mmw.site import recents, ssh
+    from mmw.site.home import init_root
+    from mmw.site.mset import root_at
+    found = root_at(location)
+    if found is not None:
+        if found.info.set_id != mset.set_id:
+            raise ValueError(f"{location} holds the mirror of network {found.info.network!r} — pick another folder")
+        recents.remember(location)
+        return f"opened root {found.info.name} ({location})"
+    taken = {r.info.name for r in mset.roots} | set(mset.missing)
+    base = location.rstrip("/").rsplit("/", 1)[-1].split(":")[-1] or "root"
+    name, n = base, 2
+    while name in taken:
+        name, n = f"{base}-{n}", n + 1
+    if ssh.parse_location(location)[0] == "ssh":
+        from mmw.site.sshroot import init_remote
+        init_remote(location, name=name, set_id=mset.set_id, network=mset.network)
+    else:
+        init_root(Path(location).expanduser(), name=name, set_id=mset.set_id, network=mset.network)
+    new = root_at(location)
+    members = list(dict.fromkeys([*mset.roots[0].info.members, *mset.missing, name]))
+    for r in [*mset.roots, new]:
+        r.set_identity(members=members)
+    recents.remember(location)
+    return f"new root {name} at {location} — move repositories into it, or place new hostnames on it"
+
+
+def root_details(home: Path) -> dict:
+    """What a root says about itself for the TUI's detail: its HTTPS
+    certificate (signed / none / expires) and its last apply."""
+    from datetime import timezone
+    out: dict = {"https": "no certificate yet", "last_apply": None, "last_apply_kind": None}
+    roots = _roots(home)
+    crt = Path(roots.primary.path) / ".mmw" / "tls" / "mirror.crt"
+    if disk_io.ops.exists(crt):
+        try:
+            from cryptography import x509
+            cert = x509.load_pem_x509_certificates(disk_io.ops.read_bytes(crt))[0]
+            out["https"] = f"signed · expires {cert.not_valid_after_utc.astimezone(timezone.utc):%b %Y}"
+        except (ValueError, OSError):
+            out["https"] = "a certificate that can't be read — Certificates re-signs it"
+    with SiteDB(home) as db:
+        applied = db.applied()
+    if applied:
+        created, _prev, kind, _at = applied[0]
+        out["last_apply"], out["last_apply_kind"] = created, kind
+    return out

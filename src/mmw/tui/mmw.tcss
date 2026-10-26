@@ -392,4 +392,6 @@ VscodeEditor Label, VscodeCheckView Label, StepVscode Label {
 
 /* The far-side TUI's Deployed page: the list narrower than the history. */
 SiteHomePage ListDetail .list-pane { width: 45%; }
-#site-hold-note { color: $warning; height: auto; }
+#site-detail { height: auto; padding: 0 1 1 1; }
+#site-version-actions { height: 1; margin-top: 1; }
+#site-version-actions Button { margin-left: 1; min-width: 0; width: auto; }

@@ -168,6 +168,9 @@ class SshRoot:
     def tidy(self) -> list[str]:
         return self._call("tidy")
 
+    def details(self) -> dict:
+        return self._call("details")
+
     def tls_notes(self) -> list[str]:
         return self._call("tls-notes")
 

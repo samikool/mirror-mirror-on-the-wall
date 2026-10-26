@@ -14,8 +14,16 @@ from waiting import until
 
 
 def _rows(app, table_id):
+    """Each row's cells; a repository's card comes back as its lines."""
     t = app.screen.query_one(f"#{table_id}", DataTable)
+    if table_id == "site-repos":
+        return [tuple(str(t.get_row_at(i)[0]).splitlines()) for i in range(t.row_count)]
     return [tuple(str(c) for c in t.get_row_at(i)) for i in range(t.row_count)]
+
+
+def _cards(app):
+    t = app.screen.query_one("#site-repos", DataTable)
+    return [str(t.get_row_at(i)[0]) for i in range(t.row_count)]
 
 
 def _run(home, check, size=(120, 40)):
@@ -36,12 +44,12 @@ def test_lists_repos_and_history(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         rows = _rows(app, "site-repos")
         a = next(r for r in rows if r[0] == "a")
-        assert "v2" in a[1] and "v3" in a[2] and a[3] == "held"
+        assert "v2" in a[1] and "newest v3" in a[1] and a[1].endswith("held")
         app.screen.query_one("#site-repos", DataTable).move_cursor(row=[r[0] for r in rows].index("a"))
         await until(pilot, lambda: len(_rows(app, "site-history")) == 3)
         hist = _rows(app, "site-history")
         assert hist[1][0].startswith("▶ v2") and "serving" in hist[1][3]
-        assert "f forward to v3" in str(app.screen.query_one("#site-hold-note").render())
+        assert "held at v2 — Forward serves v3" in str(app.screen.query_one("#site-detail").render())
     _run(home, check)
 
 
@@ -76,7 +84,7 @@ def test_serve_from_history_confirms_then_switches(env, tmp_path):  # noqa: F811
         assert "now serving v3" in details and "nothing to copy" in details and "indexes switch last" in details
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
-                    and any(r[0] == "a" and r[3] == "held" for r in _rows(app, "site-repos")))
+                    and any(r[0] == "a" and r[1].endswith("held") for r in _rows(app, "site-repos")))
     _run(home, check)
     assert _tree(root) == trees[0]
 
@@ -89,10 +97,10 @@ def test_forward_and_hold_keys(env, tmp_path):  # noqa: F811
         await _pick(app, pilot, "a")
         app.screen.query_one("#site-repos", DataTable).focus()
         await pilot.press("f")
-        await until(pilot, lambda: any(r[0] == "a" and r[3] == "current" and "v3" in r[1]
+        await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("current") and "v3" in r[1]
                                        for r in _rows(app, "site-repos")))
         await pilot.press("h")
-        await until(pilot, lambda: any(r[0] == "a" and r[3] == "held" for r in _rows(app, "site-repos")))
+        await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("held") for r in _rows(app, "site-repos")))
     _run(home, check)
 
 
@@ -125,7 +133,7 @@ def test_lock_held_is_a_status(env, tmp_path):  # noqa: F811
         with SiteLock(home):
             await pilot.press("h")
             await until(pilot, lambda: "in use by" in str(app.screen.query_one("#page-status").render()))
-        assert all(r[3] == "current" for r in _rows(app, "site-repos"))
+        assert all(r[1].endswith("current") for r in _rows(app, "site-repos"))
     _run(home, check)
 
 
@@ -268,3 +276,41 @@ def test_tui_c_signs(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: "signed" in str(app.screen.query_one("#page-status").render()))
     _run(home, check)
     assert (root / ".mmw/tls/mirror.crt").exists()
+
+
+
+# ── cards, detail and buttons ────────────────────────────────────────────────
+
+def test_cards_show_root_versions_and_size(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        card = next(c for c in _cards(app) if c.startswith("a\n"))
+        assert "example.com" in card and "versions" in card and ("B" in card)
+    _run(home, check)
+
+
+def test_detail_says_where_what_and_how_much(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        detail = lambda: str(app.screen.query_one("#site-detail").render())  # noqa: E731
+        await until(pilot, lambda: "root" in detail() and "kept" in detail())
+        for word in ("hostname", "serving", "newest", "https", "last apply"):
+            assert word in detail()
+    _run(home, check)
+
+
+def test_buttons_reach_the_actions(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        for b in ("apply", "add-root", "serve", "forward", "hold", "delete", "move", "certs", "tidy"):
+            assert app.screen.query(f"#btn-site-{b}"), b
+        assert app.screen.query_one("#btn-site-apply").variant == "primary"
+        app.screen.query_one("#btn-site-apply").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")
+    _run(home, check)

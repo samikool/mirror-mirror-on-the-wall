@@ -187,8 +187,10 @@ def roots(root: Path | None = None) -> int:
     return 0
 
 
-def _version_number(text: str) -> int:
-    return int(text[1:] if text.lower().startswith("v") else text)
+def _version_number(r_, key: str, text: str) -> int:
+    """`text` — v3, 3, or the bundle's date, stamp or label — as a number."""
+    from mmw.site.versionref import resolve
+    return resolve([v for v, *_ in r_.history(key)], text).number
 
 
 def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
@@ -198,7 +200,7 @@ def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
     from mmw.site.lock import LockHeld
     try:
         r_, key = _repo(root, repo, break_lock)
-        number = _version_number(version)
+        number = _version_number(r_, key, version)
         p = r_.serve_preview(key, number)
         now = f"v{p.current.number}" if p.current else "nothing"
         print(f"{p.label}: now serving {now} · serve v{p.target.number} ({p.target.stamp}"
@@ -214,6 +216,32 @@ def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     print(f"{p.label} serves v{p.target.number} ({r.placed} placed, {r.removed} removed)")
+    return 0
+
+
+def serve_bundle(when: str, root: Path | None = None, yes: bool = False, break_lock: bool = False) -> int:
+    """Serve every repository as it was once the bundle `when` was applied."""
+    import sys
+    from mmw.site import ops
+    from mmw.site.lock import LockHeld
+    try:
+        steps = ops.bundle_plan(_set(root, break_lock), when)
+        for s in steps:
+            print(s.line())
+        if not any(s.changes for s in steps):
+            print("nothing to change")
+            return 0
+        if not yes:
+            if not sys.stdin.isatty():
+                eprint("pass --yes to serve it (no terminal to ask on)")
+                return 1
+            if input("Serve these? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 1
+        done = ops.serve_bundle(steps)
+    except (LockHeld, *_ERRORS) as e:
+        return _fail(e)
+    print(f"served: {len(done)} repositor{'y' if len(done) == 1 else 'ies'} — held where not their newest; "
+          "f (or mmw site forward --all) moves them on")
     return 0
 
 
@@ -283,7 +311,7 @@ def delete(repo: str, version: str, root: Path | None = None, yes: bool = False,
                 return 1
             if input(f"Delete {repo} {version}? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
-        freed = r_.delete(key, _version_number(version))
+        freed = r_.delete(key, _version_number(r_, key, version))
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     print(f"deleted {repo} {version}; freed {fmt_size(freed)}")

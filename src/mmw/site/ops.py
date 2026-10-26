@@ -542,3 +542,53 @@ def root_details(home: Path) -> dict:
         created, _prev, kind, _at = applied[0]
         out["last_apply"], out["last_apply_kind"] = created, kind
     return out
+
+
+@dataclass(frozen=True)
+class BundleStep:
+    """One repository's part in serving the mirror as it was after a bundle."""
+    root: object
+    key: str
+    label: str
+    current: "VersionInfo | None"
+    target: "VersionInfo | None"          # None: it arrived after that bundle
+
+    @property
+    def changes(self) -> bool:
+        return self.target is not None and (self.current is None or self.current.number != self.target.number)
+
+    def line(self) -> str:
+        if self.target is None:
+            return f"{self.label}: not here yet then — left as it is"
+        if not self.changes:
+            return f"{self.label}: already v{self.target.number}"
+        now = f"v{self.current.number}" if self.current else "nothing"
+        return f"{self.label}: {now} → v{self.target.number}"
+
+
+def bundle_plan(mset, when: str) -> list[BundleStep]:
+    """Every repository here, as it was once the bundle `when` names (its date,
+    stamp or label) was applied: its newest version at or before that bundle."""
+    from mmw.site.versionref import as_of, bundle_stamp
+    repos = [(root, st, [v for v, *_ in root.history(st.repo)]) for root in mset.roots for st in root.status()]
+    stamp = bundle_stamp((v for *_, versions in repos for v in versions), when)
+    steps = [BundleStep(root, st.repo, st.label, st.serving, as_of(versions, stamp))
+             for root, st, versions in repos]
+    return sorted(steps, key=lambda s: s.label.lower())
+
+
+def serve_bundle(steps: list[BundleStep]) -> list[str]:
+    """Serve each step that changes something; the labels served. A failure
+    part-way says which were already served."""
+    done = []
+    for s in steps:
+        if not s.changes:
+            continue
+        try:
+            s.root.serve(s.key, s.target.number)
+        except Exception as e:
+            if not done:
+                raise
+            raise ValueError(f"{s.label}: {e} — already served: {', '.join(done)}") from e
+        done.append(s.label)
+    return done

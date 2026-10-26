@@ -601,6 +601,7 @@ _ROOT = typer.Option(None, "--root", help="Any root of the mirror — a folder o
 _BREAK_LOCK = typer.Option(False, "--break-lock", help="Clear a lock a dead run left behind")
 _REPO = typer.Argument(..., help="Repository (URL or name)")
 _YES = typer.Option(False, "--yes", help="Don't ask")
+_VERSION_HELP = "Version: v3, 3, or the bundle that brought it — its date (28oct, 2026-10-28), stamp or label"
 
 
 @site_app.command("apply")
@@ -641,12 +642,22 @@ def cmd_site_roots(root: Path = _ROOT):
 
 
 @site_app.command("serve")
-def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help="Version to serve: v3 or 3"),
+def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
                    root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
     """Serve any kept version of a repository — relinking, never copying.
     Anything but the newest holds it there."""
     from mmw.commands.site import serve
     raise typer.Exit(serve(repo, version, root, yes, break_lock))
+
+
+@site_app.command("serve-bundle")
+def cmd_site_serve_bundle(when: str = typer.Argument(..., help="The bundle: its date (28oct, 2026-10-28), "
+                                                               "stamp or label"),
+                          root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
+    """Serve every repository as it was once a bundle was applied — each at its
+    newest version from then; repositories that came later stay as they are."""
+    from mmw.commands.site import serve_bundle
+    raise typer.Exit(serve_bundle(when, root, yes, break_lock))
 
 
 @site_app.command("forward")
@@ -673,7 +684,7 @@ def cmd_site_space(root: Path = _ROOT):
 
 
 @site_app.command("delete")
-def cmd_site_delete(repo: str = _REPO, version: str = typer.Argument(..., help="Version: v3 or 3"),
+def cmd_site_delete(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
                     root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
     """Delete a kept version — never the one served, nor a held repository's newest."""
     from mmw.commands.site import delete

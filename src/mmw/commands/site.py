@@ -68,6 +68,8 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
             mset = _set(at, break_lock)
         except LookupError:
             mset = None                             # a first apply: every hostname is placed
+        if src != "-" and _offer_far_update(src, mset):
+            return 0
         keys = None
         if forward and mset is not None:
             from mmw.site import ops
@@ -100,6 +102,46 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
         for cmd in cmds:
             print(f"    {cmd}")
     return 3 if any(x.refused for x in r.per_root.values()) else 0
+
+
+def _interactive_far() -> bool:
+    import sys
+    return (sys.stdin.isatty() and sys.stderr.isatty()) or _interactive()
+
+
+def _offer_far_update(src: str, mset) -> bool:
+    """A newer mmw next to the bundle: asked before applying (the newest code
+    applies it). True when mmw was updated and has started again."""
+    import os
+    from mmw.core import update as U
+    from mmw.site.update import apply_far_update, far_offer, preflight
+    if os.environ.get("MMW_NO_UPDATE_CHECK") == "1":
+        return False
+    far = far_offer(src, mset)
+    if far is None or far.offer is None:
+        return False
+    offer = far.offer
+    if not _interactive_far():
+        eprint(f"mmw {offer.newest} is next to this bundle (you have {offer.current}) — "
+               "run mmw site apply in a terminal to update first")
+        return False
+    choice = "[Y/n]" if offer.default_yes() else "[y/N]"
+    answer = input(f"{offer.prompt_text()} {choice} ").strip().lower()
+    if not (offer.default_yes() if not answer else answer in ("y", "yes")):
+        return False
+    problem = preflight(far)
+    if problem:
+        eprint(problem)
+        return False
+    try:
+        apply_far_update(far, lambda line: eprint(line))
+    except (ValueError, OSError, _ssh_error()) as e:
+        eprint(f"the update failed: {e}")
+        return False
+    eprint(f"mmw updated to {offer.newest} — applying with it now")
+    from mmw.tui.update_flow import relaunch
+    relaunch(offer.current)                         # the same apply, run by the new mmw
+    return True
 
 
 def _interactive() -> bool:

@@ -64,6 +64,10 @@ class LocalRoot:
     def labels(self) -> list[str]:
         return [s.label for s in self.status()]
 
+    def arch(self) -> str:
+        from mmw.site.update import machine_arch
+        return machine_arch()
+
     def has(self, checksums: set[str]) -> set[str]:
         store = self.store()
         return {c for c in checksums if store.has(c)}

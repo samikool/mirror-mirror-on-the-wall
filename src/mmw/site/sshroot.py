@@ -90,6 +90,9 @@ class SshRoot:
     def hostnames(self) -> set[str]:
         return set(self._info["hostnames"])
 
+    def arch(self) -> str:
+        return self._info.get("arch", "x86_64")
+
     def free_bytes(self) -> int:
         return int(self._call("info")["free"])
 

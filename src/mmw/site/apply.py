@@ -31,7 +31,7 @@ from mmw.site.switch import resume_switches, switch_in
 
 
 # v1 bundles carried mmw's runtime; mmw comes from its installer now, and
-# updating it from bundles waits for its own design (site/runtime.py).
+# the far side updates from the installer next to a bundle (site/update.py).
 RUNTIME_PREFIX = ".mmw/runtime/"
 RUNTIME_NOTE = "this bundle carries an mmw runtime — ignored; install mmw from its installer file"
 

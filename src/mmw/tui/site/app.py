@@ -4,9 +4,10 @@ from pathlib import Path
 from textual.binding import Binding
 
 from mmw.tui.ui.base import ThemedApp
+from mmw.tui.update_flow import UpdateOffers
 
 
-class SiteApp(ThemedApp):
+class SiteApp(UpdateOffers, ThemedApp):
     BINDINGS = [Binding("q", "quit", "Quit")]
     def __init__(self, mset):
         super().__init__()
@@ -33,6 +34,14 @@ class SiteApp(ThemedApp):
     def root_of(self, repo: str):
         """The root holding `repo` (its interface: local now, ssh too)."""
         return self.mset.root_for_repo(repo)[0]
+
+    def on_mount(self) -> None:
+        import os
+        from mmw.tui.update_flow import RESUME_BUNDLE
+        self._start_update_offers(None)            # the far side never asks a network; the toast only
+        resume = os.environ.pop(RESUME_BUNDLE, None)
+        if resume:
+            self.call_later(lambda: self.screen.resume_bundle(resume))
 
     def get_default_screen(self):
         """The first page is the app's own bottom screen: nothing is behind

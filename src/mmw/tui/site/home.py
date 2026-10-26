@@ -316,7 +316,10 @@ class SiteHomePage(Page):
         self.app.push_screen(
             PathPickPage("Apply a bundle", "a bundle .tar, or a stage directory",
                          recent[0] if recent else "", dirs_only=False, suffixes=(".tar",)),
-            lambda path: path and self._plan(path))
+            lambda path: path and self.app.offer_far_update(path, lambda: self._plan(path)))
+
+    def resume_bundle(self, path: str) -> None:
+        self._plan(path)                           # just updated: carry on with the same bundle
 
     @work(thread=True, exclusive=True, group="site-plan", exit_on_error=False)
     def _plan(self, path: str) -> None:

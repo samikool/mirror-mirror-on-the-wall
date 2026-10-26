@@ -46,7 +46,7 @@ def test_launch_dialog_when_newer(tmp_path, monkeypatch):
     _newest(monkeypatch, "1.3.0")
 
     async def check(app, pilot):
-        await until(pilot, lambda: _name(app) == "UpdateDialog")
+        await until(pilot, lambda: _name(app) == "UpdateDialog" and app.focused is not None)
         assert "1.3.0" in str(app.screen.query_one("#confirm-title").render())
         assert app.focused.id == "confirm"                            # a minor update: Yes is the default
     _run(tmp_path, check)
@@ -56,7 +56,7 @@ def test_major_dialog_defaults_to_not_now(tmp_path, monkeypatch):
     _newest(monkeypatch, "2.0.0", current="1.9.0")
 
     async def check(app, pilot):
-        await until(pilot, lambda: _name(app) == "UpdateDialog")
+        await until(pilot, lambda: _name(app) == "UpdateDialog" and app.focused is not None)
         assert "major" in str(app.screen.query_one("#confirm-title").render()).lower()
         assert app.focused.id == "cancel"
     _run(tmp_path, check)
@@ -66,7 +66,7 @@ def test_no_carries_on_with_a_marker(tmp_path, monkeypatch):
     _newest(monkeypatch, "1.3.0")
 
     async def check(app, pilot):
-        await until(pilot, lambda: _name(app) == "UpdateDialog")
+        await until(pilot, lambda: _name(app) == "UpdateDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#cancel").press()
         await until(pilot, lambda: _name(app) != "UpdateDialog")
         assert "update available" in app.sub_title.lower()
@@ -81,7 +81,7 @@ def test_yes_updates_and_relaunches(tmp_path, monkeypatch):
     monkeypatch.setattr(F.os, "execve", lambda path, argv, env: execs.append((path, argv, env)))
 
     async def check(app, pilot):
-        await until(pilot, lambda: _name(app) == "UpdateDialog")
+        await until(pilot, lambda: _name(app) == "UpdateDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: execs)
     _run(tmp_path, check)
@@ -95,7 +95,7 @@ def test_update_refused_while_another_mmw_works(tmp_path, monkeypatch):
     monkeypatch.setattr(U, "run_update", lambda *a, **k: pytest.fail("updated while busy"))
 
     async def check(app, pilot):
-        await until(pilot, lambda: _name(app) == "UpdateDialog")
+        await until(pilot, lambda: _name(app) == "UpdateDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: any("another mmw is running" in str(n.message) for n in app._notifications))
     _run(tmp_path, check)

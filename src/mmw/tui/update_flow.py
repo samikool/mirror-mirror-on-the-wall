@@ -33,12 +33,16 @@ class UpdateDialog(ConfirmDialog):
         self.query_one("#confirm" if self._default_yes else "#cancel").focus()
 
 
-def relaunch(old_version: str) -> None:
-    """Start this mmw again, the same way, saying what it was updated from."""
+RESUME_BUNDLE = "MMW_RESUME_BUNDLE"
+
+
+def relaunch(old_version: str, resume: str | None = None) -> None:
+    """Start this mmw again, the same way, saying what it was updated from
+    (and, on the far side, which bundle to carry on with)."""
     from mmw.core.update import installer_prefix
     prefix = installer_prefix()
     exe = str(prefix / "bin" / "mmw") if prefix else (shutil.which(sys.argv[0]) or sys.argv[0])
-    env = {**os.environ, UPDATED_FROM: old_version}
+    env = {**os.environ, UPDATED_FROM: old_version, **({RESUME_BUNDLE: resume} if resume else {})}
     os.execve(exe, [exe, *sys.argv[1:]], env)
 
 
@@ -47,10 +51,11 @@ class UpdateRunPage(Page):
 
     TITLE = "Updating mmw"
 
-    def __init__(self, offer: U.Offer, run=None):
+    def __init__(self, offer: U.Offer, run=None, resume: str | None = None):
         super().__init__()
         self._offer = offer
         self._run_it = run                      # the far side hands its own update in
+        self._resume = resume
         self.subtitle = f"{offer.current} → {offer.newest}"
 
     def compose_body(self) -> ComposeResult:
@@ -84,7 +89,7 @@ class UpdateRunPage(Page):
         if ok:
             self.set_status(f"updated to {self._offer.newest} — restarting…", "ok")
             self.app.exit()
-            self.app.call_later(relaunch, self._offer.current)
+            self.app.call_later(relaunch, self._offer.current, self._resume)
             return
         self.set_status(f"the update failed: {last} — still on {self._offer.current}", "error")
         close = self.query_one("#btn-update-close", Button)
@@ -124,20 +129,51 @@ class UpdateOffers:
         if offer is not None:
             self.offer_update(offer)
 
-    def offer_update(self, offer: "U.Offer", run=None) -> None:
+    def offer_update(self, offer: "U.Offer", run=None, then=None, resume: str | None = None) -> None:
+        """Update now? `then` carries on when the answer is No (or it can't
+        run); `resume` is what the restarted mmw picks up again."""
         self._update_offer, self._update_run = offer, run
+        self._update_then, self._update_resume = then, resume
         self.push_screen(UpdateDialog(offer), self._update_answered)
 
     def _update_answered(self, yes) -> None:
-        offer = self._update_offer
+        offer, then = self._update_offer, getattr(self, "_update_then", None)
         if not yes:
-            self.sub_title = f"{self.sub_title} · update available: {offer.newest} (u)".lstrip(" ·")
+            if "update available" not in self.sub_title:
+                self.sub_title = f"{self.sub_title} · update available: {offer.newest} (u)".lstrip(" ·")
+            if then:
+                then()
             return
         busy = self._update_busy()
         if busy:
             self.notify(busy, severity="warning", timeout=10)
+            if then:
+                then()
             return
-        self.push_screen(UpdateRunPage(offer, self._update_run))
+        self.push_screen(UpdateRunPage(offer, self._update_run, getattr(self, "_update_resume", None)))
+
+    def offer_far_update(self, src: str, then) -> None:
+        """The far side: a newer mmw next to the bundle at `src` is asked
+        about first; `then()` carries on (No, nothing newer, or checks off)."""
+        from mmw.site.update import apply_far_update, far_offer
+        if U.checks_disabled():
+            then()
+            return
+        try:
+            far = far_offer(src, getattr(self, "mset", None))
+        except Exception:  # noqa: BLE001 — an odd folder never blocks an apply
+            far = None
+        if far is None or far.offer is None:
+            then()
+            return
+
+        def run(log):
+            try:
+                apply_far_update(far, log)
+                return True, ""
+            except Exception as e:  # noqa: BLE001 — said on the page
+                return False, str(e)
+        self.offer_update(far.offer, run=run, then=then, resume=src)
 
     def _update_busy(self) -> str | None:
         for job in (getattr(self, "active_sync", None), getattr(self, "active_transfer", None)):

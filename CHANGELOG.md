@@ -6,6 +6,85 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0]
+
+mmw comes to the far side. A network set to `far_side = "mmw"` is applied by
+mmw itself: every bundle is kept as a version you can serve, hold, roll back
+to or delete, across one or more roots — local disks or other machines over
+key-based ssh — from `mmw site` or a full-screen TUI. mmw installs there from
+its own small file, offline, and keeps itself up to date on both sides.
+
+Upgrading from 1.2.0: nothing to do. Networks default to `far_side =
+"apply"`, the same `apply.py` as before. To move one to mmw on the far side,
+set `far_side = "mmw"` (or Far side on its Edit page), transfer with the mmw
+installer included, install it there, and `mmw site apply` the bundle.
+
+### Added
+
+- **mmw on the far side** (`far_side = "mmw"`). See [docs/far-side.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/far-side.md).
+  - `mmw site apply` stores a bundle (a `.tar`, a stage folder, or stdin),
+    checks everything, then switches each repository; a cut-short switch
+    finishes on the next command. Per-repository deltas and partial bundles
+    (`--repo`) carry only what changed.
+  - Every applied bundle is a version: `serve`, `hold`, `forward`,
+    `delete`, `history`, `space`, with retention (`settings --keep N`). A
+    version can be named by its bundle's date, stamp or label as well as
+    `v3`, and `mmw site serve-bundle 28oct` serves the whole mirror as it
+    was after one bundle.
+  - **Several roots**, each describing itself (name, network, members) and
+    holding its own hostnames: new hostnames are placed on a root at apply
+    time, `mmw site move` moves a repository (with every repository sharing
+    its hostname) to another root, and `tidy` clears the old copy. nginx is
+    generated per root, with the exact steps after each change.
+  - **Roots over ssh** — key auth only, never a stored key or password. An
+    ssh root behaves like a local one; mmw can push its installer there
+    (`mmw site open HOST:/PATH --install …`, or offered by the TUI).
+  - **HTTPS on the far side**: each root's key is made where it lives and
+    only the request and certificate travel; `mmw site ca load`/`ca make`
+    record the site's CA on that machine only, and `mmw site certs` signs.
+- **The far-side TUI** (`mmw site manage`): a card per repository with its
+  detail and versions beside it; Apply bundle (review, then a progress page
+  per repository), Add root, As of (a bundle), Move, Certs and Tidy;
+  Serve, Forward, Hold and Delete under the versions. Long work runs on one
+  progress page with Stop where it's safe; ssh never holds the screen.
+- **mmw's installer**: `mmw-<version>-<arch>.tar` installs mmw offline
+  (`tar -xf … && sh mmw-<version>/install.sh`, into `~/.local/bin` or
+  `--prefix`). Written by `mmw installer --out DIR`, `--installer` on
+  `mmw bundle`/`mmw stage`, or "Include mmw installer" on the Transfer page —
+  on by default whenever this mmw is newer than the last installer sent.
+- **mmw keeps itself up to date.** On the connected side every command and
+  the TUI check PyPI (cheaply, never slowing a start) and offer the update —
+  `[Y/n]` at the end of a command, a dialog when the TUI opens — following
+  how mmw was installed (uv tool, pipx, pip in a venv, the installer). The
+  TUI comes back updated. A new major version warns and defaults to No.
+  `mmw update` does it on demand; `MMW_NO_UPDATE_CHECK=1` turns it off. On
+  the far side the installer next to a bundle offers the same, updating
+  every ssh root with this machine, or none.
+- **`mmw stage`**: a bundle laid out as hardlinks in a folder, for media
+  that is mounted rather than copied; `--out -` streams a bundle to stdout.
+- Python 3.10 is supported.
+
+### Changed
+
+- **Bundle becomes Transfer** in the TUI: a bundle (`.tar`) or a stage
+  (folder), with the repositories to send picked there and the
+  repositories each snapshot changed shown.
+- Bundles no longer carry mmw's runtime; one made before this applies as
+  usual, with a note. `--no-runtime` and `mmw site apply --allow-downgrade`
+  are gone.
+- Sync downloads the largest files first, so one slow file overlaps the rest
+  instead of trailing alone.
+- The bundle's `.sha256` is computed while the tar is written — no second
+  read of the whole bundle.
+- A long status message wraps onto up to three lines instead of being cut
+  off.
+
+### Fixed
+
+- The selected sync card has its own look, never the finished green.
+- An action's message in the TUI is no longer overwritten by the reload that
+  follows it.
+
 ## [1.2.0]
 
 PyPI joins APT and VS Code: mirror the whole index or a requirements list for

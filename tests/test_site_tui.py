@@ -314,3 +314,36 @@ def test_buttons_reach_the_actions(env, tmp_path):  # noqa: F811
         app.screen.query_one("#btn-site-apply").press()
         await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")
     _run(home, check)
+
+
+def test_history_still_loads_when_a_root_cannot_say_its_details(env, tmp_path, monkeypatch):  # noqa: F811
+    # An older mmw over ssh has no `details` verb.
+    from mmw.site.mset import LocalRoot
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    def older(self):
+        raise ValueError("unknown verb 'details'")
+    monkeypatch.setattr(LocalRoot, "details", older)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        await until(pilot, lambda: len(_rows(app, "site-history")) >= 1)
+        assert "serving" in str(app.screen.query_one("#site-detail").render())
+    _run(home, check)
+
+
+def test_version_buttons_are_on_screen_at_80x24(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        await until(pilot, lambda: len(_rows(app, "site-history")) == 3)
+        await until(pilot, lambda: "last apply" in str(app.screen.query_one("#site-detail").render()))
+
+        def fits():                     # once the filled-in detail has been laid out
+            split = app.screen.query_one("#site-split").region
+            buttons = [app.screen.query_one(f"#btn-site-{b}").region for b in ("serve", "forward", "hold", "delete")]
+            return (all(b.height == 1 and b.bottom <= split.bottom for b in buttons)
+                    and app.screen.query_one("#site-history").region.height >= 4)
+        await until(pilot, fits)
+    _run(home, check, size=(80, 24))

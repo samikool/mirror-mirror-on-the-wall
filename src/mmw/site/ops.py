@@ -488,6 +488,10 @@ def add_root(mset, location: str) -> str:
         if found.info.set_id != mset.set_id:
             raise ValueError(f"{location} holds the mirror of network {found.info.network!r} — pick another folder")
         recents.remember(location)
+        # An add that failed part-way (an ssh root down mid-write) left some
+        # roots not listing it: adding it again finishes the job.
+        if any(found.info.name not in r.info.members for r in [*mset.roots, found]):
+            _list_member(mset, found)
         return f"opened root {found.info.name} ({location})"
     taken = {r.info.name for r in mset.roots} | set(mset.missing)
     base = location.rstrip("/").rsplit("/", 1)[-1].split(":")[-1] or "root"
@@ -499,12 +503,16 @@ def add_root(mset, location: str) -> str:
         init_remote(location, name=name, set_id=mset.set_id, network=mset.network)
     else:
         init_root(Path(location).expanduser(), name=name, set_id=mset.set_id, network=mset.network)
-    new = root_at(location)
-    members = list(dict.fromkeys([*mset.roots[0].info.members, *mset.missing, name]))
-    for r in [*mset.roots, new]:
-        r.set_identity(members=members)
-    recents.remember(location)
+    recents.remember(location)       # first: a failure below is finished by adding it again
+    _list_member(mset, root_at(location))
     return f"new root {name} at {location} — move repositories into it, or place new hostnames on it"
+
+
+def _list_member(mset, new) -> None:
+    """Every root of the mirror, and `new`, lists `new` as a member."""
+    members = list(dict.fromkeys([*mset.names(), new.info.name]))
+    for r in [*(r for r in mset.roots if r.info.name != new.info.name), new]:
+        r.set_identity(members=members)
 
 
 def root_details(home: Path) -> dict:

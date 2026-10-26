@@ -139,3 +139,15 @@ def test_add_root_refuses_another_mirror(hosts, tmp_path):  # noqa: F811
     init_root(other, name="other", set_id="elsewhere", network="elm")
     with pytest.raises(ValueError, match="elm"):
         ops.add_root(open_set(), str(other))
+
+
+def test_add_root_again_finishes_a_root_whose_membership_was_half_written(hosts, tmp_path):  # noqa: F811
+    from mmw.site.home import init_root
+    *_, r1, r2 = _split(hosts, tmp_path)
+    r3 = tmp_path / "r3"
+    # Made, but the failure came before any root listed it, and before it was remembered.
+    init_root(r3, name="r3", set_id=open_set().set_id, network=open_set().network)
+    ops.add_root(open_set(), str(r3))
+    for r in (r1, r2, r3):
+        assert set(read_root(str(r)).members) == {"r1", "r2", "r3"}
+    assert str(r3) in recents.known()

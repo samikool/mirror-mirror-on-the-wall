@@ -193,10 +193,14 @@ class SiteHomePage(Page):
             try:
                 root = self.app.root_of(repo)
                 rows = root.history(repo)
-                details = {**root.details(), "root": root.info.name, "location": root.info.location}
             except Exception as e:  # noqa: BLE001
                 self.app.call_from_thread(self.set_status, str(e), "error")
                 return
+            details = {"root": root.info.name, "location": root.info.location}
+            try:
+                details.update(root.details())
+            except Exception:  # noqa: BLE001 — an older mmw over ssh has no `details`: the rest still shows
+                pass
         self.app.call_from_thread(self._history_loaded, repo, rows, details)
 
     def _detail_text(self, repo: str | None, rows, details: dict) -> str:

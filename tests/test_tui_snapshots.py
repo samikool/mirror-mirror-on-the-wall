@@ -467,8 +467,13 @@ def test_snapshot_site_home(snap_compare, tmp_path, monkeypatch):
         from textual.widgets import DataTable
         await until(pilot, lambda: pilot.app.screen.query("#site-history")
                     and pilot.app.screen.query_one("#site-history", DataTable).row_count == 3)
+    from dataclasses import replace
     from mmw.site.mset import open_set
-    assert snap_compare(SiteApp(open_set()), terminal_size=SNAP_SIZE, run_before=ready)
+    mset = open_set()
+    root = mset.roots[0]
+    root.info = replace(root.info, location="/mnt/oak")   # not this run's temp folder
+    monkeypatch.setattr(SiteApp, "reopen", lambda self: None)   # …which reading the set again would bring back
+    assert snap_compare(SiteApp(mset), terminal_size=SNAP_SIZE, run_before=ready)
 
 
 def test_snapshot_site_apply_review(snap_compare):

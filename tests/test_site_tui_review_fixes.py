@@ -39,7 +39,7 @@ def test_held_but_unserved_repo_has_a_hold_note(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         app.screen.query_one("#site-repos", DataTable).move_cursor(
             row=[r[0] for r in _rows(app, "site-repos")].index("a"))
-        await until(pilot, lambda: "nothing served" in str(app.screen.query_one("#site-hold-note").render()))
+        await until(pilot, lambda: "held · nothing served" in str(app.screen.query_one("#site-detail").render()))
     _run(home, check)
 
 

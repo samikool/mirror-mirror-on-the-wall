@@ -2,10 +2,12 @@
 history beside it (approved layouts A and B)."""
 from pathlib import Path
 
+from rich.markup import escape
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.widgets import DataTable, Static
 
 from mmw.core.format import fmt_size
@@ -36,17 +38,60 @@ class SiteHomePage(Page):
         Binding("h", "hold", "Hold"),
         Binding("d", "delete", "Delete version"),
         Binding("a", "apply", "Apply bundle"),
+        Binding("r", "add_root", "Add root"),
         Binding("m", "move", "Move to root"),
         Binding("c", "certs", "Certificates"),
         Binding("t", "tidy", "Tidy", show=False),
-        Binding("r", "refresh", "Refresh", show=False),
+        Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
 
     def __init__(self):
         super().__init__()
         self._states = []
+        self._root_of: dict[str, str] = {}
+        self._kept: dict[str, tuple[int, int]] = {}
         self._history = []
         self._history_repo = None
+
+    def compose_actions(self) -> ComposeResult:
+        # The mirror's own actions; a version's sit under its table (the
+        # pane), so both rows fit at 80 columns. Apply is the main thing here.
+        yield Button("Apply bundle…", id="btn-site-apply", variant="primary", compact=True)
+        yield Button("Add root…", id="btn-site-add-root", compact=True)
+        yield Button("Move…", id="btn-site-move", compact=True)
+        yield Button("Certificates", id="btn-site-certs", compact=True)
+        yield Button("Tidy", id="btn-site-tidy", compact=True)
+
+    _BUTTONS = {"btn-site-apply": "apply", "btn-site-add-root": "add_root", "btn-site-serve": "serve",
+                "btn-site-forward": "forward", "btn-site-hold": "hold", "btn-site-delete": "delete",
+                "btn-site-move": "move", "btn-site-certs": "certs", "btn-site-tidy": "tidy"}
+
+    def on_button_pressed(self, event) -> None:
+        action = self._BUTTONS.get(event.button.id or "")
+        if action:
+            event.stop()
+            getattr(self, f"action_{action}")()
+
+    def action_add_root(self) -> None:
+        if self.app.mset is None:
+            self.set_status("No mirror opened yet — the first apply makes its roots.", "error")
+            return
+        from mmw.tui.path_pick import PathPickPage
+        self.app.push_screen(PathPickPage("Add a root", "a folder (an empty one becomes a new root), "
+                                          "or host:/path over ssh"),
+                             lambda path: path and self.add_root_path(path))
+
+    def add_root_path(self, path: str) -> None:
+        self._act_root(path)
+
+    @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
+    def _act_root(self, path: str) -> None:
+        try:
+            msg = ops.add_root(self.app.mset, path)
+        except Exception as e:  # noqa: BLE001 — another mirror's root, ssh refused: said on the page
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(self._acted, msg)
 
     def compose_body(self) -> ComposeResult:
         yield Static("", id="site-banner")
@@ -60,9 +105,8 @@ class SiteHomePage(Page):
     def on_mount(self) -> None:
         self.query_one("#site-banner").display = False
         t = self.query_one("#site-repos", DataTable)
-        m = self.app.mset
-        self._multi = m is not None and (len(m.roots) > 1 or bool(m.missing))
-        t.add_columns("Repository", *(["Root"] if self._multi else []), "Serving", "Newest", "State")
+        t.show_header = False
+        t.add_column("Repository")
         self.query_one("#site-history", DataTable).add_columns("Version", "Date", "Size", "")
         t.focus()
         self.action_refresh()
@@ -84,13 +128,15 @@ class SiteHomePage(Page):
             self.app.reopen()
             roots_by = {r.info.name: r for r in self.app.mset.roots}
             rows = ops.set_status(self.app.mset)
-            states, newest, self._root_of = [], {}, {}
+            states, newest, self._root_of, self._kept = [], {}, {}, {}
             for name, st in rows:
                 states.append(st)
                 self._root_of[st.repo] = name
-                n = roots_by[name].newest(st.repo)
-                if n is not None:
-                    newest[st.repo] = n
+                history = roots_by[name].history(st.repo)
+                if history:
+                    newest[st.repo] = history[0][0].number
+                # For the card: how many versions are kept here, and their size.
+                self._kept[st.repo] = (len(history), max((total for _v, total, _f, _s in history), default=0))
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
@@ -103,11 +149,18 @@ class SiteHomePage(Page):
         t = self.query_one("#site-repos", DataTable)
         keep = self.selected_repo()
         t.clear()
+        colour = self.app.get_css_variables()   # a table cell is Rich: the theme's colours, resolved
         for s in states:
-            serving = f"v{s.serving.number} · {_date(s.serving.stamp)}" if s.serving else "—"
-            root = [self._root_of.get(s.repo, "")] if self._multi else []
-            t.add_row(Text(s.label), *root, serving, f"v{newest.get(s.repo, '?')}",
-                      "held" if s.held else "current", key=s.repo)
+            # A card: what it is; what it serves against the newest kept; where it lives.
+            serving = f"▶ v{s.serving.number} · {_date(s.serving.stamp)}" if s.serving else "nothing served"
+            hosts = ", ".join(sorted({b.split("/", 1)[0] for b in s.bases}))
+            kept, size = self._kept.get(s.repo, (0, 0))
+            card = Text(s.label, style="bold")
+            card.append(f"\n{serving}   newest v{newest.get(s.repo, '?')}   ")
+            card.append("held" if s.held else "current", style=colour["mmw-warn" if s.held else "mmw-ok"])
+            card.append(f"\n{hosts} · {self._root_of.get(s.repo, '')} · {fmt_size(size)} · "
+                        f"{kept} version{'s' if kept != 1 else ''}", style="dim")
+            t.add_row(card, key=s.repo, height=3)
         if keep is not None and keep in {s.repo for s in states}:
             t.move_cursor(row=t.get_row_index(keep))
         if not states:
@@ -135,18 +188,59 @@ class SiteHomePage(Page):
 
     @work(thread=True, exclusive=True, group="site-history", exit_on_error=False)
     def _load_history(self, repo: str | None) -> None:
-        rows = []
+        rows, details = [], {}
         if repo is not None:
             try:
-                rows = self.app.root_of(repo).history(repo)
+                root = self.app.root_of(repo)
+                rows = root.history(repo)
             except Exception as e:  # noqa: BLE001
                 self.app.call_from_thread(self.set_status, str(e), "error")
                 return
-        self.app.call_from_thread(self._history_loaded, repo, rows)
+            details = {"root": root.info.name, "location": root.info.location}
+            try:
+                details.update(root.details())
+            except Exception:  # noqa: BLE001 — an older mmw over ssh has no `details`: the rest still shows
+                pass
+        self.app.call_from_thread(self._history_loaded, repo, rows, details)
 
-    def _history_loaded(self, repo: str | None, rows) -> None:
+    def _detail_text(self, repo: str | None, rows, details: dict) -> str:
+        """The selected repository, in full: where, what it serves, what's kept."""
+        state = next((s for s in self._states if s.repo == repo), None)
+        if state is None:
+            return ""
+        newest = rows[0][0] if rows else None
+        serving = (f"v{state.serving.number} · {_date(state.serving.stamp)} · from bundle {state.serving.stamp}"
+                   if state.serving else "nothing")
+        held = ""
+        if state.held and newest:
+            if not state.serving:
+                held = f"   [$mmw-warn]held · nothing served — Forward serves v{newest.number}[/]"
+            elif newest.number != state.serving.number:
+                held = f"   [$mmw-warn]held at v{state.serving.number} — Forward serves v{newest.number}[/]"
+            else:
+                held = f"   [$mmw-warn]held at v{state.serving.number}[/]"
+        total = max((t for _v, t, _f, _s in rows), default=0)
+        frees = sum(f for _v, _t, f, on in rows if not on)
+        hosts = ", ".join(sorted({b.split("/", 1)[0] for b in state.bases}))
+        lines = [
+            f"[b]{escape(state.label)}[/]",
+            f"[dim]root[/]       {escape(details.get('root', ''))}  [dim]({escape(details.get('location', ''))})[/]",
+            f"[dim]hostname[/]   {escape(hosts)}",
+            f"[dim]serving[/]    {escape(serving)}",
+            "[dim]newest[/]     " + (f"v{newest.number} · {_date(newest.stamp)}" if newest else "—")
+            + ("  [$mmw-ok]current[/]" if not state.held else "") + held,
+            f"[dim]kept[/]       {len(rows)} version{'s' if len(rows) != 1 else ''} · {fmt_size(total)}"
+            + (f" · old ones free {fmt_size(frees)}" if frees else ""),
+            f"[dim]https[/]      {escape(details.get('https', '—'))}",
+            "[dim]last apply[/] " + (f"{_date(details['last_apply'])} · {escape(details.get('last_apply_kind', ''))}"
+                                     if details.get("last_apply") else "none yet"),
+        ]
+        return "\n".join(lines)
+
+    def _history_loaded(self, repo: str | None, rows, details: dict | None = None) -> None:
         if not self.is_attached or repo != self.selected_repo():
             return
+        self.query_one("#site-detail", Static).update(self._detail_text(repo, rows, details or {}))
         self._history = rows
         t = self.query_one("#site-history", DataTable)
         # The same repository again (a reload): keep the row the user is on.
@@ -162,12 +256,6 @@ class SiteHomePage(Page):
                 t.move_cursor(row=t.row_count - 1)
         if keep is not None and t.row_count:
             t.move_cursor(row=min(keep, t.row_count - 1))
-        state = next((s for s in self._states if s.repo == repo), None)
-        note = ""
-        if state and state.held and rows:
-            note = (f"held at v{state.serving.number} · f forward to v{rows[0][0].number}" if state.serving
-                    else f"held · nothing served · f serves v{rows[0][0].number}")
-        self.query_one("#site-hold-note", Static).update(note)
 
     def selected_version(self) -> int | None:
         t = self.query_one("#site-history", DataTable)
@@ -428,8 +516,13 @@ class MoveRootPage(Page):
 
 
 class _HistoryPane(Static):
-    """The selected repository's versions, and its hold."""
+    """The selected repository in full, its versions, and its hold."""
 
     def compose(self) -> ComposeResult:
+        yield Static("", id="site-detail")
         yield DataTable(cursor_type="row", zebra_stripes=True, id="site-history")
-        yield Static("", id="site-hold-note")
+        with Horizontal(id="site-version-actions"):
+            yield Button("Serve", id="btn-site-serve", compact=True)
+            yield Button("Forward", id="btn-site-forward", compact=True)
+            yield Button("Hold", id="btn-site-hold", compact=True)
+            yield Button("Delete", id="btn-site-delete", variant="error", compact=True)

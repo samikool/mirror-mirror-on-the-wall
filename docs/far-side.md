@@ -257,11 +257,17 @@ your own deployment copy outside the root, as [airgap.md](airgap.md) says.
 mmw site manage
 ```
 
-Opens on every repository the site serves — what it serves, the newest
-version here, held or current — with the selected repository's history
-beside it, the served version marked ▶. Keys: **Enter** on a version serves
-it (after a confirmation saying what changes), **f** forwards, **h** holds,
-**d** deletes a version, **a** applies a bundle, **r** refreshes.
+Opens on a card for every repository the site serves — what it serves
+against the newest version here, held or current, its hostnames, root, size
+and versions kept. Beside it, the selected repository in full (its root,
+the bundle it serves from, what old versions would free, https, the last
+apply) and its versions, the served one marked ▶, with Serve, Forward, Hold
+and Delete under them. Keys: **Enter** on a version serves it (after a
+confirmation saying what changes), **f** forwards, **h** holds, **d** deletes
+a version, **a** applies a bundle, **r** adds a root (an empty folder or
+`host:/path` becomes a new root of this mirror), **m** moves a repository to
+another root, **c** manages certificates, **t** tidies, **ctrl+r** refreshes.
+The buttons along the bottom do the same.
 
 Applying from the TUI: pick the bundle (a `.tar` or a stage directory; the
 last five are remembered), review it — every repository it changes, ticked

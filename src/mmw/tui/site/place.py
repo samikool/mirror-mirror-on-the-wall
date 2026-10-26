@@ -5,7 +5,7 @@ checked against its free space before Apply is offered."""
 from pathlib import Path
 
 from rich.text import Text
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Static
@@ -42,6 +42,7 @@ class PlacePage(Page):
         self.held_back = {h for h, o in plan.owner.items() if o is not None and o not in plan.locations}
         self.ticked = set(plan.hosts) - self.held_back
         self._cache: dict = {}                     # each root's store hits and free space, checked once
+        self._space_errors: dict[str, str] = {}    # a root whose space couldn't be asked: why
 
     def compose_body(self) -> ComposeResult:
         yield Static("", id="place-hint")
@@ -60,6 +61,22 @@ class PlacePage(Page):
             self.add_root(path)
         self._refresh()
         t.focus()
+        self._ask_space(list(dict.fromkeys([*self.roots, *(t for t in self.targets.values() if t)])))
+
+    @work(thread=True, group="place-space", exit_on_error=False)
+    def _ask_space(self, keys: list[str]) -> None:
+        """Each root's free space and what it holds — over ssh for a root on
+        another machine, so never on the screen's thread."""
+        from mmw.site.apply import root_space
+        for key in keys:
+            if key in self._cache:
+                continue
+            try:
+                self._cache[key] = root_space(self._mset, self._plan, key)
+                self._space_errors.pop(key, None)
+            except Exception as e:  # noqa: BLE001 — ssh refused, host gone: said in its row
+                self._space_errors[key] = str(e)
+        self.app.call_from_thread(self._refresh)
 
     # ── state ────────────────────────────────────────────────────────────────
 
@@ -76,20 +93,29 @@ class PlacePage(Page):
         self._refresh()
 
     def add_root(self, path: str) -> None:
+        self.set_status(f"opening {path}…")
+        self._open_root(path)
+
+    @work(thread=True, group="place-open", exit_on_error=False)        # each root its own: never cancel one
+    def _open_root(self, path: str) -> None:
         from mmw.site.mset import root_at
         from mmw.site.ssh import RemoteMmw, SshError
         try:
-            found = root_at(path)                   # a folder, or host:/path over ssh
+            found = root_at(path)                   # a folder, or host:/path over ssh: off the screen
         except RemoteMmw as e:
             if not e.installable:
-                self.set_status(str(e), "error")
+                self.app.call_from_thread(self.set_status, str(e), "error")
                 return
             from mmw.tui.site.install_flow import offer_install
-            offer_install(self, path, e, lambda: self.add_root(path), self.set_status)
+            self.app.call_from_thread(offer_install, self, path, e, lambda: self.add_root(path), self.set_status)
             return
         except (SshError, ValueError) as e:
-            self.set_status(str(e), "error")        # key auth, host key, or mmw missing there: said plainly
+            # key auth, host key, or mmw missing there: said plainly
+            self.app.call_from_thread(self.set_status, str(e), "error")
             return
+        self.app.call_from_thread(self._root_opened, path, found)
+
+    def _root_opened(self, path: str, found) -> None:
         info = found.info if found is not None else None
         if info is not None:
             mine = self._mset.set_id if self._mset else None
@@ -112,13 +138,14 @@ class PlacePage(Page):
                 self.targets[h] = path
         self.set_status(f"root {path} added — enter on a new hostname moves it between roots")
         self._refresh()
+        self._ask_space([path])
 
     def _needs(self) -> dict[str, tuple[int, int]]:
         from mmw.site.apply import placement_needs
         # Every placed hostname lands in its root, ticked or not (unticked:
         # stored and held), so every one counts toward that root's needs.
         placed = {h: t for h, t in self.targets.items() if t is not None}
-        return placement_needs(self._mset, self._plan, placed, cache=self._cache)
+        return placement_needs(self._mset, self._plan, placed, cache=self._cache, fetch=False)
 
     def hosts_text(self) -> str:
         t = self.query_one("#place-hosts", DataTable)
@@ -143,16 +170,23 @@ class PlacePage(Page):
             t.move_cursor(row=min(keep, t.row_count - 1))
         needs = self._needs()
         lines = []
+        placed = {t for t in self.targets.values() if t}
+        # A root with hostnames placed on it holds up Apply until its space is known.
+        waiting = [k for k in dict.fromkeys([*self.roots, *placed]) if k not in needs
+                   and (k in placed or k not in self._cache)]
         for key, (need, free) in needs.items():
             ok = need <= free
             where = self._plan.locations.get(key, "new root")
             lines.append(f"{'✓' if ok else '✗'} {key}  ({where})  needs {fmt_size(need)} · {fmt_size(free)} free")
+        for key in waiting:
+            why = self._space_errors.get(key)
+            lines.append(f"✗ {key}  {why}" if why else f"… {key}  checking free space…")
         self.query_one("#place-roots", Static).update(Text("Roots\n" + ("\n".join(lines) or "  none yet")))
         unplaced = [h for h in self._plan.hosts if h not in self.held_back and self.targets.get(h) is None]
         self.query_one("#place-hint", Static).update(
             "New hostnames need a root: press a (Add a root…) and pick a folder — an empty one becomes a new "
             "root. Enter moves a hostname between roots." if unplaced else "")
-        self.query_one("#btn-place-go", Button).disabled = bool(unplaced) or any(
+        self.query_one("#btn-place-go", Button).disabled = bool(unplaced) or any(k in placed for k in waiting) or any(
             need > free for need, free in needs.values()) or not self.ticked
 
     # ── keys ─────────────────────────────────────────────────────────────────

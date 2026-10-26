@@ -109,9 +109,9 @@ class LocalRoot:
         from mmw.site import ops
         return ops.serve_preview(self.home, key, number)
 
-    def serve(self, key: str, number: int):
+    def serve(self, key: str, number: int, progress=None):
         from mmw.site import ops
-        return ops.serve(self.home, key, number)
+        return ops.serve(self.home, key, number, progress=progress)
 
     def forward(self, key: str | None) -> list[str]:
         from mmw.site import ops
@@ -167,9 +167,9 @@ class LocalRoot:
         from mmw.site import ops
         ops.set_moving_in(self.home, key, src)
 
-    def tidy(self) -> list[str]:
+    def tidy(self, progress=None) -> list[str]:
         from mmw.site import ops
-        return ops.tidy_here(self.home)
+        return ops.tidy_here(self.home, progress=progress)
 
     def details(self) -> dict:
         from mmw.site import ops

@@ -59,15 +59,17 @@ Page #page-hint {
     text-wrap: nowrap;
     text-overflow: ellipsis;
 }
-Page #page-actions { height: 1; padding: 0 2; background: $surface; }
+/* A long status (an error, most of all) wraps onto up to three lines, the
+   bar growing with it, instead of being cut off mid-word. */
+Page #page-actions { height: auto; max-height: 3; padding: 0 2; background: $surface; }
 /* As wide as the label: Button's default min-width (16) put a fifth button
    off the edge of an 80-column action bar. */
 Page #page-actions Button { margin-left: 1; min-width: 0; width: auto; }
 Page #page-status {
     width: 1fr;
-    height: 1;
+    height: auto;
+    max-height: 3;
     color: $text-muted;
-    text-wrap: nowrap;
     text-overflow: ellipsis;
 }
 Page #page-status.-ok { color: $mmw-ok; }
@@ -391,7 +393,8 @@ VscodeEditor Label, VscodeCheckView Label, StepVscode Label {
 #vs-edit-check-slot { height: auto; }
 
 /* The far-side TUI's Deployed page: the list narrower than the history. */
-SiteHomePage ListDetail .list-pane { width: 45%; }
+/* Room for a card's widest line (▶ v12 · 26 Oct · held · newest v15) at 80 columns. */
+SiteHomePage ListDetail .list-pane { width: 45%; min-width: 38; }
 /* The detail gives way to the versions at 24 rows; their buttons stay on screen. */
 _HistoryPane { height: 1fr; }
 #site-detail { height: auto; max-height: 50%; overflow-y: auto; padding: 0 1 1 1; }

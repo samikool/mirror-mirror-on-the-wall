@@ -238,3 +238,18 @@ def test_a_new_folder_is_taken_when_new_is_allowed(tmp_path):
     assert result == str(tmp_path / "fresh")
     result, status = _pick(tmp_path, str(tmp_path / "no" / "such" / "place"), remote=True, new=True)
     assert result == "unset" and "no/such" in status            # its parent has to be there
+
+
+def test_closing_straight_after_opening_never_trips_on_the_tree(tmp_path):
+    # The tree reports highlights for a moment after mounting; Esc in that
+    # moment used to meet a page with no path box left.
+    root = _tree(tmp_path)
+
+    async def scenario():
+        for _ in range(5):
+            app = _Harness(PathPickPage("Pick", start=str(root)))
+            async with app.run_test() as pilot:
+                app.screen.dismiss(None)
+                await _settle(pilot)
+                assert app.result is None
+    _run(scenario)

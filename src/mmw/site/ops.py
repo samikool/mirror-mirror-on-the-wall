@@ -2,12 +2,16 @@
 of a repository, hold it where it is, move it forward."""
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 from mmw.core import disk_io
 from mmw.core.repos import resolve_repo_refs
 from mmw.resources.apply import render_derived
 from mmw.site.db import SiteDB, VersionInfo
+
+if TYPE_CHECKING:
+    from mmw.site.db import RepoState
 from mmw.site.home import load_site
 from mmw.site.lock import SiteLock
 from mmw.site.store import Store
@@ -67,12 +71,14 @@ def _session(home: Path):
         yield db, roots
 
 
-def serve(home: Path, ref: str, number: int) -> SwitchResult:
-    """Serve version `number` of a repository; held unless it is the newest."""
+def serve(home: Path, ref: str, number: int, progress=None) -> SwitchResult:
+    """Serve version `number` of a repository; held unless it is the newest.
+    `progress(path)` for each file placed or removed."""
     with _session(home) as (db, roots):
         repo = resolve_repo(db, ref)
         roots.check_mounted(roots.of(db.repo_state(repo)))
-        result = switch_in(db, roots, repo, _version(db, repo, number).id)
+        result = switch_in(db, roots, repo, _version(db, repo, number).id,
+                           progress=(lambda rel, _kind: progress(rel)) if progress else None)
         _render(roots)
         return result
 
@@ -427,8 +433,9 @@ def set_moving_in(home: Path, key: str, src: str) -> None:
         db.set_meta(f"moving_in:{key}", src)
 
 
-def tidy_here(home: Path) -> list[str]:
-    """Clear moved repositories' old served files here; the labels tidied."""
+def tidy_here(home: Path, progress=None) -> list[str]:
+    """Clear moved repositories' old served files here; the labels tidied.
+    `progress(path)` for each file removed."""
     import json
     from mmw.resources.apply import _prune_empty_parents
     done = []
@@ -442,6 +449,8 @@ def tidy_here(home: Path) -> list[str]:
             for rel in rec.get("files", []):
                 if rel not in here and disk_io.ops.remove(path / rel) is not None:
                     _prune_empty_parents(str(path), str((path / rel).parent))
+                    if progress:
+                        progress(rel)
             db.set_meta(k, "{}")
             done.append(rec.get("label", k.split(":", 1)[1]))
         roots.store(roots.primary).gc(roots.referenced(db, roots.primary))
@@ -540,10 +549,11 @@ def move_repo(mset, ref: str, to_root: str, progress=None, stop_event=None) -> M
                       [infos[k]["label"] for k in group])
 
 
-def tidy_set(mset) -> list[str]:
+def tidy_set(mset, progress=None) -> list[str]:
     """Clear moved repositories' old copies (once nginx has been recreated);
-    the labels tidied."""
-    return [label for root in mset.roots for label in root.tidy()]
+    the labels tidied. `progress(path)` per file removed, where a root can
+    say (an ssh root says only when it's done)."""
+    return [label for root in mset.roots for label in root.tidy(progress=progress)]
 
 
 def add_root(mset, location: str) -> str:
@@ -666,19 +676,29 @@ def bundle_plan(mset, when: str) -> list[BundleStep]:
     return steps
 
 
-def serve_bundle(steps: list[BundleStep]) -> list[str]:
-    """Serve each step that changes something; the labels served. A failure
-    part-way says which were already served."""
-    done = []
-    for s in steps:
-        if not s.changes:
-            continue
+def serve_bundle(steps: list[BundleStep], progress=None, stop_event=None) -> list[str]:
+    """Serve each step that changes something; the labels served.
+    `progress("repo", repo=)`, `("receive", bytes=1, name=)` per file placed
+    (where a root can say), `("finished", repo=)`, then `("done")`. A stop is
+    taken between repositories; it, or a failure part-way, says which were
+    served and which weren't."""
+    say = progress or (lambda *a, **k: None)
+    todo = [s for s in steps if s.changes]
+    done: list[str] = []
+    for s in todo:
+        if stop_event is not None and stop_event.is_set():
+            rest = [t.label for t in todo if t.label not in done]
+            raise ValueError(f"stopped — served: {', '.join(done) or 'none'}; not served: {', '.join(rest)}")
+        say("repo", repo=s.key)
         try:
-            s.root.serve(s.key, s.target.number)
+            s.root.serve(s.key, s.target.number,
+                         progress=lambda rel: say("receive", bytes=1, name=rel))
         except Exception as e:
             if not done:
                 raise
-            rest = [t.label for t in steps if t.changes and t.label not in done]
+            rest = [t.label for t in todo if t.label not in done]
             raise ValueError(f"{s.label}: {e} — served: {', '.join(done)}; not served: {', '.join(rest)}") from e
+        say("finished", repo=s.key)
         done.append(s.label)
+    say("done")
     return done

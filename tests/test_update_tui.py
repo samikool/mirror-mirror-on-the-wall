@@ -1,6 +1,5 @@
 """The connected TUI offers a newer mmw on launch and comes back updated."""
 import asyncio
-from pathlib import Path
 
 import pytest
 
@@ -49,6 +48,8 @@ def test_launch_dialog_when_newer(tmp_path, monkeypatch):
         await until(pilot, lambda: _name(app) == "UpdateDialog" and app.focused is not None)
         assert "1.3.0" in str(app.screen.query_one("#confirm-title").render())
         assert app.focused.id == "confirm"                            # a minor update: Yes is the default
+        await pilot.pause(0.2)
+        assert app.focused.id == "confirm"                            # …and stays it
     _run(tmp_path, check)
 
 
@@ -141,8 +142,8 @@ def test_a_failed_far_update_still_applies(tmp_path):
             app.offer_update(offer, run=lambda log: (False, "disk full"), then=lambda: carried.append(1))
             await until(pilot, lambda: _name(app) == "UpdateDialog" and app.screen.query("#confirm"))
             app.screen.query_one("#confirm").press()
-            await until(pilot, lambda: _name(app) == "UpdateRunPage" and
-                        not app.screen.query_one("#btn-update-close").disabled)
+            await until(pilot, lambda: _name(app) == "UpdateRunPage" and app.screen.query("#btn-update-close")
+                        and not app.screen.query_one("#btn-update-close").disabled)
             app.screen.query_one("#btn-update-close").press()
             await until(pilot, lambda: carried)
     asyncio.run(go())

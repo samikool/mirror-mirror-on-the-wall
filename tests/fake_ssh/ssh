@@ -71,6 +71,13 @@ def pump(src, dst, tag, close):
             pass
 
 
-threading.Thread(target=pump, args=(sys.stdin.buffer, proc.stdin, b"STDIN:", True), daemon=True).start()
+feed = threading.Thread(target=pump, args=(sys.stdin.buffer, proc.stdin, b"STDIN:", True), daemon=True)
+feed.start()
 pump(proc.stdout, sys.stdout.buffer, b"STDOUT:", False)
-sys.exit(proc.wait())
+code = proc.wait()
+# Exiting while the stdin thread still holds a stream's lock made Python's
+# shutdown abort now and then (SIGABRT, a flaky test in CI): let it finish,
+# flush, and leave without that shutdown.
+feed.join(5)
+sys.stdout.buffer.flush()
+os._exit(code)

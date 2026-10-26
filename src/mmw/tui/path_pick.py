@@ -107,7 +107,10 @@ class PathPickPage(Page):
 
     def _set_selected(self, path: Path) -> None:
         self._selected = path
-        self.query_one("#path-input", Input).value = str(path)
+        # The tree can still be reporting highlights as the page closes (Esc
+        # straight after it opens): nothing left to show them in, then.
+        for box in self.query("#path-input").results(Input):
+            box.value = str(path)
 
     @on(Input.Submitted, "#path-input")
     def _typed(self, event: "Input.Submitted") -> None:

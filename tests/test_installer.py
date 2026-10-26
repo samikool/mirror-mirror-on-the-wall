@@ -10,6 +10,9 @@ from mmw.core import runtime as R
 from test_runtime import FakeFetcher
 
 
+HERE = R.mmw_version()                    # whatever this mmw is: a release bump never breaks these
+
+
 def _write(tmp_path, **kw):
     kw.setdefault("arches", ["x86_64"])
     return I.write_installers(tmp_path / "out", python="3.12", cache=tmp_path / "cache",
@@ -22,19 +25,20 @@ def test_installer_name():
 
 def test_installer_layout(tmp_path):
     (path,) = _write(tmp_path)
-    assert path == tmp_path / "out" / "mmw-1.2.0-x86_64.tar"
+    assert path == tmp_path / "out" / f"mmw-{HERE}-x86_64.tar"
     with tarfile.open(path) as t:
         members = {m.name: m for m in t.getmembers()}
-    assert all(n.startswith("mmw-1.2.0/") for n in members)
-    assert members["mmw-1.2.0/install.sh"].mode & 0o777 == 0o755
-    for name in ("uv", "RUNTIME.json", "cpython-3.12.9-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-                 "wheels/mirror_mirror_on_the_wall-1.2.0-py3-none-any.whl"):
-        assert f"mmw-1.2.0/x86_64/{name}" in members
+    assert all(n.startswith(f"mmw-{HERE}/") for n in members)
+    assert members[f"mmw-{HERE}/install.sh"].mode & 0o777 == 0o755
+    for name in ("uv", "RUNTIME.json", "cpython-3.12.9-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"):
+        assert f"mmw-{HERE}/x86_64/{name}" in members
+    # mmw's own wheel: the fetcher's (the test's is a fixed release) or this checkout's build
+    assert any(n.startswith(f"mmw-{HERE}/x86_64/wheels/mirror_mirror_on_the_wall-") for n in members)
 
 
 def test_one_tar_per_arch(tmp_path):
     paths = _write(tmp_path, arches=["x86_64", "aarch64"])
-    assert [p.name for p in paths] == ["mmw-1.2.0-x86_64.tar", "mmw-1.2.0-aarch64.tar"]
+    assert [p.name for p in paths] == [f"mmw-{HERE}-x86_64.tar", f"mmw-{HERE}-aarch64.tar"]
 
 
 def test_installer_written_atomically(tmp_path):

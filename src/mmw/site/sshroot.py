@@ -154,7 +154,8 @@ class SshRoot:
     def serve_preview(self, key: str, number: int):
         return _ns(self._call("serve-preview", key, str(number)))
 
-    def serve(self, key: str, number: int):
+    def serve(self, key: str, number: int, progress=None):
+        # The remote answers once it's done: no file-by-file progress over ssh.
         return _ns(self._call("serve", key, str(number)))
 
     def forward(self, key: str | None) -> list[str]:
@@ -178,7 +179,7 @@ class SshRoot:
     def break_lock(self) -> bool:
         return self._call("break-lock")["removed"]
 
-    def tidy(self) -> list[str]:
+    def tidy(self, progress=None) -> list[str]:
         return self._call("tidy")
 
     def details(self) -> dict:

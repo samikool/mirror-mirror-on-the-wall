@@ -28,9 +28,9 @@ class UpdateDialog(ConfirmDialog):
         super().__init__(title, message, confirm_label="Update now", cancel_label="Not now",
                          confirm_variant="warning" if offer.major else "primary", cancel_variant="default")
         self._default_yes = offer.default_yes()
-
-    def on_mount(self) -> None:
-        self.query_one("#confirm" if self._default_yes else "#cancel").focus()
+        # The screen's own auto-focus picks the default button: focusing it in
+        # on_mount raced that auto-focus, which sometimes landed on Not now.
+        self.AUTO_FOCUS = "#confirm" if self._default_yes else "#cancel"
 
 
 RESUME_BUNDLE = "MMW_RESUME_BUNDLE"

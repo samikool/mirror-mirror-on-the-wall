@@ -1,4 +1,4 @@
-"""Deployed: every repository the site serves, and the selected one's
+"""Repositories: every repository the site serves, and the selected one's
 history beside it (approved layouts A and B)."""
 from pathlib import Path
 import time
@@ -61,21 +61,22 @@ def _date(stamp: str) -> str:
 
 
 class SiteHomePage(Page):
-    TITLE = "Deployed"
+    TITLE = "Repositories"
     SCROLLS = False
     HELP = ("Every repository this site serves. Its history is on the right: every version kept\n"
             "here, the one being served marked ▶. Serving anything but the newest holds the\n"
             "repository there — bundles then store its new versions without serving them.")
     BINDINGS = [
-        Binding("enter", "serve", "Serve version"),
+        # Short, so the footer fits 80 columns; the buttons say the rest.
+        Binding("enter", "serve", "Serve", show=False),
         Binding("f", "forward", "Forward"),
         Binding("h", "hold", "Hold"),
-        Binding("d", "delete", "Delete version"),
-        Binding("a", "apply", "Apply bundle"),
+        Binding("d", "delete", "Delete"),
+        Binding("a", "apply", "Apply"),
         Binding("r", "add_root", "Add root"),
-        Binding("b", "serve_bundle", "Serve bundle", show=False),
-        Binding("m", "move", "Move to root"),
-        Binding("c", "certs", "Certificates"),
+        Binding("b", "serve_bundle", "As of", show=False),
+        Binding("m", "move", "Move"),
+        Binding("c", "certs", "Certs"),
         Binding("t", "tidy", "Tidy", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
@@ -86,6 +87,8 @@ class SiteHomePage(Page):
         self._root_of: dict[str, str] = {}
         self._kept: dict[str, tuple[int, int]] = {}
         self._bundles: list[tuple[str, str | None, int]] = []     # (stamp, label, repositories it changed)
+        self._last_apply: tuple[str, str] | None = None           # the mirror's: (stamp, kind), any root
+        self._said = 0                                             # messages shown so far (see _loaded)
         self._history = []
         self._history_repo = None
 
@@ -133,9 +136,12 @@ class SiteHomePage(Page):
         if self.app.mset is None:
             self.set_status("No mirror opened yet — the first apply makes its roots.", "error")
             return
+        from mmw.site.ssh import parse_location
         from mmw.tui.path_pick import PathPickPage
+        local = [r.info.location for r in self.app.mset.roots if parse_location(r.info.location)[0] == "local"]
+        start = str(Path(local[0]).parent) if local else ""          # beside the roots, not wherever mmw ran
         self.app.push_screen(PathPickPage("Add a root", "a folder (an empty or new one becomes a new root), "
-                                          "or type host:/path for one over ssh", remote=True, new=True),
+                                          "or type host:/path for one over ssh", start, remote=True, new=True),
                              lambda path: path and self.add_root_path(path))
 
     def add_root_path(self, path: str) -> None:
@@ -166,6 +172,10 @@ class SiteHomePage(Page):
             DataTable(cursor_type="row", zebra_stripes=True, id="site-repos"),
             _HistoryPane(), id="site-split")
 
+    def set_status(self, message: str, kind: str = "info") -> None:
+        self._said += 1
+        super().set_status(message, kind)
+
     def _is_root(self) -> bool:
         return True                     # the far side's home: nothing to go back to (q quits)
 
@@ -187,6 +197,7 @@ class SiteHomePage(Page):
     def _load(self, done: str | None = None, kind: str = "ok") -> None:
         """Reload; `done` is an action's message, said once the list is back
         (a reload landing after it would otherwise talk over it)."""
+        said = self._said                        # a message after this one outranks the load's summary
         if self.app.mset is None:
             self.app.call_from_thread(self._loaded, [], {}, "no mirror opened yet — a applies a bundle; "
                                                             "`mmw site open PATH` opens a root")
@@ -198,6 +209,14 @@ class SiteHomePage(Page):
             # Built here, kept on the page only by _loaded: a load that fails
             # part-way leaves the last good one in place.
             states, newest, root_of, kept, bundles = [], {}, {}, {}, {}
+            last = None                          # the mirror's last apply, whichever root it landed in
+            for r in self.app.mset.roots:
+                try:
+                    d = r.details()
+                except Exception:  # noqa: BLE001 — an older mmw over ssh: it just isn't counted
+                    continue
+                if d.get("last_apply") and (last is None or d["last_apply"] > last[0]):
+                    last = (d["last_apply"], d.get("last_apply_kind") or "")
             for name, st in rows:
                 states.append(st)
                 root_of[st.repo] = name
@@ -212,11 +231,12 @@ class SiteHomePage(Page):
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
+        self._last_apply = last
         self.app.call_from_thread(self._loaded, states, newest, done, root_of, kept,
-                                  sorted(bundles.values(), reverse=True), kind)
+                                  sorted(bundles.values(), reverse=True), kind, said)
 
     def _loaded(self, states, newest, done: str | None = None, root_of=None, kept=None, bundles=None,
-                kind: str = "ok") -> None:
+                kind: str = "ok", said: int | None = None) -> None:
         if not self.is_attached:
             return
         self._states = states
@@ -226,15 +246,20 @@ class SiteHomePage(Page):
         t.clear()
         colour = self.app.get_css_variables()   # a table cell is Rich: the theme's colours, resolved
         for s in states:
-            # A card: what it is; what it serves against the newest kept; where it lives.
+            # A card, short enough for a 35-column list: what it serves and
+            # whether that's its newest; then where it lives and what's kept.
+            # (Its hostnames are in the detail beside it.)
             serving = f"▶ v{s.serving.number} · {_date(s.serving.stamp)}" if s.serving else "nothing served"
-            hosts = ", ".join(sorted({b.split("/", 1)[0] for b in s.bases}))
+            top = newest.get(s.repo)
+            behind = top is not None and (s.serving is None or s.serving.number != top)
             kept, size = self._kept.get(s.repo, (0, 0))
             card = Text(s.label, style="bold")
-            card.append(f"\n{serving}   newest v{newest.get(s.repo, '?')}   ")
+            card.append(f"\n{serving} · ")
             card.append("held" if s.held else "current", style=colour["mmw-warn" if s.held else "mmw-ok"])
-            card.append(f"\n{hosts} · {self._root_of.get(s.repo, '')} · {fmt_size(size)} · "
-                        f"{kept} version{'s' if kept != 1 else ''}", style="dim")
+            if behind:
+                card.append(f" · newest v{top}")
+            card.append(f"\n{self._root_of.get(s.repo, '')} · {kept} version{'s' if kept != 1 else ''} · "
+                        f"{fmt_size(size)}", style="dim")
             t.add_row(card, key=s.repo, height=3)
         if keep is not None and keep in {s.repo for s in states}:
             t.move_cursor(row=t.get_row_index(keep))
@@ -244,7 +269,7 @@ class SiteHomePage(Page):
         else:
             if done:
                 self.set_status(done, kind)
-            else:
+            elif said is None or said == self._said:   # nothing said since the load began
                 self.set_status(f"{len(states)} repositor{'y' if len(states) == 1 else 'ies'}")
             self._show_history(self.selected_repo())
 
@@ -307,8 +332,10 @@ class SiteHomePage(Page):
             f"[dim]kept[/]       {len(rows)} version{'s' if len(rows) != 1 else ''} · {fmt_size(total)}"
             + (f" · old ones free {fmt_size(frees)}" if frees else ""),
             f"[dim]https[/]      {_esc(details.get('https', '—'))}",
-            "[dim]last apply[/] " + (f"{_date(details['last_apply'])} · {_esc(details.get('last_apply_kind', ''))}"
-                                     if details.get("last_apply") else "none yet"),
+            # The mirror's, not this root's: a root a repository moved into
+            # may never have had a bundle applied to it.
+            "[dim]last apply[/] " + (f"{_date(self._last_apply[0])} · {_esc(self._last_apply[1])}"
+                                     if self._last_apply else "none yet"),
         ]
         return "\n".join(lines)
 
@@ -350,12 +377,21 @@ class SiteHomePage(Page):
         if repo is None or number is None:
             self.set_status("Pick a version in the history first.", "error")
             return
-        try:
+        self.set_status(f"working out what serving v{number} changes…")
+        self._serve_preview(repo, number)
+
+    @work(thread=True, exclusive=True, group="site-preview", exit_on_error=False)
+    def _serve_preview(self, repo: str, number: int) -> None:
+        try:                                     # over ssh, a round trip: never on the screen's thread
             p = self.app.root_of(repo).serve_preview(repo, number)
         except Exception as e:  # noqa: BLE001
-            self.set_status(str(e), "error")
+            self.app.call_from_thread(self.set_status, str(e), "error")
             return
+        self.app.call_from_thread(self._confirm_serve, repo, number, p)
+
+    def _confirm_serve(self, repo: str, number: int, p) -> None:
         from mmw.tui.ui.dialog import ConfirmDialog
+        self.set_status("")
         now = f"v{p.current.number} · {_date(p.current.stamp)}" if p.current else "nothing"
         details = (f"now serving {now}\n"
                    f"relinks {p.relinks:,} file(s) · nothing to copy · indexes switch last\n"
@@ -365,12 +401,42 @@ class SiteHomePage(Page):
             ConfirmDialog(f"Serve {p.label} v{number} ({_date(p.target.stamp)})?", "",
                           confirm_label=f"Serve v{number}", confirm_variant="primary",
                           cancel_variant="default", details=details),
-            lambda ok: ok and self._act(f"{p.label} serves v{number}", self.app.root_of(repo).serve, repo, number))
+            lambda ok: ok and self._switch([self._step(repo, p.target)], "Serving", p.relinks))
+
+    def _step(self, repo: str, target):
+        """One repository to serve at `target`, for the progress page."""
+        state = next(s for s in self._states if s.repo == repo)
+        return ops.BundleStep(self.app.root_of(repo), repo, state.label, state.serving, target)
+
+    def _switch(self, steps, title: str, total: int | None = None) -> None:
+        self.app.push_screen(SwitchRunPage(steps, title, total), lambda _: self._load())
 
     def action_forward(self) -> None:
         repo = self.selected_repo()
         if repo is not None:
-            self._act("moved forward", self.app.root_of(repo).forward, repo)
+            self._forward_plan(repo)
+
+    @work(thread=True, exclusive=True, group="site-preview", exit_on_error=False)
+    def _forward_plan(self, repo: str) -> None:
+        try:                                     # its newest, from the root itself (ssh: off the screen)
+            newest = self.app.root_of(repo).history(repo)[0][0]
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(self._forward, repo, newest)
+
+    def _forward(self, repo: str, newest) -> None:
+        state = next((s for s in self._states if s.repo == repo), None)
+        if state is None:
+            return
+        if state.serving is not None and state.serving.number == newest.number:
+            if state.held:                       # nothing to switch: only the hold to clear
+                self._act(f"{state.label}: hold cleared — already at its newest, v{newest.number}",
+                          self.app.root_of(repo).forward, repo)
+            else:
+                self.set_status(f"{state.label} is already at its newest, v{newest.number}")
+            return
+        self._switch([self._step(repo, newest)], "Forwarding")
 
     def action_hold(self) -> None:
         repo = self.selected_repo()
@@ -437,7 +503,7 @@ class SiteHomePage(Page):
                           "as they are. Any not on its newest is held until you forward it.",
                           confirm_label="Serve", confirm_variant="primary", cancel_variant="default",
                           details="\n".join(s.line() for s in steps)),
-            lambda ok: ok and self._act(f"serving the mirror as of the {when} bundle", ops.serve_bundle, steps))
+            lambda ok: ok and self._switch(steps, f"As of the {when} bundle"))
 
     def action_move(self) -> None:
         repo = self.selected_repo()
@@ -455,12 +521,12 @@ class SiteHomePage(Page):
         def chosen(root):
             if not root or root == current:
                 return
+            self.set_status(f"working out what moving {state.label} to {root} takes…")
+            self._move_preview(repo, root, lambda p: confirm(root, p))
+
+        def confirm(root, p):
             from mmw.tui.ui.dialog import ConfirmDialog
-            try:
-                p = ops.move_preview(self.app.mset, repo, root)
-            except Exception as e:  # noqa: BLE001
-                self.set_status(str(e), "error")
-                return
+            self.set_status("")
             size, hosts = fmt_size(p.copies), and_list(p.hosts)
             if p.whole_host:
                 # A hostname is served from one root: moving one of its
@@ -481,8 +547,73 @@ class SiteHomePage(Page):
         self.app.push_screen(MoveRootPage(state.label, current,
                                           [(r.info.name, r.info.location) for r in self.app.mset.roots]), chosen)
 
+    @work(thread=True, exclusive=True, group="site-preview", exit_on_error=False)
+    def _move_preview(self, repo: str, root: str, then) -> None:
+        try:                                     # lists every kept file: never on the screen's thread
+            p = ops.move_preview(self.app.mset, repo, root)
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(then, p)
+
     def action_certs(self, password: bytes | None = None) -> None:
+        from mmw.site.certs import show_ca
+        if password is None and show_ca() is None:
+            # No CA yet: set one up here, rather than send the person to the CLI.
+            self.app.push_screen(CaSetupPage(), self._ca_chosen)
+            return
         self._sign(password)
+
+    def _ca_chosen(self, how: str | None) -> None:
+        from mmw.tui.path_pick import PathPickPage
+        if how == "make":
+            self.app.push_screen(
+                PathPickPage("Where the new CA goes", "a folder for ca.crt and ca.key (a new one is made) — "
+                             "keep it off the mirror", new=True),
+                lambda path: path and self.app.push_screen(
+                    PassphrasePage("Protect the new CA's key", "Make CA", optional=True),
+                    lambda pw: pw is not None and self.make_ca(path, f"{self.app.mset.network} mmw CA",
+                                                               pw.encode() or None)))
+        elif how == "load":
+            self.app.push_screen(
+                PathPickPage("The CA's certificate", "its .crt (or .pem)", dirs_only=False, suffixes=(".crt", ".pem")),
+                lambda crt: crt and self.app.push_screen(
+                    PathPickPage("The CA's key", "its .key (or .pem)", str(Path(crt).parent),
+                                 dirs_only=False, suffixes=(".key", ".pem")),
+                    lambda key: key and self.load_ca(crt, key, None)))
+
+    @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
+    def make_ca(self, where: str, name: str, password: bytes | None) -> None:
+        from mmw.site import certs as C
+        self.app.call_from_thread(self.set_status, "making the CA…")
+        try:
+            crt, key = C.make_ca(Path(where), name, password)
+            C.load_ca(crt, key, password)
+        except Exception as e:  # noqa: BLE001 — a CA already there, a folder it can't write
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(self.set_status, f"made the CA at {where} — now signing…")
+        self._sign_now(password)
+
+    @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
+    def load_ca(self, crt: str, key: str, password: bytes | None) -> None:
+        from mmw.core.certs import CAKeyEncrypted
+        from mmw.site import certs as C
+        try:
+            C.load_ca(Path(crt), Path(key), password)
+        except CAKeyEncrypted:
+            self.app.call_from_thread(lambda: self.app.push_screen(
+                PassphrasePage("The CA key's passphrase", "Load"),
+                lambda pw: pw and self.load_ca(crt, key, pw.encode())))
+            return
+        except Exception as e:  # noqa: BLE001 — not a CA, not its key
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self._sign_now(password)
+
+    def _sign_now(self, password: bytes | None) -> None:
+        """From a worker that just set up the CA: sign with it."""
+        self.app.call_from_thread(self._sign, password)
 
     @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
     def _sign(self, password: bytes | None) -> None:
@@ -510,7 +641,7 @@ class SiteHomePage(Page):
         self.app.push_screen(PassphrasePage(), lambda pw: pw and self.action_certs(pw.encode()))
 
     def action_tidy(self) -> None:
-        self._act("cleared moved repositories' old copies", ops.tidy_set, self.app.mset)
+        self.app.push_screen(TidyRunPage([r.info.name for r in self.app.mset.roots]), lambda _: self._load())
 
     def action_apply(self) -> None:
         from mmw.tui.path_pick import PathPickPage
@@ -578,9 +709,16 @@ def ops_newest(history) -> int | None:
 
 
 class PassphrasePage(Page):
-    """The CA key's passphrase, for this signing only — never kept."""
+    """The CA key's passphrase, for this signing only — never kept. With
+    `optional` (protecting a new CA), an empty one means none."""
 
     TITLE = "CA passphrase"
+
+    def __init__(self, title: str = "CA passphrase", go: str = "Sign", optional: bool = False):
+        super().__init__()
+        self.TITLE, self._go_label, self._optional = title, go, optional
+        if optional:
+            self.subtitle = "leave it empty for none — the key file is then all it takes to sign"
 
     def compose_body(self) -> ComposeResult:
         from textual.widgets import Input
@@ -588,7 +726,7 @@ class PassphrasePage(Page):
 
     def compose_actions(self) -> ComposeResult:
         yield Button("Cancel", id="btn-pass-cancel", compact=True)
-        yield Button("Sign", id="btn-pass-go", variant="primary", compact=True)
+        yield Button(self._go_label, id="btn-pass-go", variant="primary", compact=True)
 
     @on(Button.Pressed, "#btn-pass-cancel")
     def _cancel(self) -> None:
@@ -600,13 +738,14 @@ class PassphrasePage(Page):
     @on(Button.Pressed, "#btn-pass-go")
     def _go(self) -> None:
         from textual.widgets import Input
-        self.dismiss(self.query_one("#ca-pass", Input).value or None)
+        value = self.query_one("#ca-pass", Input).value
+        self.dismiss(value if self._optional else (value or None))
 
 
 class ServeBundlePage(Page):
     """Which bundle to serve the whole mirror as of."""
 
-    TITLE = "Serve bundle"
+    TITLE = "As of a bundle"
 
     def __init__(self, bundles: list[tuple[str, str | None, int]]):
         super().__init__()
@@ -634,6 +773,117 @@ class ServeBundlePage(Page):
     def _go(self) -> None:
         from textual.widgets import Select
         self.dismiss(self.query_one("#bundle-pick", Select).value)
+
+
+class SwitchRunPage(RunPage):
+    """Serving versions — one, or every repository as of a bundle: each
+    switched in turn, its files placed (counted where a root can say; an
+    ssh root says only when it's done). Stop is taken between repositories."""
+
+    UNIT = "files"
+    RATE = "placing"
+    STOP_NOTE = "stopping finishes the repository switching now; the rest stay as they are"
+
+    def __init__(self, steps, title: str, total: int | None = None):
+        steps = [s for s in steps if s.changes]
+        super().__init__(total, [(s.key, s.label) for s in steps])
+        self.TITLE = title
+        self._steps = steps
+        self.subtitle = and_list([f"{s.label} → v{s.target.number}" for s in steps])
+
+    def updated_note(self) -> str:
+        return "serving"
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        if len(self._steps) < 2:                  # one switch: nothing to stop between
+            self.query_one("#btn-run-stop", Button).disabled = True
+
+    def job(self, progress, stop):
+        return ops.serve_bundle(self._steps, progress=progress, stop_event=stop)
+
+    def _done(self, served) -> None:
+        targets = {s.label: s for s in self._steps}
+        lines = [f"[b $success]✓ {_esc(label)} serves v{targets[label].target.number}[/]" for label in served]
+        newest = [label for label in served if targets[label].target.number < self._newest(targets[label])]
+        if newest:
+            lines.append(f"{_esc(and_list(newest))}: held there — Forward (f) moves "
+                         f"{'it' if len(newest) == 1 else 'them'} on")
+        self.query_one("#run-done", Static).update("\n".join(lines))
+        self.set_status("")
+        self._finish()
+
+    def _newest(self, step) -> int:
+        try:
+            return step.root.history(step.key)[0][0].number
+        except Exception:  # noqa: BLE001 — only for the note
+            return step.target.number
+
+
+class TidyRunPage(RunPage):
+    """Clearing moved repositories' old copies, root by root — the files
+    removed counted where a root can say."""
+
+    TITLE = "Tidying"
+    UNIT = "files"
+    RATE = "removing"
+
+    def __init__(self, roots: list[str]):
+        super().__init__(None, [(name, f"old copies in {name}") for name in roots])
+        self.subtitle = "moved repositories' old copies, once nginx is recreated in both roots"
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#btn-run-stop", Button).disabled = True
+
+    def updated_note(self) -> str:
+        return "tidied"
+
+    def job(self, progress, stop):
+        tidied = []
+        for root in self.app.mset.roots:
+            progress("repo", repo=root.info.name)
+            tidied += root.tidy(progress=lambda rel: progress("receive", bytes=1, name=rel))
+            progress("finished", repo=root.info.name)
+        progress("done")
+        return tidied
+
+    def _done(self, tidied) -> None:
+        text = (f"[b $success]✓ cleared the old copies of {_esc(and_list(tidied))}[/]" if tidied else
+                "nothing to tidy — no moved repository's old copy is left")
+        self.query_one("#run-done", Static).update(text)
+        self.set_status("")
+        self._finish()
+
+
+class CaSetupPage(Page):
+    """Signing needs a CA, and none is set up on this machine: load the
+    mirror's existing one, or make one."""
+
+    TITLE = "Certificates"
+
+    def compose_body(self) -> ComposeResult:
+        yield Static("HTTPS needs a CA to sign each root's certificate, and this machine has none yet.\n\n"
+                     "Load the CA this mirror already uses (its .crt and .key) — clients trust it already — "
+                     "or make a new one, whose ca.crt every client then has to trust.\n\n"
+                     "The CA is recorded on this machine only, never in a root.", id="ca-setup-text")
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Cancel", id="btn-ca-cancel", compact=True)
+        yield Button("Make new…", id="btn-ca-make", compact=True)
+        yield Button("Load existing…", id="btn-ca-load", variant="primary", compact=True)
+
+    @on(Button.Pressed, "#btn-ca-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-ca-make")
+    def _make(self) -> None:
+        self.dismiss("make")
+
+    @on(Button.Pressed, "#btn-ca-load")
+    def _load(self) -> None:
+        self.dismiss("load")
 
 
 class MoveRunPage(RunPage):

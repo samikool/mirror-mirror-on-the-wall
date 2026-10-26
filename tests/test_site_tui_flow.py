@@ -4,7 +4,7 @@ import asyncio
 from mmw.site import recents
 from mmw.site.apply import apply_to_set, plan_set_apply
 from mmw.site.home import read_root
-from mmw.site.mset import LocalRoot, open_set
+from mmw.site.mset import open_set
 from mmw.tui.site.app import SiteApp
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
@@ -227,10 +227,11 @@ def test_keys_place_a_first_bundle(hosts, tmp_path):  # noqa: F811
         page.add_root(str(r1))                                     # the first root: every new hostname
         await until(pilot, lambda: page.targets == {HOST_A: str(r1), HOST_B: str(r1)})
         page.add_root(str(r2))
+        await until(pilot, lambda: str(r2) in page.roots)          # opened off the screen's thread
         page.query_one("#place-hosts").focus()
         await pilot.press("enter")                                 # cycles the first hostname's root
         await until(pilot, lambda: page.targets[HOST_A] == str(r2))
-        assert not page.query_one("#btn-place-go").disabled
+        await until(pilot, lambda: not page.query_one("#btn-place-go").disabled)   # once its space is known
     _place_page(None, b, check)
 
 
@@ -325,7 +326,8 @@ def test_an_empty_folder_from_open_becomes_the_suggested_root(hosts, tmp_path): 
         note = lambda: str(app.screen.query_one("#start-note").render())  # noqa: E731
         await until(pilot, lambda: "no mirror yet" in note() and "Apply a bundle" in note())
         app.screen.apply_path(b)
-        await until(pilot, lambda: _name(app) == "PlacePage" and "mirror-here" in app.screen.hosts_text())
+        await until(pilot, lambda: _name(app) == "PlacePage" and app.screen.query("#place-hosts")
+                    and "mirror-here" in app.screen.hosts_text())
         assert app.screen.targets == {HOST_A: str(where), HOST_B: str(where)}
     _run(None, check)
 
@@ -394,7 +396,7 @@ def test_every_far_side_root_picker_takes_an_ssh_location(hosts, tmp_path):  # n
     b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
 
     async def check(app, pilot):
-        await until(pilot, lambda: _name(app) == "StartPage")
+        await until(pilot, lambda: _name(app) == "StartPage" and app.screen.query("#start-open"))
         app.screen.query_one("#start-open").press()
         await until(pilot, lambda: _name(app) == "PathPickPage")
         assert app.screen._remote and not app.screen._new          # opening: only what's already a root
@@ -453,7 +455,7 @@ def test_open_a_mirror_offers_to_install_mmw_there(tmp_path, monkeypatch):
     async def check(app, pilot):
         await until(pilot, lambda: _name(app) == "StartPage")
         app.screen.open_path("nas:/data")
-        await until(pilot, lambda: _name(app) == "ConfirmDialog")
+        await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
     _run(None, check)
 
 
@@ -471,7 +473,7 @@ def test_move_explains_the_whole_host_and_shows_progress(two_mirrors, tmp_path):
         await until(pilot, lambda: _name(app) == "MoveRootPage" and app.screen.query("#move-root"))
         app.screen.query_one("#move-root", Select).value = "r2"
         app.screen.query_one("#btn-move-go").press()
-        await until(pilot, lambda: _name(app) == "ConfirmDialog")
+        await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
         title = str(app.screen.query_one("#confirm-title").render())
         message = str(app.screen.query_one("#confirm-message").render())
         assert "whole host" in title.lower() or "whole host" in message
@@ -485,3 +487,82 @@ def test_move_explains_the_whole_host_and_shows_progress(two_mirrors, tmp_path):
         await until(pilot, lambda: _name(app) == "SiteHomePage")
         await until(pilot, lambda: {r for r in home._root_of.values()} == {"r2"})
     _run(open_set(), check)
+
+
+def test_opening_a_mirror_over_ssh_never_holds_the_screen(hosts, tmp_path, monkeypatch):  # noqa: F811
+    import threading
+    from mmw.site import mset as _mset
+    cfg, net, md = hosts
+    r1 = tmp_path / "r1"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={"*": str(r1)}, say=quiet)
+    recents.forget(str(r1))
+    gate, real = threading.Event(), _mset.root_at
+    monkeypatch.setattr(_mset, "root_at", lambda loc: (gate.wait(20), real(str(r1) if loc == "nas:/d" else loc))[1])
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "StartPage")
+        app.screen.open_path("nas:/d")                          # returns at once
+        await until(pilot, lambda: "opening nas:/d" in str(app.screen.query_one("#start-note").render()))
+        gate.set()
+        await until(pilot, lambda: _name(app) == "SiteHomePage")
+    _run(None, check)
+
+
+def test_placing_on_an_ssh_root_never_holds_the_screen(hosts, tmp_path, monkeypatch):  # noqa: F811
+    import threading
+    from mmw.site import mset as _mset
+    cfg, net, md = hosts
+    b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    gate = threading.Event()
+    monkeypatch.setattr(_mset, "root_at", lambda loc: (gate.wait(20), None)[1])
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "StartPage")
+        app.screen.apply_path(b)
+        await until(pilot, lambda: _name(app) == "PlacePage" and app.screen.query("#btn-place-go"))
+        page = app.screen
+        page.add_root("nas:/d")                                 # returns at once
+        await until(pilot, lambda: "nas:/d" in str(page.query_one("#page-status").render()))
+        gate.set()
+        await until(pilot, lambda: "nas:/d" in page.roots)
+    _run(None, check)
+
+
+def test_installing_mmw_over_ssh_shows_it_going(tmp_path, monkeypatch):
+    from mmw.core.runtime import mmw_version
+    from mmw.site import mset as _mset
+    from mmw.site import ssh
+    from mmw.tui.site import apply_flow
+    bundle = tmp_path / "b.tar"
+    bundle.write_bytes(b"bundle")
+    tar = tmp_path / f"mmw-{mmw_version()}-x86_64.tar"
+    tar.write_bytes(b"x" * 3_000_000)
+    installed = []
+
+    def root_at(location):
+        if not installed:
+            raise ssh.RemoteMmw("…", reason="mmw isn't installed on nas", installable=True)
+        return None
+    monkeypatch.setattr(_mset, "root_at", root_at)
+    monkeypatch.setattr(ssh, "remote_arch", lambda host: "x86_64")
+    monkeypatch.setattr(apply_flow, "recent_paths", lambda: [str(bundle)])
+
+    def install(host, t, progress=None):
+        with open(t, "rb") as fh:
+            while chunk := fh.read(1 << 20):
+                progress(len(chunk))
+        installed.append(host)
+    monkeypatch.setattr(ssh, "install_remote", install)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "StartPage")
+        app.screen.open_path("nas:/data")
+        await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: _name(app) == "InstallRunPage" and app.screen.query("#run-done")
+                    and "installed" in str(app.screen.query_one("#run-done").render()))
+        assert "3.0 MB" in str(app.screen.query_one("#run-rate").render())
+        app.screen.query_one("#btn-run-close").press()
+        await until(pilot, lambda: _name(app) == "StartPage"
+                    and "holds no mirror yet" in str(app.screen.query_one("#start-note").render()))
+    _run(None, check)

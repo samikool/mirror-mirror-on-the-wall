@@ -153,3 +153,15 @@ def test_a_host_never_becomes_an_option():
 def test_keepalive_and_quiet_stderr():
     argv = ssh.ssh_argv("h", ["true"])
     assert "ServerAliveInterval=15" in argv and "ServerAliveCountMax=4" in argv
+
+
+def test_install_remote_says_how_much_has_gone(tmp_path, fake_ssh):
+    import tarfile
+    inst = tmp_path / "mmw-9.9.9-x86_64.tar"
+    script = tmp_path / "install.sh"
+    script.write_text("#!/bin/sh\necho installed\n")
+    with tarfile.open(inst, "w") as t:
+        t.add(script, arcname="mmw-9.9.9/install.sh")
+    sent = []
+    ssh.install_remote("farhost", inst, progress=sent.append)
+    assert sum(sent) == inst.stat().st_size

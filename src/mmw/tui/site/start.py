@@ -48,21 +48,31 @@ class StartPage(Page):
                              lambda path: path and self.open_path(path))
 
     def open_path(self, path: str) -> None:
+        self._note(f"opening {path}…")
+        self._open(path)
+
+    @work(thread=True, exclusive=True, group="start-open", exit_on_error=False)
+    def _open(self, path: str) -> None:
         from mmw.site import mset as _mset
-        from mmw.site import recents
         from mmw.site.ssh import RemoteMmw, SshError
         try:
-            found = _mset.root_at(path)              # a folder, or host:/path over ssh
+            found = _mset.root_at(path)              # a folder, or host:/path over ssh: off the screen
         except RemoteMmw as e:
             if not e.installable:
-                self._note(str(e))
+                self.app.call_from_thread(self._note, str(e))
                 return
             from mmw.tui.site.install_flow import offer_install
-            offer_install(self, path, e, lambda: self.open_path(path), lambda text, _kind: self._note(text))
+            self.app.call_from_thread(offer_install, self, path, e, lambda: self.open_path(path),
+                                      lambda text, _kind: self._note(text))
             return
         except (SshError, ValueError, LookupError) as e:
-            self._note(str(e))                       # key auth, host key, mmw missing there: said plainly
+            self.app.call_from_thread(self._note, str(e))   # key auth, host key, mmw missing there: said plainly
             return
+        self.app.call_from_thread(self._opened_root, path, found)
+
+    def _opened_root(self, path: str, found) -> None:
+        from mmw.site import mset as _mset
+        from mmw.site import recents
         info = found.info if found is not None else None
         if info is None:
             # Not a mirror yet — most likely where one should go: offered as

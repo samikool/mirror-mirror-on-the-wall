@@ -7,14 +7,12 @@ import pytest
 
 from mmw.site import ops, recents
 from mmw.site.apply import ApplyError, apply_to_set, plan_set_apply
-from mmw.site.db import SiteDB
 from mmw.site.home import read_root
 from mmw.site.mset import open_set
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
 from test_site_apply import _bundle
 from test_site_set_apply import HOST_A, HOST_B, hosts  # noqa: F401
-from test_snapshot_repo_versions import _change_a
 
 quiet = lambda *a: None  # noqa: E731
 
@@ -58,7 +56,6 @@ def test_space_on_one_filesystem_is_summed(hosts, tmp_path, monkeypatch):  # noq
     needs = placement_needs(None, plan, {HOST_A: str(tmp_path / "a"), HOST_B: str(tmp_path / "b")})
     from mmw.site.apply import shared_filesystem_short
     total = sum(n for n, _f in needs.values())
-    free = next(iter(needs.values()))[1]
     assert shared_filesystem_short(needs, {k: str(tmp_path) for k in needs}, free_of=lambda k: total - 1) != []
 
 
@@ -134,8 +131,6 @@ def test_nginx_steps_carry_their_verb(tmp_path):
 
 # 15, 18 — a bundle's sizes are read once per process, not per screen
 def test_bundle_sizes_read_once(hosts, tmp_path, monkeypatch):  # noqa: F811
-    import json
-    import tarfile
     from mmw.site import apply as A
     cfg, net, md = hosts
     b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)

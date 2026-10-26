@@ -148,7 +148,6 @@ def serve_root_command(argv: list[str], stdin: BinaryIO, stdout: BinaryIO) -> in
 
 def _pre_root(verb: str, path: str, args: list[str], stdout) -> int:
     """Verbs for a root that may not exist yet: make one, or how much room."""
-    from mmw.core import disk_io
     from mmw.site.home import init_root
     try:
         if verb == "empty":

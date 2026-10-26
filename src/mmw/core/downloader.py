@@ -864,7 +864,11 @@ async def download_mirror(
             # The semaphore is deliberately kept: `SyncView` passes one shared
             # instance so `max_connections` bounds downloads across *all*
             # mirrors at once, not per mirror.
-            pending = collections.deque(to_download)
+            # Largest first: a big file the CDN hasn't cached can be slow, and
+            # started early it overlaps the many small ones instead of running
+            # alone at the end of the sync. Unknown sizes go last; the sort is
+            # stable, so equal sizes keep the index's order.
+            pending = collections.deque(sorted(to_download, key=lambda p: -(p.size or 0)))
 
             async def _consume() -> None:
                 while pending:

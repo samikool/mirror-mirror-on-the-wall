@@ -326,3 +326,24 @@ def test_headless_sync_shares_unknown_url_cache_across_units(tmp_path, monkeypat
     with Pool(tmp_path/'mirror', read_only=True) as pool:
         assert pool.ref_map('one') == {'one/asset': DIGEST}
         assert pool.ref_map('two') == {'two/asset': DIGEST}
+
+
+def test_largest_files_download_first(tmp_path, monkeypatch):
+    """Big files start first: a slow (uncached-on-the-CDN) one overlaps the
+    many small ones instead of running alone at the end of a sync."""
+    bodies = {"small": b"s" * 10, "big": b"b" * 5000, "mid": b"m" * 700}
+    asked = []
+
+    def respond(request):
+        name = request.url.path.rsplit("/", 1)[-1]
+        asked.append(name)
+        return httpx.Response(200, content=bodies[name])
+    transport(monkeypatch, respond)
+    pkgs = [PackageInfo(n, f"https://example.com/{n}", hashlib.sha256(b).hexdigest(), "sha256", len(b),
+                        f"pool/{n}", n) for n, b in bodies.items()]
+
+    async def scenario():
+        with Pool(tmp_path / "pool") as pool, concurrent.futures.ThreadPoolExecutor(1) as executor:
+            await dl.download_mirror(pkgs, [], pool, "m", 1, executor=executor, sem=asyncio.Semaphore(1))
+    asyncio.run(scenario())
+    assert asked == ["big", "mid", "small"]

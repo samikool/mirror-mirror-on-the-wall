@@ -787,6 +787,8 @@ class Settings(_StrictModel):
     # At least one: 0 built an `asyncio.Semaphore(0)` every download waited on
     # forever, and a `ThreadPoolExecutor(0)` that refused to start.
     max_connections: int = Field(default=os.cpu_count() or 10, ge=1)
+    # Check PyPI for a newer mmw on every start and offer it (MMW_NO_UPDATE_CHECK=1 also turns it off).
+    update_check: bool = True
     # Disk lanes, per job (`mmw.core.disk_io`). Defaults measured on one HDD —
     # see docs/internals/superpowers/specs/2026-10-20-disk-io-layer-design.md;
     # 1 / 1 / 0 is exactly the serial behaviour mmw had before.
@@ -1479,6 +1481,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
                if cfg.settings.theme != DEFAULT_THEME else {}),
             **{key: getattr(cfg.settings, key) for key in _DISK_KEYS
                if getattr(cfg.settings, key) != Settings.model_fields[key].default},
+            **({"update_check": False} if not cfg.settings.update_check else {}),
         },
         **({"sources": sources_data} if sources_data else {}),
         **({"networks": networks_data} if networks_data else {}),

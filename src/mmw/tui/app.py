@@ -18,9 +18,10 @@ from mmw.tui.sections.settings import SettingsPage
 from mmw.tui.sections.setup import SetupPage
 from mmw.tui.sections.sync import SyncSection
 from mmw.tui.ui.base import ThemedApp
+from mmw.tui.update_flow import UpdateOffers
 
 
-class MmwApp(ThemedApp):
+class MmwApp(UpdateOffers, ThemedApp):
     TITLE = "mmw"
     MODES = {
         "repositories": RepositoriesPage,
@@ -31,6 +32,7 @@ class MmwApp(ThemedApp):
         "setup": SetupPage,
     }
     BINDINGS = [
+        Binding("u", "update", "Update mmw", show=False),
         *(Binding(s.key, f"section('{s.mode}')", s.label, show=False) for s in SECTIONS),
         Binding("q", "quit", "Quit", show=False),
         Binding("question_mark", "help", "Help"),
@@ -88,6 +90,12 @@ class MmwApp(ThemedApp):
         # fallback — is not a choice the user made, so it is never saved.
         self.theme_changed_signal.subscribe(self, self._theme_changed)
         self.set_interval(0.5, self._sync_label)
+        # A newer mmw on PyPI: offered now, in front of everything.
+        from mmw.core import update as U
+        self._start_update_offers(None if U.checks_disabled(self.cfg) else U.Checker().start())
+
+    def _update_mirror_dir(self):
+        return self.cfg.settings.mirror_dir if self.cfg is not None else None
 
     def _theme_changed(self, theme: Theme) -> None:
         # Not exclusive: cancelling a worker does not stop a write already

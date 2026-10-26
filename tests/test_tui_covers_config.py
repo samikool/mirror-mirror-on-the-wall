@@ -23,6 +23,7 @@ EDITORS = {
     ("Settings", "disk_write_threads"): ("sections/settings.py", "settings-disk-write-threads"),
     ("Settings", "disk_read_threads"): ("sections/settings.py", "settings-disk-read-threads"),
     ("Settings", "disk_readahead"): ("sections/settings.py", "settings-disk-readahead"),
+    ("Settings", "update_check"): ("sections/settings.py", "settings-update-check"),
 
     ("SourceConfig", "url"): ("source_screens.py", "edit-source-url"),
     ("SourceConfig", "provider"): ("source_screens.py", "edit-source-provider"),

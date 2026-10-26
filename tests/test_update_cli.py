@@ -59,7 +59,8 @@ def test_major_defaults_to_no(capsys, monkeypatch):
     c.newest = "2.0.0"
     c._done.set()
     cmd.after_command(c, None)
-    assert "[y/N]" in asked[0] and "major" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert asked and "[y/N]" in err and "major" in err
 
 
 def test_site_commands_never_check(monkeypatch, tmp_path):
@@ -82,3 +83,42 @@ def test_update_command_runs_the_upgrade(monkeypatch, tmp_path):
     (tmp_path / "mmw.toml").write_text(f'[settings]\nmirror_dir = "{tmp_path / "pool"}"\n')
     r = CliRunner().invoke(cli.app, ["--config", str(tmp_path), "update", "--yes"])
     assert r.exit_code == 0 and "mmw updated to 99.0.0" in r.output
+
+
+# ── review findings ──────────────────────────────────────────────────────────
+
+def test_a_pipe_on_stdout_is_never_prompted(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    assert not cmd._interactive()
+
+
+def test_prompt_goes_to_stderr_and_ctrl_c_is_no(capsys, monkeypatch):
+    monkeypatch.setattr(cmd, "_interactive", lambda: True)
+
+    def interrupted(prompt=""):
+        assert prompt == ""                                            # never written to stdout
+        raise KeyboardInterrupt
+    monkeypatch.setattr("builtins.input", interrupted)
+    monkeypatch.setattr(U, "run_update", lambda *a, **k: pytest.fail("updated after Ctrl-C"))
+    cmd.after_command(_checker("1.3.0"), None)
+    out = capsys.readouterr()
+    assert "Update now?" in out.err and out.out == ""
+
+
+def test_help_and_errors_never_check(monkeypatch, tmp_path):
+    monkeypatch.setattr(U.Checker, "start", lambda self, fetch=None: pytest.fail("checked for --help"))
+    monkeypatch.setattr("sys.argv", ["mmw", "sync", "--help"])
+    CliRunner().invoke(cli.app, ["sync", "--help"])
+
+
+def test_no_offer_after_an_exception(monkeypatch):
+    import sys
+    monkeypatch.setattr(cmd, "_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("asked after Ctrl-C"))
+    try:
+        raise KeyboardInterrupt
+    except KeyboardInterrupt:
+        cmd.after_command(_checker("1.3.0"), None, exc=sys.exc_info()[1])

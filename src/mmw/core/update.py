@@ -142,12 +142,26 @@ class InstallKind:
     note: str
 
 
+def _uv() -> str | None:
+    import shutil
+    return shutil.which("uv")
+
+
 def _uv_tool_dir() -> Path | None:
-    try:
-        out = subprocess.run([sys.executable, "-m", "uv", "tool", "dir"], capture_output=True, text=True, timeout=10)
-        return Path(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
-    except (OSError, subprocess.SubprocessError):
-        return None
+    """Where uv keeps its tools. A uv tool's own venv has no uv (or pip) in
+    it, so the uv on PATH is asked — or uv's documented default."""
+    uv = _uv()
+    if uv:
+        try:
+            out = subprocess.run([uv, "tool", "dir"], capture_output=True, text=True, timeout=10)
+            if out.returncode == 0 and out.stdout.strip():
+                return Path(out.stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if os.environ.get("UV_TOOL_DIR"):
+        return Path(os.environ["UV_TOOL_DIR"])
+    data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(data) / "uv" / "tools"
 
 
 def _pipx_venvs() -> Path | None:
@@ -191,10 +205,18 @@ def detect_install() -> InstallKind:
     if installer_prefix() is not None:
         return InstallKind("installer", None, "installed by mmw's installer — updated from a newer installer")
     if _within(prefix, _uv_tool_dir()):
-        return InstallKind("uv-tool", ["uv", "tool", "upgrade", DIST], "installed with uv tool")
+        return InstallKind("uv-tool", [_uv() or "uv", "tool", "upgrade", DIST], "installed with uv tool")
     if _within(prefix, _pipx_venvs()):
         return InstallKind("pipx", ["pipx", "upgrade", DIST], "installed with pipx")
     if sys.prefix != sys.base_prefix:
+        import importlib.util
+        if importlib.util.find_spec("pip") is None:          # a uv-made venv ships without pip
+            uv = _uv()
+            if uv is None:
+                return InstallKind("venv", None, f"this virtualenv has no pip — update mmw with: "
+                                                 f"uv pip install -U --python {sys.executable} {DIST}")
+            return InstallKind("venv", [uv, "pip", "install", "-U", "--python", sys.executable, DIST],
+                               "installed in a uv virtualenv")
         return InstallKind("venv", [sys.executable, "-m", "pip", "install", "-U", DIST], "installed with pip in a virtualenv")
     stdlib = Path(sysconfig.get_path("stdlib"))
     command = f"{sys.executable} -m pip install -U {DIST}"

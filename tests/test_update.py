@@ -82,10 +82,13 @@ def test_detect_install_kinds(kind, monkeypatch, tmp_path):
     monkeypatch.setattr(U, "_uv_tool_dir", lambda: tmp_path / "uv" / "tools")
     monkeypatch.setattr(U, "_pipx_venvs", lambda: tmp_path / "pipx" / "venvs")
     monkeypatch.setattr(U, "_checkout", lambda: tmp_path / "co" if kind == "checkout" else None)
+    import importlib.util
+    real_spec = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "pip" else real_spec(name))
     k = U.detect_install()
     assert k.name == kind
     if kind == "uv-tool":
-        assert k.argv == ["uv", "tool", "upgrade", "mirror-mirror-on-the-wall"]
+        assert k.argv[1:] == ["tool", "upgrade", "mirror-mirror-on-the-wall"]
     if kind == "venv":
         assert k.argv[-4:] == ["pip", "install", "-U", "mirror-mirror-on-the-wall"]
     if kind == "checkout":
@@ -112,3 +115,31 @@ def test_run_update_reports_failure():
     ok, last = U.run_update(U.InstallKind("venv", ["sh", "-c", "echo working; echo boom >&2; exit 3"], ""),
                             progress=lines.append)
     assert not ok and last == "boom" and "working" in lines
+
+
+# ── review findings ──────────────────────────────────────────────────────────
+
+def test_uv_tool_dir_found_without_uv_in_the_venv(monkeypatch, tmp_path):
+    """A uv tool venv has neither uv nor pip inside it: the uv binary is asked."""
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    calls = []
+
+    class R:
+        returncode, stdout = 0, f"{tmp_path}/tools\n"
+    monkeypatch.setattr(U.subprocess, "run", lambda argv, **k: calls.append(argv) or R())
+    assert U._uv_tool_dir() == tmp_path / "tools" and calls[0][0] == "/usr/bin/uv"
+
+
+def test_a_venv_without_pip_uses_uv_pip(monkeypatch, tmp_path):
+    import importlib.util
+    import shutil
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    monkeypatch.setattr(U, "_uv_tool_dir", lambda: None)
+    monkeypatch.setattr(U, "_pipx_venvs", lambda: None)
+    monkeypatch.setattr(U, "_checkout", lambda: None)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None if name == "pip" else object())
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    k = U.detect_install()
+    assert k.argv == ["/usr/bin/uv", "pip", "install", "-U", "--python", sys.executable, "mirror-mirror-on-the-wall"]

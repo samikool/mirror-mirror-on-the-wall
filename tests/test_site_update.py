@@ -13,8 +13,9 @@ OTHER = "aarch64" if ARCH == "x86_64" else "x86_64"
 
 
 @pytest.fixture(autouse=True)
-def _version(monkeypatch):
+def _version(monkeypatch, tmp_path):
     monkeypatch.setattr(U, "current_version", lambda: "1.2.0")
+    monkeypatch.setattr(U, "installer_prefix", lambda: tmp_path / "prefix")   # installed by install.sh
 
 
 def _beside(tmp_path, *names):
@@ -81,5 +82,30 @@ def test_cli_apply_offers_before_applying(tmp_path, monkeypatch):
     applied = []
     monkeypatch.setattr("mmw.site.apply.apply_to_set", lambda *a, **k: applied.append(1) or (_ for _ in ()).throw(
         FileNotFoundError("stop here")))
+    import io
+    import sys
+    err = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", err)
     cmd.apply(str(b), root=[f"*={tmp_path / 'r'}"])
-    assert asked and "1.3.0" in asked[0] and applied == [1]           # asked first, No still applies
+    assert asked and "1.3.0" in err.getvalue() and applied == [1]     # asked first, No still applies
+
+
+# ── review findings ──────────────────────────────────────────────────────────
+
+def test_this_machine_checked_before_any_remote(tmp_path, monkeypatch):
+    b = _beside(tmp_path, f"mmw-1.3.0-{ARCH}.tar", f"mmw-1.3.0-{OTHER}.tar")
+    mset = SimpleNamespace(roots=[_root("far", OTHER)])
+    monkeypatch.setattr(U, "installer_prefix", lambda: None)             # e.g. pip-installed here
+    far = F.far_offer(str(b), mset)
+    assert "installer" in F.preflight(far)
+    monkeypatch.setattr(F, "_install_remote", lambda *a: pytest.fail("updated a remote first"))
+    with pytest.raises(ValueError):
+        F.apply_far_update(far, print)
+
+
+def test_a_root_that_doesnt_say_its_arch_is_asked(monkeypatch):
+    from mmw.site import ssh, sshroot
+    root = sshroot.SshRoot("h:/x", {"path": "/x", "name": "x", "set_id": "s", "network": "n", "members": ["x"],
+                                     "hostnames": []})
+    monkeypatch.setattr(ssh, "run", lambda host, argv, **k: b"aarch64\n" if argv == ["uname", "-m"] else b"")
+    assert root.arch() == "aarch64"                                    # never assumed x86_64

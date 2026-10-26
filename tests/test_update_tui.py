@@ -80,11 +80,16 @@ def test_yes_updates_and_relaunches(tmp_path, monkeypatch):
     execs = []
     monkeypatch.setattr(F.os, "execve", lambda path, argv, env: execs.append((path, argv, env)))
 
+    holder = {}
+
     async def check(app, pilot):
+        holder["app"] = app
         await until(pilot, lambda: _name(app) == "UpdateDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
-        await until(pilot, lambda: execs)
+        await until(pilot, lambda: getattr(app, "relaunch_after", None) is not None)
+        assert execs == []                         # never while the app still owns the terminal
     _run(tmp_path, check)
+    F.relaunch_if_updated(holder["app"])          # what `mmw manage` does once app.run() returns
     (path, argv, env) = execs[0]
     assert env["MMW_UPDATED_FROM"] == "1.2.0"
 
@@ -121,3 +126,23 @@ def test_no_dialog_when_disabled(tmp_path, monkeypatch):
         await pilot.pause(0.3)
         assert _name(app) != "UpdateDialog"
     _run(tmp_path, check)
+
+
+def test_a_failed_far_update_still_applies(tmp_path):
+    """The far side: Close after a failed update carries on with the bundle."""
+    from mmw.tui.site.app import SiteApp
+    carried = []
+
+    async def go():
+        app = SiteApp(None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: _name(app) == "StartPage")
+            offer = U.Offer("1.2.0", "1.3.0", False)
+            app.offer_update(offer, run=lambda log: (False, "disk full"), then=lambda: carried.append(1))
+            await until(pilot, lambda: _name(app) == "UpdateDialog" and app.screen.query("#confirm"))
+            app.screen.query_one("#confirm").press()
+            await until(pilot, lambda: _name(app) == "UpdateRunPage" and
+                        not app.screen.query_one("#btn-update-close").disabled)
+            app.screen.query_one("#btn-update-close").press()
+            await until(pilot, lambda: carried)
+    asyncio.run(go())

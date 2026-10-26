@@ -79,9 +79,16 @@ def far_offer(src: str, mset) -> FarOffer | None:
 
 
 def preflight(far: FarOffer) -> str | None:
-    """Why the update can't cover every machine, or None."""
+    """Why the update can't cover every machine, or None — this machine
+    first, so no remote is ever updated for a machine that can't follow."""
+    if U.installer_prefix() is None:
+        return ("this mmw wasn't installed by mmw's installer, so it can't update from the installer next to "
+                "the bundle — update it the way it was installed; nothing was updated")
     for root in far.remotes:
-        arch = _arch_of(root)
+        try:
+            arch = _arch_of(root)
+        except Exception as e:  # noqa: BLE001 — unreachable, or it won't say: never guessed
+            return f"root {root.info.name} ({root.info.location}): can't tell its architecture ({e}) — nothing was updated"
         if arch not in far.installers:
             return (f"root {root.info.name} ({root.info.location}) is {arch}, and there's no "
                     f"mmw-{far.offer.newest}-{arch}.tar next to the bundle — bring it, then update; "

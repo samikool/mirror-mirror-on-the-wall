@@ -11,16 +11,26 @@ NEVER = {"site", "update", "manage"}
 
 
 def _interactive() -> bool:
-    return sys.stdin.isatty() and sys.stderr.isatty()
+    """A person at a terminal: stdin, stdout and stderr all ttys (a pipe on
+    stdout is a script, and never gets a prompt)."""
+    return sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()
 
 
-def _ask(offer: U.Offer) -> bool:
+def ask(offer: U.Offer) -> bool:
+    """Update now? — on stderr, so stdout stays the command's own; Ctrl-C or
+    end of input is No."""
     choice = "[Y/n]" if offer.default_yes() else "[y/N]"
+    sys.stderr.write(f"{offer.prompt_text()} {choice} ")
+    sys.stderr.flush()
     try:
-        answer = input(f"{offer.prompt_text()} {choice} ").strip().lower()
-    except EOFError:
+        answer = input("").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        sys.stderr.write("\n")
         return False
     return offer.default_yes() if not answer else answer in ("y", "yes")
+
+
+_ask = ask
 
 
 def _run(offer: U.Offer, mirror_dir: Path | None) -> bool:
@@ -38,9 +48,13 @@ def _run(offer: U.Offer, mirror_dir: Path | None) -> bool:
     return ok
 
 
-def after_command(checker: "U.Checker | None", mirror_dir: Path | None) -> None:
-    """At the end of a command: a newer mmw is offered (a terminal) or noted (anything else)."""
+def after_command(checker: "U.Checker | None", mirror_dir: Path | None, exc=None) -> None:
+    """At the end of a command: a newer mmw is offered (a terminal) or noted
+    (anything else) — never after Ctrl-C, a usage error or a crash."""
     if checker is None:
+        return
+    import click
+    if exc is not None and not isinstance(exc, click.exceptions.Exit):
         return
     offer = checker.result(wait=1.5)
     if offer is None:

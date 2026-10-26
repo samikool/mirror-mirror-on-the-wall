@@ -19,7 +19,7 @@ def _run_tui(app):
         saved_tc = None
     saved_sigwinch = signal.getsignal(signal.SIGWINCH)
     try:
-        return app.run()
+        result = app.run()
     finally:
         if saved_tc is not None:
             try:
@@ -40,6 +40,12 @@ def _run_tui(app):
             "\x1b[?1049l"   # leave alternate screen (no-op if already normal)
         )
         sys.stdout.flush()
+    # An update finished inside the app: the new mmw starts only now, with the
+    # terminal already restored above.
+    from mmw.tui.update_flow import relaunch_if_updated
+    relaunch_if_updated(app)
+    return result
+
 
 app = typer.Typer(
     name="mmw",
@@ -108,8 +114,11 @@ def _start_update_check(ctx: typer.Context) -> None:
     the TUI (it asks for itself)."""
     from mmw.commands.update import NEVER, after_command
     from mmw.core import update as U
+    import sys
     if ctx.invoked_subcommand in NEVER or ctx.invoked_subcommand is None or ctx.resilient_parsing:
         return
+    if {"--help", "-h"} & set(sys.argv[1:]):
+        return                                     # help is never followed by a question
     cfg = None
     try:
         from mmw.core import config
@@ -120,7 +129,9 @@ def _start_update_check(ctx: typer.Context) -> None:
         return
     checker = U.Checker().start()
     mirror_dir = cfg.settings.mirror_dir if cfg is not None else None
-    ctx.call_on_close(lambda: after_command(checker, mirror_dir))
+    # Inside the context's exit: exc_info is what is propagating (Exit on
+    # success, or Ctrl-C, a usage error, a crash — no offer after those).
+    ctx.call_on_close(lambda: after_command(checker, mirror_dir, exc=sys.exc_info()[1]))
 
 
 def _load_config_or_exit(cfg_dir: Path):

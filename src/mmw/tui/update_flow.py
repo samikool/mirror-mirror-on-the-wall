@@ -36,6 +36,14 @@ class UpdateDialog(ConfirmDialog):
 RESUME_BUNDLE = "MMW_RESUME_BUNDLE"
 
 
+def relaunch_if_updated(app) -> None:
+    """After `app.run()` returns: an update finished, so start the new mmw —
+    with the terminal already restored."""
+    after = getattr(app, "relaunch_after", None)
+    if after:
+        relaunch(*after)
+
+
 def relaunch(old_version: str, resume: str | None = None) -> None:
     """Start this mmw again, the same way, saying what it was updated from
     (and, on the far side, which bundle to carry on with)."""
@@ -51,11 +59,12 @@ class UpdateRunPage(Page):
 
     TITLE = "Updating mmw"
 
-    def __init__(self, offer: U.Offer, run=None, resume: str | None = None):
+    def __init__(self, offer: U.Offer, run=None, resume: str | None = None, then=None):
         super().__init__()
         self._offer = offer
         self._run_it = run                      # the far side hands its own update in
         self._resume = resume
+        self._then = then                       # carried on after a failed update (the far side's apply)
         self.subtitle = f"{offer.current} → {offer.newest}"
 
     def compose_body(self) -> ComposeResult:
@@ -87,9 +96,11 @@ class UpdateRunPage(Page):
 
     def _done(self, ok: bool, last: str) -> None:
         if ok:
+            # Restarted only once the app has exited and handed the terminal
+            # back (`relaunch_if_updated`, after app.run() returns).
             self.set_status(f"updated to {self._offer.newest} — restarting…", "ok")
+            self.app.relaunch_after = (self._offer.current, self._resume)
             self.app.exit()
-            self.app.call_later(relaunch, self._offer.current, self._resume)
             return
         self.set_status(f"the update failed: {last} — still on {self._offer.current}", "error")
         close = self.query_one("#btn-update-close", Button)
@@ -99,6 +110,8 @@ class UpdateRunPage(Page):
     def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-update-close":
             self.dismiss(None)
+            if self._then:
+                self._then()                    # the update failed: carry on as with No
 
 
 class UpdateOffers:
@@ -150,7 +163,7 @@ class UpdateOffers:
             if then:
                 then()
             return
-        self.push_screen(UpdateRunPage(offer, self._update_run, getattr(self, "_update_resume", None)))
+        self.push_screen(UpdateRunPage(offer, self._update_run, getattr(self, "_update_resume", None), then))
 
     def offer_far_update(self, src: str, then) -> None:
         """The far side: a newer mmw next to the bundle at `src` is asked

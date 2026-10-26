@@ -106,7 +106,7 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
 
 def _interactive_far() -> bool:
     import sys
-    return (sys.stdin.isatty() and sys.stderr.isatty()) or _interactive()
+    return (sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()) or _interactive()
 
 
 def _offer_far_update(src: str, mset) -> bool:
@@ -125,9 +125,8 @@ def _offer_far_update(src: str, mset) -> bool:
         eprint(f"mmw {offer.newest} is next to this bundle (you have {offer.current}) — "
                "run mmw site apply in a terminal to update first")
         return False
-    choice = "[Y/n]" if offer.default_yes() else "[y/N]"
-    answer = input(f"{offer.prompt_text()} {choice} ").strip().lower()
-    if not (offer.default_yes() if not answer else answer in ("y", "yes")):
+    from mmw.commands.update import ask
+    if not ask(offer):
         return False
     problem = preflight(far)
     if problem:
@@ -374,8 +373,9 @@ def manage(root: Path | None = None) -> int:
         mset = None                                 # nothing opened yet: the TUI starts there
     except _ERRORS as e:
         return _fail(e)
+    from mmw.cli import _run_tui
     from mmw.tui.site.app import SiteApp
-    SiteApp(mset).run()
+    _run_tui(SiteApp(mset))                         # restores the terminal, then restarts after an update
     return 0
 
 

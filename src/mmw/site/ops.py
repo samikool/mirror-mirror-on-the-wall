@@ -481,8 +481,11 @@ def add_root(mset, location: str) -> str:
     mirror is opened; an empty folder (or one with no mirror) becomes a new,
     empty root of it; another mirror's root is refused. What happened."""
     from mmw.site import recents, ssh
-    from mmw.site.home import init_root
+    from mmw.site.home import could_become_root, init_root
     from mmw.site.mset import root_at
+    remote = ssh.parse_location(location)[0] == "ssh"
+    if not remote:
+        location = str(Path(location).expanduser().resolve())   # remembered: the same from any folder
     found = root_at(location)
     if found is not None:
         if found.info.set_id != mset.set_id:
@@ -498,10 +501,14 @@ def add_root(mset, location: str) -> str:
     name, n = base, 2
     while name in taken:
         name, n = f"{base}-{n}", n + 1
-    if ssh.parse_location(location)[0] == "ssh":
-        from mmw.site.sshroot import init_remote
+    if remote:
+        from mmw.site.sshroot import empty_at, init_remote
+        if not empty_at(location):
+            raise ValueError(f"{location} isn't empty — pick an empty folder, or a new one")
         init_remote(location, name=name, set_id=mset.set_id, network=mset.network)
     else:
+        if not could_become_root(Path(location)):
+            raise ValueError(f"{location} isn't empty — pick an empty folder, or a new one")
         init_root(Path(location).expanduser(), name=name, set_id=mset.set_id, network=mset.network)
     recents.remember(location)       # first: a failure below is finished by adding it again
     _list_member(mset, root_at(location))

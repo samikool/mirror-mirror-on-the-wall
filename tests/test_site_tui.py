@@ -347,3 +347,70 @@ def test_version_buttons_are_on_screen_at_80x24(env, tmp_path):  # noqa: F811
                     and app.screen.query_one("#site-history").region.height >= 4)
         await until(pilot, fits)
     _run(home, check, size=(80, 24))
+
+
+def _detail_plain(states, repo, rows, details):
+    from textual.content import Content
+    from mmw.tui.site.home import SiteHomePage
+    page = SiteHomePage()
+    page._states = states
+    return Content.from_markup(page._detail_text(repo, rows, details)).plain
+
+
+def test_detail_shows_brackets_in_names_and_paths():
+    from types import SimpleNamespace
+    s = SimpleNamespace(repo="r", label="mirror [eu]", held=False, serving=None, bases=["x.org/[a]"])
+    plain = _detail_plain([s], "r", [], {"root": "oak", "location": "/srv/[Mirror]\\", "https": "signed [by CA]"})
+    for text in ("mirror [eu]", "/srv/[Mirror]\\", "signed [by CA]"):
+        assert text in plain, plain
+
+
+def test_detail_says_held_with_no_versions_kept():
+    from types import SimpleNamespace
+    s = SimpleNamespace(repo="r", label="r", held=True, serving=None, bases=[])
+    assert "held" in _detail_plain([s], "r", [], {})
+
+
+def test_a_failed_reload_keeps_where_each_repository_lives(env, tmp_path, monkeypatch):  # noqa: F811
+    from mmw.site.mset import LocalRoot
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        before = dict(app.screen._root_of)
+
+        def down(self, repo):
+            raise OSError("root went away")
+        monkeypatch.setattr(LocalRoot, "history", down)
+        app.screen.action_refresh()
+        await until(pilot, lambda: "went away" in str(app.screen.query_one("#page-status").render()))
+        assert app.screen._root_of == before and before
+    _run(home, check)
+
+
+def test_actions_wait_while_one_is_running(env, tmp_path, monkeypatch):  # noqa: F811
+    import threading
+    from textual.widgets import Button
+    cfg, home, root, _ = _three(env, tmp_path)
+    go = threading.Event()
+    calls = []
+
+    def slow(mset, path):
+        calls.append(path)
+        go.wait(20)
+        return "new root x"
+    monkeypatch.setattr(ops, "add_root", slow)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        page = app.screen
+        page.add_root_path("lnxp005:/data")
+        await until(pilot, lambda: "Adding root" in str(page.query_one("#page-status").render()))
+        await until(pilot, lambda: page.query_one("#btn-site-tidy", Button).disabled)
+        assert not page.check_action("tidy", ())
+        page.query_one("#btn-site-add-root", Button).press()
+        await pilot.pause()
+        go.set()
+        await until(pilot, lambda: not page.query_one("#btn-site-tidy", Button).disabled)
+        assert calls == ["lnxp005:/data"]
+    _run(home, check)

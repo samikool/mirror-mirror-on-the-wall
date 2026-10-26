@@ -455,3 +455,33 @@ def test_open_a_mirror_offers_to_install_mmw_there(tmp_path, monkeypatch):
         app.screen.open_path("nas:/data")
         await until(pilot, lambda: _name(app) == "ConfirmDialog")
     _run(None, check)
+
+
+def test_move_explains_the_whole_host_and_shows_progress(two_mirrors, tmp_path):  # noqa: F811
+    from textual.widgets import DataTable, Select
+    from test_site_set_ops import _one_hostname_two_roots
+    _one_hostname_two_roots(two_mirrors, tmp_path)               # a and b share a hostname, in r1
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "SiteHomePage")
+        home = app.screen
+        t = home.query_one("#site-repos", DataTable)
+        await until(pilot, lambda: t.row_count == 2)
+        home.action_move()
+        await until(pilot, lambda: _name(app) == "MoveRootPage" and app.screen.query("#move-root"))
+        app.screen.query_one("#move-root", Select).value = "r2"
+        app.screen.query_one("#btn-move-go").press()
+        await until(pilot, lambda: _name(app) == "ConfirmDialog")
+        title = str(app.screen.query_one("#confirm-title").render())
+        message = str(app.screen.query_one("#confirm-message").render())
+        assert "whole host" in title.lower() or "whole host" in message
+        assert "a and b" in message and "served from one root" in message and "tidy" in message.lower()
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: _name(app) == "MoveRunPage" and app.screen.query("#run-done"))
+        page = app.screen
+        await until(pilot, lambda: "moved a and b" in str(page.query_one("#run-done").render()))
+        assert "recreate nginx" in str(page.query_one("#run-done").render())
+        page.query_one("#btn-run-close").press()
+        await until(pilot, lambda: _name(app) == "SiteHomePage")
+        await until(pilot, lambda: {r for r in home._root_of.values()} == {"r2"})
+    _run(open_set(), check)

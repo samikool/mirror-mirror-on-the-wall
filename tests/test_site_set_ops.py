@@ -55,7 +55,7 @@ def test_move_repo_between_roots(hosts, tmp_path):  # noqa: F811
     assert not {p for p in _tree(r2) if p.startswith(HOST_B)}
 
 
-def test_move_refuses_splitting_a_hostname(two_mirrors, tmp_path):  # noqa: F811
+def _one_hostname_two_roots(two_mirrors, tmp_path):  # noqa: F811
     from test_bundle_mmw import _mmw
     cfg, net, md = _mmw(two_mirrors)                               # a and b: one hostname
     r1, r2 = tmp_path / "r1", tmp_path / "r2"
@@ -65,8 +65,44 @@ def test_move_refuses_splitting_a_hostname(two_mirrors, tmp_path):  # noqa: F811
     m = open_set()
     init_root(r2, name="r2", set_id=m.set_id, network=m.network)
     recents.remember(str(r2))
-    with pytest.raises(ValueError, match="share"):
-        ops.move_repo(open_set(), "a", "r2")
+    return r1, r2
+
+
+def test_move_takes_the_whole_host(two_mirrors, tmp_path):  # noqa: F811
+    _one_hostname_two_roots(two_mirrors, tmp_path)
+    p = ops.move_preview(open_set(), "a", "r2")
+    assert p.labels == ["a", "b"] and p.whole_host and len(p.hosts) == 1 and p.copies > 0
+    r = ops.move_repo(open_set(), "a", "r2")
+    assert r.moved == ["a", "b"] and r.copied_bytes == p.copies
+    assert sorted((root, st.label) for root, st in ops.set_status(open_set())) == [("r2", "a"), ("r2", "b")]
+    assert open_set().owner(p.hosts[0]).info.name == "r2"
+
+
+def test_a_repository_alone_on_its_hostname_moves_alone(hosts, tmp_path):  # noqa: F811
+    _split(hosts, tmp_path)
+    p = ops.move_preview(open_set(), "b", "r1")
+    assert p.labels == ["b"] and not p.whole_host
+
+
+def test_move_says_how_it_goes(hosts, tmp_path):  # noqa: F811
+    _split(hosts, tmp_path)
+    events = []
+    ops.move_repo(open_set(), "b", "r1", progress=lambda event, **d: events.append((event, d)))
+    kinds = [e for e, _d in events]
+    assert "copy" in kinds and kinds[-2:] == ["switch", "done"]
+    assert sum(d["bytes"] for e, d in events if e == "copy") > 0
+
+
+def test_a_stopped_move_switches_nothing_and_runs_again(hosts, tmp_path):  # noqa: F811
+    import threading
+    _split(hosts, tmp_path)
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(ValueError, match="stopped"):
+        ops.move_repo(open_set(), "b", "r1", stop_event=stop)
+    assert sorted((root, st.label) for root, st in ops.set_status(open_set())) == [("r1", "a"), ("r2", "b")]
+    ops.move_repo(open_set(), "b", "r1")
+    assert sorted((root, st.label) for root, st in ops.set_status(open_set())) == [("r1", "a"), ("r1", "b")]
 
 
 def test_ca_location_lives_on_this_machine(hosts, tmp_path):  # noqa: F811
@@ -175,3 +211,12 @@ def test_add_root_remembers_a_typed_relative_path_in_full(hosts, tmp_path, monke
     monkeypatch.chdir(tmp_path)
     ops.add_root(open_set(), "r3")
     assert str(tmp_path / "r3") in recents.known() and "r3" not in recents.known()
+
+
+def test_cli_move_says_the_whole_host_moves(two_mirrors, tmp_path):  # noqa: F811
+    from typer.testing import CliRunner
+    from mmw import cli
+    _one_hostname_two_roots(two_mirrors, tmp_path)
+    r = CliRunner().invoke(cli.app, ["site", "move", "a", "r2", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert "can't move on its own: a, b move together" in r.output and "moved a, b" in r.output

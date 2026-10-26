@@ -545,3 +545,30 @@ def test_without_an_installer_beside_a_bundle_it_asks_for_one(env, tmp_path, mon
         await until(pilot, lambda: "isn't an installer for nas" in str(page.query_one("#page-status").render()))
         assert installs == []
     _run(home, check)
+
+
+def test_a_root_says_where_it_is():
+    from mmw.tui.site.home import where
+    assert where("sam-server-remote:/12-tb/mirrors") == "on sam-server-remote · /12-tb/mirrors"
+    assert where("sam@nas:/data") == "on sam@nas · /data"
+    assert where("/mnt/oak") == "/mnt/oak"
+
+
+def test_move_lists_each_root_with_where_it_is():
+    from textual.app import App
+    from textual.widgets import Select
+    from mmw.tui.site.home import MoveRootPage
+
+    class Harness(App):
+        def on_mount(self):
+            self.push_screen(MoveRootPage("a", "oak", [("oak", "/mnt/oak"),
+                                                      ("nas", "sam-server-remote:/12-tb/mirrors")]))
+
+    async def go():
+        app = Harness()
+        async with app.run_test() as pilot:
+            await until(pilot, lambda: app.screen.query("#move-root"))
+            labels = [str(p) for p, _v in app.screen.query_one("#move-root", Select)._options]
+            assert labels == ["oak — /mnt/oak", "nas — on sam-server-remote · /12-tb/mirrors"]
+            assert "/mnt/oak" in app.screen.subtitle
+    asyncio.run(go())

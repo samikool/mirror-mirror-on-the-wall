@@ -143,6 +143,14 @@ class RootInfo:
     members: tuple[str, ...]
 
 
+def could_become_root(path: Path) -> bool:
+    """Nothing there yet — a missing folder, an empty one, or a fresh disk
+    with only lost+found — so making it a root takes nobody's files."""
+    if not disk_io.ops.exists(path):
+        return True
+    return {p.name for p in Path(path).iterdir()} <= {"lost+found"}
+
+
 def init_root(root: Path, *, name: str, set_id: str, network: str, serve_path: Path | None = None) -> Path:
     """Make `root` a root of set `set_id`; its home. A root of another set is refused."""
     home = root_home(root)

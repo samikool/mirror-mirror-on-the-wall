@@ -67,6 +67,11 @@ def init_remote(location: str, *, name: str, set_id: str, network: str) -> None:
     _call(host, "init", path, name, set_id, network)
 
 
+def empty_at(location: str) -> bool:
+    _kind, host, path = ssh.parse_location(location)
+    return bool(_call(host, "empty", path)["empty"])
+
+
 def free_at(location: str) -> int:
     _kind, host, path = ssh.parse_location(location)
     return int(_call(host, "free", path)["free"])
@@ -167,6 +172,9 @@ class SshRoot:
 
     def tidy(self) -> list[str]:
         return self._call("tidy")
+
+    def details(self) -> dict:
+        return self._call("details")
 
     def tls_notes(self) -> list[str]:
         return self._call("tls-notes")

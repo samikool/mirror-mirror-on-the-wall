@@ -112,3 +112,66 @@ def test_move_in_refuses_paths_outside_the_root(hosts, tmp_path):  # noqa: F811
                                          "files": [["../../escape", "ab" * 32, 1]]}]}
     with pytest.raises(ValueError, match="outside"):
         O.move_in(read_root(str(r1)).home, "kx", bad)
+
+
+# ── adding a root from the TUI's Add root… ───────────────────────────────────
+
+def test_add_root_makes_an_empty_root_of_this_mirror(hosts, tmp_path):  # noqa: F811
+    *_, r1, r2 = _split(hosts, tmp_path)
+    r3 = tmp_path / "r3"
+    msg = ops.add_root(open_set(), str(r3))
+    m = open_set()
+    assert "r3" in [r.info.name for r in m.roots] and "new" in msg
+    assert set(read_root(str(r1)).members) == {"r1", "r2", "r3"}
+
+
+def test_add_root_opens_a_root_of_this_mirror(hosts, tmp_path):  # noqa: F811
+    *_, r1, r2 = _split(hosts, tmp_path)
+    recents.forget(str(r2))
+    assert "opened" in ops.add_root(open_set(), str(r2))
+    assert str(r2) in recents.known()
+
+
+def test_add_root_refuses_another_mirror(hosts, tmp_path):  # noqa: F811
+    from mmw.site.home import init_root
+    _split(hosts, tmp_path)
+    other = tmp_path / "other"
+    init_root(other, name="other", set_id="elsewhere", network="elm")
+    with pytest.raises(ValueError, match="elm"):
+        ops.add_root(open_set(), str(other))
+
+
+def test_add_root_again_finishes_a_root_whose_membership_was_half_written(hosts, tmp_path):  # noqa: F811
+    from mmw.site.home import init_root
+    *_, r1, r2 = _split(hosts, tmp_path)
+    r3 = tmp_path / "r3"
+    # Made, but the failure came before any root listed it, and before it was remembered.
+    init_root(r3, name="r3", set_id=open_set().set_id, network=open_set().network)
+    ops.add_root(open_set(), str(r3))
+    for r in (r1, r2, r3):
+        assert set(read_root(str(r)).members) == {"r1", "r2", "r3"}
+    assert str(r3) in recents.known()
+
+
+def test_add_root_refuses_a_folder_with_things_in_it(hosts, tmp_path):  # noqa: F811
+    _split(hosts, tmp_path)
+    busy = tmp_path / "home-dir"
+    busy.mkdir()
+    (busy / "notes.txt").write_text("mine")
+    with pytest.raises(ValueError, match="isn't empty"):
+        ops.add_root(open_set(), str(busy))
+    assert not (busy / ".mmw").exists()
+
+
+def test_add_root_takes_a_fresh_disk_with_only_lost_and_found(hosts, tmp_path):  # noqa: F811
+    _split(hosts, tmp_path)
+    disk = tmp_path / "disk"
+    (disk / "lost+found").mkdir(parents=True)
+    assert "new" in ops.add_root(open_set(), str(disk))
+
+
+def test_add_root_remembers_a_typed_relative_path_in_full(hosts, tmp_path, monkeypatch):  # noqa: F811
+    _split(hosts, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    ops.add_root(open_set(), "r3")
+    assert str(tmp_path / "r3") in recents.known() and "r3" not in recents.known()

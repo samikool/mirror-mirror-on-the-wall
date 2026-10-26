@@ -14,8 +14,16 @@ from waiting import until
 
 
 def _rows(app, table_id):
+    """Each row's cells; a repository's card comes back as its lines."""
     t = app.screen.query_one(f"#{table_id}", DataTable)
+    if table_id == "site-repos":
+        return [tuple(str(t.get_row_at(i)[0]).splitlines()) for i in range(t.row_count)]
     return [tuple(str(c) for c in t.get_row_at(i)) for i in range(t.row_count)]
+
+
+def _cards(app):
+    t = app.screen.query_one("#site-repos", DataTable)
+    return [str(t.get_row_at(i)[0]) for i in range(t.row_count)]
 
 
 def _run(home, check, size=(120, 40)):
@@ -36,12 +44,12 @@ def test_lists_repos_and_history(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         rows = _rows(app, "site-repos")
         a = next(r for r in rows if r[0] == "a")
-        assert "v2" in a[1] and "v3" in a[2] and a[3] == "held"
+        assert "v2" in a[1] and "newest v3" in a[1] and a[1].endswith("held")
         app.screen.query_one("#site-repos", DataTable).move_cursor(row=[r[0] for r in rows].index("a"))
         await until(pilot, lambda: len(_rows(app, "site-history")) == 3)
         hist = _rows(app, "site-history")
         assert hist[1][0].startswith("▶ v2") and "serving" in hist[1][3]
-        assert "f forward to v3" in str(app.screen.query_one("#site-hold-note").render())
+        assert "held at v2 — Forward serves v3" in str(app.screen.query_one("#site-detail").render())
     _run(home, check)
 
 
@@ -76,7 +84,7 @@ def test_serve_from_history_confirms_then_switches(env, tmp_path):  # noqa: F811
         assert "now serving v3" in details and "nothing to copy" in details and "indexes switch last" in details
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
-                    and any(r[0] == "a" and r[3] == "held" for r in _rows(app, "site-repos")))
+                    and any(r[0] == "a" and r[1].endswith("held") for r in _rows(app, "site-repos")))
     _run(home, check)
     assert _tree(root) == trees[0]
 
@@ -89,10 +97,10 @@ def test_forward_and_hold_keys(env, tmp_path):  # noqa: F811
         await _pick(app, pilot, "a")
         app.screen.query_one("#site-repos", DataTable).focus()
         await pilot.press("f")
-        await until(pilot, lambda: any(r[0] == "a" and r[3] == "current" and "v3" in r[1]
+        await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("current") and "v3" in r[1]
                                        for r in _rows(app, "site-repos")))
         await pilot.press("h")
-        await until(pilot, lambda: any(r[0] == "a" and r[3] == "held" for r in _rows(app, "site-repos")))
+        await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("held") for r in _rows(app, "site-repos")))
     _run(home, check)
 
 
@@ -125,7 +133,7 @@ def test_lock_held_is_a_status(env, tmp_path):  # noqa: F811
         with SiteLock(home):
             await pilot.press("h")
             await until(pilot, lambda: "in use by" in str(app.screen.query_one("#page-status").render()))
-        assert all(r[3] == "current" for r in _rows(app, "site-repos"))
+        assert all(r[1].endswith("current") for r in _rows(app, "site-repos"))
     _run(home, check)
 
 
@@ -268,3 +276,141 @@ def test_tui_c_signs(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: "signed" in str(app.screen.query_one("#page-status").render()))
     _run(home, check)
     assert (root / ".mmw/tls/mirror.crt").exists()
+
+
+
+# ── cards, detail and buttons ────────────────────────────────────────────────
+
+def test_cards_show_root_versions_and_size(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        card = next(c for c in _cards(app) if c.startswith("a\n"))
+        assert "example.com" in card and "versions" in card and ("B" in card)
+    _run(home, check)
+
+
+def test_detail_says_where_what_and_how_much(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        detail = lambda: str(app.screen.query_one("#site-detail").render())  # noqa: E731
+        await until(pilot, lambda: "root" in detail() and "kept" in detail())
+        for word in ("hostname", "serving", "newest", "https", "last apply"):
+            assert word in detail()
+    _run(home, check)
+
+
+def test_buttons_reach_the_actions(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        for b in ("apply", "add-root", "serve", "forward", "hold", "delete", "move", "certs", "tidy"):
+            assert app.screen.query(f"#btn-site-{b}"), b
+        assert app.screen.query_one("#btn-site-apply").variant == "primary"
+        app.screen.query_one("#btn-site-apply").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")
+    _run(home, check)
+
+
+def test_history_still_loads_when_a_root_cannot_say_its_details(env, tmp_path, monkeypatch):  # noqa: F811
+    # An older mmw over ssh has no `details` verb.
+    from mmw.site.mset import LocalRoot
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    def older(self):
+        raise ValueError("unknown verb 'details'")
+    monkeypatch.setattr(LocalRoot, "details", older)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        await until(pilot, lambda: len(_rows(app, "site-history")) >= 1)
+        assert "serving" in str(app.screen.query_one("#site-detail").render())
+    _run(home, check)
+
+
+def test_version_buttons_are_on_screen_at_80x24(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        await until(pilot, lambda: len(_rows(app, "site-history")) == 3)
+        await until(pilot, lambda: "last apply" in str(app.screen.query_one("#site-detail").render()))
+
+        def fits():                     # once the filled-in detail has been laid out
+            split = app.screen.query_one("#site-split").region
+            buttons = [app.screen.query_one(f"#btn-site-{b}").region for b in ("serve", "forward", "hold", "delete")]
+            return (all(b.height == 1 and b.bottom <= split.bottom for b in buttons)
+                    and app.screen.query_one("#site-history").region.height >= 4)
+        await until(pilot, fits)
+    _run(home, check, size=(80, 24))
+
+
+def _detail_plain(states, repo, rows, details):
+    from textual.content import Content
+    from mmw.tui.site.home import SiteHomePage
+    page = SiteHomePage()
+    page._states = states
+    return Content.from_markup(page._detail_text(repo, rows, details)).plain
+
+
+def test_detail_shows_brackets_in_names_and_paths():
+    from types import SimpleNamespace
+    s = SimpleNamespace(repo="r", label="mirror [eu]", held=False, serving=None, bases=["x.org/[a]"])
+    plain = _detail_plain([s], "r", [], {"root": "oak", "location": "/srv/[Mirror]\\", "https": "signed [by CA]"})
+    for text in ("mirror [eu]", "/srv/[Mirror]\\", "signed [by CA]"):
+        assert text in plain, plain
+
+
+def test_detail_says_held_with_no_versions_kept():
+    from types import SimpleNamespace
+    s = SimpleNamespace(repo="r", label="r", held=True, serving=None, bases=[])
+    assert "held" in _detail_plain([s], "r", [], {})
+
+
+def test_a_failed_reload_keeps_where_each_repository_lives(env, tmp_path, monkeypatch):  # noqa: F811
+    from mmw.site.mset import LocalRoot
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        before = dict(app.screen._root_of)
+
+        def down(self, repo):
+            raise OSError("root went away")
+        monkeypatch.setattr(LocalRoot, "history", down)
+        app.screen.action_refresh()
+        await until(pilot, lambda: "went away" in str(app.screen.query_one("#page-status").render()))
+        assert app.screen._root_of == before and before
+    _run(home, check)
+
+
+def test_actions_wait_while_one_is_running(env, tmp_path, monkeypatch):  # noqa: F811
+    import threading
+    from textual.widgets import Button
+    cfg, home, root, _ = _three(env, tmp_path)
+    go = threading.Event()
+    calls = []
+
+    def slow(mset, path):
+        calls.append(path)
+        go.wait(20)
+        return "new root x"
+    monkeypatch.setattr(ops, "add_root", slow)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        page = app.screen
+        page.add_root_path("lnxp005:/data")
+        await until(pilot, lambda: "Adding root" in str(page.query_one("#page-status").render()))
+        await until(pilot, lambda: page.query_one("#btn-site-tidy", Button).disabled)
+        assert not page.check_action("tidy", ())
+        page.query_one("#btn-site-add-root", Button).press()
+        await pilot.pause()
+        go.set()
+        await until(pilot, lambda: not page.query_one("#btn-site-tidy", Button).disabled)
+        assert calls == ["lnxp005:/data"]
+    _run(home, check)

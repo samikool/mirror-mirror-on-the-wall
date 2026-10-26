@@ -167,6 +167,10 @@ class LocalRoot:
         from mmw.site import ops
         return ops.tidy_here(self.home)
 
+    def details(self) -> dict:
+        from mmw.site import ops
+        return ops.root_details(self.home)
+
     def tls_notes(self) -> list[str]:
         from mmw.site.certs import tls_notes
         return tls_notes(self.home)

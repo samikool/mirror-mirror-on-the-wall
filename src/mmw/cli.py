@@ -82,6 +82,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def _main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False, "--version", "-V", callback=_version_callback, is_eager=True,
         help="Show the version and exit.",
@@ -98,6 +99,28 @@ def _main(
     bug is often on the far side of an airgap, with no `git log`, no network
     and no way to tell which build produced the bundle it is holding.
     """
+    _start_update_check(ctx)
+
+
+def _start_update_check(ctx: typer.Context) -> None:
+    """Check PyPI for a newer mmw in the background; offered when the command
+    is done. Never for the far side (`mmw site …`), `mmw update` itself, or
+    the TUI (it asks for itself)."""
+    from mmw.commands.update import NEVER, after_command
+    from mmw.core import update as U
+    if ctx.invoked_subcommand in NEVER or ctx.invoked_subcommand is None or ctx.resilient_parsing:
+        return
+    cfg = None
+    try:
+        from mmw.core import config
+        cfg = config.load(_cfg_dir())
+    except Exception:  # noqa: BLE001 — no mmw.toml here: checks stay on
+        pass
+    if U.checks_disabled(cfg):
+        return
+    checker = U.Checker().start()
+    mirror_dir = cfg.settings.mirror_dir if cfg is not None else None
+    ctx.call_on_close(lambda: after_command(checker, mirror_dir))
 
 
 def _load_config_or_exit(cfg_dir: Path):
@@ -803,6 +826,13 @@ def cmd_snapshot_clean(network: str = _SNAP_NET,
     """Delete all but the newest N snapshots (previews unless --yes)."""
     from mmw.commands.snapshot import clean
     raise typer.Exit(clean(_cfg_dir(), network, keep, yes))
+
+
+@app.command("update")
+def cmd_update(yes: bool = typer.Option(False, "--yes", help="Don't ask")):
+    """Update mmw to the newest release, the way it was installed (uv tool, pipx, pip)."""
+    from mmw.commands.update import run
+    raise typer.Exit(run(_cfg_dir(), yes))
 
 
 @app.command("verify")

@@ -116,3 +116,12 @@ def test_hidden_cli_verb(hosts, tmp_path):  # noqa: F811
     r = subprocess.run([str(Path(sys.executable).with_name("mmw")), "site", "_root", "info", str(r1)], capture_output=True)
     assert r.returncode == 0 and json.loads(r.stdout)["name"] == "r1"
     assert b"_root" not in subprocess.run([str(Path(sys.executable).with_name("mmw")), "site", "--help"], capture_output=True).stdout
+
+
+def test_empty_says_whether_a_folder_could_become_a_root(tmp_path):
+    (tmp_path / "used").mkdir()
+    (tmp_path / "used" / "x").write_text("x")
+    (tmp_path / "disk" / "lost+found").mkdir(parents=True)
+    for name, empty in (("used", False), ("disk", True), ("absent", True)):
+        code, out = _call(["empty", str(tmp_path / name)])
+        assert code == 0 and _lines(out)[-1] == {"empty": empty}, name

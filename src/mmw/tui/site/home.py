@@ -2,19 +2,25 @@
 history beside it (approved layouts A and B)."""
 from pathlib import Path
 
-from rich.markup import escape
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import DataTable, Static
+from textual.worker import WorkerState
 
 from mmw.core.format import fmt_size
 from mmw.site import ops
 from mmw.tui.ui.list_detail import ListDetail
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
+
+
+def _esc(text: str) -> str:
+    """Text shown as it is inside markup — a `[` in a label or path is not a
+    tag. (rich's escape leaves Textual markup's `[$var]` and a trailing `\\`.)"""
+    return str(text).replace("[", "\\[")
 
 
 def _date(stamp: str) -> str:
@@ -70,7 +76,26 @@ class SiteHomePage(Page):
         action = self._BUTTONS.get(event.button.id or "")
         if action:
             event.stop()
-            getattr(self, f"action_{action}")()
+            if self.check_action(action, ()):
+                getattr(self, f"action_{action}")()
+
+    def _acting(self) -> bool:
+        return any(w.group == "site-act" and w.state in (WorkerState.PENDING, WorkerState.RUNNING)
+                   for w in self.workers)
+
+    def check_action(self, action: str, parameters) -> bool | None:
+        # One change to the mirror at a time: a second would cancel the first
+        # in Textual's eyes while its thread carries on, and their messages race.
+        if action in self._BUTTONS.values() and self._acting():
+            return False
+        return super().check_action(action, parameters)
+
+    def on_worker_state_changed(self, event) -> None:
+        if event.worker.group == "site-act":
+            busy = self._acting()
+            for button_id in self._BUTTONS:
+                self.query_one(f"#{button_id}", Button).disabled = busy
+            self.refresh_bindings()
 
     def action_add_root(self) -> None:
         if self.app.mset is None:
@@ -82,6 +107,7 @@ class SiteHomePage(Page):
                              lambda path: path and self.add_root_path(path))
 
     def add_root_path(self, path: str) -> None:
+        self.set_status(f"Adding root {path}…")
         self._act_root(path)
 
     @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
@@ -128,24 +154,27 @@ class SiteHomePage(Page):
             self.app.reopen()
             roots_by = {r.info.name: r for r in self.app.mset.roots}
             rows = ops.set_status(self.app.mset)
-            states, newest, self._root_of, self._kept = [], {}, {}, {}
+            # Built here, kept on the page only by _loaded: a load that fails
+            # part-way leaves the last good one in place.
+            states, newest, root_of, kept = [], {}, {}, {}
             for name, st in rows:
                 states.append(st)
-                self._root_of[st.repo] = name
+                root_of[st.repo] = name
                 history = roots_by[name].history(st.repo)
                 if history:
                     newest[st.repo] = history[0][0].number
                 # For the card: how many versions are kept here, and their size.
-                self._kept[st.repo] = (len(history), max((total for _v, total, _f, _s in history), default=0))
+                kept[st.repo] = (len(history), max((total for _v, total, _f, _s in history), default=0))
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._loaded, states, newest, done)
+        self.app.call_from_thread(self._loaded, states, newest, done, root_of, kept)
 
-    def _loaded(self, states, newest, done: str | None = None) -> None:
+    def _loaded(self, states, newest, done: str | None = None, root_of=None, kept=None) -> None:
         if not self.is_attached:
             return
         self._states = states
+        self._root_of, self._kept = root_of or {}, kept or {}
         t = self.query_one("#site-repos", DataTable)
         keep = self.selected_repo()
         t.clear()
@@ -211,7 +240,7 @@ class SiteHomePage(Page):
         newest = rows[0][0] if rows else None
         serving = (f"v{state.serving.number} · {_date(state.serving.stamp)} · from bundle {state.serving.stamp}"
                    if state.serving else "nothing")
-        held = ""
+        held = "   [$mmw-warn]held[/]" if state.held and not newest else ""
         if state.held and newest:
             if not state.serving:
                 held = f"   [$mmw-warn]held · nothing served — Forward serves v{newest.number}[/]"
@@ -223,16 +252,16 @@ class SiteHomePage(Page):
         frees = sum(f for _v, _t, f, on in rows if not on)
         hosts = ", ".join(sorted({b.split("/", 1)[0] for b in state.bases}))
         lines = [
-            f"[b]{escape(state.label)}[/]",
-            f"[dim]root[/]       {escape(details.get('root', ''))}  [dim]({escape(details.get('location', ''))})[/]",
-            f"[dim]hostname[/]   {escape(hosts)}",
-            f"[dim]serving[/]    {escape(serving)}",
+            f"[b]{_esc(state.label)}[/]",
+            f"[dim]root[/]       {_esc(details.get('root', ''))}  [dim]({_esc(details.get('location', ''))})[/]",
+            f"[dim]hostname[/]   {_esc(hosts)}",
+            f"[dim]serving[/]    {_esc(serving)}",
             "[dim]newest[/]     " + (f"v{newest.number} · {_date(newest.stamp)}" if newest else "—")
             + ("  [$mmw-ok]current[/]" if not state.held else "") + held,
             f"[dim]kept[/]       {len(rows)} version{'s' if len(rows) != 1 else ''} · {fmt_size(total)}"
             + (f" · old ones free {fmt_size(frees)}" if frees else ""),
-            f"[dim]https[/]      {escape(details.get('https', '—'))}",
-            "[dim]last apply[/] " + (f"{_date(details['last_apply'])} · {escape(details.get('last_apply_kind', ''))}"
+            f"[dim]https[/]      {_esc(details.get('https', '—'))}",
+            "[dim]last apply[/] " + (f"{_date(details['last_apply'])} · {_esc(details.get('last_apply_kind', ''))}"
                                      if details.get("last_apply") else "none yet"),
         ]
         return "\n".join(lines)

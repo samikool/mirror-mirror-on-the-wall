@@ -151,3 +151,27 @@ def test_add_root_again_finishes_a_root_whose_membership_was_half_written(hosts,
     for r in (r1, r2, r3):
         assert set(read_root(str(r)).members) == {"r1", "r2", "r3"}
     assert str(r3) in recents.known()
+
+
+def test_add_root_refuses_a_folder_with_things_in_it(hosts, tmp_path):  # noqa: F811
+    _split(hosts, tmp_path)
+    busy = tmp_path / "home-dir"
+    busy.mkdir()
+    (busy / "notes.txt").write_text("mine")
+    with pytest.raises(ValueError, match="isn't empty"):
+        ops.add_root(open_set(), str(busy))
+    assert not (busy / ".mmw").exists()
+
+
+def test_add_root_takes_a_fresh_disk_with_only_lost_and_found(hosts, tmp_path):  # noqa: F811
+    _split(hosts, tmp_path)
+    disk = tmp_path / "disk"
+    (disk / "lost+found").mkdir(parents=True)
+    assert "new" in ops.add_root(open_set(), str(disk))
+
+
+def test_add_root_remembers_a_typed_relative_path_in_full(hosts, tmp_path, monkeypatch):  # noqa: F811
+    _split(hosts, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    ops.add_root(open_set(), "r3")
+    assert str(tmp_path / "r3") in recents.known() and "r3" not in recents.known()

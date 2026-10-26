@@ -119,7 +119,7 @@ def serve_root_command(argv: list[str], stdin: BinaryIO, stdout: BinaryIO) -> in
         _emit(stdout, {"event": "error", "code": 1, "message": "usage: mmw site _root VERB PATH …"})
         return 1
     verb, path, args = argv[0], argv[1], argv[2:]
-    if verb in ("init", "free"):
+    if verb in ("init", "free", "empty"):
         return _pre_root(verb, path, args, stdout)
     info = read_root(path)
     if info is None:
@@ -151,7 +151,10 @@ def _pre_root(verb: str, path: str, args: list[str], stdout) -> int:
     from mmw.core import disk_io
     from mmw.site.home import init_root
     try:
-        if verb == "init":
+        if verb == "empty":
+            from mmw.site.home import could_become_root
+            _emit(stdout, {"empty": could_become_root(Path(path))})
+        elif verb == "init":
             name, set_id, network = args
             init_root(Path(path), name=name, set_id=set_id, network=network)
             _emit(stdout, {"ok": True})

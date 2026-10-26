@@ -178,7 +178,8 @@ class PlacePage(Page):
     @on(Button.Pressed, "#btn-place-add")
     def action_add(self) -> None:
         from mmw.tui.path_pick import PathPickPage
-        self.app.push_screen(PathPickPage("Add a root", "a folder for hostnames to live in"),
+        self.app.push_screen(PathPickPage("Add a root", "a folder for hostnames to live in (a new one is made), "
+                                          "or type host:/path for one over ssh", remote=True, new=True),
                              lambda path: path and self.add_root(path))
 
     @on(Button.Pressed, "#btn-place-cancel")

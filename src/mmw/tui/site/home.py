@@ -119,8 +119,8 @@ class SiteHomePage(Page):
             self.set_status("No mirror opened yet — the first apply makes its roots.", "error")
             return
         from mmw.tui.path_pick import PathPickPage
-        self.app.push_screen(PathPickPage("Add a root", "a folder (an empty one becomes a new root), "
-                                          "or host:/path over ssh"),
+        self.app.push_screen(PathPickPage("Add a root", "a folder (an empty or new one becomes a new root), "
+                                          "or type host:/path for one over ssh", remote=True, new=True),
                              lambda path: path and self.add_root_path(path))
 
     def add_root_path(self, path: str) -> None:

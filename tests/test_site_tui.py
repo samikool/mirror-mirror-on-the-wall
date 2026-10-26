@@ -439,7 +439,7 @@ def test_serve_bundle_from_the_home(env, tmp_path, monkeypatch):  # noqa: F811
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage")
         await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
-        assert "as of the 01 Oct bundle" in str(app.screen.query_one("#page-status").render())
+        assert "as of the 01 Oct" in str(app.screen.query_one("#page-status").render())
     _run(home, check)
 
 
@@ -455,4 +455,31 @@ def test_page_buttons_fit_the_action_bar_at_80(env, tmp_path):  # noqa: F811
             return buttons and all(b.width > 0 and b.right <= bar.right for b in buttons)
         await until(pilot, fits)
         assert app.screen.query_one("#btn-site-serve-bundle")
+        assert app.screen.query_one("#page-status").region.width >= len("2 repositories")
     _run(home, check, size=(80, 24))
+
+
+def test_bundles_are_told_apart_by_year_and_time():
+    import time
+    from mmw.tui.site.home import _bundle_when
+    this = time.gmtime().tm_year
+    stamps = [f"{this}1028T150000Z", f"{this}1028T090000Z", f"{this - 1}1028T120000Z"]
+    assert _bundle_when(stamps[0], stamps) == "28 Oct 15:00"
+    assert _bundle_when(stamps[2], stamps) == f"28 Oct {this - 1}"
+    assert _bundle_when(f"{this}1001T120000Z", stamps) == "01 Oct"
+
+
+def test_a_failed_action_reloads_what_did_happen(env, tmp_path):  # noqa: F811
+    cfg, home, root, _ = _three(env, tmp_path)
+
+    async def check(app, pilot):
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        page = app.screen
+
+        def half(repo):
+            ops.serve(home, repo, 1)                 # one change lands…
+            raise OSError("then the lock was held")  # …and the next is refused
+        page._act("never said", half, "a")
+        await until(pilot, lambda: "lock was held" in str(page.query_one("#page-status").render()))
+        await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
+    _run(home, check)

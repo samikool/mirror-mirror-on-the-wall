@@ -1,6 +1,7 @@
 """Deployed: every repository the site serves, and the selected one's
 history beside it (approved layouts A and B)."""
 from pathlib import Path
+import time
 
 from rich.text import Text
 from textual import on, work
@@ -23,9 +24,21 @@ def _esc(text: str) -> str:
     return str(text).replace("[", "\\[")
 
 
+def _bundle_when(stamp: str, stamps: list[str]) -> str:
+    """A bundle as a person tells it apart: its day, the year when not this
+    one, and the time when another bundle shares the day."""
+    try:
+        t = time.strptime(stamp, "%Y%m%dT%H%M%SZ")
+    except ValueError:
+        return stamp
+    fmt = "%d %b" + ("" if t.tm_year == time.gmtime().tm_year else " %Y")
+    if sum(s[:8] == stamp[:8] for s in stamps) > 1:
+        fmt += " %H:%M"
+    return time.strftime(fmt, t)
+
+
 def _date(stamp: str) -> str:
     """20261024T101500Z → 24 Oct"""
-    import time
     try:
         return time.strftime("%d %b", time.strptime(stamp, "%Y%m%dT%H%M%SZ"))
     except ValueError:
@@ -66,9 +79,9 @@ class SiteHomePage(Page):
         # pane), so both rows fit at 80 columns. Apply is the main thing here.
         yield Button("Apply bundle…", id="btn-site-apply", variant="primary", compact=True)
         yield Button("Add root…", id="btn-site-add-root", compact=True)
-        yield Button("Serve bundle…", id="btn-site-serve-bundle", compact=True)
+        yield Button("As of…", id="btn-site-serve-bundle", compact=True)
         yield Button("Move…", id="btn-site-move", compact=True)
-        yield Button("Certificates", id="btn-site-certs", compact=True)
+        yield Button("Certs", id="btn-site-certs", compact=True)
         yield Button("Tidy", id="btn-site-tidy", compact=True)
 
     _BUTTONS = {"btn-site-apply": "apply", "btn-site-add-root": "add_root", "btn-site-serve-bundle": "serve_bundle",
@@ -147,7 +160,7 @@ class SiteHomePage(Page):
         self._load()
 
     @work(thread=True, exclusive=True, group="site-load", exit_on_error=False)
-    def _load(self, done: str | None = None) -> None:
+    def _load(self, done: str | None = None, kind: str = "ok") -> None:
         """Reload; `done` is an action's message, said once the list is back
         (a reload landing after it would otherwise talk over it)."""
         if self.app.mset is None:
@@ -176,9 +189,10 @@ class SiteHomePage(Page):
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
         self.app.call_from_thread(self._loaded, states, newest, done, root_of, kept,
-                                  sorted(bundles.values(), reverse=True))
+                                  sorted(bundles.values(), reverse=True), kind)
 
-    def _loaded(self, states, newest, done: str | None = None, root_of=None, kept=None, bundles=None) -> None:
+    def _loaded(self, states, newest, done: str | None = None, root_of=None, kept=None, bundles=None,
+                kind: str = "ok") -> None:
         if not self.is_attached:
             return
         self._states = states
@@ -205,7 +219,7 @@ class SiteHomePage(Page):
             self._show_history(None)
         else:
             if done:
-                self.set_status(done, "ok")
+                self.set_status(done, kind)
             else:
                 self.set_status(f"{len(states)} repositor{'y' if len(states) == 1 else 'ies'}")
             self._show_history(self.selected_repo())
@@ -360,7 +374,9 @@ class SiteHomePage(Page):
         try:
             result = fn(*args)
         except Exception as e:  # noqa: BLE001 — a refusal, the lock: said on the page
-            self.app.call_from_thread(self.set_status, str(e), "error")
+            # Reloaded all the same: part of it may have happened (serving
+            # several repositories, one root's lock held part-way).
+            self.app.call_from_thread(self._load, str(e), "error")
             return
         notes = getattr(result, "tls_notes", [])
         self.app.call_from_thread(self._acted, "; ".join([done, *notes]))
@@ -374,7 +390,7 @@ class SiteHomePage(Page):
             return
         self.app.push_screen(ServeBundlePage(self._bundles), lambda stamp: stamp and self._bundle_plan(stamp))
 
-    @work(thread=True, exclusive=True, group="site-plan", exit_on_error=False)
+    @work(thread=True, exclusive=True, group="site-bundle-plan", exit_on_error=False)
     def _bundle_plan(self, stamp: str) -> None:
         self.app.call_from_thread(self.set_status, "reading every repository's versions…")
         try:
@@ -386,7 +402,7 @@ class SiteHomePage(Page):
 
     def _confirm_bundle(self, stamp: str, steps) -> None:
         from mmw.tui.ui.dialog import ConfirmDialog
-        when = _date(stamp)
+        when = _bundle_when(stamp, [b[0] for b in self._bundles])
         if not any(s.changes for s in steps):
             self.set_status(f"Every repository already serves what it had after the {when} bundle.", "ok")
             return
@@ -564,7 +580,8 @@ class ServeBundlePage(Page):
 
     def compose_body(self) -> ComposeResult:
         from mmw.tui.ui.form import ChoiceField, Form
-        options = [(" · ".join([_date(stamp), *([label] if label else []),
+        stamps = [b[0] for b in self._bundles]
+        options = [(" · ".join([_bundle_when(stamp, stamps), *([label] if label else []),
                                 f"{n} repositor{'y' if n == 1 else 'ies'}"]), stamp)
                    for stamp, label, n in self._bundles]
         yield Form(ChoiceField("Bundle", options, self._bundles[0][0], id="bundle-pick",

@@ -187,10 +187,15 @@ def roots(root: Path | None = None) -> int:
     return 0
 
 
-def _version_number(r_, key: str, text: str) -> int:
-    """`text` — v3, 3, or the bundle's date, stamp or label — as a number."""
+def _version(r_, key: str, text: str):
+    """The version `text` names — v3, 3, or its bundle's date, stamp or label."""
     from mmw.site.versionref import resolve
-    return resolve([v for v, *_ in r_.history(key)], text).number
+    return resolve([v for v, *_ in r_.history(key)], text)
+
+
+def _when(stamp: str) -> str:
+    from mmw.site.versionref import when_list
+    return when_list([stamp])[0]
 
 
 def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
@@ -200,7 +205,7 @@ def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
     from mmw.site.lock import LockHeld
     try:
         r_, key = _repo(root, repo, break_lock)
-        number = _version_number(r_, key, version)
+        number = _version(r_, key, version).number
         p = r_.serve_preview(key, number)
         now = f"v{p.current.number}" if p.current else "nothing"
         print(f"{p.label}: now serving {now} · serve v{p.target.number} ({p.target.stamp}"
@@ -240,8 +245,8 @@ def serve_bundle(when: str, root: Path | None = None, yes: bool = False, break_l
         done = ops.serve_bundle(steps)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
-    print(f"served: {len(done)} repositor{'y' if len(done) == 1 else 'ies'} — held where not their newest; "
-          "f (or mmw site forward --all) moves them on")
+    print(f"served: {len(done)} repositor{'y' if len(done) == 1 else 'ies'} — each held where not its newest; "
+          "mmw site forward --all moves them on")
     return 0
 
 
@@ -305,16 +310,18 @@ def delete(repo: str, version: str, root: Path | None = None, yes: bool = False,
     from mmw.site.lock import LockHeld
     try:
         r_, key = _repo(root, repo, break_lock)
+        v = _version(r_, key, version)
+        named = f"{repo} v{v.number} ({_when(v.stamp)}{' ' + v.snap_label if v.snap_label else ''})"
         if not yes:
             if not sys.stdin.isatty():
                 eprint("pass --yes to delete it (no terminal to ask on)")
                 return 1
-            if input(f"Delete {repo} {version}? [y/N] ").strip().lower() not in ("y", "yes"):
+            if input(f"Delete {named}? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
-        freed = r_.delete(key, _version_number(r_, key, version))
+        freed = r_.delete(key, v.number)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
-    print(f"deleted {repo} {version}; freed {fmt_size(freed)}")
+    print(f"deleted {named}; freed {fmt_size(freed)}")
     return 0
 
 

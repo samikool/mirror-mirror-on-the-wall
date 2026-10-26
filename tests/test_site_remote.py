@@ -125,3 +125,16 @@ def test_empty_says_whether_a_folder_could_become_a_root(tmp_path):
     for name, empty in (("used", False), ("disk", True), ("absent", True)):
         code, out = _call(["empty", str(tmp_path / name)])
         assert code == 0 and _lines(out)[-1] == {"empty": empty}, name
+
+
+def test_deleted_says_when_deleted_versions_came(hosts, tmp_path):  # noqa: F811
+    from mmw.site import ops
+    from test_snapshot_repo_versions import _change_a
+    cfg, net, md, r1 = _root(hosts, tmp_path)
+    _change_a(md)
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "2")), place={"*": str(r1)}, say=quiet)
+    home = r1 / ".mmw" / "site"
+    v1 = ops.history(home, "a")[-1][0]
+    ops.delete_version(home, "a", 1)
+    code, out = _call(["deleted", str(r1), "a"])
+    assert code == 0 and _lines(out)[-1] == {"stamps": [v1.stamp]}

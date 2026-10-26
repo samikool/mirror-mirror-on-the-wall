@@ -77,9 +77,16 @@ class PlacePage(Page):
 
     def add_root(self, path: str) -> None:
         from mmw.site.mset import root_at
-        from mmw.site.ssh import SshError
+        from mmw.site.ssh import RemoteMmw, SshError
         try:
             found = root_at(path)                   # a folder, or host:/path over ssh
+        except RemoteMmw as e:
+            if not e.installable:
+                self.set_status(str(e), "error")
+                return
+            from mmw.tui.site.install_flow import offer_install
+            offer_install(self, path, e, lambda: self.add_root(path), self.set_status)
+            return
         except (SshError, ValueError) as e:
             self.set_status(str(e), "error")        # key auth, host key, or mmw missing there: said plainly
             return

@@ -433,3 +433,25 @@ def test_open_a_mirror_over_ssh_from_the_start_page(hosts, tmp_path, monkeypatch
         await until(pilot, lambda: _name(app) == "SiteHomePage")
         assert "nas:/data" in recents.known()
     _run(None, check)
+
+
+def test_open_a_mirror_offers_to_install_mmw_there(tmp_path, monkeypatch):
+    from mmw.core.runtime import mmw_version
+    from mmw.site import mset as _mset
+    from mmw.site import ssh
+    from mmw.tui.site import apply_flow
+    bundle = tmp_path / "b.tar"
+    bundle.write_bytes(b"bundle")
+    (tmp_path / f"mmw-{mmw_version()}-x86_64.tar").write_bytes(b"installer")
+
+    def root_at(location):
+        raise ssh.RemoteMmw("…", reason="mmw isn't installed on nas", installable=True)
+    monkeypatch.setattr(_mset, "root_at", root_at)
+    monkeypatch.setattr(ssh, "remote_arch", lambda host: "x86_64")
+    monkeypatch.setattr(apply_flow, "recent_paths", lambda: [str(bundle)])
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "StartPage")
+        app.screen.open_path("nas:/data")
+        await until(pilot, lambda: _name(app) == "ConfirmDialog")
+    _run(None, check)

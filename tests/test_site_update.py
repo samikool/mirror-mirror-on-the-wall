@@ -109,3 +109,28 @@ def test_a_root_that_doesnt_say_its_arch_is_asked(monkeypatch):
                                      "hostnames": []})
     monkeypatch.setattr(ssh, "run", lambda host, argv, **k: b"aarch64\n" if argv == ["uname", "-m"] else b"")
     assert root.arch() == "aarch64"                                    # never assumed x86_64
+
+
+# ── an ssh root without mmw: the installer to push there ────────────────────
+
+def test_installer_for_a_remote_is_at_least_this_version(tmp_path):
+    b = _beside(tmp_path, "mmw-1.0.0-x86_64.tar", "mmw-1.2.0-x86_64.tar", "mmw-1.3.0-aarch64.tar")
+    # The remote must be no older than this machine: 1.2.0 (here) is fine, 1.0.0 isn't.
+    assert F.installer_for("x86_64", [str(b)], "1.2.0").name == "mmw-1.2.0-x86_64.tar"
+    assert F.installer_for("aarch64", [str(b)], "1.2.0").name == "mmw-1.3.0-aarch64.tar"
+    assert F.installer_for("x86_64", [str(b)], "1.3.0") is None
+
+
+def test_installer_for_looks_beside_every_recent_bundle(tmp_path):
+    (tmp_path / "old").mkdir()
+    (tmp_path / "new").mkdir()
+    old = _beside(tmp_path / "old", "mmw-1.2.0-x86_64.tar")
+    new = _beside(tmp_path / "new")
+    assert F.installer_for("x86_64", [str(new), str(old), "-", str(tmp_path / "gone" / "b.tar")],
+                           "1.2.0").parent == old.parent
+
+
+def test_remote_arch_asks_the_machine(monkeypatch):
+    from mmw.site import ssh
+    monkeypatch.setattr(ssh, "run", lambda host, argv: b"arm64\n" if argv == ["uname", "-m"] else b"")
+    assert ssh.remote_arch("nas") == "aarch64"

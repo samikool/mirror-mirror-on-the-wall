@@ -57,8 +57,8 @@ def remote_info(location: str) -> dict | None:
         raise
     from mmw.site.remote import PROTOCOL
     if info.get("protocol") != PROTOCOL:
-        raise ssh.RemoteMmw(f"mmw on {host} speaks protocol {info.get('protocol')}, this one {PROTOCOL} — "
-                            "install the same mmw on both")
+        reason = f"mmw on {host} speaks protocol {info.get('protocol')}, this one {PROTOCOL}"
+        raise ssh.RemoteMmw(f"{reason} — install the same mmw on both", reason=reason, installable=True)
     return info
 
 

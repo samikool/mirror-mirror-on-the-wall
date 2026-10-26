@@ -129,8 +129,17 @@ class SiteHomePage(Page):
 
     @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
     def _act_root(self, path: str) -> None:
+        from mmw.site.ssh import RemoteMmw
         try:
             msg = ops.add_root(self.app.mset, path)
+        except RemoteMmw as e:
+            if e.installable:              # no mmw there, or an older one: offer to install it, then add again
+                from mmw.tui.site.install_flow import offer_install
+                self.app.call_from_thread(offer_install, self, path, e, lambda: self.add_root_path(path),
+                                          self.set_status)
+            else:
+                self.app.call_from_thread(self.set_status, str(e), "error")
+            return
         except Exception as e:  # noqa: BLE001 — another mirror's root, ssh refused: said on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return

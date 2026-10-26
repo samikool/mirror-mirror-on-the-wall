@@ -1,6 +1,5 @@
 """The far side updates from the installer next to a bundle — every machine or none."""
 import platform
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

@@ -57,7 +57,8 @@ def test_p_publishes_an_older_snapshot(two_mirrors):  # noqa: F811
 
     async def check(app, pilot):
         await pilot.press("p")
-        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage" and app.screen.query("#page-body")
+                    and app.screen.query("#pick-target"))
         assert "serves" not in str(app.screen.query_one("#page-body").render())
         app.screen.query_one("#pick-target", Select).value = s1.stamp
         await confirm_picker(app, pilot, "PublishPickPage")
@@ -76,7 +77,7 @@ def test_p_into_another_directory(two_mirrors, tmp_path):  # noqa: F811
 
     async def check(app, pilot):
         await pilot.press("p")
-        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage" and app.screen.query("#pick-dir"))
         app.screen.query_one("#pick-dir", Select).value = "other"
         await until(pilot, lambda: app.screen.query_one("#field-pick-root").display)
         app.screen.query_one("#pick-root", Input).value = str(other)
@@ -93,7 +94,7 @@ def test_p_into_another_directory_needs_one(two_mirrors):  # noqa: F811
 
     async def check(app, pilot):
         await pilot.press("p")
-        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage" and app.screen.query("#pick-dir"))
         app.screen.query_one("#pick-dir", Select).value = "other"
         await pilot.pause()
         app.screen.query_one("#btn-pick-go").press()
@@ -117,7 +118,7 @@ def test_b_bundles_between_two_snapshots_with_an_estimate(two_mirrors, tmp_path)
 
     async def check(app, pilot):
         await pilot.press("t")
-        await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage" and app.screen.query("#pick-from"))
         app.screen.query_one("#pick-from", Select).value = s1.stamp
         app.screen.query_one("#pick-to", Select).value = s2.stamp
         await until(pilot, lambda: "Sends about" in str(
@@ -140,14 +141,14 @@ def test_b_refuses_the_same_snapshot_at_both_ends(two_mirrors, tmp_path):  # noq
 
     async def check(app, pilot):
         await pilot.press("t")
-        await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage"
+                    and app.screen.query("#pick-from") and app.screen.query("#btn-pick-go"))
         app.screen.query_one("#pick-from", Select).value = s1.stamp
         app.screen.query_one("#pick-to", Select).value = s1.stamp
         await pilot.pause()
         app.screen.query_one("#btn-pick-go").press()
-        await pilot.pause()
+        await until(pilot, lambda: "same snapshot" in str(app.screen.query_one("#page-status").render()))
         assert type(app.screen).__name__ == "BundlePickPage"
-        assert "same snapshot" in str(app.screen.query_one("#page-status").render())
     _run(cfg, mirror_dir.parent, check)
 
 
@@ -172,7 +173,7 @@ def test_the_snapshots_page_takes_renames_deletes_and_cleans(two_mirrors):  # no
 
         # Take — in the background, labelled.
         await pilot.press("t")
-        await until(pilot, lambda: type(app.screen).__name__ == "LabelPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "LabelPage" and app.screen.query("#inp-snap-label"))
         app.screen.query_one("#inp-snap-label", Input).value = "fresh"
         await pilot.press("enter")
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
@@ -182,7 +183,7 @@ def test_the_snapshots_page_takes_renames_deletes_and_cleans(two_mirrors):  # no
 
         # Rename the newest.
         await pilot.press("r")
-        await until(pilot, lambda: type(app.screen).__name__ == "LabelPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "LabelPage" and app.screen.query("#inp-snap-label"))
         app.screen.query_one("#inp-snap-label", Input).value = "renamed"
         await pilot.press("enter")
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
@@ -196,7 +197,7 @@ def test_the_snapshots_page_takes_renames_deletes_and_cleans(two_mirrors):  # no
 
         # Clean up, keeping none: the served one stays.
         await pilot.press("c")
-        await until(pilot, lambda: type(app.screen).__name__ == "CleanPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "CleanPage" and app.screen.query("#inp-snap-keep"))
         app.screen.query_one("#inp-snap-keep", Input).value = "0"
         await until(pilot, lambda: "Deletes" in str(
             app.screen.query_one("#clean-preview").render()))
@@ -270,7 +271,7 @@ def test_publish_page_can_recheck_and_snapshot_first(two_mirrors, monkeypatch): 
 
     async def check(app, pilot):
         await pilot.press("p")
-        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage" and app.screen.query("#publish-recheck"))
         recheck = app.screen.query_one("#publish-recheck", Checkbox)
         snap = app.screen.query_one("#publish-take-snapshot", Checkbox)
         assert not recheck.value and not snap.value
@@ -291,7 +292,7 @@ def test_publish_page_refuses_a_snapshot_first_of_a_snapshot(two_mirrors):  # no
 
     async def check(app, pilot):
         await pilot.press("p")
-        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "PublishPickPage" and app.screen.query("#pick-target"))
         app.screen.query_one("#pick-target", Select).value = s1.stamp
         app.screen.query_one("#publish-take-snapshot", Checkbox).value = True
         await confirm_picker(app, pilot, "PublishPickPage")

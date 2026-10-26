@@ -12,7 +12,7 @@ from cryptography.x509.oid import NameOID
 
 from mmw.core import disk_io
 from mmw.core.certs import _load_ca
-from mmw.site.home import load_site, save_settings
+from mmw.site.home import load_site
 
 TRUST = """\
 Next: install {crt} — never the key — on every client:

@@ -2,12 +2,16 @@
 of a repository, hold it where it is, move it forward."""
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 from mmw.core import disk_io
 from mmw.core.repos import resolve_repo_refs
 from mmw.resources.apply import render_derived
 from mmw.site.db import SiteDB, VersionInfo
+
+if TYPE_CHECKING:
+    from mmw.site.db import RepoState
 from mmw.site.home import load_site
 from mmw.site.lock import SiteLock
 from mmw.site.store import Store

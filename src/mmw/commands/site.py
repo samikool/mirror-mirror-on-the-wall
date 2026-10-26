@@ -113,7 +113,6 @@ def _offer_far_update(src: str, mset) -> bool:
     """A newer mmw next to the bundle: asked before applying (the newest code
     applies it). True when mmw was updated and has started again."""
     import os
-    from mmw.core import update as U
     from mmw.site.update import apply_far_update, far_offer, preflight
     if os.environ.get("MMW_NO_UPDATE_CHECK") == "1":
         return False
@@ -201,7 +200,6 @@ def _when(stamp: str) -> str:
 def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
           break_lock: bool = False) -> int:
     import sys
-    from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
         r_, key = _repo(root, repo, break_lock)
@@ -251,7 +249,6 @@ def serve_bundle(when: str, root: Path | None = None, yes: bool = False, break_l
 
 
 def forward(repo: str | None, root: Path | None = None, all_: bool = False, break_lock: bool = False) -> int:
-    from mmw.site import ops
     from mmw.site.lock import LockHeld
     if repo is None and not all_:
         eprint("name a repository, or --all for every held one")
@@ -269,7 +266,6 @@ def forward(repo: str | None, root: Path | None = None, all_: bool = False, brea
 
 
 def hold(repo: str, root: Path | None = None, break_lock: bool = False) -> int:
-    from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
         r_, key = _repo(root, repo, break_lock)
@@ -306,7 +302,6 @@ def delete(repo: str, version: str, root: Path | None = None, yes: bool = False,
            break_lock: bool = False) -> int:
     import sys
     from mmw.core.format import fmt_size
-    from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
         r_, key = _repo(root, repo, break_lock)
@@ -367,7 +362,6 @@ def status(root: Path | None = None) -> int:
 
 def history(repo: str, root: Path | None = None) -> int:
     from mmw.core.format import fmt_size
-    from mmw.site import ops
     try:
         r_, key = _repo(root, repo)
         rows = r_.history(key)

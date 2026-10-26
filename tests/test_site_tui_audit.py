@@ -2,7 +2,7 @@
 progress wherever there's work to watch, nothing cut off at 80 columns."""
 import threading
 
-from textual.widgets import Button, DataTable, Static
+from textual.widgets import DataTable, Static
 
 from mmw.site import ops
 from test_site_tui import _rows, _run, _three, env  # noqa: F401
@@ -50,7 +50,7 @@ def test_serve_works_out_its_preview_off_the_screen_and_shows_the_switch(env, tm
         home.action_serve()                                      # returns at once: the screen stays live
         await until(pilot, lambda: "working out" in str(home.query_one("#page-status").render()))
         gate.set()
-        await until(pilot, lambda: _name(app) == "ConfirmDialog")
+        await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: "serves v1" in _on(app, "SwitchRunPage", "#run-done"))
         assert "file" in str(app.screen.query_one("#run-rate").render())     # files placed, counted
@@ -118,7 +118,7 @@ def test_move_works_out_its_preview_off_the_screen(two_mirrors, tmp_path, monkey
             await until(pilot, lambda: _name(app) == "SiteHomePage"
                         and "working out" in str(home.query_one("#page-status").render()))
             gate.set()
-            await until(pilot, lambda: _name(app) == "ConfirmDialog")
+            await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
     asyncio.run(go())
 
 
@@ -205,7 +205,7 @@ def test_add_root_opens_beside_the_mirrors_roots(env, tmp_path):  # noqa: F811
 
 def test_apply_review_says_where_an_ssh_root_is():
     from pathlib import Path
-    from mmw.site.apply import ApplyPlan, PlanRow
+    from mmw.site.apply import PlanRow
     from mmw.tui.site.apply_flow import _row_text
     row = PlanRow("u", "debian", 1, 2, 10, 1000, 1, False, False, Path("/data"))
     assert "on nas · /data" in _row_text(row, "nas:/data")
@@ -236,4 +236,21 @@ def test_making_a_ca_from_the_tui_then_signs(env, tmp_path):  # noqa: F811
         home.make_ca(str(where), "Lab CA", None)
         await until(pilot, lambda: "signed" in str(home.query_one("#page-status").render()))
         assert recents.ca_paths() is not None and (root / ".mmw" / "tls" / "mirror.crt").exists()
+    _run(home_dir, check)
+
+
+def test_a_slow_first_load_never_talks_over_a_later_message(env, tmp_path, monkeypatch):  # noqa: F811
+    cfg, home_dir, root, _ = _three(env, tmp_path)
+    gate = threading.Event()
+    real = ops.set_status
+    monkeypatch.setattr(ops, "set_status", lambda mset: (gate.wait(20), real(mset))[1])
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "SiteHomePage" and app.screen.query("#page-status"))
+        home = app.screen
+        home.set_status("junk.tar is not a bundle", "error")      # said while the first load is out
+        gate.set()
+        await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
+        await pilot.pause(0.2)
+        assert "not a bundle" in str(home.query_one("#page-status").render())
     _run(home_dir, check)

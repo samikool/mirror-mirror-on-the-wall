@@ -461,7 +461,7 @@ def _site_demo(tmp_path, monkeypatch):
 
 def test_snapshot_site_home(snap_compare, tmp_path, monkeypatch):
     from mmw.tui.site.app import SiteApp
-    home = _site_demo(tmp_path, monkeypatch)
+    _site_demo(tmp_path, monkeypatch)
 
     async def ready(pilot):
         from textual.widgets import DataTable
@@ -540,7 +540,10 @@ def test_snapshot_site_place(snap_compare, tmp_path, monkeypatch):
     src = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
 
     async def ready(pilot):
+        # Once the app's own first page is up — pushed before it, this one ends up underneath.
+        await until(pilot, lambda: type(pilot.app.screen).__name__ == "StartPage")
         pilot.app.push_screen(PlacePage(plan_set_apply(None, src), src, None))
         await until(pilot, lambda: type(pilot.app.screen).__name__ == "PlacePage"
+                    and pilot.app.screen.query("#place-hosts")
                     and "choose a root" in pilot.app.screen.hosts_text())
     assert snap_compare(SiteApp(None), terminal_size=SNAP_SIZE, run_before=ready)

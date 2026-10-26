@@ -1,6 +1,5 @@
 """The CLI offers a newer mmw at the end of a command; `mmw update`."""
 import time
-from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner

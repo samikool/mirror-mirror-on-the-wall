@@ -4,7 +4,7 @@ import asyncio
 from mmw.site import recents
 from mmw.site.apply import apply_to_set, plan_set_apply
 from mmw.site.home import read_root
-from mmw.site.mset import LocalRoot, open_set
+from mmw.site.mset import open_set
 from mmw.tui.site.app import SiteApp
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
@@ -326,7 +326,8 @@ def test_an_empty_folder_from_open_becomes_the_suggested_root(hosts, tmp_path): 
         note = lambda: str(app.screen.query_one("#start-note").render())  # noqa: E731
         await until(pilot, lambda: "no mirror yet" in note() and "Apply a bundle" in note())
         app.screen.apply_path(b)
-        await until(pilot, lambda: _name(app) == "PlacePage" and "mirror-here" in app.screen.hosts_text())
+        await until(pilot, lambda: _name(app) == "PlacePage" and app.screen.query("#place-hosts")
+                    and "mirror-here" in app.screen.hosts_text())
         assert app.screen.targets == {HOST_A: str(where), HOST_B: str(where)}
     _run(None, check)
 
@@ -395,7 +396,7 @@ def test_every_far_side_root_picker_takes_an_ssh_location(hosts, tmp_path):  # n
     b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
 
     async def check(app, pilot):
-        await until(pilot, lambda: _name(app) == "StartPage")
+        await until(pilot, lambda: _name(app) == "StartPage" and app.screen.query("#start-open"))
         app.screen.query_one("#start-open").press()
         await until(pilot, lambda: _name(app) == "PathPickPage")
         assert app.screen._remote and not app.screen._new          # opening: only what's already a root
@@ -454,7 +455,7 @@ def test_open_a_mirror_offers_to_install_mmw_there(tmp_path, monkeypatch):
     async def check(app, pilot):
         await until(pilot, lambda: _name(app) == "StartPage")
         app.screen.open_path("nas:/data")
-        await until(pilot, lambda: _name(app) == "ConfirmDialog")
+        await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
     _run(None, check)
 
 
@@ -472,7 +473,7 @@ def test_move_explains_the_whole_host_and_shows_progress(two_mirrors, tmp_path):
         await until(pilot, lambda: _name(app) == "MoveRootPage" and app.screen.query("#move-root"))
         app.screen.query_one("#move-root", Select).value = "r2"
         app.screen.query_one("#btn-move-go").press()
-        await until(pilot, lambda: _name(app) == "ConfirmDialog")
+        await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
         title = str(app.screen.query_one("#confirm-title").render())
         message = str(app.screen.query_one("#confirm-message").render())
         assert "whole host" in title.lower() or "whole host" in message
@@ -509,7 +510,6 @@ def test_opening_a_mirror_over_ssh_never_holds_the_screen(hosts, tmp_path, monke
 
 def test_placing_on_an_ssh_root_never_holds_the_screen(hosts, tmp_path, monkeypatch):  # noqa: F811
     import threading
-    from mmw.tui.site import place as _place
     from mmw.site import mset as _mset
     cfg, net, md = hosts
     b = str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None))
@@ -557,7 +557,7 @@ def test_installing_mmw_over_ssh_shows_it_going(tmp_path, monkeypatch):
     async def check(app, pilot):
         await until(pilot, lambda: _name(app) == "StartPage")
         app.screen.open_path("nas:/data")
-        await until(pilot, lambda: _name(app) == "ConfirmDialog")
+        await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: _name(app) == "InstallRunPage" and app.screen.query("#run-done")
                     and "installed" in str(app.screen.query_one("#run-done").render()))

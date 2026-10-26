@@ -79,7 +79,7 @@ def test_serve_from_history_confirms_then_switches(env, tmp_path):  # noqa: F811
     async def check(app, pilot):
         await _pick(app, pilot, "a", 1)
         await pilot.press("enter")
-        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         details = str(app.screen.query_one("#confirm-details Label").render())
         assert "now serving v3" in details and "nothing to copy" in details and "indexes switch last" in details
         app.screen.query_one("#confirm").press()
@@ -120,13 +120,13 @@ def test_delete_refusal_is_a_status(env, tmp_path):  # noqa: F811
     async def check(app, pilot):
         await _pick(app, pilot, "a", 3)
         await pilot.press("d")
-        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
                     and "being served" in str(app.screen.query_one("#page-status").render()))
         await _pick(app, pilot, "a", 1)
         await pilot.press("d")
-        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
                     and len(_rows(app, "site-history")) == 2)
@@ -150,7 +150,7 @@ def test_lock_held_is_a_status(env, tmp_path):  # noqa: F811
 async def _choose(app, pilot, path):
     from textual.widgets import Input
     await pilot.press("a")
-    await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")
+    await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage" and app.screen.query("#path-input"))
     app.screen.query_one("#path-input", Input).value = str(path)
     app.screen.query_one("#btn-use").press()
     await until(pilot, lambda: type(app.screen).__name__ == "ApplyReviewPage" and app.screen.query("#btn-review-go"))
@@ -206,7 +206,7 @@ def test_review_of_a_non_bundle_is_a_status(env, tmp_path):  # noqa: F811
 
     async def check(app, pilot):
         await pilot.press("a")
-        await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage" and app.screen.query("#path-input"))
         app.screen.query_one("#path-input", Input).value = str(junk)
         app.screen.query_one("#btn-use").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
@@ -437,13 +437,13 @@ def test_serve_bundle_from_the_home(env, tmp_path, monkeypatch):  # noqa: F811
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         await pilot.press("b")
-        await until(pilot, lambda: type(app.screen).__name__ == "ServeBundlePage")
+        await until(pilot, lambda: type(app.screen).__name__ == "ServeBundlePage" and app.screen.query("#bundle-pick"))
         pick = app.screen.query_one("#bundle-pick", Select)
         labels = [str(p) for p, _v in pick._options]
         assert "01 Oct" in labels[-1] and "2 repositories" in labels[-1]   # oldest last; it brought a and b
         pick.value = "20261001T120000Z"
         app.screen.query_one("#btn-bundle-go").press()
-        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         details = str(app.screen.query_one("#confirm-details Label").render())
         assert "v3 → v1" in details and "already v1" in details
         app.screen.query_one("#confirm").press()

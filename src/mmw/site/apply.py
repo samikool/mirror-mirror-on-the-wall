@@ -216,9 +216,8 @@ class RootApply:
         the network files. A set checks every root before any commits."""
         self._want = None                          # the arrivals' map isn't needed past here
         self._settle()
-        db, roots, store, root, progress, stop_event = (self.db, self.roots, self.store, self.root,
-                                                        self.progress, self.stop_event)
-        got, say = self.got, self.say
+        db, store, progress = self.db, self.store, self.progress
+        got = self.got
         result = ApplyResult()
         header, rows = iter_manifest_v2(self.manifest_path)
         rows = list(rows)
@@ -692,7 +691,6 @@ def _read_manifest_member(gen, scratch: Path):
 
 
 def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPlan", dict]:
-    from mmw.site.home import load_site
     repos = header.repos or {}
     hosts: dict[str, list[str]] = {}
     for repo, meta in sorted(repos.items()):
@@ -992,7 +990,7 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         everyone = [*present.values(), *[r for r in made.values() if r.info.name not in present]]
         # Every root here takes part: the network files (and its nginx) reach
         # each one, even one none of this bundle's hostnames go to.
-        roots: dict[str, LocalRoot] = {r.info.name: r for r in [*targets.values(), *everyone]}
+        roots = {r.info.name: r for r in [*targets.values(), *everyone]}
         # The set's order stays as it was (its first root serves the
         # network's own hostnames); new roots join at the end.
         members = list(dict.fromkeys([*(mset.roots[0].info.members if mset else []),
@@ -1021,7 +1019,6 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         cs_all = {p: c for p, c, _r, _s in rows}
         for ra in appliers.values():
             ra.expected = cs_all                   # one map for every root, not one each
-        first = appliers[order[0]]
         repo_of = {p: r for p, _c, r, _s in rows}
         cs_of = {p: c for p, c, _r, _s in rows}
         size_of = {c: size or 0 for _p, c, _r, size in rows}

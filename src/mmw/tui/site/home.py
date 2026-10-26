@@ -88,6 +88,7 @@ class SiteHomePage(Page):
         self._kept: dict[str, tuple[int, int]] = {}
         self._bundles: list[tuple[str, str | None, int]] = []     # (stamp, label, repositories it changed)
         self._last_apply: tuple[str, str] | None = None           # the mirror's: (stamp, kind), any root
+        self._said = 0                                             # messages shown so far (see _loaded)
         self._history = []
         self._history_repo = None
 
@@ -171,6 +172,10 @@ class SiteHomePage(Page):
             DataTable(cursor_type="row", zebra_stripes=True, id="site-repos"),
             _HistoryPane(), id="site-split")
 
+    def set_status(self, message: str, kind: str = "info") -> None:
+        self._said += 1
+        super().set_status(message, kind)
+
     def _is_root(self) -> bool:
         return True                     # the far side's home: nothing to go back to (q quits)
 
@@ -192,6 +197,7 @@ class SiteHomePage(Page):
     def _load(self, done: str | None = None, kind: str = "ok") -> None:
         """Reload; `done` is an action's message, said once the list is back
         (a reload landing after it would otherwise talk over it)."""
+        said = self._said                        # a message after this one outranks the load's summary
         if self.app.mset is None:
             self.app.call_from_thread(self._loaded, [], {}, "no mirror opened yet — a applies a bundle; "
                                                             "`mmw site open PATH` opens a root")
@@ -227,10 +233,10 @@ class SiteHomePage(Page):
             return
         self._last_apply = last
         self.app.call_from_thread(self._loaded, states, newest, done, root_of, kept,
-                                  sorted(bundles.values(), reverse=True), kind)
+                                  sorted(bundles.values(), reverse=True), kind, said)
 
     def _loaded(self, states, newest, done: str | None = None, root_of=None, kept=None, bundles=None,
-                kind: str = "ok") -> None:
+                kind: str = "ok", said: int | None = None) -> None:
         if not self.is_attached:
             return
         self._states = states
@@ -263,7 +269,7 @@ class SiteHomePage(Page):
         else:
             if done:
                 self.set_status(done, kind)
-            else:
+            elif said is None or said == self._said:   # nothing said since the load began
                 self.set_status(f"{len(states)} repositor{'y' if len(states) == 1 else 'ies'}")
             self._show_history(self.selected_repo())
 

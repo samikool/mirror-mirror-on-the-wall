@@ -55,7 +55,7 @@ def test_grouped_progress_keeps_file_transfers_and_deduplicates_units(tmp_path, 
                 assert card._total == 1
                 assert card._item_label == 'widgets'
                 assert not card._downloaded + card._pending_downloaded
-                assert '0/1 widgets' in card.query_one('#stats').render_line(0).text
+                await until(pilot, lambda c=card: '0/1 widgets' in c.query_one('#stats').render_line(0).text)
             assert sum(c._in_flight for c in view._cards.values()) > 0
             release.set()
             await until(pilot, lambda: not view.running)

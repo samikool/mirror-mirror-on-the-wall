@@ -6,12 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rich.text import Text
-import threading
-import time
 
-from textual import on, work
+from textual import on
 from textual.app import ComposeResult
-from textual.widgets import Label, ProgressBar, SelectionList, Static
+from textual.widgets import Label, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
 from mmw.core import disk_io

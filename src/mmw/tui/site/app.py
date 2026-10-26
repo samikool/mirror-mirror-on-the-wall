@@ -1,5 +1,4 @@
 """`SiteApp` — mmw's TUI on the far side, for one mirror (a set of roots)."""
-from pathlib import Path
 
 from textual.binding import Binding
 

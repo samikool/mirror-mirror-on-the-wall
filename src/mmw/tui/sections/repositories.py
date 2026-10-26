@@ -147,6 +147,8 @@ class RepositoriesPage(Page):
         # A pool query: 3290 ms on the live pool's first call. Until it lands
         # the list shows config expansion, which is the right first answer.
         await asyncio.to_thread(self.model.refresh)
+        if not self.is_attached:
+            return              # replaced while the pool was read (a settings save rebuilds the sections)
         await self.refresh_rows()
         self._status_selection()
 
@@ -172,7 +174,9 @@ class RepositoriesPage(Page):
             await self._rebuild()
 
     async def _rebuild(self) -> None:
-        lst = self.query_one("#repo-list", ListView)
+        lst = next(self.query("#repo-list").results(ListView), None)
+        if lst is None:
+            return              # the page is going: nothing to rebuild
         keep = self.highlighted()
         self._rows = self.model.rows()
         await lst.clear()

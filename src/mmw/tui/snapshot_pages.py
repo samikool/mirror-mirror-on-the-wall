@@ -312,8 +312,8 @@ class CleanPage(Page):
 
     def compose_body(self) -> ComposeResult:
         yield Form(TextField("Keep newest", "3", id="inp-snap-keep", integer_min=0,
-                             hint="Snapshots a directory serves, and the one the last "
-                                  "transfer went to, are always kept."))
+                             hint="Snapshots a directory serves are always kept; one a "
+                                  "transfer went to stays as history only."))
         yield Label("", id="clean-preview")
 
     def compose_actions(self) -> ComposeResult:
@@ -341,7 +341,7 @@ class CleanPage(Page):
     def _preview(self, keep: int) -> None:
         from mmw.core.snapshots import clean_plan
         with Pool(self._mirror_dir, read_only=True) as pool:
-            plan = clean_plan(pool, self._net.name, keep, self.app.cfg)
+            plan = clean_plan(pool, self._net.name, keep)
         self.app.call_from_thread(self._previewed, keep, plan)
 
     def _previewed(self, keep: int, plan) -> None:
@@ -352,6 +352,9 @@ class CleanPage(Page):
         else:
             text = (f"Deletes [b]{len(plan.delete)}[/] snapshot(s); the next prune frees "
                     f"[b]{fmt_size(plan.frees)}[/].")
+            if plan.history:
+                text += (f"\n[dim]{len(plan.history)} of them stay as history only — a "
+                         "transfer went to them.[/]")
         if plan.kept:
             text += f"\n[dim]Keeps {len(plan.kept)} older: " + escape(", ".join(
                 f"{s.stamp} ({why})" for s, why in plan.kept)) + "[/]"
@@ -377,9 +380,9 @@ class SnapshotsPage(Page):
     SCROLLS = False
     HELP = ("A snapshot is the network's exact published state, kept in the pool to transfer\n"
             "or publish again (p on Networks offers them). Holds: the disk only that\n"
-            "snapshot keeps — freed by the next prune once it is deleted. A snapshot a\n"
-            "directory serves cannot be deleted; history-only ones (from old bundles) can\n"
-            "only be a transfer's starting point.")
+            "snapshot keeps — freed by the next prune once it is deleted. One a transfer\n"
+            "went to stays as history only: no files, just where a transfer can start\n"
+            "from. A snapshot a directory serves cannot be deleted.")
     BINDINGS = [
         Binding("t", "take", "Take"),
         Binding("r", "rename", "Rename"),
@@ -552,25 +555,28 @@ class SnapshotsPage(Page):
         self.reload()
 
     async def _delete(self) -> None:
-        from mmw.core.snapshots import delete_snapshot, served_by
+        from mmw.core.snapshots import delete_snapshot, served_by, transferred
         snap = self._selected()
         if snap is None or self._status is None:
             return
+        if not snap.complete:
+            self.notify(f"{snap.stamp} is history only — it holds no files, so deleting it "
+                        "frees nothing.", severity="warning", timeout=12)
+            return
         name = escape(snap.stamp + (f" ({snap.label})" if snap.label else ""))
 
-        def where() -> list[str]:
+        def where() -> tuple[list[str], bool]:
             with Pool(self._mirror_dir, read_only=True) as pool:
-                return served_by(pool, snap)
-        roots = await asyncio.to_thread(where)
+                return served_by(pool, snap), transferred(pool, snap)
+        roots, sent = await asyncio.to_thread(where)
         if roots:
             self.notify(f"{snap.stamp} is published at {', '.join(roots)} — publish something "
                         "else there first.", severity="warning", timeout=12)
             return
-        last = self._status.last_bundle
         message = f"Delete snapshot [b]{name}[/]? The next prune frees the files only it holds."
-        if last is not None and last.to_stamp == snap.stamp:
-            message += ("\n[$mmw-warn]The last transfer went to it: the next transfer then needs "
-                        "a From chosen (or sends everything).[/]")
+        if sent:
+            message += ("\nA transfer went to it, so it stays listed as history only — where "
+                        "the next transfer can start from.")
         if not await self.app.push_screen_wait(ConfirmDialog("Delete snapshot", message,
                                                              "Delete")):
             return
@@ -590,14 +596,15 @@ class SnapshotsPage(Page):
         if keep is None:
             return
 
-        def clean() -> int:
+        def clean() -> tuple[int, int]:
             with Pool(self._mirror_dir) as pool:
-                plan = clean_plan(pool, self._net.name, keep, self.app.cfg)
+                plan = clean_plan(pool, self._net.name, keep)
                 delete_snapshots(pool, plan.delete)
-                return len(plan.delete)
-        n = await asyncio.to_thread(clean)
-        self.notify(f"Deleted {n} snapshot(s) of {self._net.name} — the next prune frees "
-                    "their files." if n else "Nothing to delete.")
+                return len(plan.delete), len(plan.history)
+        n, history = await asyncio.to_thread(clean)
+        stay = f" ({history} stay as history only)" if history else ""
+        self.notify(f"Deleted {n} snapshot(s) of {self._net.name}{stay} — the next prune "
+                    "frees their files." if n else "Nothing to delete.")
         self.reload()
 
 

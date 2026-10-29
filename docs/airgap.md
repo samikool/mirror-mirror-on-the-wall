@@ -121,7 +121,8 @@ mmw bundle -n lab --from none --to pre-upgrade  # full, to an older state
 ```
 
 Backwards (bringing the far side back to an older state) works because a snapshot keeps every file
-it lists in the pool until the snapshot is deleted. In the TUI, `b` on a network
+it lists in the pool until the snapshot is deleted. A deleted one a transfer went to stays as
+history only: still a starting point, never a destination. In the TUI, `b` on a network
 asks From and To and estimates what the bundle sends.
 
 On the far side, `python3 apply.py --status --root /srv/www` says which

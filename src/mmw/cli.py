@@ -830,13 +830,14 @@ def cmd_snapshot_rename(ref: str = typer.Argument(..., help="Stamp, label or id"
 @snapshot_app.command("delete")
 def cmd_snapshot_delete(ref: str = typer.Argument(..., help="Stamp, label or id"),
                         network: str = _SNAP_NET,
-                        yes: bool = typer.Option(
-                            False, "--yes", "-y",
-                            help="Also when it is where the last bundle went")):
-    """Delete a snapshot. `mmw prune` then frees the files only it kept.
-    One a directory serves is refused: publish something else there first."""
+                        yes: bool = typer.Option(False, "--yes", "-y", hidden=True)):
+    """Delete a snapshot. `mmw prune` then frees the files only it kept. One a
+    transfer went to stays as history only — where the next transfer can start
+    from. One a directory serves is refused: publish something else there first."""
+    # --yes is accepted, and no longer needed: deleting the snapshot the last
+    # transfer went to keeps it as that transfer's starting point.
     from mmw.commands.snapshot import delete
-    raise typer.Exit(delete(_cfg_dir(), network, ref, yes))
+    raise typer.Exit(delete(_cfg_dir(), network, ref))
 
 
 @snapshot_app.command("clean")

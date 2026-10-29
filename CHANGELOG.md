@@ -6,6 +6,26 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **A new network's far side defaults to mmw.** The network editor offers mmw
+  first; existing networks keep what they have (no `far_side` in the config
+  still means `apply`).
+- **Deleting a snapshot a transfer went to keeps it as history only.** Its
+  files go with the next prune, but it stays listed as where the next transfer
+  can start from — so `mmw snapshot delete` no longer needs `--yes` for the
+  one the last bundle went to (it is still accepted), and Clean up no longer
+  keeps snapshots back for that. A history-only snapshot holds no files, and
+  picking one as From uses the repository versions it kept.
+
+### Fixed
+
+- **Deleted snapshots came back.** Every bundle leaves its manifest in the
+  ledger, and listing snapshots imported it again — the snapshot reappeared
+  as history only, still holding every file, so prune freed nothing.
+  Snapshots already history only stop holding their files too: the first
+  prune after upgrading may free more than usual.
+
 ## [1.3.0]
 
 mmw comes to the far side. A network set to `far_side = "mmw"` is applied by

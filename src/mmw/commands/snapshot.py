@@ -2,8 +2,10 @@
 
 A snapshot is a network's complete published tree at a moment, kept in the
 pool database (see core/snapshots.py) so it can be bundled to or published
-again exactly. Deleting one only drops its rows; the next `mmw prune` frees
-the files no live mirror and no other snapshot still references.
+again exactly. Deleting one frees its files: the next `mmw prune` removes
+those no live mirror and no other complete snapshot still references. One a
+transfer went to stays listed as history only, where the next transfer can
+start from.
 """
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,7 +41,7 @@ def _network(cfg_dir: Path, name: str, gone_ok: bool = False):
 def _row(s: SnapshotInfo, holds: int | None = None, serves: list[str] = ()) -> str:
     label = s.label or ""
     held = f"  holds {fmt_size(holds)}" if holds is not None else ""
-    note = "" if s.complete else "  (history only — some files pruned)"
+    note = "" if s.complete else "  (history only — holds no files)"
     note += "".join(f"  [published at {r}]" for r in serves)
     return f"  {s.stamp}  {label:<20}  {s.kind:<8}  {s.files:>9,} files{held}{note}"
 
@@ -94,21 +96,21 @@ def rename(cfg_dir: Path, network: str, ref: str, label: str) -> int:
     return _with_snapshot(cfg_dir, network, ref, act)
 
 
-def delete(cfg_dir: Path, network: str, ref: str, yes: bool = False) -> int:
+def delete(cfg_dir: Path, network: str, ref: str) -> int:
     from mmw.core import snapshots
 
     def act(pool, s):
-        if not yes and s.stamp == snapshots.last_bundled_to(pool, s.network):
-            eprint(f"{s.stamp} is where the last bundle of {s.network} went — without it "
-                   "the next bundle needs --from (or --from none). Run again with --yes to delete it.")
-            return 1
         try:
-            snapshots.delete_snapshot(pool, s)
+            history = snapshots.delete_snapshot(pool, s)
         except ValueError as e:
             eprint(str(e))
             return 1
-        print(f"Deleted {s.stamp}" + (f" ({s.label})" if s.label else "")
-              + " — `mmw prune` frees its files.")
+        name = s.stamp + (f" ({s.label})" if s.label else "")
+        if history:
+            print(f"Deleted {name} — a transfer went to it, so it stays as history only, "
+                  "where the next transfer can start from. `mmw prune` frees its files.")
+        else:
+            print(f"Deleted {name} — `mmw prune` frees its files.")
         return 0
     return _with_snapshot(cfg_dir, network, ref, act)
 
@@ -153,7 +155,7 @@ def clean(cfg_dir: Path, network: str, keep: int, yes: bool = False) -> int:
     with Pool(cfg.settings.mirror_dir) as pool:
         if isinstance(net, SimpleNamespace) and keep == 0:
             return _forget(pool, net.name, yes)
-        plan = snapshots.clean_plan(pool, net.name, keep, cfg)
+        plan = snapshots.clean_plan(pool, net.name, keep)
         for snap, why in plan.kept:
             print(f"Keeping {snap.stamp}" + (f" ({snap.label})" if snap.label else "")
                   + f" — {why}.")
@@ -163,7 +165,7 @@ def clean(cfg_dir: Path, network: str, keep: int, yes: bool = False) -> int:
         verb = "Deleted" if yes else "Would delete"
         print(f"{verb} {len(plan.delete)} snapshot(s) of {net.name}, keeping the newest {keep}:")
         for s in plan.delete:
-            print(_row(s))
+            print(_row(s) + ("  (stays as history only)" if s.stamp in plan.history else ""))
         print(f"`mmw prune` then frees {fmt_size(plan.frees)}.")
         if yes:
             snapshots.delete_snapshots(pool, plan.delete)

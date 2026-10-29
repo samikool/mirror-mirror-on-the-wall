@@ -12,7 +12,9 @@ of writing files. So a snapshot cannot drift from what publish lays out.
 - The nginx image is frozen like any other file; generated container setup
   is regenerated from the settings stored with the snapshot.
 
-Every checksum a snapshot lists is a pool GC root (see `Pool.prune_orphans`).
+Every checksum a complete snapshot lists is a pool GC root (see
+`Pool.prune_orphans`). Deleting one a transfer went to only makes it history
+only: it keeps its list, as where the next transfer starts, but not its files.
 """
 import hashlib
 import json
@@ -268,11 +270,10 @@ def served_by(pool: Pool, snap: SnapshotInfo) -> list[str]:
     return [p.root for p in pool.published(snap.network) if p.target == snap.stamp]
 
 
-def last_bundled_to(pool: Pool, network: str) -> str | None:
-    """Stamp the newest bundle of `network` went to — the next bundle's
-    default starting point."""
-    log = pool.bundles(network)
-    return log[0].to_stamp if log else None
+def transferred(pool: Pool, snap: SnapshotInfo) -> bool:
+    """Whether a bundle, stream or stage went to `snap` — a far side may sit
+    at it, and the ledger holds its manifest."""
+    return any(b.to_stamp == snap.stamp for b in pool.bundles(snap.network))
 
 
 def delete_snapshot(pool: Pool, snap: SnapshotInfo) -> bool:
@@ -290,7 +291,7 @@ def delete_snapshot(pool: Pool, snap: SnapshotInfo) -> bool:
     if not snap.complete:
         raise ValueError(f"snapshot {snap.stamp} is history only — it holds no files, "
                          "so deleting it frees nothing")
-    if any(b.to_stamp == snap.stamp for b in pool.bundles(snap.network)):
+    if transferred(pool, snap):
         pool.demote_snapshot(snap.id)
         return True
     pool.delete_snapshot(snap.id)
@@ -328,37 +329,23 @@ class CleanPlan:
     delete: list[SnapshotInfo]     # oldest last
     frees: int                     # bytes the next prune frees once they are gone
     kept: list[tuple[SnapshotInfo, str]]   # past `keep` but kept anyway, and why
+    history: set[str]              # stamps of `delete` a transfer went to: they stay, history only
 
 
-def clean_plan(pool: Pool, network: str, keep: int, cfg: Config | None = None) -> CleanPlan:
-    """What "keep the newest `keep` snapshots" would delete, and free. A
-    snapshot a directory serves, or the last bundle went to, is never
-    cleaned — delete it by name if it really must go."""
-    last = last_bundled_to(pool, network)
-    sent = set(pool.last_sent_versions(network).values())
+def clean_plan(pool: Pool, network: str, keep: int) -> CleanPlan:
+    """What "keep the newest `keep` complete snapshots" would delete, and
+    free. One a directory serves is never cleaned; one a transfer went to
+    stays as history only (see `delete_snapshot`)."""
     delete, kept = [], []
     # History-only snapshots hold nothing to free, and don't count as kept.
-    candidates = [s for s in pool.snapshots(network) if s.complete][max(keep, 0):]
-    doomed = {s.id for s in candidates}
-    for s in candidates:
+    for s in [s for s in pool.snapshots(network) if s.complete][max(keep, 0):]:
         roots = served_by(pool, s)
-        # A version the ledger says the far side has, which no snapshot
-        # outside this clean holds: the next delta of that repository
-        # starts from it.
-        only = [v for v in pool.snapshot_repo_versions(s.id).values()
-                if v.id in sent and set(pool.repo_version_snapshots(v.id)) <= doomed]
         if roots:
             kept.append((s, f"published at {', '.join(roots)}"))
-        elif s.stamp == last:
-            kept.append((s, "the last bundle went to it"))
-        elif only:
-            from mmw.core.repos import repository_label
-            names = ", ".join(sorted(repository_label(v.repo, cfg) if cfg else v.repo for v in only))
-            kept.append((s, f"holds the version last sent of {names}"))
-            doomed.discard(s.id)
         else:
             delete.append(s)
-    return CleanPlan(delete, pool.snapshot_exclusive_bytes([s.id for s in delete]), kept)
+    return CleanPlan(delete, pool.snapshot_exclusive_bytes([s.id for s in delete]), kept,
+                     {s.stamp for s in delete if transferred(pool, s)})
 
 
 def delete_snapshots(pool: Pool, snaps: list[SnapshotInfo]) -> None:

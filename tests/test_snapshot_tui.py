@@ -6,6 +6,7 @@ import hashlib
 from textual.widgets import DataTable, Input, ListView, Select
 
 from mmw.core import config
+from mmw.core.format import fmt_size
 from mmw.core.pool import KIND_META, KIND_PKG, Pool
 from mmw.core.snapshots import take_snapshot
 from mmw.tui.app import MmwApp
@@ -207,6 +208,29 @@ def test_the_snapshots_page_takes_renames_deletes_and_cleans(two_mirrors):  # no
         assert _rows(app)[0][0] == served.stamp
     _run(cfg, mirror_dir.parent, check)
 
+
+
+def test_deleting_a_transferred_snapshot_keeps_it_as_history_only(two_mirrors):  # noqa: F811
+    cfg, net, mirror_dir = two_mirrors
+    sent = take_snapshot(net, cfg, mirror_dir, label="sent")
+    with Pool(mirror_dir) as pool:
+        pool.record_bundle(net.name, None, sent.stamp, "/o/x.tar", 1, 1, 0)
+
+    async def check(app, pilot):
+        await pilot.press("n")
+        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
+                    and len(_rows(app)) == 1)
+        await pilot.press("d")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        assert "history only" in str(app.screen.query_one("#confirm-message").render())
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
+                    and _rows(app) and "history only" in _rows(app)[0][5])
+        await until(pilot, lambda: _rows(app)[0][4] == fmt_size(0))   # holds nothing any more
+        await pilot.press("d")                                # and has nothing left to free
+        await until(pilot, lambda: any("frees nothing" in n for n in app.notes))
+        assert type(app.screen).__name__ == "SnapshotsPage" and len(_rows(app)) == 1
+    _run(cfg, mirror_dir.parent, check)
 
 def test_the_detail_pane_says_what_the_root_serves(two_mirrors):  # noqa: F811
     from mmw.core.publisher import publish_snapshot

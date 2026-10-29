@@ -120,9 +120,9 @@ def test_cli_publish_snapshot_and_delete_guards(states, tmp_path, monkeypatch): 
 
     bundle_network(net, cfg, mirror_dir, from_ref=None, to_ref="s2")
     r = _mmw(monkeypatch, cfg_dir, "snapshot", "delete", "-n", "lab", "s2")
-    assert r.exit_code == 1 and "--yes" in r.output
+    assert r.exit_code == 0 and "stays as history only" in r.output, r.output
     r = _mmw(monkeypatch, cfg_dir, "snapshot", "delete", "-n", "lab", "s2", "--yes")
-    assert r.exit_code == 0, r.output
+    assert r.exit_code == 1 and "frees nothing" in r.output     # --yes still accepted
 
     other = tmp_path / "other"
     r = _mmw(monkeypatch, cfg_dir, "publish", "-n", "lab", "--snapshot", "live",

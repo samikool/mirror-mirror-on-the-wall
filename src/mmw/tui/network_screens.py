@@ -212,8 +212,10 @@ class NetworkForm(Vertical):
                 ToggleField("nginx config", net.nginx if net else True, id="nginx-switch",
                             hint="nginx (and VS Code's gallery) in Docker: image, "
                                  "compose.yaml, mirror.conf."),
-                ChoiceField("Far side", [("apply.py (no mmw there)", "apply"), ("mmw", "mmw")],
-                            net.far_side if net else "apply", id="far-side-pick",
+                # A new network gets mmw; an existing one keeps what it has
+                # (unset in its config means apply).
+                ChoiceField("Far side", [("mmw", "mmw"), ("apply.py (no mmw there)", "apply")],
+                            net.far_side if net else "mmw", id="far-side-pick",
                             hint="What runs on the airgapped side. mmw unlocks partial bundles, "
                                  "mmw stage and far-side history."),
                 TextField("Runtime arches", " ".join(net.runtime_arches) if net else "x86_64",

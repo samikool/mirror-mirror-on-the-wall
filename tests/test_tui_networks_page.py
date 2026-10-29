@@ -95,7 +95,8 @@ def test_add_through_the_wizard_saves(tmp_path, monkeypatch):
             await _settle(pilot)
             await pilot.pause(0.05)
         await _done(app, pilot)
-        assert "edge" in [n.name for n in config.load(tmp_path).networks]
+        far_side = {n.name: n.far_side for n in config.load(tmp_path).networks}
+        assert far_side == {"lab": "apply", "dgx": "apply", "edge": "mmw"}   # new ones get mmw
         assert "edge" in _names(app)
     _run(tmp_path, check, monkeypatch=monkeypatch)
 

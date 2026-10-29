@@ -1,5 +1,8 @@
 """The `apt-local` provider: a folder of debs, signed and served at a URL."""
+import asyncio
+import concurrent.futures
 import hashlib
+import shutil
 from dataclasses import replace
 
 import pytest
@@ -9,8 +12,15 @@ from debs import make_deb
 from mmw.core import config, downloader
 from mmw.core.downloader import Status
 from mmw.core.pool import Pool
-from mmw.providers import get_provider
-from mmw.providers.base import PackageInfo
+from mmw.core.publisher import publish_network
+from mmw.core.signing import Keyring
+from mmw.core.sync_engine import KeySyncCoordinator, sync_mirror
+from mmw.providers import apt_local, get_provider
+from mmw.providers.base import PackageInfo, ResolveContext
+from test_signing import gpgv_ok
+
+needs_gpg = pytest.mark.skipif(shutil.which("gpg") is None or shutil.which("gpgv") is None,
+                               reason="needs gpg and gpgv")
 
 
 def test_local_source_round_trips_through_toml(tmp_path):
@@ -70,3 +80,109 @@ def test_a_file_url_is_pooled_and_verified(tmp_path):
     missing = replace(pkg, url=(tmp_path / "gone.deb").as_uri())
     with Pool(tmp_path / "m") as pool, pytest.raises(downloader.PermanentFetchError, match="not found"):
         downloader._download_sync(missing, pool, None, None)
+
+
+# ── sync, build and sign ─────────────────────────────────────────────────────
+
+def _src(tmp_path, folder="debs", **kw):
+    return config.LocalAptSource(provider="apt-local", url="https://tools.lab/apt",
+                                 folder=str(tmp_path / folder), key="tools", **kw)
+
+
+def _sync_local(tmp_path, src):
+    """Resolve, sync and publish one folder repository; (unit, summary, root)."""
+    mirror_dir = tmp_path / "m"
+    kr = Keyring(mirror_dir)
+    if not any(k.name == "tools" for k in kr.list()):
+        kr.generate("tools")
+    net = config.NetworkConfig(name="lab", root=tmp_path / "pub")
+    cfg = config.Config(settings=config.Settings(mirror_dir=mirror_dir), sources=[src], networks=[net])
+    resolved = get_provider("apt-local").resolve(src, context=ResolveContext.from_config(cfg))
+    assert not resolved.errors, resolved.errors
+    [unit] = resolved.mirrors
+    with Pool(mirror_dir) as pool, concurrent.futures.ThreadPoolExecutor(2) as ex:
+        summary = asyncio.run(sync_mirror(unit, pool=pool, mirror_dir=mirror_dir, max_connections=2,
+                                          executor=ex, keys=KeySyncCoordinator(mirror_dir)))
+    publish_network(net, cfg, mirror_dir)
+    return unit, summary, tmp_path / "pub"
+
+
+def _metadata_bytes(tmp_path, name="tools"):
+    with Pool(tmp_path / "m", read_only=True) as pool:
+        return {rel: open(path, "rb").read() for rel, path, *_ in pool.mirror_files([name])
+                if not rel.endswith(".deb")}
+
+
+@needs_gpg
+def test_flat_folder_syncs_signed_and_publishes(tmp_path):
+    make_deb(tmp_path / "debs", "tool", "1.0")
+    make_deb(tmp_path / "debs", "doc", "1.0", "all")
+    unit, summary, root = _sync_local(tmp_path, _src(tmp_path))
+    assert summary.ok and summary.downloaded == 2
+    base = root / "tools.lab/apt"
+    assert {"Packages", "Packages.gz", "Packages.xz", "Release", "InRelease", "Release.gpg",
+            "tool_1.0_amd64.deb", "doc_1.0_all.deb"} <= {p.name for p in base.iterdir()}
+    assert "Filename: ./tool_1.0_amd64.deb" in (base / "Packages").read_text()
+    release = (base / "Release").read_text()
+    assert "Architectures: amd64\n" in release and "Suite:" not in release
+    assert gpgv_ok(tmp_path, (root / f"keys/{unit.label}/tools.asc").read_text(),
+                   (base / "Release.gpg").read_bytes(), (base / "Release").read_bytes())
+
+
+@needs_gpg
+def test_structured_puts_all_debs_in_every_arch(tmp_path):
+    for arch in ("amd64", "arm64"):
+        make_deb(tmp_path / "debs", "tool", "1.0", arch)
+    make_deb(tmp_path / "debs", "doc", "1.0", "all")
+    _, _, root = _sync_local(tmp_path, _src(tmp_path, structured=True))
+    dists = root / "tools.lab/apt/dists/stable"
+    for arch in ("amd64", "arm64"):
+        text = (dists / f"main/binary-{arch}/Packages").read_text()
+        assert "Package: doc" in text and f"Architecture: {arch}" in text
+        assert "Filename: pool/main/doc_1.0_all.deb" in text
+    release = (dists / "Release").read_text()
+    assert "Codename: stable" in release and "Components: main" in release
+    assert " main/binary-arm64/Packages.xz" in release
+    assert (root / "tools.lab/apt/pool/main/tool_1.0_arm64.deb").is_file()
+
+
+@needs_gpg
+def test_resync_unchanged_is_byte_identical_and_rereads_nothing(tmp_path, monkeypatch):
+    make_deb(tmp_path / "debs", "tool", "1.0")
+    _sync_local(tmp_path, _src(tmp_path))
+    first = _metadata_bytes(tmp_path)
+    assert "InRelease" in first
+    monkeypatch.setattr(apt_local, "read_control", lambda p: pytest.fail("re-read " + p.name))
+    _sync_local(tmp_path, _src(tmp_path))
+    assert _metadata_bytes(tmp_path) == first
+
+
+@needs_gpg
+def test_contents_only_when_asked(tmp_path):
+    make_deb(tmp_path / "debs", "tool", "1.0")
+    _, _, root = _sync_local(tmp_path, _src(tmp_path))
+    assert not (root / "tools.lab/apt/Contents-amd64").exists()
+    _, _, root = _sync_local(tmp_path, _src(tmp_path, contents=True))
+    assert "usr/share/doc/tool/README  utils/tool" in (root / "tools.lab/apt/Contents-amd64").read_text()
+    assert "Contents-amd64.gz" in (root / "tools.lab/apt/Release").read_text()
+
+
+@needs_gpg
+def test_missing_empty_and_clashing_folders(tmp_path):
+    with pytest.raises(ValueError, match=str(tmp_path / "nope")):
+        apt_local.scan(tmp_path / "nope", tmp_path / "c.json")
+    (tmp_path / "empty").mkdir()
+    _, summary, root = _sync_local(tmp_path, _src(tmp_path, folder="empty"))
+    assert summary.ok and (root / "tools.lab/apt/Packages").read_bytes() == b""
+    make_deb(tmp_path / "a", "x", "1")
+    make_deb(tmp_path / "a" / "sub", "x", "1", extra={"Depends": "y"})
+    with pytest.raises(ValueError, match="differ") as clash:
+        apt_local.scan(tmp_path / "a", tmp_path / "c2.json")
+    assert "sub/x_1_amd64.deb and x_1_amd64.deb" in str(clash.value)
+
+
+def test_a_missing_folder_is_a_resolve_error(tmp_path):
+    src = _src(tmp_path, folder="nope")
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "m"), sources=[src])
+    resolved = get_provider("apt-local").resolve(src, context=ResolveContext.from_config(cfg))
+    assert resolved.mirrors == [] and str(tmp_path / "nope") in resolved.errors[0]

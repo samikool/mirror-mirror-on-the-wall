@@ -1,4 +1,5 @@
 from mmw.providers.apt import AptFlatProvider, AptProvider
+from mmw.providers.apt_local import AptLocalProvider
 from mmw.providers.base import BaseProvider
 from mmw.providers.pypi.provider import PypiProvider
 from mmw.providers.vscode.provider import VscodeProvider
@@ -8,6 +9,7 @@ from mmw.providers.vscode.provider import VscodeProvider
 _REGISTRY: dict[str, BaseProvider] = {
     "apt": AptProvider(),
     "apt-flat": AptFlatProvider(),
+    "apt-local": AptLocalProvider(),
     "vscode": VscodeProvider(),
     "pypi": PypiProvider(),
 }

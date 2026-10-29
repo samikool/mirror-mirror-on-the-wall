@@ -8,7 +8,7 @@ from mmw.providers.base import BaseProvider, Dimension
 
 
 def test_registry_order_and_lookup():
-    assert [p.name for p in all_providers()] == ["apt", "apt-flat", "vscode", "pypi"]
+    assert [p.name for p in all_providers()] == ["apt", "apt-flat", "apt-local", "vscode", "pypi"]
     assert get_provider("apt").name == "apt"
     with pytest.raises(ValueError, match="Unknown provider"):
         get_provider("nope")

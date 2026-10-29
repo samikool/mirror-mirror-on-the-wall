@@ -136,10 +136,11 @@ CREATE TABLE IF NOT EXISTS refs (
 
 -- Network snapshots: a network's complete published tree at a moment, kept
 -- so it can be bundled to or published again exactly. Every checksum here is
--- a GC root, like `refs` — prune never deletes a file a snapshot still lists.
--- `complete = 0`: imported from a bundle manifest written before snapshots
--- existed; its file list is exact but some files may already be pruned, so
--- it can be a bundle's starting point but never its destination.
+-- a GC root, like `refs` — prune never deletes a file a complete snapshot
+-- still lists. `complete = 0` (history only): imported from a bundle manifest
+-- written before snapshots existed, or a transferred snapshot deleted since;
+-- its file list is exact but it holds no files, so some may already be
+-- pruned — a bundle's starting point, never its destination.
 CREATE TABLE IF NOT EXISTS snapshots (
     id        INTEGER PRIMARY KEY,
     network   TEXT NOT NULL,
@@ -1520,6 +1521,14 @@ class Pool:
         else (a live mirror, another snapshot) still references them."""
         self._delete_snapshots([snapshot_id])
 
+    def demote_snapshot(self, snapshot_id: int) -> None:
+        """Make it history only: its rows stay — a far side may sit at it, and
+        a transfer starts from its list and versions — but it stops holding
+        its files, so the next prune frees what nothing else references."""
+        with self._lock:
+            self._conn.execute("UPDATE snapshots SET complete = 0 WHERE id = ?", (snapshot_id,))
+            self._conn.commit()
+
     def _delete_snapshots(self, ids: list[int]) -> None:
         with self._lock:
             for sid in ids:
@@ -1527,7 +1536,7 @@ class Pool:
                 self._conn.execute("DELETE FROM snapshot_repos WHERE snapshot = ?", (sid,))
                 self._conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
             # The shared tables hold exactly what some snapshot still lists —
-            # prune reads `snapshot_blobs` as the set of held checksums.
+            # prune finds a file's holders through `snapshot_blobs`.
             # NOT IN, not a correlated NOT EXISTS: `snapshot_files.path` has no
             # index of its own, and the correlated form compared every path
             # with every row (515k x 515k — it never finished on oak). NOT IN
@@ -1791,7 +1800,8 @@ class Pool:
 
     def snapshot_exclusive_bytes(self, snapshot_ids: "int | list[int]") -> int:
         """Bytes only these snapshots keep — what deleting them (then pruning)
-        frees: files no live mirror and no other snapshot references."""
+        frees: files no live mirror and no other complete snapshot references.
+        A history-only snapshot keeps none."""
         ids = [snapshot_ids] if isinstance(snapshot_ids, int) else list(snapshot_ids)
         if not ids:
             return 0
@@ -1800,10 +1810,10 @@ class Pool:
         row = self._read_only(
             "SELECT COALESCE(SUM(p.size), 0) FROM snapshot_blobs b "
             "JOIN packages p ON p.checksum = b.checksum "
-            f"WHERE EXISTS (SELECT 1 FROM snapshot_files f WHERE f.blob = b.id "
-            f"AND f.snapshot IN ({ph})) "
-            f"AND NOT EXISTS (SELECT 1 FROM snapshot_files o WHERE o.blob = b.id "
-            f"AND o.snapshot NOT IN ({ph})) "
+            f"WHERE EXISTS (SELECT 1 FROM snapshot_files f JOIN snapshots s ON s.id = f.snapshot "
+            f"WHERE f.blob = b.id AND f.snapshot IN ({ph}) AND s.complete = 1) "
+            f"AND NOT EXISTS (SELECT 1 FROM snapshot_files o JOIN snapshots s ON s.id = o.snapshot "
+            f"WHERE o.blob = b.id AND o.snapshot NOT IN ({ph}) AND s.complete = 1) "
             "AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = b.checksum)",
             tuple(ids) * 2)
         return row[0] if row else 0
@@ -1855,8 +1865,12 @@ class Pool:
                      columns: str = "checksum, pool_path, size") -> str:
         """Packages no ref passing `ref_filter` wants and no snapshot holds —
         the one definition of an orphan, shared by the prune and its preview."""
+        # Only a complete snapshot holds: a history-only one's files may go.
+        # Through idx_snapshot_files_blob, a few index steps per package.
         held = ("AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
-                "WHERE b.checksum = packages.checksum)" if self._has_snapshot_blobs else "")
+                "JOIN snapshot_files f ON f.blob = b.id JOIN snapshots s ON s.id = f.snapshot "
+                "WHERE b.checksum = packages.checksum AND s.complete = 1)"
+                if self._has_snapshot_blobs else "")
         return (f"SELECT {columns} FROM packages "
                 "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum "
                 f"AND {ref_filter}) {held}")

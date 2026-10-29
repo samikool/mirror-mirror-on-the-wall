@@ -275,15 +275,26 @@ def last_bundled_to(pool: Pool, network: str) -> str | None:
     return log[0].to_stamp if log else None
 
 
-def delete_snapshot(pool: Pool, snap: SnapshotInfo) -> None:
-    """Delete `snap`, unless a directory serves it: its rows are what says
-    which files that tree should hold, and what publishing it again needs."""
+def delete_snapshot(pool: Pool, snap: SnapshotInfo) -> bool:
+    """Delete `snap` — free the files only it holds. One a transfer went to
+    is kept as history only: a far side may sit at it, so the next transfer
+    still starts from its list, and the ledger manifest under its stamp would
+    only import it again. Refused while a directory serves it (its rows say
+    which files that tree should hold) and for a history-only one (it holds
+    nothing). Returns whether it was kept as history only."""
     roots = served_by(pool, snap)
     if roots:
         raise ValueError(f"snapshot {snap.stamp} is published at {', '.join(roots)} — "
                          f"publish something else there first (e.g. `mmw publish -n "
                          f"{snap.network} --snapshot live`)")
+    if not snap.complete:
+        raise ValueError(f"snapshot {snap.stamp} is history only — it holds no files, "
+                         "so deleting it frees nothing")
+    if any(b.to_stamp == snap.stamp for b in pool.bundles(snap.network)):
+        pool.demote_snapshot(snap.id)
+        return True
     pool.delete_snapshot(snap.id)
+    return False
 
 
 @dataclass(frozen=True)
@@ -326,7 +337,8 @@ def clean_plan(pool: Pool, network: str, keep: int, cfg: Config | None = None) -
     last = last_bundled_to(pool, network)
     sent = set(pool.last_sent_versions(network).values())
     delete, kept = [], []
-    candidates = pool.snapshots(network)[max(keep, 0):]
+    # History-only snapshots hold nothing to free, and don't count as kept.
+    candidates = [s for s in pool.snapshots(network) if s.complete][max(keep, 0):]
     doomed = {s.id for s in candidates}
     for s in candidates:
         roots = served_by(pool, s)

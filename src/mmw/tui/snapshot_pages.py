@@ -382,11 +382,13 @@ class SnapshotsPage(Page):
             "or publish again (p on Networks offers them). Holds: the disk only that\n"
             "snapshot keeps — freed by the next prune once it is deleted. One a transfer\n"
             "went to stays as history only: no files, just where a transfer can start\n"
-            "from. A snapshot a directory serves cannot be deleted.")
+            "from. A snapshot a directory serves cannot be deleted. D force-deletes:\n"
+            "it forgets the snapshot and every transfer to it — like a force push.")
     BINDINGS = [
         Binding("t", "take", "Take"),
         Binding("r", "rename", "Rename"),
         Binding("d", "delete", "Delete"),
+        Binding("D", "forget", "Force delete"),
         Binding("c", "clean", "Clean up"),
     ]
 
@@ -507,6 +509,9 @@ class SnapshotsPage(Page):
     def action_delete(self) -> None:
         self.start_flow(self._delete)
 
+    def action_forget(self) -> None:
+        self.start_flow(self._forget)
+
     def action_clean(self) -> None:
         self.start_flow(self._clean)
 
@@ -588,6 +593,40 @@ class SnapshotsPage(Page):
             await asyncio.to_thread(delete)
         except ValueError as e:                     # published meanwhile
             self.notify(str(e), severity="warning", timeout=12)
+        self.reload()
+
+    async def _forget(self) -> None:
+        from mmw.core.snapshots import forget_snapshot, forget_warnings, served_by
+        snap = self._selected()
+        if snap is None:
+            return
+        name = escape(snap.stamp + (f" ({snap.label})" if snap.label else ""))
+
+        def where() -> tuple[list[str], list[str]]:
+            with Pool(self._mirror_dir, read_only=True) as pool:
+                return served_by(pool, snap), forget_warnings(pool, snap, self._net.far_side)
+        roots, lines = await asyncio.to_thread(where)
+        if roots:
+            self.notify(f"{snap.stamp} is published at {', '.join(roots)} — publish something "
+                        "else there first.", severity="warning", timeout=12)
+            return
+        message = (f"Force delete snapshot [b]{name}[/]? This rewrites history.\n"
+                   + "\n".join(f"[$mmw-warn]{escape(line)}[/]" if "far side may" in line
+                               else escape(line) for line in lines))
+        if not await self.app.push_screen_wait(ConfirmDialog("Force delete snapshot", message,
+                                                             "Force delete")):
+            return
+
+        def forget() -> bool:
+            with Pool(self._mirror_dir) as pool:
+                return forget_snapshot(pool, self._mirror_dir, snap)
+        try:
+            full = await asyncio.to_thread(forget)
+        except ValueError as e:                     # published meanwhile
+            self.notify(str(e), severity="warning", timeout=12)
+        else:
+            self.notify(f"Forgot {snap.stamp}"
+                        + (" — the next transfer sends everything." if full else "."))
         self.reload()
 
     async def _clean(self) -> None:

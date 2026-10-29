@@ -232,6 +232,28 @@ def test_deleting_a_transferred_snapshot_keeps_it_as_history_only(two_mirrors): 
         assert type(app.screen).__name__ == "SnapshotsPage" and len(_rows(app)) == 1
     _run(cfg, mirror_dir.parent, check)
 
+
+def test_force_delete_forgets_and_says_the_next_transfer_is_full(two_mirrors):  # noqa: F811
+    cfg, net, mirror_dir = two_mirrors
+    sent = take_snapshot(net, cfg, mirror_dir, label="sent")
+    with Pool(mirror_dir) as pool:
+        pool.record_bundle(net.name, None, sent.stamp, "/o/x.tar", 1, 1, 0)
+
+    async def check(app, pilot):
+        await pilot.press("n")
+        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
+                    and len(_rows(app)) == 1)
+        await pilot.press("D")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        assert "sends everything" in str(app.screen.query_one("#confirm-message").render())
+        app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
+                    and not _rows(app))
+        assert any("Forgot" in n and "sends everything" in n for n in app.notes)
+        with Pool(mirror_dir, read_only=True) as pool:
+            assert pool.full_next(net.name) == sent.stamp
+    _run(cfg, mirror_dir.parent, check)
+
 def test_the_detail_pane_says_what_the_root_serves(two_mirrors):  # noqa: F811
     from mmw.core.publisher import publish_snapshot
     cfg, net, mirror_dir = two_mirrors

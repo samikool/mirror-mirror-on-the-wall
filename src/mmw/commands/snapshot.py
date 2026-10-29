@@ -7,6 +7,7 @@ those no live mirror and no other complete snapshot still references. One a
 transfer went to stays listed as history only, where the next transfer can
 start from.
 """
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -89,17 +90,19 @@ def list_(cfg_dir: Path, network: str, repos: bool = False) -> int:
 
 
 def rename(cfg_dir: Path, network: str, ref: str, label: str) -> int:
-    def act(pool, s):
+    def act(cfg, net, pool, s):
         pool.rename_snapshot(s.id, label)
         print(f"{s.stamp} is now labelled {label!r}.")
         return 0
     return _with_snapshot(cfg_dir, network, ref, act)
 
 
-def delete(cfg_dir: Path, network: str, ref: str) -> int:
+def delete(cfg_dir: Path, network: str, ref: str, force: bool = False, yes: bool = False) -> int:
     from mmw.core import snapshots
 
-    def act(pool, s):
+    def act(cfg, net, pool, s):
+        if force:
+            return _forget_one(cfg, net, pool, s, yes)
         try:
             history = snapshots.delete_snapshot(pool, s)
         except ValueError as e:
@@ -126,7 +129,33 @@ def _with_snapshot(cfg_dir, network, ref, act) -> int:
         except LookupError as e:
             eprint(str(e))
             return 1
-        return act(pool, snap)
+        return act(cfg, net, pool, snap)
+
+
+def _forget_one(cfg, net, pool: Pool, s: SnapshotInfo, yes: bool) -> int:
+    """`delete --force`: says what goes, asks, then forgets it."""
+    from mmw.core import snapshots
+    name = s.stamp + (f" ({s.label})" if s.label else "")
+    roots = snapshots.served_by(pool, s)
+    if roots:
+        eprint(f"{s.stamp} is published at {', '.join(roots)} — publish something else there first.")
+        return 1
+    print(f"Force delete {name} — this rewrites history:")
+    for line in snapshots.forget_warnings(pool, s, getattr(net, "far_side", "apply")):
+        print(f"  {line}")
+    if not yes:
+        if not sys.stdin.isatty():
+            eprint("pass --yes to force delete it (no terminal to ask on)")
+            return 1
+        if input("Force delete it? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    try:
+        full = snapshots.forget_snapshot(pool, cfg.settings.mirror_dir, s)
+    except ValueError as e:
+        eprint(str(e))
+        return 1
+    print(f"Forgot {name}" + (" — the next transfer sends everything." if full else "."))
+    return 0
 
 
 def _forget(pool: Pool, name: str, yes: bool) -> int:

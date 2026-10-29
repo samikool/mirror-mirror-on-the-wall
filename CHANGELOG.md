@@ -6,6 +6,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Force delete a snapshot** (`D` on the Snapshots page, `mmw snapshot
+  delete --force`): forgets it outright, with every transfer that went to it
+  and its ledger manifest — like a force push. The far side is not touched:
+  if it may be at the forgotten snapshot, the next transfer sends everything,
+  and the dialog (or the command) says so before you confirm.
+
 ### Changed
 
 - **A new network's far side defaults to mmw.** The network editor offers mmw

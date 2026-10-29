@@ -116,17 +116,11 @@ from mmw.core.publisher.repo_delta import _LAST  # noqa: E402 — from_ref defau
 
 
 def _resolve_from(pool: Pool, network: str, from_ref):
-    from mmw.core.snapshots import find_snapshot
+    from mmw.core.snapshots import default_start, find_snapshot
     if from_ref is None:
         return None                                  # full
     if from_ref is _LAST:
-        log = pool.bundles(network)
-        if log:
-            return find_snapshot(pool, network, log[0].to_stamp)
-        # Never bundled since snapshots existed: the newest imported bundle
-        # manifest is where the far side was last sent.
-        imported = [s for s in pool.snapshots(network) if s.kind == "imported"]
-        return imported[0] if imported else None
+        return default_start(pool, network)
     return find_snapshot(pool, network, from_ref)
 
 
@@ -230,6 +224,11 @@ def bundle_network(
     with Pool(mirror_dir) as pool:
         import_ledger(pool, mirror_dir, network.name)
         ensure_repo_versions(pool, network.name)
+        # A force-deleted snapshot may be where the far side is: nothing here
+        # records what it has, so the default is everything.
+        forgotten = pool.full_next(network.name) if from_ref is _LAST else None
+        if forgotten is not None:
+            from_ref = None
         start = _resolve_from(pool, network.name, from_ref)
         if to_ref != "now":
             dest = find_snapshot(pool, network.name, to_ref)
@@ -265,6 +264,9 @@ def bundle_network(
     result = BundleResult(network_name=network.name, out_path=target, created=dest.stamp,
                           previous=header.previous, full=header.full)
     result.warnings = snap_warnings
+    if forgotten is not None:
+        result.warnings.append(f"{forgotten} was force-deleted and the far side may be at it — "
+                               "sending everything")
 
     with Pool(mirror_dir, read_only=True) as pool:
         missing = pool.snapshot_missing(dest.id)
@@ -432,6 +434,8 @@ def bundle_network(
                            sink.sent, sink.sent_bytes, len(sink.deleted),
                            kind="stage" if stage else "stream" if streaming else "bundle",
                            repos=sent_repos)
+        if header.full and repos is None:
+            pool.clear_full_next(network.name)      # the far side is whole again
     if installer and not (stop_event is not None and stop_event.is_set()):
         _write_installers(result, network, mirror_dir, Path(target).parent, runtime_wheel, fetcher,
                           progress, stop_event)

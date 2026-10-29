@@ -262,7 +262,10 @@ class _TargetClosure:
                 return
             wave = self._merge(frontier, expanded)
             waves += 1
-            self.say(f"{key}: wave {waves}, {len(wave):,} releases")
+            # A wave is one round of following requirements: the first reads
+            # the seeds', each later one those of the releases just pulled in.
+            self.say(f"{key}: dependencies, round {waves} — reading the requirements of "
+                     f"{len(wave):,} release(s); {len(kept):,} kept so far")
             chosen: dict[tuple[str, Version], DistFile | None] = {}
             for name, v, _, how in wave:
                 if kept.get((name, v)) in (None, "sdist"):     # a wheel reach outranks a fallback
@@ -299,6 +302,8 @@ class _TargetClosure:
                         continue
                     frontier.append((canonicalize_name(req.name), picked[0],
                                      frozenset(canonicalize_name(x) for x in req.extras), picked[1]))
+        self.say(f"{key}: dependencies complete — {len(kept):,} release(s) after "
+                 f"{waves} round(s)")
         self._extras_gaps(seed_meta, kept)
         self._collect(kept)
 
@@ -382,6 +387,7 @@ def keep_closure(universe: Universe, targets: list[Target], floors: Floors, *, s
         if stop_event is not None and stop_event.is_set():
             break
         closure, closures[i] = closures[i], None       # its tables go when it is done
-        say(f"{closure.t.key}: resolving latest + dependencies ({i + 1}/{len(targets)})")
+        say(f"{closure.t.key}: resolving latest + dependencies ({i + 1}/{len(targets)}) — "
+            "a round at a time, until a round adds nothing new")
         closure.run()
     return keep, report._normalize()

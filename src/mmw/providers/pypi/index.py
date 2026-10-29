@@ -12,6 +12,7 @@ import json
 import posixpath
 import sqlite3
 import threading
+import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -469,11 +470,16 @@ def fetch_metadata(cache: IndexCache, files: list[DistFile], client_factory, *, 
         # bodies, and a pool.map over them held every response at once. A
         # network-sized lane; `ordered_map` is the same contract as a disk one.
         lane = Lane(max(1, threads), "pypi-metadata", DiskStats(), "network")
+        said = time.monotonic()
         try:
             with cache.writing() as writer:
-                for _f, outcome in lane.ordered_map(one, wanted.values()):
+                for done, (_f, outcome) in enumerate(lane.ordered_map(one, wanted.values()), start=1):
                     if isinstance(outcome, Exception):
                         raise outcome
+                    if say and time.monotonic() - said >= 1.0:
+                        said = time.monotonic()
+                        say(f"PyPI metadata: fetching the requirements of new releases — "
+                            f"{done:,}/{len(wanted):,}")
                     f, body, error = outcome
                     if error is not None:
                         failures.append(f"{f.filename}: {error}")
@@ -482,5 +488,6 @@ def fetch_metadata(cache: IndexCache, files: list[DistFile], client_factory, *, 
         finally:
             lane.close()
     if say:
-        say(f"PyPI metadata: {len(wanted) - len(failures)} fetched")
+        say(f"PyPI metadata: {len(wanted) - len(failures):,} fetched"
+            + (f", {len(failures):,} failed" if failures else ""))
     return failures

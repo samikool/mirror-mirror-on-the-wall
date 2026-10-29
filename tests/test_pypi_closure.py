@@ -234,3 +234,15 @@ def test_self_extras_expand_a_release_once_per_growth_not_per_subset():
     assert releases(keep) == [("pkg", "1.0"), ("user", "1.0")] and not report.unsatisfiable
     # Subsets of the extras were nodes of their own: hundreds of reads here.
     assert reads.count("pkg") <= n
+
+
+def test_progress_says_what_a_round_is_and_when_it_is_done():
+    """"wave 3, 4,512 releases" meant nothing unless you had read the code."""
+    msgs = []
+    u = FakeUniverse(dist("a", "1.0", requires=["b"]), dist("b", "1.0"))
+    keep_closure(u, [T], Floors(), sdists=False, seeds=["a"], progress=msgs.append)
+    assert f"{T.key}: dependencies, round 1 — reading the requirements of 1 release(s); " \
+           "0 kept so far" in msgs
+    assert f"{T.key}: dependencies, round 2 — reading the requirements of 1 release(s); " \
+           "1 kept so far" in msgs
+    assert f"{T.key}: dependencies complete — 2 release(s) after 2 round(s)" in msgs

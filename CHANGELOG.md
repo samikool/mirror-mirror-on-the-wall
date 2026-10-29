@@ -21,6 +21,11 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Unavailable`…), and a card that finishes with failures sums them up —
   `Failed packages: 12 — 10 × http 404 (not on the server), 2 × checksum
   mismatch`. `mmw retry-failed` ends each mirror with the same `Why:` line.
+- **PyPI resolving says what it is doing.** `wave 3, 4,512 releases` is now
+  `dependencies, round 3 — reading the requirements of 4,512 release(s);
+  9,870 kept so far`, the metadata fetch between rounds counts as it goes
+  (`1,200/4,512`), and each target ends with how many releases it kept
+  after how many rounds.
 - **Retry missing says what it leaves out.** It covers VS Code and PyPI
   mirrors; apt mirrors in the selection used to vanish silently (or read as
   "nothing selected could be resolved"). It now names them and says a normal

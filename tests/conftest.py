@@ -114,3 +114,16 @@ def _isolated_mmw_state(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state")))
     # Never a real PyPI check from a test; the update tests turn it back on.
     monkeypatch.setenv("MMW_NO_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _stop_gpg_agents(tmp_path):
+    """gpg starts an agent per keyring directory and leaves it running; a
+    test's keyrings live under its tmp_path, so stop their agents after it."""
+    yield
+    import subprocess
+    for home in {p.parent for p in tmp_path.glob("**/pubring.kbx")}:
+        try:
+            subprocess.run(["gpgconf", "--homedir", str(home), "--kill", "all"], capture_output=True)
+        except FileNotFoundError:          # no gpgconf: no agent was started either
+            return

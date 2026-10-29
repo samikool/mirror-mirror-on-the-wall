@@ -146,6 +146,7 @@ def test_cli_dry_run_and_real_retry(incomplete, tmp_path):
     assert not upstream.requests
     result = runner.invoke(app, args)
     assert result.exit_code == 1
+    assert "Why: 1 × http 404 (not on the server)" in result.output
     blocked.clear()
     result = runner.invoke(app, args)
     assert result.exit_code == 0, result.output
@@ -237,3 +238,31 @@ def test_tui_retry_button_repairs_without_discovery(incomplete, tmp_path):
     assert [str(r.url) for r in upstream.requests] == [missing.url]
     with Pool(tmp_path, read_only=True) as pool:
         assert verify_mirror(unit, tmp_path, pool).complete
+
+
+def test_failure_reasons_are_short_and_grouped():
+    from collections import Counter
+    assert downloader.failure_reason(
+        "Server error '503 Service Unavailable' for url 'https://x/a.deb'\n"
+        "For more information check: https://…") == "503 Service Unavailable"
+    assert downloader.failure_reason("") == "unknown error"
+    assert downloader.reason_summary(Counter({"http 404 (not on the server)": 10,
+                                              "checksum mismatch": 2, "a": 1, "b": 1})) == (
+        "10 × http 404 (not on the server), 2 × checksum mismatch, 1 × a, +1 more")
+
+
+def test_retry_says_which_selected_mirrors_it_leaves_out(tmp_path, monkeypatch):
+    """An apt repository ticked beside VS Code is not silently dropped."""
+    from mmw.tui import repositories
+    apt = config.MirrorConfig(name="deb-noble-main-amd64", provider="apt", source="https://d/x",
+                              source_url="https://d/x", arch="amd64", suite="noble", component="main")
+    vs = config.MirrorConfig(name="code", provider="vscode", source="https://m/x",
+                             source_url="https://m/x")
+    monkeypatch.setattr("mmw.core.resolve.pooled_mirrors", lambda cfg, d: [apt, vs])
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path))
+    chosen, messages = repositories.resolve_retry_selection(cfg, ([], []))
+    assert chosen == [vs]
+    assert messages == ["Retry missing covers VS Code and PyPI mirrors; left out 1 APT repository "
+                        "mirror — a normal sync fetches what they are missing."]
+    chosen, messages = repositories.resolve_retry_selection(cfg, (["https://d/x"], []))
+    assert chosen == [] and messages[-1].startswith("Nothing to retry")

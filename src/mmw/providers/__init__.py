@@ -24,6 +24,19 @@ def all_providers() -> list[BaseProvider]:
     return list(_REGISTRY.values())
 
 
+def retry_scope(skipped) -> str:
+    """What Retry missing covers, said when it leaves `skipped` units out —
+    only providers that keep a retry list can retry without a full sync."""
+    covered = " and ".join(p.label for p in all_providers() if p.retries_failures)
+    kinds: dict[str, int] = {}
+    for unit in skipped:
+        label = get_provider(unit.provider).label
+        kinds[label] = kinds.get(label, 0) + 1
+    left = ", ".join(f"{n:,} {label} mirror{'s' if n != 1 else ''}" for label, n in kinds.items())
+    return (f"Retry missing covers {covered} mirrors; left out {left} — "
+            "a normal sync fetches what they are missing.")
+
+
 def extra_hosts(network, units) -> list[str]:
     """Every provider's extra hostnames for `network`, first-seen order."""
     seen: list[str] = []

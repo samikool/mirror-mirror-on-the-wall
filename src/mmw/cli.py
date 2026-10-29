@@ -455,6 +455,17 @@ def cmd_add(
     raise typer.Exit(code)
 
 
+@app.command("sources-file")
+def cmd_sources_file(
+    name: str = typer.Argument(..., help="The folder repository's name"),
+    fmt: str = typer.Option("deb822", "--format",
+                            help="deb822 (Ubuntu 24.04+, Debian 12+) or list (one line: jammy, Debian 11)"),
+):
+    """Print the sources file a client saves in /etc/apt/sources.list.d/ for a folder repository."""
+    from mmw.commands.sources_file import run
+    raise typer.Exit(run(_cfg_dir(), name, fmt))
+
+
 @app.command("move-database")
 def cmd_move_database(
     path: Path = typer.Argument(..., help="New path for the pool database file, e.g. on a fast disk"),

@@ -124,6 +124,34 @@ class AptLocalProvider(BaseProvider):
         return build(mirror_config)[1]
 
 
+# ── client sources file ──────────────────────────────────────────────────────
+
+SOURCES_FORMATS = ("deb822", "list")
+
+
+def sources_file(source, fmt: str) -> str:
+    """What a client drops into /etc/apt/sources.list.d/ — `deb822` (Ubuntu
+    24.04+, Debian 12+) or `list` (one line: jammy, Debian 11) — headed by the
+    command that installs the repository's key where the entry expects it."""
+    from urllib.parse import urlparse
+
+    from mmw.core.apt_sources import AptEntry, render_deb822, render_one_line
+    if fmt not in SOURCES_FORMATS:
+        raise ValueError(f"format must be one of {', '.join(SOURCES_FORMATS)}, not {fmt!r}")
+    parsed = urlparse(source.url)
+    keyring = f"/etc/apt/keyrings/{source.key}.gpg"
+    key_url = f"{parsed.scheme}://{parsed.netloc}/mmw-keys/{source.label}/{source.key}.gpg"
+    entry = AptEntry(source.url.rstrip("/"), source.suite if source.structured else None,
+                     [source.component] if source.structured else [], [])
+    render = render_deb822 if fmt == "deb822" else render_one_line
+    ext = "sources" if fmt == "deb822" else "list"
+    return (f"# {source.name} — served by mmw. Install the signing key first:\n"
+            f"#   sudo install -d -m 0755 /etc/apt/keyrings\n"
+            f"#   sudo curl -fsSL {key_url} -o {keyring}\n"
+            f"# then save this file as /etc/apt/sources.list.d/{source.name}.{ext}\n"
+            + render(entry, signed_by=keyring))
+
+
 # ── scanning ─────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -223,6 +251,7 @@ def build(unit) -> tuple[list[PackageInfo], list[MetadataFile]]:
         return [e for d, e in entries if d.control["Architecture"] in (arch, "all")]
 
     files: dict[str, bytes] = {}          # relative to the Release's directory
+    files_root: dict[str, bytes] = {}     # at the repository root, not in Release
     if structured:
         for arch in arches or ["all"]:
             files.update({f"{component}/binary-{arch}/{k}": v for k, v in
@@ -249,14 +278,29 @@ def build(unit) -> tuple[list[PackageInfo], list[MetadataFile]]:
     release = release_text(fields, files)
     inrelease, release_gpg = _signatures(work, o["key"], mirror_dir, release)
 
+    # The client's sources files, beside the repository, so `curl` gets them.
+    source = _as_source(unit)
+    for fmt, ext in (("deb822", "sources"), ("list", "list")):
+        files_root[f"{unit.name}.{ext}"] = sources_file(source, fmt).encode()
+
     top = f"dists/{o.get('suite', 'stable')}/" if structured else ""
     metadata = [MetadataFile(url=f"{base}/{top}{rel}", repo_path=top + rel, content=body)
                 for rel, body in sorted(files.items())]
+    metadata += [MetadataFile(url=f"{base}/{rel}", repo_path=rel, content=body)
+                 for rel, body in sorted(files_root.items())]
     metadata += [MetadataFile(url=f"{base}/{top}{rel}", repo_path=top + rel, content=body,
                               is_release=True)
                  for rel, body in (("Release", release), ("InRelease", inrelease),
                                    ("Release.gpg", release_gpg))]
     return packages, metadata
+
+
+def _as_source(unit):
+    from mmw.core.config import LocalAptSource
+    o = unit.options
+    return LocalAptSource(provider="apt-local", url=unit.source_url, folder=o["folder"], key=o["key"],
+                          name=unit.name, label=unit.label, structured=o.get("structured", False),
+                          suite=o.get("suite", "stable"), component=o.get("component", "main"))
 
 
 def _signatures(work: Path, key: str, mirror_dir: Path, release: bytes) -> tuple[bytes, bytes]:

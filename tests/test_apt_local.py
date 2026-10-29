@@ -123,7 +123,10 @@ def test_flat_folder_syncs_signed_and_publishes(tmp_path):
     assert {"Packages", "Packages.gz", "Packages.xz", "Release", "InRelease", "Release.gpg",
             "tool_1.0_amd64.deb", "doc_1.0_all.deb"} <= {p.name for p in base.iterdir()}
     assert "Filename: ./tool_1.0_amd64.deb" in (base / "Packages").read_text()
+    assert (base / f"{unit.name}.sources").read_text().startswith(f"# {unit.name} — served by mmw")
+    assert "./\n" in (base / f"{unit.name}.list").read_text()
     release = (base / "Release").read_text()
+    assert f"{unit.name}.list" not in release
     assert "Architectures: amd64\n" in release and "Suite:" not in release
     assert gpgv_ok(tmp_path, (root / f"keys/{unit.label}/tools.asc").read_text(),
                    (base / "Release.gpg").read_bytes(), (base / "Release").read_bytes())

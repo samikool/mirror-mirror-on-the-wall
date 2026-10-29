@@ -328,3 +328,21 @@ def test_index_writer_waits_for_every_row_and_pushes_back(tmp_path, monkeypatch)
     with IndexCache(tmp_path).writing():
         pass
     assert seen["timeout"] is None and seen["maxsize"]
+
+
+def test_fetch_metadata_counts_as_it_goes(tmp_path, monkeypatch):
+    """A long fetch said nothing until it ended."""
+    from itertools import count
+    from mmw.providers.pypi import index
+    fake = FakePyPI()
+    fake.add("a", [file_entry(f"a-1.{i}-py3-none-any.whl", metadata=metadata_text("a", f"1.{i}"))
+                   for i in range(3)])
+    fake.bad_metadata.add(fake.projects["a"]["files"][2]["url"])
+    cache = IndexCache(tmp_path)
+    refresh(cache, fake.client, threads=1)
+    ticks = count(0, 2)                             # every item is past the 1 s throttle
+    monkeypatch.setattr(index.time, "monotonic", lambda: next(ticks))
+    msgs = []
+    fetch_metadata(cache, cache.files("a"), fake.client, threads=1, say=msgs.append)
+    assert msgs == [f"PyPI metadata: fetching the requirements of new releases — {i}/3"
+                    for i in (1, 2, 3)] + ["PyPI metadata: 2 fetched, 1 failed"]

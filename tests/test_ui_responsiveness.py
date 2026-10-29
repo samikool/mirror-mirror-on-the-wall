@@ -551,6 +551,20 @@ def test_a_finishing_card_lands_its_last_bytes():
     assert card._pooled == 1
 
 
+def test_a_failed_card_says_why():
+    """A count alone ("Failed packages: 12") left the user guessing."""
+    from mmw.core.downloader import Status
+
+    card = _card()
+    card._start = time.monotonic()
+    for name in ("a.deb", "b.deb"):
+        card.record_file(name, Status.FAILED, 0, "http 404 (not on the server)")
+    card.record_file("c.deb", Status.FAILED, 0, "Client error '403 Forbidden' for url 'https://x/c'")
+    assert card._log_pending[-1].endswith("[dim]403 Forbidden[/]")
+    card.finish()
+    assert "2 × http 404 (not on the server), 1 × 403 Forbidden" in card.finish_line
+
+
 # ── the pool write must not block the download thread ────────────────────────
 
 def test_a_queued_row_is_visible_to_reads_immediately(tmp_path):

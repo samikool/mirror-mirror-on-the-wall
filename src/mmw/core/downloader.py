@@ -364,6 +364,31 @@ class PermanentFetchError(Exception):
     """
 
 
+_PERMANENT = {403: "forbidden", 404: "not on the server", 410: "gone from the server"}
+
+
+def failure_reason(error: str) -> str:
+    """A failed download's error, short enough to group and show on one
+    line: the first line, without the URL httpx puts in it (the file name
+    is shown beside it already). `Server error '503 Service Unavailable'
+    for url '…'` → `503 Service Unavailable`."""
+    line = (error or "unknown error").strip().splitlines()[0]
+    line = line.split(" for url ", 1)[0]
+    for prefix in ("Client error ", "Server error ", "Redirect response "):
+        if line.startswith(prefix):
+            line = line[len(prefix):].strip("'")
+    return line if len(line) <= 80 else line[:79] + "…"
+
+
+def reason_summary(reasons: "collections.Counter[str]", top: int = 3) -> str:
+    """`10 × http 404 (not on the server), 2 × checksum mismatch` — the
+    commonest first, the rest folded into `+N more`."""
+    common = reasons.most_common()
+    text = ", ".join(f"{n:,} × {r}" for r, n in common[:top])
+    rest = sum(n for _, n in common[top:])
+    return text + (f", +{rest:,} more" if rest else "")
+
+
 def _partial_path(pool: Pool, pkg: PackageInfo) -> Path:
     """A resume file for ONE download of `pkg`: unique to it, and reused by
     that download's own retries (`_do_one` makes it once and hands it to
@@ -430,7 +455,8 @@ def _download_sync(
     try:
         with request_scope(stop_event), client.stream("GET", pkg.url, headers=headers) as resp:
             if resp.status_code in (403, 404, 410):
-                raise PermanentFetchError(f"http {resp.status_code}")
+                raise PermanentFetchError(
+                    f"http {resp.status_code} ({_PERMANENT[resp.status_code]})")
             if offset and resp.status_code != 206:
                 # Range ignored (or unsupported) — start clean rather than
                 # appending to bytes the server is about to resend.

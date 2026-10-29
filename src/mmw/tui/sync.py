@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import concurrent.futures
 import threading
 import time
@@ -20,7 +21,7 @@ from mmw.core.format import (
     fmt_size as _fmt_size,
     fmt_speed as _fmt_speed,
 )
-from mmw.core.downloader import Status
+from mmw.core.downloader import Status, failure_reason, reason_summary
 from mmw.core.pool import Pool
 from mmw.core.item_progress import ItemCounts, ItemInventory, ItemProgressSession
 from mmw.core.download_coordinator import DownloadCoordinator
@@ -136,6 +137,9 @@ class MirrorCard(Static, can_focus=True):
         self._pending_skipped: int = 0
         self._pending_bytes: int = 0
         self._pending_pkg: str = ""
+        # Why files failed, by `failure_reason` — the finish line names the
+        # commonest, so a run of failures says what went wrong, not just how many.
+        self._fail_reasons: collections.Counter[str] = collections.Counter()
 
     def compose(self) -> ComposeResult:
         yield Label(
@@ -195,10 +199,13 @@ class MirrorCard(Static, can_focus=True):
     def current_speed(self) -> float:
         return 0.0 if self._done else self._speed_ema
 
-    def record_file(self, pkg_name: str, status: Status, bytes_xfr: int):
+    def record_file(self, pkg_name: str, status: Status, bytes_xfr: int, error: str = ""):
         """Transfer accounting stays per file, independent of item progress."""
+        reason = failure_reason(error) if status == Status.FAILED else ""
+        if reason:
+            self._fail_reasons[reason] += 1
         if not self._logical_progress:
-            self.accumulate(pkg_name, status, bytes_xfr)
+            self.accumulate(pkg_name, status, bytes_xfr, reason=reason)
             return
         if status == Status.DOWNLOADED:
             self._pending_bytes += bytes_xfr
@@ -206,9 +213,11 @@ class MirrorCard(Static, can_focus=True):
             with self._in_flight_lock:
                 self._in_flight = max(0, self._in_flight - 1)
         if status == Status.FAILED and pkg_name:
-            self._log_pending.append(f"  [$mmw-error]✗[/] {escape(pkg_name)} (file)")
+            self._log_pending.append(f"  [$mmw-error]✗[/] {escape(pkg_name)} (file)"
+                                     + (f"  [dim]{escape(reason)}[/]" if reason else ""))
 
-    def accumulate(self, pkg_name: str, status: Status, bytes_xfr: int, *, track_transfer: bool = True):
+    def accumulate(self, pkg_name: str, status: Status, bytes_xfr: int, *, track_transfer: bool = True,
+                   reason: str = ""):
         """Called at download rate — counters only, no DOM work."""
         if status == Status.DOWNLOADED:
             self._pending_downloaded += 1
@@ -228,7 +237,8 @@ class MirrorCard(Static, can_focus=True):
                 with self._in_flight_lock:
                     self._in_flight = max(0, self._in_flight - 1)
             if pkg_name:
-                self._log_pending.append(f"  [$mmw-error]✗[/] {escape(pkg_name)}")
+                self._log_pending.append(f"  [$mmw-error]✗[/] {escape(pkg_name)}"
+                                         + (f"  [dim]{escape(reason)}[/]" if reason else ""))
         elif status == Status.SKIPPED:
             self._pending_skipped += 1
         if pkg_name:
@@ -339,7 +349,9 @@ class MirrorCard(Static, can_focus=True):
             line = f"  ⚠ Stopped after {_fmt_eta(elapsed)}  —  {_fmt_size(self._bytes)} transferred"
         elif self._failed:
             self.add_class("error")
-            line = (f"  ✗ Failed {escape(self._item_label)}: {self._failed:,}"
+            why = (f"  —  {escape(reason_summary(self._fail_reasons))}"
+                   if self._fail_reasons else "")
+            line = (f"  ✗ Failed {escape(self._item_label)}: {self._failed:,}{why}"
                     f"  —  {_fmt_size(self._bytes)} transferred  (expand for detail)")
         elif not metadata_ok:
             self.add_class("warn")
@@ -350,6 +362,7 @@ class MirrorCard(Static, can_focus=True):
         else:
             self.add_class("done")
             line = f"  ✓ Complete in {_fmt_eta(elapsed)}  —  {_fmt_size(self._bytes)} transferred"
+        self.finish_line = line
         try:
             self.query_one("#pkg", Label).update(line)
         except Exception:
@@ -947,13 +960,15 @@ class SyncView(Vertical):
         events = SyncEvents(
             phase=lambda text: self.post_message(MirrorStatus(mirror.name, text)),
             started=_on_started,
-            progress=(lambda pkg, res: card.record_file(pkg, res.status, res.bytes_transferred)) if card else None,
+            progress=(lambda pkg, res: card.record_file(pkg, res.status, res.bytes_transferred, res.error)) if card else None,
             chunk=card.add_chunk_bytes if card else None,
             download_started=card.inc_in_flight if card else None,
             download_finished=card.dec_in_flight if card else None,
             items_started=_on_items_started,
             item_progress=(lambda event: card.accumulate(event.name, event.result.status,
-                                                       event.result.bytes_transferred, track_transfer=False)) if card else None,
+                                                       event.result.bytes_transferred, track_transfer=False,
+                                                       reason=failure_reason(event.result.error)
+                                                       if event.result.status == Status.FAILED else "")) if card else None,
         )
 
         try:

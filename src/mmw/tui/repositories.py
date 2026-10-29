@@ -409,10 +409,23 @@ def resolve_retry_selection(cfg: config.Config, selection, *, progress=None, sto
                             config_dir=None):
     """Resolve a recovery selection from the pool, with no upstream calls."""
     from mmw.core.resolve import pooled_mirrors
-    mirrors = [m for m in pooled_mirrors(cfg, cfg.settings.mirror_dir) if get_provider(m.provider).retries_failures]
+    from mmw.providers import retry_scope
+    pooled = pooled_mirrors(cfg, cfg.settings.mirror_dir)
+    mirrors = [m for m in pooled if get_provider(m.provider).retries_failures]
     chosen, problem, _ = narrow_to_selection(mirrors, [], selection)
-    return chosen, ([problem + " Retry supports previously synced VS Code mirrors."]
-                    if problem else [])
+    # The selection's units that cannot be retried are said, not dropped
+    # silently: an apt repository ticked beside VS Code is left out.
+    left_out, _, _ = narrow_to_selection(
+        [m for m in pooled if not get_provider(m.provider).retries_failures], [], selection)
+    messages = [retry_scope(left_out)] if left_out else []
+    if not chosen and left_out:
+        problem = "Nothing to retry in the selection."
+    elif problem == "Nothing to sync.":
+        problem = ("Nothing to retry: no previously synced mirror of a kind that keeps a "
+                   "retry list.")
+    if problem:
+        messages.append(problem)
+    return chosen, messages
 
 
 def resolve_selection(cfg: config.Config, selection, *, progress=None, stop_event=None,

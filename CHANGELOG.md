@@ -16,6 +16,15 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Failed downloads say why.** Each failed file on a sync card names its
+  reason (`http 404 (not on the server)`, `checksum mismatch`, `503 Service
+  Unavailable`…), and a card that finishes with failures sums them up —
+  `Failed packages: 12 — 10 × http 404 (not on the server), 2 × checksum
+  mismatch`. `mmw retry-failed` ends each mirror with the same `Why:` line.
+- **Retry missing says what it leaves out.** It covers VS Code and PyPI
+  mirrors; apt mirrors in the selection used to vanish silently (or read as
+  "nothing selected could be resolved"). It now names them and says a normal
+  sync fetches what they are missing.
 - **A new network's far side defaults to mmw.** The network editor offers mmw
   first; existing networks keep what they have (no `far_side` in the config
   still means `apply`).

@@ -1,9 +1,16 @@
 """The `apt-local` provider: a folder of debs, signed and served at a URL."""
+import hashlib
+from dataclasses import replace
+
 import pytest
 from pydantic import ValidationError
 
-from mmw.core import config
+from debs import make_deb
+from mmw.core import config, downloader
+from mmw.core.downloader import Status
+from mmw.core.pool import Pool
 from mmw.providers import get_provider
+from mmw.providers.base import PackageInfo
 
 
 def test_local_source_round_trips_through_toml(tmp_path):
@@ -47,3 +54,19 @@ def test_bad_url_and_names_are_refused():
         with pytest.raises(ValidationError):
             config.LocalAptSource(**{"provider": "apt-local", "url": "https://h/p",
                                      "folder": "/d", "key": "k", **bad})
+
+
+def test_a_file_url_is_pooled_and_verified(tmp_path):
+    deb = make_deb(tmp_path, "a", "1")
+    digest = hashlib.sha256(deb.read_bytes()).hexdigest()
+    pkg = PackageInfo("a", deb.as_uri(), digest, "sha256", deb.stat().st_size, "a_1_amd64.deb", deb.name)
+    chunks = []
+    with Pool(tmp_path / "m") as pool:
+        result = downloader._download_sync(pkg, pool, chunks.append, None)
+        assert result.status is Status.DOWNLOADED and pool.contains(digest)
+        assert sum(chunks) == deb.stat().st_size
+        bad = downloader._download_sync(replace(pkg, checksum="0" * 64), pool, None, None)
+        assert bad.status is Status.FAILED and bad.error == "checksum mismatch"
+    missing = replace(pkg, url=(tmp_path / "gone.deb").as_uri())
+    with Pool(tmp_path / "m") as pool, pytest.raises(downloader.PermanentFetchError, match="not found"):
+        downloader._download_sync(missing, pool, None, None)

@@ -351,21 +351,24 @@ _ADD_FLAGS = {
     "vscode": {"--kind", "--platform", "--quality", "--top-n", "--id", "--ids-file", "--all", "--prerelease"},
     "pypi": {"--python", "--platform", "--arch", "--glibc", "--musl", "--macos", "--sdists", "--all", "--req",
              "--requirements-file"},
+    "local": {"--folder", "--url", "--structured", "--suite", "--component", "--key", "--contents"},
 }
 
 
 @app.command("add")
 def cmd_add(
     what: str = typer.Argument(
-        None, help="`vscode` or `pypi` to add (or replace) that source; omit for apt files.",
-        metavar="[vscode|pypi]"),
+        None, help="`vscode` or `pypi` to add (or replace) that source, `local` for a folder of "
+                   ".debs; omit for apt files.",
+        metavar="[vscode|pypi|local]"),
     file: list[Path] = typer.Option(
         None, "--file", "-f",
         help="apt config file(s) or a directory of them ('-' for stdin). "
              "Repeatable; joined with blank lines so records never run together. "
              "Defaults to stdin.",
     ),
-    url: str = typer.Option(None, "--url", help="Fetch the config file from a URL."),
+    url: str = typer.Option(None, "--url", help="Fetch the config file from a URL. local: the "
+                                                "address clients use, e.g. https://tools.lan/apt."),
     label: str = typer.Option(
         None, "--label",
         help="Override the key-grouping label (default: the host's domain name).",
@@ -407,6 +410,17 @@ def cmd_add(
                                                      "e.g. 'numpy<2' (repeatable)."),
     requirements_file: str = typer.Option(None, "--requirements-file",
                                           help="pypi: a requirements.txt-style file, relative to mmw.toml."),
+    folder: str = typer.Option(None, "--folder", help="local: the folder of .deb files (relative to mmw.toml)."),
+    structured: bool = typer.Option(False, "--structured",
+                                    help="local: a dists/{suite}/{component}/ layout instead of flat."),
+    suite: str = typer.Option(None, "--suite", help="local: the suite (with --structured; default stable)."),
+    component: str = typer.Option(None, "--component",
+                                  help="local: the component (with --structured; default main)."),
+    key: str = typer.Option(None, "--key", help="local: the signing key's name (default: one is "
+                                                "generated, named after the repository)."),
+    contents: bool = typer.Option(False, "--contents",
+                                  help="local: Contents files, so apt-file finds these packages "
+                                       "(slower to sync and sign)."),
 ):
     """Add sources from a sources.list or deb822 .sources file — or the VS Code source.
 
@@ -418,18 +432,25 @@ def cmd_add(
       mmw add -f /etc/apt/sources.list.d --keys-dir /path/to/keyrings
       mmw add vscode --kind extensions --top-n 200 --platform linux-x64
       mmw add pypi --python 3.12 --platform linux-glibc --arch amd64 --all
+      mmw add local --folder ./debs --url https://tools.lan/apt
     """
     given = {"--file": file, "--url": url, "--label": label, "--keys-dir": keys_dir, "--arch": arch,
              "--kind": kind, "--platform": platform, "--quality": quality, "--top-n": top_n, "--id": ext_id,
              "--ids-file": ids_file, "--all": all_, "--prerelease": prerelease, "--python": python,
              "--glibc": glibc, "--musl": musl, "--macos": macos, "--sdists": sdists, "--req": req,
-             "--requirements-file": requirements_file}
+             "--requirements-file": requirements_file, "--folder": folder, "--structured": structured,
+             "--suite": suite, "--component": component, "--key": key, "--contents": contents}
     kind_name = what if what in _ADD_FLAGS else "apt"
     foreign = [flag for flag, value in given.items() if value and flag not in _ADD_FLAGS[kind_name]]
     if foreign:
         typer.echo(f"mmw add {'' if kind_name == 'apt' else kind_name + ' '}does not take "
                    f"{', '.join(foreign)}.", err=True)
         raise typer.Exit(2)
+    if what == "local":
+        from mmw.commands.add_local import run as run_local
+        raise typer.Exit(run_local(
+            _cfg_dir(), folder=folder, url=url, structured=structured, suite=suite,
+            component=component, key=key, contents=contents, dry_run=dry_run, echo=typer.echo))
     if what == "pypi":
         from mmw.commands.add_pypi import run as run_pypi
         raise typer.Exit(run_pypi(
@@ -438,8 +459,8 @@ def cmd_add(
             requirements=req, requirements_file=requirements_file))
     if what is not None:
         if what != "vscode":
-            typer.echo(f"Unknown source kind {what!r} — use `mmw add vscode` or `mmw add pypi`, "
-                       "or no argument for apt files.", err=True)
+            typer.echo(f"Unknown source kind {what!r} — use `mmw add vscode`, `mmw add pypi` or "
+                       "`mmw add local`, or no argument for apt files.", err=True)
             raise typer.Exit(2)
         from mmw.commands.add_vscode import run as run_vscode
         raise typer.Exit(run_vscode(
@@ -453,6 +474,49 @@ def cmd_add(
     code = run(file=file, url=url, label=label, arch=arch[0] if arch else "", keys_dir=keys_dir,
                dry_run=dry_run, cfg_dir=_cfg_dir(), echo=typer.echo)
     raise typer.Exit(code)
+
+
+signing_key_app = typer.Typer(help="The keys mmw signs repositories with.", no_args_is_help=True)
+app.add_typer(signing_key_app, name="signing-key")
+
+
+@signing_key_app.command("generate")
+def cmd_signing_key_generate(name: str = typer.Argument(..., help="A short name, e.g. tools")):
+    """Make a new signing key (ed25519, no expiry)."""
+    from mmw.commands.signing_key import generate
+    raise typer.Exit(generate(_cfg_dir(), name))
+
+
+@signing_key_app.command("import")
+def cmd_signing_key_import(name: str = typer.Argument(..., help="The name mmw will know it by"),
+                           file: Path = typer.Option(None, "--file", "-f",
+                                                     help="An armoured private key ('-' or omitted: stdin)")):
+    """Import an armoured private key to sign with."""
+    from mmw.commands.signing_key import import_
+    raise typer.Exit(import_(_cfg_dir(), name, file))
+
+
+@signing_key_app.command("export")
+def cmd_signing_key_export(name: str = typer.Argument(...),
+                           private: bool = typer.Option(False, "--private",
+                                                        help="The private key (anyone holding it can sign as you)")):
+    """Print a key, armoured: the public half unless --private."""
+    from mmw.commands.signing_key import export
+    raise typer.Exit(export(_cfg_dir(), name, private))
+
+
+@signing_key_app.command("list")
+def cmd_signing_key_list():
+    """The signing keys, and which repositories each signs."""
+    from mmw.commands.signing_key import list_
+    raise typer.Exit(list_(_cfg_dir()))
+
+
+@signing_key_app.command("remove")
+def cmd_signing_key_remove(name: str = typer.Argument(...)):
+    """Delete a key no repository signs with."""
+    from mmw.commands.signing_key import remove
+    raise typer.Exit(remove(_cfg_dir(), name))
 
 
 @app.command("sources-file")

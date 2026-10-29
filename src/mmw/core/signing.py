@@ -136,6 +136,9 @@ class Keyring:
     def public_armor(self, name: str) -> str:
         return self._gpg("--armor", "--export", self._fingerprint(name)).decode()
 
+    def private_armor(self, name: str) -> str:
+        return self._gpg("--armor", "--export-secret-keys", self._fingerprint(name)).decode()
+
     def remove(self, name: str) -> None:
         fpr = self._fingerprint(name)
         self._gpg("--delete-secret-and-public-key", fpr)

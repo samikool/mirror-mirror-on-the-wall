@@ -367,8 +367,11 @@ with the same hostnames, so serve it on its own address. Every bundle also
 takes one (see [airgap](airgap.md#between-any-two-snapshots)).
 
 `mmw prune` never deletes a file a snapshot lists; `mmw snapshot delete` /
-`clean --keep N` let it go (the next prune frees it). A snapshot some directory
-serves cannot be deleted. Renaming a network carries its snapshots along, and
+`clean --keep N` let it go (the next prune frees it). One a transfer went to
+stays listed as history only — no files, just where the next transfer can start
+from. `delete --force` forgets it outright instead, with the transfers that
+went to it; if the far side may be there, the next transfer sends everything.
+A snapshot some directory serves cannot be deleted. Renaming a network carries its snapshots along, and
 removing it in the TUI removes them; a network deleted from `mmw.toml` by hand
 leaves them behind — `mmw prune` names it, and
 `mmw snapshot clean -n OLD --keep 0 --yes` clears them. In the TUI: `n` on a network opens its snapshots, and

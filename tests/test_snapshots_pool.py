@@ -57,3 +57,21 @@ def test_renaming_and_two_networks_sharing_a_stamp(pool):
     assert [s.label for s in pool.snapshots("oak")] == ["golden"]
     with pytest.raises(ValueError, match="already"):
         pool.create_snapshot("oak", "20261011T120000Z", kind="manual", rows=[])
+
+
+def test_a_history_only_snapshot_keeps_its_rows_but_not_its_files(pool):
+    old = _add(pool, b"old version", "x_1.deb")
+    shared = _add(pool, b"shared", "y_1.deb")
+    pool.reconcile_refs("m", [], source=SRC)
+    sid = pool.create_snapshot("oak", "20261011T120000Z", kind="bundle",
+                               rows=[("deb/pool/x_1.deb", old), ("deb/pool/y_1.deb", shared)])
+    keep = pool.create_snapshot("oak", "20261012T120000Z", kind="manual",
+                                rows=[("deb/pool/y_1.deb", shared)])
+    pool.demote_snapshot(sid)
+
+    [_, info] = pool.snapshots("oak")
+    assert (info.id, info.complete, info.files) == (sid, False, 2)    # rows stay
+    assert pool.snapshot_exclusive_bytes(sid) == 0                     # holds nothing
+    assert pool.snapshot_exclusive_bytes(keep) == len(b"shared")       # the other alone holds it
+    assert pool.prune_orphans([SRC]) == (1, len(b"old version"))      # a complete one still holds
+    assert not pool.contains(old) and pool.contains(shared)

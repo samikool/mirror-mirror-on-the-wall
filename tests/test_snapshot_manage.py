@@ -50,3 +50,26 @@ def test_bundle_history_is_imported_as_incomplete_snapshots_once(two_mirrors):  
         assert [(s.stamp, s.kind, s.complete) for s in snaps] == [
             ("20260902T000000Z", "imported", False), ("20260901T000000Z", "imported", False)]
         assert dict(pool.snapshot_files(snaps[0].id)) == {"a/pool/x.deb": "c1"}
+
+
+def test_deleting_a_transferred_snapshot_leaves_it_history_only(two_mirrors):  # noqa: F811
+    # The far side may sit at it: its list stays as a starting point, and
+    # the ledger manifest under its stamp must not bring it back whole.
+    cfg, net, mirror_dir = two_mirrors
+    sent = S.take_snapshot(net, cfg, mirror_dir)
+    kept = S.take_snapshot(net, cfg, mirror_dir)
+    write_manifest(ledger_dir(mirror_dir, "oak") / f"{sent.stamp}.manifest.jsonl",
+                   ManifestHeader(network="oak", created=sent.stamp, previous=None, full=True),
+                   [("a/pool/x.deb", "c1")])
+    with Pool(mirror_dir) as pool:
+        S.ensure_repo_versions(pool, "oak")
+        versions = pool.snapshot_repo_versions(sent.id)
+        pool.record_bundle("oak", None, sent.stamp, "/o/x.tar", 1, 1, 0)
+        S.delete_snapshot(pool, sent)
+        S.delete_snapshot(pool, kept)                   # never transferred: really gone
+        assert S.import_ledger(pool, mirror_dir, "oak") == 0
+        [snap] = pool.snapshots("oak")
+        assert (snap.id, snap.complete) == (sent.id, False)
+        assert pool.snapshot_repo_versions(sent.id) == versions
+        with pytest.raises(ValueError, match="history only"):
+            S.delete_snapshot(pool, snap)

@@ -48,12 +48,12 @@ def plan_repo_deltas(pool: Pool, network: NetworkConfig, cfg: Config, dest: Snap
     elif from_ref is None:
         starts = {}
     else:
-        if not from_ref.complete:
+        # A deleted snapshot kept as history only still has its versions;
+        # one imported from an old bundle never had any.
+        starts = pool.snapshot_repo_versions(from_ref.id)
+        if not starts and not from_ref.complete:
             warnings.extend(f"{repository_label(r, cfg)}: {from_ref.stamp} is history only — "
                             "sending it in full" for r in chosen)
-            starts = {}
-        else:
-            starts = pool.snapshot_repo_versions(from_ref.id)
 
     deltas = []
     for repo in chosen:

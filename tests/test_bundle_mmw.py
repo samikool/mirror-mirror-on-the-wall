@@ -101,6 +101,22 @@ def test_mmw_bundle_from_imported_falls_back_to_full_with_warning(two_mirrors, t
     assert any("history only" in w and "in full" in w for w in r.warnings)
 
 
+
+def test_a_deleted_transferred_snapshot_is_still_a_delta_start(two_mirrors, tmp_path):  # noqa: F811
+    cfg, net, md = _mmw(two_mirrors)
+    first = bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None)
+    _change_a(md)
+    from mmw.core.snapshots import delete_snapshot, find_snapshot, take_snapshot
+    take_snapshot(net, cfg, md)
+    with Pool(md) as p:
+        assert delete_snapshot(p, find_snapshot(p, net.name, first.created))   # history only
+    for i, from_ref in enumerate((None, first.created)):                    # the last, and chosen
+        kw = {"from_ref": from_ref} if from_ref else {}
+        r = bundle_network(net, cfg, md, out_path=tmp_path / f"{i + 2}", **kw)
+        assert [d.repo for d in r.repos] == [_key(cfg, "a")]                 # b is already there
+        assert r.repos[0].start is not None
+        assert not any("in full" in w for w in r.warnings), r.warnings
+
 def test_deleted_start_version_falls_back_to_full(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
     first = bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None)

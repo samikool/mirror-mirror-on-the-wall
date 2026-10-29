@@ -136,10 +136,11 @@ CREATE TABLE IF NOT EXISTS refs (
 
 -- Network snapshots: a network's complete published tree at a moment, kept
 -- so it can be bundled to or published again exactly. Every checksum here is
--- a GC root, like `refs` — prune never deletes a file a snapshot still lists.
--- `complete = 0`: imported from a bundle manifest written before snapshots
--- existed; its file list is exact but some files may already be pruned, so
--- it can be a bundle's starting point but never its destination.
+-- a GC root, like `refs` — prune never deletes a file a complete snapshot
+-- still lists. `complete = 0` (history only): imported from a bundle manifest
+-- written before snapshots existed, or a transferred snapshot deleted since;
+-- its file list is exact but it holds no files, so some may already be
+-- pruned — a bundle's starting point, never its destination.
 CREATE TABLE IF NOT EXISTS snapshots (
     id        INTEGER PRIMARY KEY,
     network   TEXT NOT NULL,
@@ -223,6 +224,13 @@ CREATE TABLE IF NOT EXISTS published (
     network  TEXT NOT NULL,
     target   TEXT NOT NULL,                   -- 'live' | snapshot stamp
     made     TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now'))
+);
+
+-- A network whose far side may sit at a snapshot force-deleted here: the
+-- record of what it has is gone, so its next default transfer is full.
+CREATE TABLE IF NOT EXISTS full_next (
+    network  TEXT PRIMARY KEY,
+    stamp    TEXT NOT NULL                    -- the snapshot forgotten
 );
 
 -- mirror_stats / group_unique_count / ref_map all filter on mirror_name;
@@ -671,6 +679,23 @@ def _current_dims(raw: str | None, arch: str | None, suite: str | None,
         return legacy
     dims = json.loads(raw)
     return {k: legacy.get(k, v) for k, v in dims.items()}
+
+
+def _delete_snapshot_rows(conn: sqlite3.Connection, ids: list[int]) -> None:
+    """A snapshot's rows, and the shared paths and checksums no snapshot
+    lists any more. The caller holds the write lock and commits."""
+    for sid in ids:
+        conn.execute("DELETE FROM snapshot_files WHERE snapshot = ?", (sid,))
+        conn.execute("DELETE FROM snapshot_repos WHERE snapshot = ?", (sid,))
+        conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
+    # The shared tables hold exactly what some snapshot still lists —
+    # prune finds a file's holders through `snapshot_blobs`.
+    # NOT IN, not a correlated NOT EXISTS: `snapshot_files.path` has no
+    # index of its own, and the correlated form compared every path
+    # with every row (515k x 515k — it never finished on oak). NOT IN
+    # builds its lookup once.
+    conn.execute("DELETE FROM snapshot_blobs WHERE id NOT IN (SELECT blob FROM snapshot_files)")
+    conn.execute("DELETE FROM snapshot_paths WHERE id NOT IN (SELECT path FROM snapshot_files)")
 
 
 def _replace_retry_plan(conn, mirror_name, failures, source):
@@ -1520,22 +1545,59 @@ class Pool:
         else (a live mirror, another snapshot) still references them."""
         self._delete_snapshots([snapshot_id])
 
+    def demote_snapshot(self, snapshot_id: int) -> None:
+        """Make it history only: its rows stay — a far side may sit at it, and
+        a transfer starts from its list and versions — but it stops holding
+        its files, so the next prune frees what nothing else references."""
+        with self._lock:
+            self._conn.execute("UPDATE snapshots SET complete = 0 WHERE id = ?", (snapshot_id,))
+            self._conn.commit()
+
     def _delete_snapshots(self, ids: list[int]) -> None:
         with self._lock:
-            for sid in ids:
-                self._conn.execute("DELETE FROM snapshot_files WHERE snapshot = ?", (sid,))
-                self._conn.execute("DELETE FROM snapshot_repos WHERE snapshot = ?", (sid,))
-                self._conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
-            # The shared tables hold exactly what some snapshot still lists —
-            # prune reads `snapshot_blobs` as the set of held checksums.
-            # NOT IN, not a correlated NOT EXISTS: `snapshot_files.path` has no
-            # index of its own, and the correlated form compared every path
-            # with every row (515k x 515k — it never finished on oak). NOT IN
-            # builds its lookup once.
-            self._conn.execute("DELETE FROM snapshot_blobs WHERE id NOT IN "
-                               "(SELECT blob FROM snapshot_files)")
-            self._conn.execute("DELETE FROM snapshot_paths WHERE id NOT IN "
-                               "(SELECT path FROM snapshot_files)")
+            _delete_snapshot_rows(self._conn, ids)
+            self._conn.commit()
+
+    _LAST_SENT = ("SELECT r.repo, r.to_version FROM bundle_repos r JOIN bundles b ON b.id = r.bundle "
+                  "WHERE b.network = ? ORDER BY b.id")
+
+    def forget_snapshot(self, snap: SnapshotInfo, far_side_at_it: bool) -> bool:
+        """Force delete: the snapshot's rows and every transfer that went to
+        it, in one transaction. Version rows stay — a far side may hold one,
+        and a number must never be handed out again. When the far side may be
+        at it (`far_side_at_it`: where the next transfer would start), or a
+        repository's last-sent version came from one of those transfers, the
+        network's next default transfer is full. Returns whether it now is."""
+        network, stamp = snap.network, snap.stamp
+        with self._lock:
+            before = dict(self._conn.execute(self._LAST_SENT, (network,)).fetchall())
+            went = "SELECT id FROM bundles WHERE network = ? AND to_stamp = ?"
+            self._conn.execute(f"DELETE FROM bundle_repos WHERE bundle IN ({went})", (network, stamp))
+            self._conn.execute("DELETE FROM bundles WHERE network = ? AND to_stamp = ?", (network, stamp))
+            full = far_side_at_it or dict(
+                self._conn.execute(self._LAST_SENT, (network,)).fetchall()) != before
+            if full:
+                self._conn.execute("INSERT OR REPLACE INTO full_next (network, stamp) VALUES (?, ?)",
+                                   (network, stamp))
+            _delete_snapshot_rows(self._conn, [snap.id])
+            self._conn.commit()
+        return full
+
+    def full_next(self, network: str) -> str | None:
+        """The forgotten snapshot that makes `network`'s next default
+        transfer full, if one does."""
+        try:
+            with self._read() as c:
+                row = c.execute("SELECT stamp FROM full_next WHERE network = ?", (network,)).fetchone()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):        # read-only open of an older pool
+                return None
+            raise
+        return row[0] if row else None
+
+    def clear_full_next(self, network: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM full_next WHERE network = ?", (network,))
             self._conn.commit()
 
     def network_names(self) -> set[str]:
@@ -1559,7 +1621,7 @@ class Pool:
             if clash:
                 return (f"snapshots or bundles of a network called '{new}' are already in "
                         f"the pool — '{old}''s were left under the old name")
-            for table in ("snapshots", "bundles", "published", "repo_versions"):
+            for table in ("snapshots", "bundles", "published", "repo_versions", "full_next"):
                 self._conn.execute(f"UPDATE {table} SET network = ? WHERE network = ?",
                                    (new, old))
             self._conn.commit()
@@ -1581,6 +1643,7 @@ class Pool:
             self._conn.execute("DELETE FROM repo_versions WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM bundles WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM published WHERE network = ?", (network,))
+            self._conn.execute("DELETE FROM full_next WHERE network = ?", (network,))
             self._conn.commit()
         return len(ids)
 
@@ -1743,13 +1806,15 @@ class Pool:
                 return []
             raise
 
-    def last_sent_versions(self, network: str) -> dict[str, int]:
-        """Repository → the version id the newest transfer naming it sent."""
+    def last_sent_versions(self, network: str, without: str | None = None) -> dict[str, int]:
+        """Repository → the version id the newest transfer naming it sent;
+        `without`: as if no transfer had gone to that stamp."""
+        sql, args = self._LAST_SENT, (network,)
+        if without is not None:
+            sql, args = sql.replace("ORDER BY", "AND b.to_stamp != ? ORDER BY"), (network, without)
         try:
             with self._read() as c:
-                rows = c.execute(
-                    "SELECT r.repo, r.to_version FROM bundle_repos r JOIN bundles b ON b.id = r.bundle "
-                    "WHERE b.network = ? ORDER BY b.id", (network,)).fetchall()
+                rows = c.execute(sql, args).fetchall()
         except sqlite3.OperationalError as e:
             if "no such table" in str(e):
                 return {}
@@ -1791,7 +1856,8 @@ class Pool:
 
     def snapshot_exclusive_bytes(self, snapshot_ids: "int | list[int]") -> int:
         """Bytes only these snapshots keep — what deleting them (then pruning)
-        frees: files no live mirror and no other snapshot references."""
+        frees: files no live mirror and no other complete snapshot references.
+        A history-only snapshot keeps none."""
         ids = [snapshot_ids] if isinstance(snapshot_ids, int) else list(snapshot_ids)
         if not ids:
             return 0
@@ -1800,10 +1866,10 @@ class Pool:
         row = self._read_only(
             "SELECT COALESCE(SUM(p.size), 0) FROM snapshot_blobs b "
             "JOIN packages p ON p.checksum = b.checksum "
-            f"WHERE EXISTS (SELECT 1 FROM snapshot_files f WHERE f.blob = b.id "
-            f"AND f.snapshot IN ({ph})) "
-            f"AND NOT EXISTS (SELECT 1 FROM snapshot_files o WHERE o.blob = b.id "
-            f"AND o.snapshot NOT IN ({ph})) "
+            f"WHERE EXISTS (SELECT 1 FROM snapshot_files f JOIN snapshots s ON s.id = f.snapshot "
+            f"WHERE f.blob = b.id AND f.snapshot IN ({ph}) AND s.complete = 1) "
+            f"AND NOT EXISTS (SELECT 1 FROM snapshot_files o JOIN snapshots s ON s.id = o.snapshot "
+            f"WHERE o.blob = b.id AND o.snapshot NOT IN ({ph}) AND s.complete = 1) "
             "AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = b.checksum)",
             tuple(ids) * 2)
         return row[0] if row else 0
@@ -1855,8 +1921,12 @@ class Pool:
                      columns: str = "checksum, pool_path, size") -> str:
         """Packages no ref passing `ref_filter` wants and no snapshot holds —
         the one definition of an orphan, shared by the prune and its preview."""
+        # Only a complete snapshot holds: a history-only one's files may go.
+        # Through idx_snapshot_files_blob, a few index steps per package.
         held = ("AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
-                "WHERE b.checksum = packages.checksum)" if self._has_snapshot_blobs else "")
+                "JOIN snapshot_files f ON f.blob = b.id JOIN snapshots s ON s.id = f.snapshot "
+                "WHERE b.checksum = packages.checksum AND s.complete = 1)"
+                if self._has_snapshot_blobs else "")
         return (f"SELECT {columns} FROM packages "
                 "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum "
                 f"AND {ref_filter}) {held}")

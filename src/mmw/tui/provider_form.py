@@ -5,16 +5,23 @@ from pydantic import TypeAdapter, ValidationError
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Checkbox, Input, Label, TextArea
+from textual.widgets import Checkbox, Input, Label, Select, TextArea
 
 from mmw.core import config
 from mmw.providers import get_provider
 from mmw.tui.pick import PickPage
-from mmw.tui.ui.form import ActionField, Form, TextAreaField, TextField, ToggleField
+from mmw.tui.ui.form import (
+    ActionField, ChoiceField, Form, PathField, TextAreaField, TextField, ToggleField,
+)
 from mmw.tui.ui.form import Heading
 from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 from mmw.tui.wizard_steps import WizardStep
+
+
+# A `signing-key` field's "make one" choice: on save, a key named after the
+# source is generated (or reused, when one by that name exists).
+NEW_KEY = "__generate__"
 
 
 def parse_top_n(text: str) -> int | None:
@@ -74,8 +81,55 @@ class ProviderSourceForm(Vertical):
                     yield ToggleField(field.label, value, id=cid, hint=field.hint)
                 elif field.kind == "textarea":
                     yield TextAreaField(field.label, "\n".join(value), id=cid, hint=field.hint)
+                elif field.kind == "path":
+                    yield PathField(field.label, value or "", id=cid, hint=field.hint,
+                                    browse_title=f"Choose the {field.label.lower()}")
+                elif field.kind == "signing-key":
+                    options, chosen = self._key_options(value)
+                    yield ChoiceField(field.label, options, chosen, id=cid, hint=field.hint)
                 else:
                     yield TextField(field.label, "" if value is None else str(value), id=cid, hint=field.hint)
+
+    def _keyring(self):
+        cfg = getattr(self.app, "cfg", None)
+        if cfg is None:
+            return None
+        from mmw.core.signing import Keyring
+        return Keyring(cfg.settings.mirror_dir)
+
+    def _key_options(self, current: str) -> tuple[list[tuple[str, str]], str]:
+        from mmw.core.signing import SigningError
+        names: list[str] = []
+        keyring = self._keyring()
+        if keyring is not None:
+            try:
+                names = [k.name for k in keyring.list()]
+            except SigningError:
+                pass                       # no gpg: only "generate" is offered, and says why on save
+        options = [(n, n) for n in names]
+        if current and current != NEW_KEY and current not in names:
+            options.append((f"{current} (not in mmw's keyring)", current))
+        options.append(("Generate a new key, named after this source", NEW_KEY))
+        return options, current if current else NEW_KEY
+
+    def _with_key(self, source):
+        """A source whose key is still "generate one": make it now, named after
+        the source (an existing key of that name is used as it is)."""
+        from mmw.core.signing import SigningError
+        if getattr(source, "key", None) != NEW_KEY:
+            return source
+        keyring = self._keyring()
+        if keyring is None:
+            raise ValueError("Set the pool directory in Settings first — keys are kept there.")
+        try:
+            if source.name not in {k.name for k in keyring.list()}:
+                keyring.generate(source.name)
+                self.app.notify(f"Generated signing key {source.name!r}.")
+        except SigningError as exc:
+            raise ValueError(str(exc)) from None
+        source.key = source.name
+        self.draft.set_value("key", source.name)
+        return source
 
     def focus_first(self):
         self.query_one("#vs-name", Input).focus()
@@ -107,6 +161,7 @@ class ProviderSourceForm(Vertical):
     @on(Input.Changed)
     @on(TextArea.Changed)
     @on(Checkbox.Changed)
+    @on(Select.Changed)
     def _changed(self):
         self.post_message(self.Changed())
 
@@ -115,7 +170,7 @@ class ProviderSourceForm(Vertical):
             if field.kind == "multi":
                 continue
             widget = self.query_one("#" + self.control_id(field.path))
-            if field.kind == "toggle":
+            if field.kind in ("toggle", "signing-key"):
                 value = widget.value
             elif field.kind == "textarea":
                 value = widget.text
@@ -151,6 +206,10 @@ class ProviderSourceForm(Vertical):
             raise ValueError("Choose a nonempty, unique source name.")
         return source
 
+    def get_source_for_save(self):
+        """`get_source`, then make the signing key it asks for, if it asks."""
+        return self._with_key(self.get_source())
+
 
 class ProviderStep(WizardStep):
     """A provider's Add step: its editor, under a heading, with a note when
@@ -173,7 +232,7 @@ class ProviderStep(WizardStep):
 
     def get_sources(self):
         try:
-            return [self.editor.form.get_source()]
+            return [self.editor.form.get_source_for_save()]
         except ValueError as exc:
             self.query_one("#" + self._error_id, Label).update(str(exc))
             return []
@@ -203,7 +262,7 @@ class ProviderEditPage(Page):
     @on(Button.Pressed, "#btn-save")
     async def _save(self):
         try:
-            source = self.editor.form.get_source()
+            source = self.editor.form.get_source_for_save()
         except ValueError as exc:
             self.set_status(str(exc), "error")
             return

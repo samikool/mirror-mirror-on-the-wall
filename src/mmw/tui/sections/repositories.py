@@ -110,6 +110,7 @@ class RepositoriesPage(Page):
         Binding("ctrl+w", "wipe", "Wipe pool", show=False),
         Binding("s", "sync", "Sync"),
         Binding("r", "retry_failed", "Retry missing", show=False),
+        Binding("f", "sources_file", "Sources file"),
     ]
 
     def __init__(self):
@@ -222,6 +223,7 @@ class RepositoriesPage(Page):
     @on(ListView.Highlighted, "#repo-list")
     def _highlighted(self) -> None:
         self._show_detail()
+        self.refresh_bindings()      # f Sources file follows the highlighted repository
 
     @on(ListView.Selected, "#repo-list")
     async def _selected(self) -> None:
@@ -273,6 +275,10 @@ class RepositoriesPage(Page):
         super().action_back()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "sources_file":
+            # Only a folder repository has a sources file mmw writes.
+            src = self._highlighted_source() if self.is_mounted and self.model is not None else None
+            return getattr(src, "provider", None) == "apt-local"
         if action == "back" and self.is_mounted:
             box = self.query_one("#repo-filter", Input)
             if box.value or self.focused is box:
@@ -352,6 +358,13 @@ class RepositoriesPage(Page):
             return
         await self._after_write()
         self.notify(f"Updated {edited.name}.")
+
+    def action_sources_file(self) -> None:
+        src = self._highlighted_source()
+        if getattr(src, "provider", None) != "apt-local":
+            return
+        from mmw.tui.sources_file import SourcesFilePage
+        self.app.push_screen(SourcesFilePage(src))
 
     async def _remove(self) -> None:
         targets = self.model.removal_targets(self._highlighted_source())

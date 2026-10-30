@@ -7,6 +7,7 @@ from textual.app import ComposeResult
 from textual.markup import escape
 from textual.widgets import Input, Label, ListItem, ListView, TextArea
 
+from mmw.core import disk_io
 from mmw.core.signing import Keyring, SigningError
 from mmw.tui.ui.dialog import ConfirmDialog
 from mmw.tui.ui.page import Page
@@ -93,7 +94,7 @@ class SigningKeysPage(Page):
             return
         name = self._typed_name() or Path(picked).stem
         try:
-            text = await asyncio.to_thread(Path(picked).read_text)
+            text = await asyncio.to_thread(disk_io.ops.read_text, Path(picked))
             key = await asyncio.to_thread(self._keyring().import_armored, text, name)
         except (OSError, UnicodeDecodeError, SigningError) as e:
             self.set_status(str(e), "error")

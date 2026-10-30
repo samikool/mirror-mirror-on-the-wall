@@ -50,7 +50,7 @@ class Keyring:
         if shutil.which("gpg") is None:
             raise SigningError("gpg is not installed — install gnupg to sign repositories")
         disk_io.ops.mkdir(self.home, parents=True, exist_ok=True)
-        self.home.chmod(0o700)
+        disk_io.ops.chmod(self.home, 0o700)
         cmd = ["gpg", "--homedir", str(self.home), "--batch", "--no-tty", "--yes",
                "--pinentry-mode", "loopback", "--passphrase", "", *args]
         try:

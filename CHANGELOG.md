@@ -8,6 +8,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Your own packages: folder repositories.** A folder of `.deb` files becomes
+  a signed apt repository served at an address you choose — `mmw add local
+  --folder ./debs --url https://tools.lan/apt`, or Sources → Add → Local
+  folder. Sync scans the folder (unchanged debs are not read again), builds
+  the indexes and signs them; it publishes and bundles like any other
+  repository. Flat by default, or `--structured` for `dists/{suite}/{component}/`;
+  `--contents` adds `Contents` files for apt-file. `mmw sources-file NAME`
+  (or `f` on the repository) prints the client's sources file, deb822 or
+  one-line, which is also published beside the repository.
+- **Signing keys** (`mmw signing-key generate|import|export|list|remove`,
+  Settings → Signing keys): the keys mmw signs your repositories with, kept in
+  its own keyring under the pool directory. Needs `gpg`.
 - **Force delete a snapshot** (`D` on the Snapshots page, `mmw snapshot
   delete --force`): forgets it outright, with every transfer that went to it
   and its ledger manifest — like a force push. The far side is not touched:

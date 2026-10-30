@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 
 from mmw.commands.common import eprint, load_config_or_none
+from mmw.core import disk_io
 
 
 def _keyring(cfg_dir: Path):
@@ -34,7 +35,7 @@ def generate(cfg_dir: Path, name: str) -> int:
 
 def import_(cfg_dir: Path, name: str, file: Path | None) -> int:
     def act(cfg, kr):
-        text = sys.stdin.read() if file is None or str(file) == "-" else file.read_text()
+        text = sys.stdin.read() if file is None or str(file) == "-" else disk_io.ops.read_text(file)
         key = kr.import_armored(text, name)
         typer.echo(f"imported {key.name}: {key.fingerprint}")
     return _run(cfg_dir, act)

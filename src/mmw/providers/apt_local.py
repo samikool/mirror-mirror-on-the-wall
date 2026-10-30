@@ -184,7 +184,7 @@ def scan(folder: Path, cache_path: Path, *, contents: bool = False) -> list[Scan
     if not disk_io.ops.is_dir(folder):
         raise ValueError(f"folder {folder} does not exist or is not a directory")
     try:
-        paths = sorted(p for p in folder.rglob("*.deb") if p.is_file())
+        paths = sorted(p for p in disk_io.ops.rglob(folder, "*.deb") if disk_io.ops.is_file(p))
     except OSError as e:
         raise ValueError(f"folder {folder} cannot be read: {e}") from None
     cache = {}
@@ -196,7 +196,7 @@ def scan(folder: Path, cache_path: Path, *, contents: bool = False) -> list[Scan
     fresh, out, seen = {}, [], {}
     for path in paths:
         rel = path.relative_to(folder).as_posix()
-        st = path.stat()
+        st = disk_io.ops.stat(path)
         hit = cache.get(rel)
         if hit and hit["size"] == st.st_size and hit["mtime_ns"] == st.st_mtime_ns:
             entry = hit

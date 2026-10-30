@@ -221,6 +221,38 @@ all       = true
 | `requirements_file` | string | none | A requirements.txt-style file of the same, relative to `mmw.toml`; re-read every sync and unioned with `requirements`. |
 
 
+### Your own packages: `provider = "apt-local"`
+
+A folder of `.deb` files that mmw serves as a signed apt repository at the
+address you give it. Syncing scans the folder (unchanged debs are not read
+again), builds the indexes and signs them with an mmw signing key
+(`mmw signing-key`, or Settings → Signing keys); from the pool on it is
+published and bundled like any other repository. One unit, named `{name}`.
+`mmw sources-file NAME` prints what a client puts in
+`/etc/apt/sources.list.d/`, and the same file is published beside the
+repository.
+
+```toml
+[[sources]]
+provider = "apt-local"
+url      = "https://tools.example.lan/apt"
+folder   = "debs"
+key      = "tools"
+```
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `provider` | `apt-local` | **required** | A folder of your own `.deb` files. |
+| `url` | string | **required** | The address clients use — `http(s)://host/path`. It is the identity, and decides the published path (`{host}/{path}`) exactly as an upstream's URL does. |
+| `folder` | string | **required** | The folder of `.deb` files, searched recursively; relative to `mmw.toml`. Never modified. Two debs with the same package, version and architecture but different contents are refused. |
+| `key` | string | **required** | The mmw signing key that signs it. Clients trust its public half, published at `/mmw-keys/{label}/{key}.gpg` on every host the network serves. |
+| `name` | string | derived from the URL | The unit's name. |
+| `label` | string | derived from the URL | Key grouping directory (`keys/{label}/`). |
+| `structured` | bool | `false` | Off: a flat repository (`deb URL ./`). On: `dists/{suite}/{component}/binary-{arch}/`, debs under `pool/{component}/`; `Architecture: all` debs appear in every architecture's index. |
+| `suite` | string | `'stable'` | The suite, when `structured`. |
+| `component` | string | `'main'` | The component, when `structured`. |
+| `contents` | bool | `false` | Also write `Contents-{arch}` files, so `apt-file` finds these packages. It reads every deb's file list (once; unchanged debs are cached), so syncing and signing can take significantly longer. |
+
 ## `[[networks]]`
 
 A network is a named downselect of the mirror — what one site gets. `publish`

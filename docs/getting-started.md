@@ -377,6 +377,25 @@ leaves them behind — `mmw prune` names it, and
 `mmw snapshot clean -n OLD --keep 0 --yes` clears them. In the TUI: `n` on a network opens its snapshots, and
 `p` asks what to publish and where.
 
+### Your own packages
+
+A folder of `.deb` files you build can be served like any mirror, signed with
+a key mmw keeps:
+
+```bash
+mmw add local --folder ./debs --url https://tools.example.lan/apt   # makes a key named after it
+mmw sync && mmw publish -n lab
+mmw sources-file example-tools                                      # what clients install (the name `add` printed)
+```
+
+In the TUI: Sources → `a` → **Local folder**; Settings → **Signing keys**;
+`f` on the repository shows its sources file (deb822 for Ubuntu 24.04+ and
+Debian 12+, one line for older releases). The file's header has the command
+that installs the key. Re-run `mmw sync` (by hand, cron or CI) after the
+folder changes; an unchanged folder re-signs nothing. Flat by default
+(`deb URL ./`); `--structured` lays it out under `dists/`. See
+[configuration](configuration.md#your-own-packages-provider--apt-local).
+
 ---
 
 ## Next

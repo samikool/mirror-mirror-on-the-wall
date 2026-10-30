@@ -6,6 +6,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.widgets import Select, TextArea
 
+from mmw.core import disk_io
 from mmw.providers.apt_local import sources_file
 from mmw.tui.ui.form import ChoiceField, Form
 from mmw.tui.ui.page import Page
@@ -51,7 +52,7 @@ class SourcesFilePage(Page):
         ext = "sources" if self._fmt() == "deb822" else "list"
         dest = Path(picked) / f"{self.source.name}.{ext}"
         try:
-            await asyncio.to_thread(dest.write_text, self.query_one("#sources-text", TextArea).text)
+            await asyncio.to_thread(disk_io.ops.write_text, dest, self.query_one("#sources-text", TextArea).text)
         except OSError as e:
             self.set_status(f"Not saved: {e}", "error")
             return

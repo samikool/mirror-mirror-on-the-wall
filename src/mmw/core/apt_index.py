@@ -15,6 +15,8 @@ from pathlib import Path
 
 import zstandard
 
+from mmw.core import disk_io
+
 # Fields the index writes itself: a deb's own control never carries them,
 # and one that did would contradict the file actually served.
 _INDEX_FIELDS = ("Filename", "Size", "MD5sum", "SHA256", "SHA1", "SHA512")
@@ -30,7 +32,7 @@ class Entry:
 
 
 def _ar_members(path: Path) -> dict[str, bytes]:
-    data = path.read_bytes()
+    data = disk_io.ops.read_bytes(path)
     if not data.startswith(b"!<arch>\n"):
         raise ValueError(f"{path.name}: not a .deb (no ar archive header)")
     members, pos = {}, 8

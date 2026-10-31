@@ -471,22 +471,10 @@ def add_packages(cfg, mirror_dir: Path, paths, *, into: str, network: str | None
                                     f"`mmw signing-key generate {layer.key}`")
         finally:
             keyring.stop_agent()
-    dims = published_dims(net, cfg, mirror_dir, source)
-    suite = suite or (sorted(dims)[0] if dims else None)
-    component = component or "main"
-    if suite is None or component not in dims.get(suite, {}):
-        raise PackagesError(f"{net.name} does not publish {source.name} {suite}/{component} — pick a "
-                            "suite and component it publishes")
+    suite, component = _target(net, cfg, mirror_dir, source, suite, component)
     folder = layer_dir(mirror_dir, net.name, source.name)
     decisions = read_decisions(folder)
-    from mmw.core.pool import Pool
-    from mmw.core.publisher.links import _dedup_rows
-    from mmw.core.resolve import network_mirrors
-    names = [u.name for u in network_mirrors(net, cfg, mirror_dir) if u.source == source.identity]
-    with Pool(mirror_dir, read_only=True) as pool:
-        rows = {r[0]: r for r in _dedup_rows(pool.mirror_files(names))}
-    clashes = _clashes(source.name, rows, {suite: {component: dims[suite][component]}},
-                       {(suite, component): [_scanned(d) for d in debs]}, {})
+    clashes = _find_clashes(net, cfg, mirror_dir, source, debs, suite, component)
     for clash in clashes:
         choice = ask(clash) if ask is not None else (on_clash or "keep")
         if choice == "cancel":
@@ -508,6 +496,40 @@ def add_packages(cfg, mirror_dir: Path, paths, *, into: str, network: str | None
                              "need [trusted=yes] for it")
     outcome.notes.append(f"publish (or bundle) {net.name} to serve them")
     return outcome
+
+
+def _target(net, cfg, mirror_dir, source, suite, component) -> tuple[str, str]:
+    dims = published_dims(net, cfg, mirror_dir, source)
+    suite = suite or (sorted(dims)[0] if dims else None)
+    component = component or "main"
+    if suite is None or component not in dims.get(suite, {}):
+        raise PackagesError(f"{net.name} does not publish {source.name} {suite}/{component} — pick a "
+                            "suite and component it publishes")
+    return suite, component
+
+
+def _find_clashes(net, cfg, mirror_dir, source, debs, suite, component) -> list[Clash]:
+    from mmw.core.pool import Pool
+    from mmw.core.publisher.links import _dedup_rows
+    from mmw.core.resolve import network_mirrors
+    dims = published_dims(net, cfg, mirror_dir, source)
+    names = [u.name for u in network_mirrors(net, cfg, mirror_dir) if u.source == source.identity]
+    with Pool(mirror_dir, read_only=True) as pool:
+        rows = {r[0]: r for r in _dedup_rows(pool.mirror_files(names))}
+    return _clashes(source.name, rows, {suite: {component: dims[suite][component]}},
+                    {(suite, component): [_scanned(d) for d in debs]}, {})
+
+
+def check_clashes(cfg, mirror_dir: Path, paths, *, into: str, network: str | None = None,
+                  suite: str | None = None, component: str | None = None) -> list[Clash]:
+    """What adding `paths` would clash with, before anything is copied — so
+    a page can ask about each, then pass the answers to `add_packages`."""
+    source = find_source(cfg, into)
+    if source.provider == "apt-local":
+        return []
+    net = find_network(cfg, network)
+    suite, component = _target(net, cfg, mirror_dir, source, suite, component)
+    return _find_clashes(net, cfg, mirror_dir, source, collect_debs(paths), suite, component)
 
 
 def remove_package(cfg, mirror_dir: Path, filename: str, *, into: str, network: str | None = None,

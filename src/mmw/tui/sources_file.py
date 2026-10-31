@@ -19,15 +19,19 @@ _FORMATS = [("deb822 (.sources) — Ubuntu 24.04+, Debian 12+", "deb822"),
 class SourcesFilePage(Page):
     TITLE = "Sources file"
 
-    def __init__(self, source):
+    def __init__(self, source, *, render=None, name: str | None = None):
+        """`source`: a folder repository; or `render(fmt) -> str` and `name`
+        for anything else that has a sources file (a layered upstream)."""
         super().__init__()
         self.source = source
+        self._text_for = render or (lambda fmt: sources_file(source, fmt))
+        self._file_stem = name or source.name
         self.subtitle = source.url
 
     def compose_body(self) -> ComposeResult:
         yield Form(ChoiceField("Format", _FORMATS, "deb822", id="sources-format",
                                hint="What the clients run: apt's newer deb822 or the one-line form."))
-        yield TextArea(sources_file(self.source, "deb822"), id="sources-text", read_only=True)
+        yield TextArea(self._text_for("deb822"), id="sources-text", read_only=True)
 
     def compose_actions(self) -> ComposeResult:
         yield Button("Save…", id="btn-sources-save", variant="primary", compact=True)
@@ -37,7 +41,7 @@ class SourcesFilePage(Page):
 
     @on(Select.Changed, "#sources-format")
     def _format_changed(self) -> None:
-        self.query_one("#sources-text", TextArea).text = sources_file(self.source, self._fmt())
+        self.query_one("#sources-text", TextArea).text = self._text_for(self._fmt())
 
     @on(Button.Pressed, "#btn-sources-save")
     def _save(self) -> None:
@@ -50,7 +54,7 @@ class SourcesFilePage(Page):
         if picked is None:
             return
         ext = "sources" if self._fmt() == "deb822" else "list"
-        dest = Path(picked) / f"{self.source.name}.{ext}"
+        dest = Path(picked) / f"{self._file_stem}.{ext}"
         try:
             await asyncio.to_thread(disk_io.ops.write_text, dest, self.query_one("#sources-text", TextArea).text)
         except OSError as e:

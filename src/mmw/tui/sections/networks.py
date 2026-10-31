@@ -30,7 +30,8 @@ class NetworksPage(Page):
     HELP = ("A network is what gets published, and where. Dry run counts what a publish\n"
             "would link without writing; transfer carries it to an offline network, as one\n"
             ".tar (bundle) or a folder of hardlinks (stage); certs generates the network's\n"
-            "TLS key and CSR (and checks a signed cert).\n"
+            "TLS key and CSR (and checks a signed cert). k: custom .debs this network adds to\n"
+            "an upstream mirror it publishes, and how that mirror is signed.\n"
             "Publish, dry run and transfer run in the Publish section (4) — keep browsing meanwhile.\n"
             "Publish asks what (live, or a snapshot) and where; transfer asks from, to and how.\n"
             "Snapshots (n) keeps exact network states to transfer or publish again.")
@@ -45,6 +46,7 @@ class NetworksPage(Page):
         # still a button, and listed by ?.
         Binding("c", "verb('certs')", "Certs", show=False),
         Binding("n", "snapshots", "Snapshots"),
+        Binding("k", "packages", "Packages", show=False),
     ]
 
     def __init__(self):
@@ -199,6 +201,14 @@ class NetworksPage(Page):
             if choice is None:
                 return          # cancelled — never falls back to a default silently
         await self.app.start_transfer(verb, net, choice=choice)
+
+    def action_packages(self) -> None:
+        net = self.highlighted()
+        if net is None:
+            self.notify("Select a network first.", severity="warning")
+            return
+        from mmw.tui.packages import NetworkPackagesPage
+        self.app.push_screen(NetworkPackagesPage(net), lambda _: self._show_detail(force=True))
 
     def action_snapshots(self) -> None:
         net = self.highlighted()

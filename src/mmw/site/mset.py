@@ -179,6 +179,35 @@ class LocalRoot:
         from mmw.site.certs import tls_notes
         return tls_notes(self.home)
 
+    # ── local packages and keys (a root on this machine only) ────────────────
+
+    def layer_details(self, repo: str) -> dict:
+        """How the repository's site layer stands: `local` (its signing, when
+        it has one) and `layer_hold` (why it is held, if it is)."""
+        from mmw.site.db import SiteDB
+        with SiteDB(self.home) as db:
+            layer, overlay = db.layer(repo), db.repo_overlay(repo)
+            local = (f"{layer.signing}" + (f" · key {layer.key}" if layer.key else "")
+                     if layer and (overlay or layer.signing != "upstream") else "")
+            return {"local": local, "layer_hold": db.get_meta(f"hold:{repo}") or ""}
+
+    def packages_target(self) -> tuple[Path, Store]:
+        """(home, store) for the local-packages page."""
+        return self.home, self.store()
+
+    def local_update(self):
+        from mmw.site import local
+        return local.update(self.home)
+
+    def keyring_root(self) -> Path:
+        return self.home
+
+    def key_users(self, name: str) -> list[str]:
+        from mmw.site.db import SiteDB
+        with SiteDB(self.home) as db:
+            return [s.label for s in db.repo_states()
+                    if (lay := db.layer(s.repo)) is not None and lay.key == name]
+
     def sign(self, *, password: bytes | None, days: int, force: bool):
         from mmw.site.certs import sign_roots
         return sign_roots(self.home, password=password, days=days, force=force)

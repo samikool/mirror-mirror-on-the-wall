@@ -274,6 +274,7 @@ destination is unset says so rather than inventing one.
 | `far_side` | string | `'apply'` | What runs on the airgapped side. `apply`: only `apply.py`, which applies whole-network bundles in order (the default, and how every network worked before). `mmw`: mmw itself, which tracks each repository's version, so it can take partial bundles (`mmw bundle --repo …`) and `mmw stage` directories. |
 | `runtime_arches` | list | `['x86_64']` | `mmw` networks: the far-side machine architectures mmw's shipped runtime is built for — `x86_64`, `aarch64` or both. Each adds an interpreter and a set of wheels (~100 MB) to the bundles that carry it. See [far-side.md](far-side.md#first-contact-installing-mmw). |
 | `runtime_python` | string | `'3.12'` | `mmw` networks: the Python version shipped in that runtime (a python-build-standalone build). |
+| `carry_keys` | list of string | `[]` | `mmw` networks: mmw signing keys whose **private** parts ride every bundle, so the far side can re-sign with them (`mmw site packages`). Anyone holding a bundle can then sign as you — opt-in per key. |
 
 
 ### `[[networks.layers]]`

@@ -153,6 +153,30 @@ class Keyring:
         subprocess.run(["gpgconf", "--homedir", str(self.home), "--kill", "gpg-agent"],
                        capture_output=True, timeout=_TIMEOUT)
 
+    def fingerprint_of(self, armor: str) -> str | None:
+        """The primary fingerprint of an armoured key, without importing it."""
+        out = self._gpg("--with-colons", "--import-options", "show-only", "--import", data=armor.encode())
+        fpr_next = False
+        for line in out.decode().splitlines():
+            f = line.split(":")
+            if f[0] in ("sec", "pub"):
+                fpr_next = True
+            elif f[0] == "fpr" and fpr_next:
+                return f[9]
+        return None
+
+    def import_carried(self, name: str, armor: str) -> str | None:
+        """A key that came in a bundle: imported under `name` unless one by
+        that name is here already. Returns a line to tell, or None."""
+        here = {k.name: k.fingerprint for k in self.list()}
+        if name in here:
+            if here[name] == self.fingerprint_of(armor):
+                return None
+            return (f"signing key {name!r} arrived in this bundle but a different key by that name is "
+                    "here — kept the one here; rename one to use both")
+        self.import_armored(armor, name)
+        return f"signing key {name!r} imported from the bundle"
+
     def private_armor(self, name: str) -> str:
         return self._gpg("--armor", "--export-secret-keys", self._fingerprint(name)).decode()
 

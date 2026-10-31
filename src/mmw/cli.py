@@ -784,6 +784,193 @@ def cmd_site_roots(root: Path = _ROOT):
     raise typer.Exit(roots(root))
 
 
+site_key_app = typer.Typer(help="The far side's signing keys: site layers re-sign with them.",
+                           no_args_is_help=True)
+site_app.add_typer(site_key_app, name="signing-key")
+
+
+def _site_keys(root):
+    from mmw.commands.signing_key import site_keyring
+    try:
+        return site_keyring(root)
+    except (FileNotFoundError, ValueError, LookupError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+
+
+@site_key_app.command("generate")
+def cmd_site_key_generate(name: str = typer.Argument(...), root: Path = _ROOT):
+    """Make a signing key on this side."""
+    from mmw.commands.signing_key import generate
+    raise typer.Exit(generate(_cfg_dir(), name, _site_keys(root)[0]))
+
+
+@site_key_app.command("import")
+def cmd_site_key_import(name: str = typer.Argument(...),
+                        file: Path = typer.Option(None, "--file", "-f", help="Armoured private key ('-': stdin)"),
+                        root: Path = _ROOT):
+    """Import an armoured private key to sign with."""
+    from mmw.commands.signing_key import import_
+    raise typer.Exit(import_(_cfg_dir(), name, file, _site_keys(root)[0]))
+
+
+@site_key_app.command("export")
+def cmd_site_key_export(name: str = typer.Argument(...), private: bool = typer.Option(False, "--private"),
+                        root: Path = _ROOT):
+    """Print a key, armoured: the public half unless --private."""
+    from mmw.commands.signing_key import export
+    raise typer.Exit(export(_cfg_dir(), name, private, _site_keys(root)[0]))
+
+
+@site_key_app.command("list")
+def cmd_site_key_list(root: Path = _ROOT):
+    """This side's signing keys (carried ones included)."""
+    from mmw.commands.signing_key import list_
+    raise typer.Exit(list_(_cfg_dir(), _site_keys(root)[0]))
+
+
+@site_key_app.command("remove")
+def cmd_site_key_remove(name: str = typer.Argument(...), root: Path = _ROOT):
+    """Delete a key no site layer signs with."""
+    from mmw.commands.signing_key import remove
+    keyring, in_use = _site_keys(root)
+    raise typer.Exit(remove(_cfg_dir(), name, keyring, in_use))
+
+
+site_packages_app = typer.Typer(help="Local .debs this site adds to a repository it serves.",
+                                no_args_is_help=True)
+site_app.add_typer(site_packages_app, name="packages")
+
+
+@site_packages_app.command("add")
+def cmd_site_packages_add(
+    paths: list[Path] = typer.Argument(..., help=".deb files or folders of them"),
+    repo: str = typer.Option(..., "--repo", help="Repository (URL or name)"),
+    suite: str = typer.Option(None, "--suite", help="Default: the first it has"),
+    component: str = typer.Option(None, "--component", help="Default main"),
+    resign: str = typer.Option(None, "--resign", metavar="KEY", help="Re-sign with this site key"),
+    unsigned: bool = typer.Option(False, "--unsigned", help="Serve unsigned — unsafe, clients need trusted=yes"),
+    on_clash: str = typer.Option(None, "--on-clash", help="keep or drop a deb that clashes with upstream's"),
+    root: Path = _ROOT,
+):
+    """Add local .debs to a repository this site serves; it is served again with them."""
+    from mmw.commands.site_packages import add
+    if on_clash not in (None, "keep", "drop"):
+        typer.echo("--on-clash is keep or drop", err=True)
+        raise typer.Exit(2)
+    raise typer.Exit(add(paths, repo=repo, suite=suite, component=component, resign=resign,
+                         unsigned=unsigned, on_clash=on_clash, root=root))
+
+
+@site_packages_app.command("list")
+def cmd_site_packages_list(root: Path = _ROOT):
+    """Every local .deb, by repository."""
+    from mmw.commands.site_packages import list_
+    raise typer.Exit(list_(root))
+
+
+@site_packages_app.command("remove")
+def cmd_site_packages_remove(filename: str = typer.Argument(...),
+                             repo: str = typer.Option(..., "--repo"), root: Path = _ROOT):
+    """Remove a local .deb; the repository is served again without it."""
+    from mmw.commands.site_packages import remove
+    raise typer.Exit(remove(filename, repo=repo, root=root))
+
+
+@site_packages_app.command("signing")
+def cmd_site_packages_signing(
+    repo: str = _REPO,
+    resign: str = typer.Option(None, "--resign", metavar="KEY"),
+    unsigned: bool = typer.Option(False, "--unsigned"),
+    upstream: bool = typer.Option(False, "--upstream"),
+    contents: bool = typer.Option(None, "--contents/--no-contents",
+                                  help="Keep Contents right for apt-file (can make signing much slower)"),
+    drop_valid_until: bool = typer.Option(None, "--drop-valid-until/--keep-valid-until"),
+    root: Path = _ROOT,
+):
+    """How this site serves a repository it adds local packages to."""
+    from mmw.commands.site_packages import signing
+    raise typer.Exit(signing(repo, resign=resign, unsigned=unsigned, upstream=upstream, contents=contents,
+                             drop_valid_until=drop_valid_until, root=root))
+
+
+@site_app.command("sources-file")
+def cmd_site_sources_file(repo: str = _REPO,
+                          fmt: str = typer.Option("deb822", "--format", help="deb822 or list"),
+                          root: Path = _ROOT):
+    """The sources file clients use for a repository with local packages."""
+    from mmw.commands.site_packages import sources_file
+    raise typer.Exit(sources_file(repo, fmt, root))
+
+
+site_local_app = typer.Typer(help="Another mmw instance this site serves — its folder repositories — "
+                                   "read, never written to.", no_args_is_help=True)
+site_app.add_typer(site_local_app, name="local")
+
+
+def _site_local_home(root):
+    from mmw.commands.site_packages import _local
+    try:
+        return _local(root)[0]
+    except (FileNotFoundError, ValueError, LookupError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+
+
+@site_local_app.command("add")
+def cmd_site_local_add(path: Path = typer.Argument(..., help="The instance's directory (its mmw.toml)"),
+                       network: str = typer.Option(..., "--network", "-n", help="Its network to serve"),
+                       root: Path = _ROOT):
+    """Serve another mmw instance's network here (kept current there by hand, cron or CI)."""
+    from mmw.site import local
+    try:
+        local.add(_site_local_home(root), path, network)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"added {network} from {path} — bring it in with: mmw site local update")
+
+
+@site_local_app.command("list")
+def cmd_site_local_list(root: Path = _ROOT):
+    """The local instances this site serves."""
+    from mmw.site import local
+    found = local.entries(_site_local_home(root))
+    if not found:
+        typer.echo("No local instances.")
+    for network, path in sorted(found.items()):
+        typer.echo(f"{network}  {path}")
+
+
+@site_local_app.command("remove")
+def cmd_site_local_remove(network: str = typer.Argument(...), root: Path = _ROOT):
+    """Stop bringing a local instance in (what it brought stays served)."""
+    from mmw.site import local
+    try:
+        local.remove(_site_local_home(root), network)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"removed {network}")
+
+
+@site_local_app.command("update")
+def cmd_site_local_update(root: Path = _ROOT):
+    """Bring every local instance in: unchanged repositories store nothing new."""
+    from mmw.site import local
+    results = local.update(_site_local_home(root))
+    if not results:
+        typer.echo("No local instances — add one with: mmw site local add PATH -n NETWORK")
+    for r in results:
+        if r.error:
+            typer.echo(f"{r.network}: {r.error}", err=True)
+        else:
+            typer.echo(f"{r.network}: " + (f"{len(r.updated)} updated" if r.updated else "unchanged"))
+            for line in r.lines:
+                typer.echo(line)
+    raise typer.Exit(1 if any(r.error for r in results) else 0)
+
+
 @site_app.command("serve")
 def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
                    root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):

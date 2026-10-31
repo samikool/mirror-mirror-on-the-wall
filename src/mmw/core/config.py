@@ -1053,6 +1053,10 @@ class NetworkConfig(_StrictModel):
     runtime_arches: list[Literal["x86_64", "aarch64"]] = ["x86_64"]
     runtime_python: str = DEFAULT_RUNTIME_PYTHON
     layers: list[NetworkLayer] = []   # custom debs added to upstream repositories
+    # mmw signing keys whose PRIVATE parts ride this network's bundles, so the
+    # far side can sign with them. Opt-in per key: anyone holding a bundle
+    # can then sign as you. Only an mmw far side has a keyring to put them in.
+    carry_keys: list[str] = []
 
     @field_validator("runtime_python")
     @classmethod
@@ -1090,6 +1094,13 @@ class NetworkConfig(_StrictModel):
         if isinstance(data, dict) and _LEGACY_NETWORK_KEYS.intersection(data):
             data = {k: v for k, v in data.items() if k not in _LEGACY_NETWORK_KEYS}
         return data
+
+    @model_validator(mode="after")
+    def _carry_keys_need_mmw(self):
+        if self.carry_keys and self.far_side != "mmw":
+            raise ValueError(f"network {self.name}: carry_keys needs far_side = \"mmw\" — apply.py has "
+                             "no keyring to put a key in")
+        return self
 
     @model_validator(mode="after")
     def _one_layer_per_repository(self):
@@ -1578,6 +1589,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"runtime_arches": n.runtime_arches} if n.runtime_arches != ["x86_64"] else {}),
             **({"runtime_python": n.runtime_python} if n.runtime_python != DEFAULT_RUNTIME_PYTHON else {}),
             **({"layers": [_layer_to_dict(la) for la in n.layers]} if n.layers else {}),
+            **({"carry_keys": n.carry_keys} if n.carry_keys else {}),
         }
         for n in cfg.networks
     ]

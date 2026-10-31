@@ -562,7 +562,8 @@ class BundleSink:
                 apply_script: bytes, prune: bool = True,
                 full: bool = False, progress=None,
                 tls_files: dict[str, bytes] | None = None, stop_event=None,
-                writer=None, scratch_dir: Path | None = None, row_repo=None):
+                writer=None, scratch_dir: Path | None = None, row_repo=None,
+                signing_files: dict[str, bytes] | None = None):
         self.out_path = out_path
         # Where the members go (`members.MemberWriter` factory); by default
         # one plain tar at `out_path`, written beside it and renamed in.
@@ -577,6 +578,9 @@ class BundleSink:
         # name → bytes, written as `{TLS_DIR}/{name}`; a name ending `.key`
         # goes in 0600. Empty unless the network has certs on.
         self._tls_files = dict(tls_files or {})
+        # name → armoured private key, written as `.mmw/signing/{name}.asc`
+        # (0600): the keys a network carries to an mmw far side.
+        self._signing_files = dict(signing_files or {})
         self.header = header
         self._prev = prev
         self._apply_script = apply_script
@@ -859,6 +863,10 @@ class BundleSink:
                 for name, data in sorted(self._tls_files.items()):
                     writer.add_bytes(f"{TLS_DIR}/{name}", data,
                                      mode=0o600 if name.endswith(".key") else 0o644)
+                    files_written += 1
+                    raw_written += len(data)
+                for name, data in sorted(self._signing_files.items()):
+                    writer.add_bytes(f".mmw/signing/{name}.asc", data, mode=0o600)
                     files_written += 1
                     raw_written += len(data)
                 for rel, data in self._generated.items():

@@ -33,6 +33,7 @@ from mmw.site.switch import resume_switches, switch_in
 # v1 bundles carried mmw's runtime; mmw comes from its installer now, and
 # the far side updates from the installer next to a bundle (site/update.py).
 RUNTIME_PREFIX = ".mmw/runtime/"
+SIGNING_PREFIX = ".mmw/signing/"           # carried private keys: name.asc
 RUNTIME_NOTE = "this bundle carries an mmw runtime — ignored; install mmw from its installer file"
 
 
@@ -109,13 +110,18 @@ class RootApply:
 
     def __init__(self, home: Path, *, dry_run: bool = False, forward: set[str] | None = None,
                  forward_all: bool = False, only: set[str] | None = None, progress=None, stop_event=None,
-                 say=print):
+                 say=print, network_files: bool = True):
+        """`network_files=False`: repositories only — a local instance's
+        update (`site.local`) leaves the network files, settings and applied
+        log exactly as the connected side's bundles made them."""
         self.home = Path(home)
         self.dry_run, self.forward, self.forward_all, self.only = dry_run, set(forward or ()), forward_all, only
         self.progress, self.stop_event, self.say = progress, stop_event, say
+        self.network_files = network_files
         self.got: dict[str, tuple[str, int]] = {}
         self.links: dict[str, str] = {}
         self.tls: dict[str, bytes] = {}
+        self.signing: dict[str, bytes] = {}      # carried keys: name → armour
         self.seen: set[str] = set()
         self.manifest_path = self.home / "incoming-manifest.jsonl"
         self._manifest = False
@@ -152,6 +158,8 @@ class RootApply:
         """One member of the bundle (never the manifest: that is `begin`)."""
         if m.name.startswith(TLS_PREFIX):
             self.tls[m.name[len(TLS_PREFIX):]] = m.fh.read()
+        elif m.name.startswith(SIGNING_PREFIX):
+            self.signing[m.name[len(SIGNING_PREFIX):].removesuffix(".asc")] = m.fh.read()
         elif m.name.startswith(RUNTIME_PREFIX):
             self.seen.add("runtime")
         elif m.name.startswith(".mmw/"):
@@ -196,6 +204,24 @@ class RootApply:
             self.got[name] = self.got[target]
         if not self._manifest:
             raise ApplyError(2, "bundle is malformed: no .mmw/manifest.jsonl")
+
+    def _import_keys(self) -> list[str]:
+        if not self.signing:
+            return []
+        from mmw.core.signing import Keyring, SigningError
+        keyring = Keyring(self.home)
+        lines = []
+        try:
+            for name, armor in sorted(self.signing.items()):
+                try:
+                    said = keyring.import_carried(name, armor.decode())
+                except SigningError as e:
+                    said = f"signing key {name!r} not imported: {e}"
+                if said:
+                    lines.append(f"  {said}")
+        finally:
+            keyring.stop_agent()
+        return lines
 
     def switch_order(self, repos: dict) -> list[list[str]]:
         """The repositories grouped by hostname, each hostname whole, in order."""
@@ -293,6 +319,8 @@ class RootApply:
             raise ApplyError(5, "stopped before anything changed — what arrived is stored")
         # Nothing applied here before: nginx was never started for this root.
         self.first_time = not db.applied()
+        # Carried signing keys first: a site layer re-signs as its repository switches.
+        result.lines.extend(self._import_keys())
         recorded: dict[str, int] = {}
         try:
             for repo, plan in planned.items():
@@ -305,16 +333,19 @@ class RootApply:
             db.rollback()
             raise
 
-        old = roots.network_files(db, roots.primary)
-        db.set_network_files(network, {c: _size(store, c, sizes) for c in network.values()})
-        new = roots.network_files(db, roots.primary)
-        for rel, checksum in sorted(new.items()):
-            if old.get(rel) != checksum or not disk_io.ops.exists(root / rel):
-                place_served_file(store, root, rel, checksum, network=True)
-        for rel in sorted(set(old) - set(new)):
-            if disk_io.ops.remove(root / rel) is not None:
-                _prune_empty_parents(str(root), str((root / rel).parent))
-        if header.settings:
+        if not self.network_files:
+            result.network_changed = False     # nothing of the network's was touched
+        if self.network_files:
+            old = roots.network_files(db, roots.primary)
+            db.set_network_files(network, {c: _size(store, c, sizes) for c in network.values()})
+            new = roots.network_files(db, roots.primary)
+            for rel, checksum in sorted(new.items()):
+                if old.get(rel) != checksum or not disk_io.ops.exists(root / rel):
+                    place_served_file(store, root, rel, checksum, network=True)
+            for rel in sorted(set(old) - set(new)):
+                if disk_io.ops.remove(root / rel) is not None:
+                    _prune_empty_parents(str(root), str((root / rel).parent))
+        if header.settings and self.network_files:
             db.set_meta("settings", header.settings)
         if roots.multi and db.get_meta("settings"):
             result.network_changed = write_root_nginx(db, roots) or result.network_changed
@@ -346,21 +377,32 @@ class RootApply:
                     result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
                                         f"{f'still serving v{was}' if was else 'not served'} (held)")
                     continue
-                if state and state.held and not self.forward_all and repo not in forward:
+                # A repository held only by its site layer (no key then, say)
+                # tries again: a key this bundle carried may be the fix.
+                layer_held = bool(db.get_meta(f"hold:{repo}"))
+                if state and state.held and not layer_held and not self.forward_all and repo not in forward:
                     result.stored_held.append(repo)
                     result.lines.append(f"  {meta['label']}  stored v{meta['to']}, still serving v{was} (held)")
                     continue
                 if progress:
                     progress("switch", repo=repo, label=meta["label"])
-                switch_in(db, roots, repo, vid)
+                switched = switch_in(db, roots, repo, vid)
+                if switched.held:
+                    result.stored_held.append(repo)
+                    result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
+                                        f"{f'still serving v{was}' if was else 'not served'} (held: "
+                                        f"{switched.held})")
+                    continue
                 result.updated.append(repo)
                 result.lines.append(f"  {meta['label']}  {f'v{was}' if was else 'full'} → v{meta['to']}")
+                result.lines.extend(f"  {w}" for w in switched.warnings)
         for repo, why in result.refused.items():
             result.lines.append(f"  {header.repos[repo]['label']}  refused: {why}")
 
         if disk_io.ops.is_dir(root):
             render_derived(str(root), say=lambda m: say(f"  {m}"))
-        db.record_applied(header.created, header.previous, "full" if header.full else "delta")
+        if self.network_files:
+            db.record_applied(header.created, header.previous, "full" if header.full else "delta")
         if self.settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
             apply_retention(db, roots, self.settings.keep_versions)
@@ -1059,6 +1101,11 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     data = m.fh.read()
                     for ra in appliers.values():
                         ra.tls[m.name[len(TLS_PREFIX):]] = data
+                    continue
+                if m.name.startswith(SIGNING_PREFIX):
+                    data = m.fh.read()
+                    for ra in appliers.values():
+                        ra.signing[m.name[len(SIGNING_PREFIX):].removesuffix(".asc")] = data
                     continue
                 if m.name.startswith(RUNTIME_PREFIX):
                     runtime_seen = True                    # said once, for the whole set

@@ -212,7 +212,7 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
         dropped = {c.filename for c in clashes if chosen.get(c.filename) == "drop"}
         try:
             out = _rebuild(network.name, source.name, layer, rows, published, debs, dropped,
-                           mirror_dir, pool)
+                           mirror_dir, _work(mirror_dir, network.name, source.name), PoolBlobs(pool))
         except Exception as e:  # noqa: BLE001 — one repository's failure is reported, not fatal
             report.errors.append(f"{network.name}: {source.name}: layer not built: {e}")
             pool.clear_layer(network.name, base)
@@ -251,16 +251,37 @@ def _clashes(name, rows, published, debs, chosen) -> list[Clash]:
     return out
 
 
-def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, mirror_dir, pool):
-    """The replacement rows for one repository: debs, indexes, releases."""
+class PoolBlobs:
+    """The connected side's pool as a layer's blob store. The far side has
+    its own (`mmw.site.layers.StoreBlobs`): the rebuild needs only these."""
+
+    def __init__(self, pool):
+        self.pool = pool
+
+    def have(self, checksum: str, filename: str) -> bool:
+        return _have(self.pool, checksum, filename)
+
+    def add_bytes(self, body: bytes, checksum: str, filename: str) -> None:
+        self.pool.add(body, checksum, "sha256", filename, len(body))
+
+    def add_deb(self, deb) -> None:
+        _pool_file(self.pool, deb)
+
+
+def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, keyring_root: Path,
+             work: Path, store):
+    """The replacement rows for one repository: debs, indexes, releases.
+    `rows`: upstream's, relative to the repository's base; `store`: where
+    blobs go (`PoolBlobs`, or the far side's); `keyring_root`: whose mmw
+    keyring signs; `work`: kept signatures."""
     from mmw.core.apt_index import Entry, packages_text, rewrite_release
     out: list[tuple] = []
 
     def add_blob(rel: str, body: bytes, kind: str) -> None:
         digest = hashlib.sha256(body).hexdigest()
         filename = rel.rsplit("/", 1)[-1]
-        if not _have(pool, digest, filename):
-            pool.add(body, digest, "sha256", filename, len(body))
+        if not store.have(digest, filename):
+            store.add_bytes(body, digest, filename)
         out.append((rel, digest, len(body), kind, filename))
 
     changed: dict[str, dict[str, bytes]] = {}           # suite → path (under dists/suite/) → bytes
@@ -271,8 +292,8 @@ def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, mir
             continue
         for d in ds:
             rel = f"pool/mmw/{comp}/{d.path.name}"
-            if not _have(pool, d.sha256, d.path.name):
-                _pool_file(pool, d)
+            if not store.have(d.sha256, d.path.name):
+                store.add_deb(d)
             out.append((rel, d.sha256, d.size, KIND_PKG, d.path.name))
         entries = {d.path.name: Entry(d.control, f"pool/mmw/{comp}/{d.path.name}", d.size, d.sha256, d.md5)
                    for d in ds}
@@ -311,8 +332,7 @@ def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, mir
         add_blob(f"dists/{suite}/Release", release, KIND_RELEASE)
         if layer.signing == "resign":
             from mmw.providers.apt_local import _signatures
-            inrelease, gpg = _signatures(_work(mirror_dir, network, name) / suite, layer.key,
-                                         mirror_dir, release)
+            inrelease, gpg = _signatures(work / suite, layer.key, keyring_root, release)
             add_blob(f"dists/{suite}/InRelease", inrelease, KIND_RELEASE)
             add_blob(f"dists/{suite}/Release.gpg", gpg, KIND_RELEASE)
         else:                                           # unsigned: nothing may vouch for the change

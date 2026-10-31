@@ -222,6 +222,10 @@ class NetworkForm(Vertical):
                           id="inp-runtime-arches",
                           hint="mmw far side: the machines mmw's shipped runtime runs on — "
                                "x86_64, aarch64 or both."),
+                TextField("Carry signing keys", " ".join(net.carry_keys) if net else "",
+                          id="inp-carry-keys",
+                          hint="mmw far side: signing keys whose PRIVATE part rides every bundle, so the "
+                               "far side can sign with them — anyone holding a bundle can then sign as you."),
                 TextField("Runtime Python", net.runtime_python if net else config.DEFAULT_RUNTIME_PYTHON,
                           id="inp-runtime-python",
                           hint="mmw far side: the Python version shipped with it, like 3.12."),
@@ -332,6 +336,10 @@ class NetworkForm(Vertical):
         arches = self._value("inp-runtime-arches").replace(",", " ").split() or ["x86_64"]
         if bad := [a for a in arches if a not in ("x86_64", "aarch64")]:
             return None, f"runtime arches are x86_64 and aarch64, not {', '.join(bad)}", "inp-runtime-arches"
+        carry = self._value("inp-carry-keys").replace(",", " ").split()
+        far_side = self.query_one("#far-side-pick", Select).value
+        if carry and far_side != "mmw":
+            return None, "carrying signing keys needs an mmw far side (apply.py has no keyring)", "inp-carry-keys"
         python = self._value("inp-runtime-python") or config.DEFAULT_RUNTIME_PYTHON
         try:
             config.check_runtime_python(python)
@@ -351,6 +359,7 @@ class NetworkForm(Vertical):
             "far_side": self.query_one("#far-side-pick", Select).value,
             "runtime_arches": arches,
             "runtime_python": python,
+            "carry_keys": carry,
         }), None, None
 
 

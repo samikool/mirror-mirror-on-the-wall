@@ -45,7 +45,7 @@ def serve_preview(home: Path, ref: str, number: int) -> ServePreview:
     with SiteDB(home) as db:
         repo = resolve_repo(db, ref)
         state, target = db.repo_state(repo), _version(db, repo, number)
-        before = db.version_files(state.serving.id) if state.serving else {}
+        before = db.served_files(state.serving.id, db.repo_overlay(repo)) if state.serving else {}
         after = db.version_files(target.id)
         changed = sum(1 for p, c in after.items() if before.get(p) != c) + len(set(before) - set(after))
         return ServePreview(state.label, state.serving, target, changed)
@@ -94,13 +94,42 @@ def forward(home: Path, ref: str | None) -> list[str]:
             state = db.repo_state(repo)
             roots.check_mounted(roots.of(state))
             if state.serving is None or state.serving.id != newest.id:
-                switch_in(db, roots, repo, newest.id)
+                if switch_in(db, roots, repo, newest.id).held:
+                    continue                    # still held: its layer cannot be built yet
             else:
                 db.set_held(repo, False)
             moved.append(repo)
         if moved:
             _render(roots)
     return moved
+
+
+def relayer(home: Path, ref: str, progress=None) -> SwitchResult:
+    """Serve the repository's current version again with its site layer as it
+    is now — after local packages or the signing choice changed."""
+    with _session(home) as (db, roots):
+        repo = resolve_repo(db, ref)
+        state = db.repo_state(repo)
+        if state is None or state.serving is None:
+            raise ValueError(f"{ref} serves nothing yet — apply a bundle first")
+        roots.check_mounted(roots.of(state))
+        held = state.held
+        # Held by its layer (not by a person): once the layer builds, go on to
+        # the newest version, like any fast-forward.
+        layer_held = bool(db.get_meta(f"hold:{repo}"))
+        target = db.versions(repo)[0].id if layer_held else state.serving.id
+        result = switch_in(db, roots, repo, target,
+                           progress=(lambda rel, _kind: progress(rel)) if progress else None)
+        if not result.held and not layer_held:
+            db.set_held(repo, held)              # a re-layer is not a fast-forward
+        _render(roots)
+        return result
+
+
+def status_reason(home: Path, ref: str) -> str | None:
+    """Why a repository is held by its site layer, if it is."""
+    with _session(home) as (db, _roots):
+        return db.get_meta(f"hold:{resolve_repo(db, ref)}") or None
 
 
 def hold(home: Path, ref: str) -> str:
@@ -238,8 +267,8 @@ def _expected(db: SiteDB, roots: Roots) -> dict[str, dict[str, str]]:
     out: dict[str, dict[str, str]] = {r.name: {**roots.network_files(db, r), **roots.generated(db, r)}
                                       for r in roots.all}
     for st in db.repo_states():
-        if st.serving is not None:
-            out[roots.of(st).name].update(db.version_files(st.serving.id))
+        if st.serving is not None:            # the version and its site layer
+            out[roots.of(st).name].update(db.served_files(st.serving.id, db.repo_overlay(st.repo)))
     return out
 
 
@@ -374,7 +403,24 @@ def move_out_info(home: Path, key: str) -> dict:
             files = [(rel, c, disk_io.ops.stat(store.path(c)).st_size) for rel, c in db.version_files(v.id).items()]
             versions.append({"number": v.number, "label": v.label, "digest": v.digest, "stamp": v.stamp,
                              "snap_label": v.snap_label, "files": files})
+        # Its site layer travels too: the policy, and the debs (as blobs to
+        # copy, then written into the new root's layer folder).
+        layer = db.layer(key)
+        from mmw.site.layers import site_debs
+        debs = site_debs(home, key)
+        for ds in debs.values():
+            for d in ds:
+                if not store.has(d.sha256):
+                    with disk_io.ops.open_rb(d.path) as fh:
+                        store.add_stream(fh, expect=d.sha256)
         return {"label": state.label, "bases": state.bases, "held": state.held,
+                "layer": ({"signing": layer.signing, "key": layer.key, "contents": layer.contents,
+                           "drop_valid_until": layer.drop_valid_until} if layer else None),
+                "layer_files": [(f"{s}/{c}/{d.path.name}", d.sha256, d.size)
+                                for (s, c), ds in debs.items() for d in ds],
+                # What it serves here, layer and all — what `tidy` clears after the move.
+                "served_paths": sorted(db.served_files(state.serving.id, db.repo_overlay(key)))
+                if state.serving else [],
                 "serving": state.serving.number if state.serving else None, "versions": versions,
                 "hosts": sorted(hosts),
                 "sharing": [s.label for s in db.repo_states() if s.repo != key and hosts & _hosts_of(s.bases)],
@@ -411,7 +457,19 @@ def move_in(home: Path, key: str, info: dict) -> bool:
                 place_served_file(store, path, rel, checksum, network=True)
         changed = bool(roots.multi and db.get_meta("settings") and write_root_nginx(db, roots))
         _render(roots)
-        return changed
+        if info.get("layer"):
+            from mmw.site.layers import site_layer_dir
+            db.set_layer(key, **info["layer"])
+            folder = site_layer_dir(home, key)
+            for rel, c, _size in info.get("layer_files", []):
+                if not is_safe_path(rel):
+                    raise ValueError(f"{rel!r} is not a layer path — refusing the move")
+                dest = folder / rel
+                disk_io.ops.mkdir(dest.parent, parents=True, exist_ok=True)
+                disk_io.ops.copy_file(store.path(c), dest)
+    if info.get("layer") and served_id is not None:
+        relayer(home, key)               # serve it with its layer here (held, with why, if it cannot be)
+    return changed
 
 
 def move_out_finish(home: Path, key: str, to: str, info: dict) -> bool:
@@ -421,10 +479,13 @@ def move_out_finish(home: Path, key: str, to: str, info: dict) -> bool:
     from mmw.site.apply import write_root_nginx
     served = next((v for v in info["versions"] if v["number"] == info["serving"]), None)
     with _session(home) as (db, roots):
-        db.set_meta(f"moved:{key}", json.dumps({"to": to, "label": info["label"],
-                                                "files": sorted(rel for rel, _c, _s in served["files"])
-                                                if served else []}))
+        paths = info.get("served_paths") or (sorted(rel for rel, _c, _s in served["files"]) if served else [])
+        db.set_meta(f"moved:{key}", json.dumps({"to": to, "label": info["label"], "files": paths}))
         db.drop_repo(key)
+        from mmw.site.layers import site_layer_dir
+        folder = site_layer_dir(home, key)
+        if disk_io.ops.exists(folder):
+            disk_io.ops.rmtree(folder)       # the layer lives in the new root now
         return bool(roots.multi and db.get_meta("settings") and write_root_nginx(db, roots))
 
 
@@ -441,7 +502,8 @@ def tidy_here(home: Path, progress=None) -> list[str]:
     done = []
     with _session(home) as (db, roots):
         path = Path(roots.primary.path)
-        here = {p for s in db.repo_states() if s.serving is not None for p in db.version_files(s.serving.id)}
+        here = {p for s in db.repo_states() if s.serving is not None
+                for p in db.served_files(s.serving.id, db.repo_overlay(s.repo))}
         for k, raw in db.metas("moved:").items():
             rec = json.loads(raw or "{}")
             if not rec:
@@ -479,6 +541,7 @@ def _move_plan(mset, ref: str, to_root: str):
         todo += info.get("sharing_keys", [])
     group = sorted(infos, key=lambda k: infos[k]["label"].lower())
     sizes = {c: size for info in infos.values() for v in info["versions"] for _rel, c, size in v["files"]}
+    sizes.update({c: size for info in infos.values() for _rel, c, size in info.get("layer_files", [])})
     lacking = set(sizes) - dst.has(set(sizes))
     return src, dst, group, infos, sizes, lacking
 
@@ -523,7 +586,9 @@ def move_repo(mset, ref: str, to_root: str, progress=None, stop_event=None) -> M
     for k in group:
         dst.set_moving_in(k, src.info.name)
         say("repo", repo=k, label=infos[k]["label"])
-        for c in sorted({c for v in infos[k]["versions"] for _rel, c, _size in v["files"]} & left):
+        wanted = {c for v in infos[k]["versions"] for _rel, c, _size in v["files"]}
+        wanted |= {c for _rel, c, _size in infos[k].get("layer_files", [])}
+        for c in sorted(wanted & left):
             if stop_event is not None and stop_event.is_set():
                 raise ValueError(f"stopped — nothing switched; what was copied stays, and moving {labels} "
                                  "again picks up from there")
@@ -685,14 +750,18 @@ def serve_bundle(steps: list[BundleStep], progress=None, stop_event=None) -> lis
     say = progress or (lambda *a, **k: None)
     todo = [s for s in steps if s.changes]
     done: list[str] = []
+    held: list[str] = []
     for s in todo:
         if stop_event is not None and stop_event.is_set():
             rest = [t.label for t in todo if t.label not in done]
             raise ValueError(f"stopped — served: {', '.join(done) or 'none'}; not served: {', '.join(rest)}")
         say("repo", repo=s.key)
         try:
-            s.root.serve(s.key, s.target.number,
-                         progress=lambda rel: say("receive", bytes=1, name=rel))
+            r = s.root.serve(s.key, s.target.number,
+                             progress=lambda rel: say("receive", bytes=1, name=rel))
+            if getattr(r, "held", None):              # its site layer could not be built
+                held.append(f"{s.label} ({r.held})")
+                continue
         except Exception as e:
             if not done:
                 raise
@@ -701,4 +770,6 @@ def serve_bundle(steps: list[BundleStep], progress=None, stop_event=None) -> lis
         say("finished", repo=s.key)
         done.append(s.label)
     say("done")
+    if held:
+        raise ValueError(f"served: {', '.join(done) or 'none'}; held by local packages: {'; '.join(held)}")
     return done

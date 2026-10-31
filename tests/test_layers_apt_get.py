@@ -70,3 +70,45 @@ def test_apt_get_installs_a_custom_deb_from_the_layered_mirror(lab, signing):  #
             hashlib.sha256(ours.read_bytes()).digest()
     finally:
         server.shutdown()
+
+
+def test_apt_get_installs_a_site_layer_deb_from_the_far_side(lab, tmp_path):  # noqa: F811
+    """The far side: a site serving `lab`'s upstream, plus a deb added there."""
+    import subprocess
+    from mmw.core import config
+    from mmw.core.publisher.bundle import bundle_network
+    from mmw.site import home as H
+    from mmw.site.apply import apply_bundle
+    from mmw.site.db import SiteDB
+    from mmw.site.layers import site_layer_dir
+    from mmw.site.ops import relayer
+    net = config.NetworkConfig(name="lab", root=lab.tmp / "pub", far_side="mmw")
+    cfg = config.Config(settings=config.Settings(mirror_dir=lab.mirror_dir), sources=[lab.src], networks=[net])
+    home = H.init_root(lab.tmp / "srv", name="main", set_id="s1", network="lab")
+    apply_bundle(home, str(bundle_network(net, cfg, lab.mirror_dir, out_path=lab.tmp / "b",
+                                          from_ref=None).out_path), say=lambda *a: None)
+    with SiteDB(home) as db:
+        [state] = db.repo_states()
+        db.set_layer(state.repo, signing="resign", key="site")
+    Keyring(home).generate("site")
+    ours = make_deb(site_layer_dir(home, state.repo) / "jammy/main", "far-tool", "1.0")
+    relayer(home, state.repo)
+    server = _serve(lab.tmp / "srv" / state.bases[0].split("/")[0])
+    try:
+        (lab.tmp / "kh").mkdir(exist_ok=True, mode=0o700)
+        keyring = lab.tmp / "site-key.gpg"
+        subprocess.run(["gpg", "--batch", "--yes", "--homedir", str(lab.tmp / "kh"), "--dearmor", "-o",
+                        str(keyring)], input=Keyring(home).public_armor("site").encode(), check=True,
+                       capture_output=True)
+        url = f"http://127.0.0.1:{server.server_address[1]}/ubuntu"
+        root = _client(lab.tmp, f"deb [signed-by={keyring}] {url} jammy main universe\n")
+        update = _apt(root, "update")
+        assert update.returncode == 0, update.stdout + update.stderr
+        out = lab.tmp / "got"
+        out.mkdir()
+        got = _apt(root, "download", "far-tool", "hello", cwd=out)
+        assert got.returncode == 0, got.stdout + got.stderr
+        assert (out / "far-tool_1.0_amd64.deb").read_bytes() == ours.read_bytes()
+    finally:
+        server.shutdown()
+        Keyring(home).stop_agent()

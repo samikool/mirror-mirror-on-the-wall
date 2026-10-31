@@ -218,6 +218,11 @@ def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
         r = r_.serve(key, number)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
+    if getattr(r, "held", None):
+        eprint(f"{p.label}: not switched — held: {r.held}")
+        return 1
+    for w in getattr(r, "warnings", ()):
+        eprint(w)
     print(f"{p.label} serves v{p.target.number} ({r.placed} placed, {r.removed} removed)")
     return 0
 
@@ -354,7 +359,12 @@ def status(root: Path | None = None) -> int:
                    f"{' ' + s.serving.snap_label if s.serving.snap_label else ''}") if s.serving else "nothing"
         state = "held" if s.held else "current"
         where = f"{name:<10} " if several else ""
-        print(f"  {where}{s.label:<36} {serving:<36} newest v{newest:<4} {state}")
+        layer = getattr(roots_by[name], "layer_details", None)        # a local root's only
+        extra = layer(s.repo) if layer is not None else {}
+        local = f" + local packages ({extra['local']})" if extra.get("local") else ""
+        print(f"  {where}{s.label:<36} {serving:<36} newest v{newest:<4} {state}{local}")
+        if extra.get("layer_hold"):
+            print(f"  {where}{'':<36} held by its local packages: {extra['layer_hold']}")
     for name in mset.missing:
         print(f"  {name:<10} MISSING — its repositories aren't shown; mount it, then: mmw site open PATH")
     return 0

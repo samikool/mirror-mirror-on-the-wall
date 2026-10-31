@@ -37,6 +37,15 @@ CREATE TABLE IF NOT EXISTS switches (
     phase TEXT NOT NULL DEFAULT 'pkg');
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS deleted (repo TEXT NOT NULL, number INTEGER NOT NULL, stamp TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS site_layers (
+    repo TEXT PRIMARY KEY, signing TEXT NOT NULL DEFAULT 'upstream', key TEXT,
+    contents INTEGER NOT NULL DEFAULT 0, drop_valid_until INTEGER NOT NULL DEFAULT 0);
+-- What a site layer changes in one version of a repository: path → blob
+-- ('' = not served). Keyed by the layer's inputs digest.
+CREATE TABLE IF NOT EXISTS overlays (
+    repo TEXT NOT NULL, version INTEGER NOT NULL, digest TEXT NOT NULL, path TEXT NOT NULL,
+    checksum TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (repo, version, digest, path)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS applied (
     id INTEGER PRIMARY KEY, created TEXT NOT NULL, previous TEXT, kind TEXT NOT NULL,
     applied_at TEXT NOT NULL);
@@ -55,6 +64,15 @@ class VersionInfo:
 
 
 @dataclass(frozen=True)
+class SiteLayer:
+    repo: str
+    signing: str              # upstream | resign | unsigned
+    key: str | None
+    contents: bool
+    drop_valid_until: bool
+
+
+@dataclass(frozen=True)
 class RepoState:
     repo: str
     label: str
@@ -66,12 +84,18 @@ class RepoState:
 
 class SiteDB:
     def __init__(self, home: Path):
+        self.home = Path(home)                   # site layers live beside the database
         self._conn = sqlite3.connect(Path(home) / DB_FILE)
         self._conn.execute("PRAGMA journal_mode=DELETE")
         self._conn.execute("PRAGMA foreign_keys=OFF")
         self._conn.executescript(SCHEMA)
-        if "root" not in {r[1] for r in self._conn.execute("PRAGMA table_info(repos)")}:
+        repo_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(repos)")}
+        if "root" not in repo_cols:
             self._conn.execute("ALTER TABLE repos ADD COLUMN root TEXT")
+        if "overlay" not in repo_cols:          # the site layer digest it serves, if any
+            self._conn.execute("ALTER TABLE repos ADD COLUMN overlay TEXT")
+        if "overlay" not in {r[1] for r in self._conn.execute("PRAGMA table_info(switches)")}:
+            self._conn.execute("ALTER TABLE switches ADD COLUMN overlay TEXT")
 
     def __enter__(self) -> "SiteDB":
         return self
@@ -159,6 +183,7 @@ class SiteDB:
         c.execute("INSERT INTO deleted (repo, number, stamp) SELECT repo, number, stamp FROM versions "
                   "WHERE id = ?", (version_id,))
         c.execute("DELETE FROM version_files WHERE version = ?", (version_id,))
+        c.execute("DELETE FROM overlays WHERE version = ?", (version_id,))
         c.execute("DELETE FROM versions WHERE id = ?", (version_id,))
         c.commit()
 
@@ -169,6 +194,9 @@ class SiteDB:
             c.execute("DELETE FROM version_files WHERE version = ?", (vid,))
         c.execute("DELETE FROM versions WHERE repo = ?", (repo,))
         c.execute("DELETE FROM repos WHERE repo = ?", (repo,))
+        c.execute("DELETE FROM overlays WHERE repo = ?", (repo,))        # its site layer went with it
+        c.execute("DELETE FROM site_layers WHERE repo = ?", (repo,))
+        c.execute("DELETE FROM meta WHERE key = ?", (f"hold:{repo}",))
         c.commit()
 
     def metas(self, prefix: str) -> dict[str, str]:
@@ -224,10 +252,14 @@ class SiteDB:
 
     # ── switches left halfway ────────────────────────────────────────────────
 
-    def begin_switch(self, repo: str, from_id: int | None, to_id: int) -> None:
-        self._conn.execute("INSERT OR REPLACE INTO switches (repo, from_version, to_version, phase) "
-                           "VALUES (?, ?, ?, 'pkg')", (repo, from_id, to_id))
+    def begin_switch(self, repo: str, from_id: int | None, to_id: int, overlay: str | None = None) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO switches (repo, from_version, to_version, phase, overlay) "
+                           "VALUES (?, ?, ?, 'pkg', ?)", (repo, from_id, to_id, overlay))
         self._conn.commit()
+
+    def switch_overlay(self, repo: str) -> str | None:
+        row = self._conn.execute("SELECT overlay FROM switches WHERE repo = ?", (repo,)).fetchone()
+        return row[0] if row else None
 
     def switch_phase(self, repo: str, phase: str) -> None:
         self._conn.execute("UPDATE switches SET phase = ? WHERE repo = ?", (phase, repo))
@@ -278,6 +310,73 @@ class SiteDB:
             "AND b.id NOT IN (SELECT blob FROM network_files)", (version_id, version_id)).fetchone()[0]
         return total, only
 
+    # ── site layers ──────────────────────────────────────────────────────────
+
+    def layer(self, repo: str) -> SiteLayer | None:
+        row = self._conn.execute("SELECT repo, signing, key, contents, drop_valid_until FROM site_layers "
+                                 "WHERE repo = ?", (repo,)).fetchone()
+        return SiteLayer(row[0], row[1], row[2], bool(row[3]), bool(row[4])) if row else None
+
+    def set_layer(self, repo: str, *, signing: str = "upstream", key: str | None = None,
+                  contents: bool = False, drop_valid_until: bool = False) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO site_layers VALUES (?, ?, ?, ?, ?)",
+                           (repo, signing, key, int(contents), int(drop_valid_until)))
+        self._conn.commit()
+
+    def drop_layer(self, repo: str) -> None:
+        self._conn.execute("DELETE FROM site_layers WHERE repo = ?", (repo,))
+        self._conn.commit()
+
+    def put_overlay(self, repo: str, version_id: int, digest: str,
+                    rows: Iterable[tuple[str, str, int]]) -> None:
+        """A version's overlay; any other one of the same version is dropped
+        unless it is the one being served (a switch still needs it)."""
+        c = self._conn
+        served = self.repo_overlay(repo)
+        c.execute("DELETE FROM overlays WHERE repo = ? AND version = ? AND digest NOT IN (?, ?)",
+                  (repo, version_id, digest, served or ""))
+        c.execute("DELETE FROM overlays WHERE repo = ? AND version = ? AND digest = ?",
+                  (repo, version_id, digest))
+        c.executemany("INSERT INTO overlays VALUES (?, ?, ?, ?, ?, ?)",
+                      [(repo, version_id, digest, p, cs, size) for p, cs, size in rows])
+        c.commit()
+
+    def retire_overlays(self, repo: str, version_id: int, digest: str | None) -> None:
+        """Keep only the overlay being served (their blobs are GC roots)."""
+        self._conn.execute("DELETE FROM overlays WHERE repo = ? AND NOT (version = ? AND digest = ?)",
+                           (repo, version_id, digest or ""))
+        self._conn.commit()
+
+    def has_overlay(self, repo: str, version_id: int, digest: str) -> bool:
+        return self._conn.execute("SELECT 1 FROM overlays WHERE repo = ? AND version = ? AND digest = ? "
+                                  "LIMIT 1", (repo, version_id, digest)).fetchone() is not None
+
+    def overlay_files(self, repo: str, version_id: int, digest: str) -> dict[str, str]:
+        return dict(self._conn.execute(
+            "SELECT path, checksum FROM overlays WHERE repo = ? AND version = ? AND digest = ?",
+            (repo, version_id, digest)).fetchall())
+
+    def served_files(self, version_id: int, digest: str | None) -> dict[str, str]:
+        """What serving `version_id` with overlay `digest` puts in the root."""
+        files = self.version_files(version_id)
+        if digest:
+            v = self.version_by_id(version_id)
+            for path, cs in self.overlay_files(v.repo, version_id, digest).items():
+                if cs:
+                    files[path] = cs
+                else:
+                    files.pop(path, None)
+        return files
+
+    def repo_overlay(self, repo: str) -> str | None:
+        row = self._conn.execute("SELECT overlay FROM repos WHERE repo = ?", (repo,)).fetchone()
+        return row[0] if row else None
+
+    def set_overlay(self, repo: str, digest: str | None, *, commit: bool = True) -> None:
+        self._conn.execute("UPDATE repos SET overlay = ? WHERE repo = ?", (digest, repo))
+        if commit:
+            self._conn.commit()
+
     def referenced_checksums(self, repos: "set[str] | None" = None, network: bool = True,
                              network_prefix: str | None = None) -> set[str]:
         """Every blob the given repositories' versions use (None: every
@@ -295,4 +394,11 @@ class SiteDB:
         if network:
             out |= {c for p, c in self.network_files().items()
                     if network_prefix is None or p.startswith(network_prefix)}
+        # A site layer's files are served too: its debs and rebuilt indexes.
+        if repos is None:
+            out |= {r[0] for r in self._conn.execute("SELECT checksum FROM overlays WHERE checksum != ''")}
+        elif repos:
+            ph = ",".join("?" * len(repos))
+            out |= {r[0] for r in self._conn.execute(
+                f"SELECT checksum FROM overlays WHERE checksum != '' AND repo IN ({ph})", tuple(repos))}
         return out

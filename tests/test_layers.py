@@ -286,3 +286,93 @@ def test_a_broken_layer_is_a_publish_error(lab):
     make_deb(lab.folder / "jammy/main", "tools-ours", "1.0")
     _, (res,) = _publish(lab, None)
     assert any("resign or unsigned" in e for r in res.mirrors for e in r.errors)
+
+
+# ── review fixes (plan 2) ────────────────────────────────────────────────────
+
+@needs_gpg
+def test_prune_keeps_live_layer_blobs(lab):
+    make_deb(lab.folder / "jammy/main", "tools-ours", "1.0")
+    lab.build(_layer(lab))
+    with Pool(lab.mirror_dir) as pool:
+        pool.prune_orphans([lab.src.identity])
+        overlay = pool.layer_overlay("lab", lab.base)
+    from pathlib import Path
+    assert all(Path(row[1]).is_file() for row in overlay.values() if row is not None)
+
+
+@needs_gpg
+def test_an_overlay_with_a_missing_blob_is_rebuilt(lab):
+    from pathlib import Path
+    make_deb(lab.folder / "jammy/main", "tools-ours", "1.0")
+    _, overlay = lab.build(_layer(lab))
+    Path(overlay["dists/jammy/Release"][1]).unlink()
+    _, overlay = lab.build(_layer(lab))
+    assert Path(overlay["dists/jammy/Release"][1]).is_file()
+
+
+@needs_gpg
+def test_changing_the_selection_rebuilds(lab):
+    make_deb(lab.folder / "jammy/main", "docs-ours", "1.0", "all")
+    _, overlay = lab.build(_layer(lab))
+    assert "dists/jammy/main/binary-arm64/Packages" in overlay
+    narrowed = lab.cfg(_layer(lab))
+    net = narrowed.networks[0].model_copy(update={"select": [config.NetworkSelect(
+        source=lab.src.url, arches=["amd64"])]})
+    with Pool(lab.mirror_dir) as pool:
+        layers.build_network_layers(net, narrowed, lab.mirror_dir, pool)
+        overlay = pool.layer_overlay("lab", lab.base)
+    assert "dists/jammy/main/binary-arm64/Packages" not in overlay
+
+
+@needs_gpg
+def test_suite_level_contents_keeps_every_component(lab, monkeypatch):
+    import gzip
+    monkeypatch.setattr(layers, "_contents_path", lambda rows, suite, comp, arch: f"Contents-{arch}")
+    make_deb(lab.folder / "jammy/main", "a-ours", "1.0")
+    make_deb(lab.folder / "jammy/universe", "b-ours", "1.0")
+    _, overlay = lab.build(_layer(lab, contents=True))
+    text = gzip.decompress(_body(overlay["dists/jammy/Contents-amd64.gz"])).decode()
+    assert "a-ours" in text and "b-ours" in text
+
+
+def test_drop_valid_until_needs_resign():
+    with pytest.raises(ValidationError, match="resign"):
+        config.NetworkLayer(source=UBUNTU, drop_valid_until=True)
+    with pytest.raises(ValidationError, match="resign"):
+        config.NetworkLayer(source=UBUNTU, signing="unsigned", drop_valid_until=True)
+
+
+def test_contents_merge_streams_and_stays_sorted(tmp_path):
+    import gzip
+    import tracemalloc
+    upstream = tmp_path / "Contents-amd64.gz"
+    with gzip.open(upstream, "wt") as f:
+        for i in range(400_000):
+            f.write(f"usr/share/doc/pkg{i:07d}/copyright  doc/pkg{i:07d}\n")
+    tracemalloc.start()
+    merged = layers._merge_contents(upstream, [("usr/share/doc/pkg0000005/extra", "utils/ours"),
+                                              ("aaa/first", "utils/ours")])
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    lines = gzip.decompress(merged).decode().splitlines()
+    assert lines[0] == "aaa/first  utils/ours" and len(lines) == 400_002
+    assert lines == sorted(lines)
+    assert peak < 8 * 1024 * 1024, f"{peak / 1e6:.0f} MB"
+
+
+def test_index_forms_follow_what_upstream_lists():
+    import bz2
+    forms = layers._index_forms(b"SHA256:\n a 1 main/binary-amd64/Packages.gz\n"
+                                b" b 2 main/binary-amd64/Packages.bz2\n", "main/binary-amd64/Packages")
+    assert forms == ["", ".bz2", ".gz"]
+    built = layers._compress_forms(b"text", forms)
+    assert bz2.decompress(built["Packages.bz2"]) == b"text" and built["Packages"] == b"text"
+    assert layers._index_forms(b"SHA256:\n", "x/Packages") == ["", ".gz", ".xz"]   # nothing listed: the usual three
+
+
+@needs_gpg
+def test_a_deb_for_an_unpublished_arch_is_reported(lab):
+    make_deb(lab.folder / "jammy/main", "risc-ours", "1.0", "riscv64")
+    report, _ = lab.build(_layer(lab))
+    assert any("riscv64" in w for w in report.warnings)

@@ -871,6 +871,7 @@ class Pool:
         # A read-only open of a pool from before snapshots has no such table;
         # checked once here, not per query on a connection a writer may hold.
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
+        self._has_layer_rows = self._has_table("layer_rows")
         self._has_download_sources = self._has_table("download_sources")
         self._has_retry_state = self._has_table("retry_state")
         # SQLite's planner prefers the checksum primary key (one row, but a
@@ -2007,9 +2008,13 @@ class Pool:
                 "JOIN snapshot_files f ON f.blob = b.id JOIN snapshots s ON s.id = f.snapshot "
                 "WHERE b.checksum = packages.checksum AND s.complete = 1)"
                 if self._has_snapshot_blobs else "")
+        # A network's layer (debs, rebuilt indexes, signatures) is referenced
+        # only by layer_rows: without this a prune deleted every live one.
+        layered = ("AND NOT EXISTS (SELECT 1 FROM layer_rows l WHERE l.checksum = packages.checksum)"
+                   if self._has_layer_rows else "")
         return (f"SELECT {columns} FROM packages "
                 "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum "
-                f"AND {ref_filter}) {held}")
+                f"AND {ref_filter}) {held} {layered}")
 
     def _has_table(self, name: str) -> bool:
         """Init-time schema probe — not for use once the pool is shared."""

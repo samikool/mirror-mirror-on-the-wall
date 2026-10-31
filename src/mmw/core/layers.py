@@ -172,12 +172,21 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
             finally:
                 keyring.stop_agent()
         digest = hashlib.sha256(json.dumps({
+            "format": LAYER_FORMAT,
+            "published": sorted((s, c, sorted(a)) for s, cs in published.items() for c, a in cs.items()),
             "upstream": sorted((rel, r[4]) for rel, r in rows.items()
                                if rel.startswith("dists/") and rel.rsplit("/", 1)[-1] in _RELEASE_NAMES),
             "debs": sorted((s, c, d.path.name, d.sha256) for (s, c), ds in debs.items() for d in ds),
             "layer": layer.model_dump(mode="json"), "key": fingerprint, "decisions": chosen,
         }, sort_keys=True).encode()).hexdigest()
         built.add(base)
+        for (s, c), ds in debs.items():
+            for d in ds:
+                arch = d.control["Architecture"]
+                if arch != "all" and arch not in published[s][c]:
+                    report.warnings.append(
+                        f"{network.name}: {source.name}: {d.path.name} is for {arch}, which this "
+                        f"network does not publish in {s}/{c} — no index lists it")
         clashes = _clashes(source.name, rows, published, debs, chosen)
         report.clashes += [c for c in clashes if c.filename not in chosen]
         for c in clashes:
@@ -191,7 +200,7 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
             report.warnings.append(
                 f"{network.name}: {source.name} is served unsigned — this is unsafe; clients "
                 "need [trusted=yes] for it")
-        if pool.layer_digest(network.name, base) == digest:
+        if pool.layer_digest(network.name, base) == digest and _intact(pool, network.name, base):
             continue
         dropped = {c.filename for c in clashes if chosen.get(c.filename) == "drop"}
         try:
@@ -237,28 +246,30 @@ def _clashes(name, rows, published, debs, chosen) -> list[Clash]:
 
 def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, mirror_dir, pool):
     """The replacement rows for one repository: debs, indexes, releases."""
-    from mmw.core.apt_index import Entry, compressed, contents_text, packages_text, rewrite_release
+    from mmw.core.apt_index import Entry, packages_text, rewrite_release
     out: list[tuple] = []
 
     def add_blob(rel: str, body: bytes, kind: str) -> None:
         digest = hashlib.sha256(body).hexdigest()
         filename = rel.rsplit("/", 1)[-1]
-        if not pool.contains(digest):
+        if not _have(pool, digest, filename):
             pool.add(body, digest, "sha256", filename, len(body))
         out.append((rel, digest, len(body), kind, filename))
 
     changed: dict[str, dict[str, bytes]] = {}           # suite → path (under dists/suite/) → bytes
+    contents: dict[tuple[str, str], list] = {}          # (suite, Contents path) → the layer's rows
     for (suite, comp), ds in sorted(debs.items()):
         ds = [d for d in ds if d.path.name not in dropped]
         if not ds:
             continue
         for d in ds:
             rel = f"pool/mmw/{comp}/{d.path.name}"
-            if not pool.contains(d.sha256):
+            if not _have(pool, d.sha256, d.path.name):
                 _pool_file(pool, d)
             out.append((rel, d.sha256, d.size, KIND_PKG, d.path.name))
         entries = {d.path.name: Entry(d.control, f"pool/mmw/{comp}/{d.path.name}", d.size, d.sha256, d.md5)
                    for d in ds}
+        upstream_release = _release_of(rows, suite) or b""
         for arch in sorted(published[suite][comp]):
             mine = [entries[d.path.name] for d in ds if d.control["Architecture"] in (arch, "all")]
             if not mine:
@@ -266,23 +277,25 @@ def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, mir
             stem = f"dists/{suite}/{comp}/binary-{arch}/Packages"
             upstream = (_read_index(rows, stem) or b"").rstrip(b"\n")
             text = (upstream + b"\n\n" if upstream else b"") + packages_text(mine)
-            for fname, body in compressed("Packages", text).items():
+            # Every form upstream's Release lists: one left out would keep
+            # upstream's hash and be served without the layer's debs.
+            forms = _index_forms(upstream_release, f"{comp}/binary-{arch}/Packages")
+            for fname, body in _compress_forms(text, forms).items():
                 changed.setdefault(suite, {})[f"{comp}/binary-{arch}/{fname}"] = body
             if layer.contents:
-                ours = [(p, f"{d.control.get('Section', 'misc')}/{d.control['Package']}")
-                        for d in ds if d.control["Architecture"] in (arch, "all")
-                        for p in _data_paths(d)]
                 where = _contents_path(rows, suite, comp, arch)
-                existing = _read_index(rows, f"dists/{suite}/{where}") or b""
-                merged = [tuple(line.rsplit(None, 1)) for line in
-                          existing.decode("utf-8", errors="replace").splitlines() if line.strip()]
-                owners = [(p, o) for p, os_ in merged for o in os_.split(",")]
-                changed.setdefault(suite, {})[f"{where}.gz"] = compressed("x", contents_text(owners + ours))["x.gz"]
+                contents.setdefault((suite, where), []).extend(
+                    (p, f"{d.control.get('Section', 'misc')}/{d.control['Package']}")
+                    for d in ds if d.control["Architecture"] in (arch, "all") for p in _data_paths(d))
+    # One Contents file can serve several components (suite-level ones):
+    # every component's rows go in before it is written, once, streamed.
+    for (suite, where), ours in sorted(contents.items()):
+        row = rows.get(f"dists/{suite}/{where}.gz")
+        changed.setdefault(suite, {})[f"{where}.gz"] = _merge_contents(Path(row[1]) if row else None, ours)
     for suite, files in changed.items():
         for rel, body in sorted(files.items()):
             add_blob(f"dists/{suite}/{rel}", body, KIND_META)
-    suites = set(changed) | ({s for s in published} if layer.signing == "resign" or layer.drop_valid_until
-                             else set())
+    suites = set(changed) | ({s for s in published} if layer.signing == "resign" else set())
     for suite in sorted(suites):
         upstream = _release_of(rows, suite)
         if upstream is None:
@@ -299,6 +312,98 @@ def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, mir
             for sig in ("InRelease", "Release.gpg"):
                 out.append((f"dists/{suite}/{sig}", "", 0, "", ""))
     return out
+
+
+LAYER_FORMAT = 2            # bump when the rebuild changes what it writes: every layer rebuilds
+
+
+def _have(pool, checksum: str, filename: str) -> bool:
+    """In the pool's index AND on disk: a blob deleted under the index must be
+    written again, not trusted."""
+    return pool.contains(checksum) and disk_io.ops.exists(pool.blob_path(checksum, filename))
+
+
+def _intact(pool, network: str, base: str) -> bool:
+    """Every blob the stored overlay names is still in the pool."""
+    return all(row is None or disk_io.ops.exists(Path(row[1]))
+               for row in pool.layer_overlay(network, base).values())
+
+
+def _index_forms(release: bytes, stem: str) -> list[str]:
+    """The compressions upstream's Release lists for an index (`""` =
+    uncompressed, always written); the usual three when it lists none."""
+    forms = {""}
+    for line in release.decode("utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if line.startswith(" ") and len(parts) == 3 and parts[2].startswith(stem):
+            ext = parts[2][len(stem):]
+            if ext in ("", ".gz", ".xz", ".bz2", ".lzma", ".zst"):
+                forms.add(ext)
+    return sorted(forms) if len(forms) > 1 else ["", ".gz", ".xz"]
+
+
+def _compress_forms(data: bytes, forms: list[str], name: str = "Packages") -> dict[str, bytes]:
+    import bz2
+    import gzip
+    import io
+    import lzma
+
+    import zstandard
+    out = {}
+    for ext in forms:
+        if ext == "":
+            out[name] = data
+        elif ext == ".gz":
+            buf = io.BytesIO()
+            with gzip.GzipFile(filename="", mode="wb", fileobj=buf, mtime=0) as f:
+                f.write(data)
+            out[name + ext] = buf.getvalue()
+        elif ext == ".xz":
+            out[name + ext] = lzma.compress(data)
+        elif ext == ".lzma":
+            out[name + ext] = lzma.compress(data, format=lzma.FORMAT_ALONE)
+        elif ext == ".bz2":
+            out[name + ext] = bz2.compress(data)
+        elif ext == ".zst":
+            out[name + ext] = zstandard.ZstdCompressor().compress(data)
+    return out
+
+
+def _merge_contents(upstream: Path | None, ours: list[tuple[str, str]]) -> bytes:
+    """Upstream's sorted Contents (gzip, hundreds of MB uncompressed on
+    Ubuntu) merged with the layer's (path, section/package) rows, line by line
+    into a gzip stream — never held whole."""
+    import gzip
+    import io
+    mine: dict[str, set[str]] = {}
+    for path, owner in ours:
+        mine.setdefault(path, set()).add(owner)
+    pending = sorted(mine.items())
+    buf = io.BytesIO()
+    i = 0
+    with gzip.GzipFile(filename="", mode="wb", fileobj=buf, mtime=0) as out:
+        def emit(path: str, owners) -> None:
+            out.write(f"{path}  {','.join(sorted(owners))}\n".encode())
+
+        if upstream is not None:
+            with disk_io.ops.open_rb(upstream) as raw, \
+                    io.TextIOWrapper(gzip.GzipFile(fileobj=raw), encoding="utf-8", errors="replace") as src:
+                for line in src:
+                    parts = line.rstrip("\n").rsplit(None, 1)
+                    if len(parts) != 2:
+                        continue
+                    path, owners = parts
+                    while i < len(pending) and pending[i][0] < path:
+                        emit(*pending[i])
+                        i += 1
+                    if i < len(pending) and pending[i][0] == path:
+                        emit(path, set(owners.split(",")) | pending[i][1])
+                        i += 1
+                    else:
+                        out.write(line.encode() if line.endswith("\n") else (line + "\n").encode())
+        for path, owners in pending[i:]:
+            emit(path, owners)
+    return buf.getvalue()
 
 
 def _contents_path(rows, suite: str, comp: str, arch: str) -> str:
@@ -422,15 +527,23 @@ def _scanned(path: Path):
 
 
 def _copy_in(debs: list[Path], dest: Path, outcome: AddOutcome) -> None:
-    disk_io.ops.mkdir(dest, parents=True, exist_ok=True)
+    """All or nothing: every target is checked before the first copy, so a
+    refused add leaves no stray files behind."""
+    from mmw.providers.apt_local import _hashes
+    todo = []
     for deb in debs:
         target = dest / deb.name
         if disk_io.ops.exists(target):
-            from mmw.providers.apt_local import _hashes
             if _hashes(target)[0] == _hashes(deb)[0]:
                 outcome.skipped.append(deb)
                 continue
             raise PackagesError(f"{target} already exists with different contents — remove it first")
+        todo.append((deb, target))
+    names = [t.name for _, t in todo]
+    if len(set(names)) != len(names):
+        raise PackagesError("two of these debs have the same file name — rename one")
+    disk_io.ops.mkdir(dest, parents=True, exist_ok=True)
+    for deb, target in todo:
         disk_io.ops.copy_file(deb, target)
         outcome.copied.append(target)
 
@@ -463,14 +576,7 @@ def add_packages(cfg, mirror_dir: Path, paths, *, into: str, network: str | None
         layer = NetworkLayer(**{**(layer.model_dump() if layer else {"source": source.url}),
                                 "signing": signing, "key": key if signing == "resign" else None})
     if layer.signing == "resign":
-        from mmw.core.signing import Keyring
-        keyring = Keyring(mirror_dir)
-        try:
-            if layer.key not in {k.name for k in keyring.list()}:
-                raise PackagesError(f"no signing key named {layer.key!r} — make one with "
-                                    f"`mmw signing-key generate {layer.key}`")
-        finally:
-            keyring.stop_agent()
+        _check_key(mirror_dir, layer.key)
     suite, component = _target(net, cfg, mirror_dir, source, suite, component)
     folder = layer_dir(mirror_dir, net.name, source.name)
     decisions = read_decisions(folder)
@@ -532,6 +638,25 @@ def check_clashes(cfg, mirror_dir: Path, paths, *, into: str, network: str | Non
     return _find_clashes(net, cfg, mirror_dir, source, collect_debs(paths), suite, component)
 
 
+def _check_key(mirror_dir: Path, key: str) -> None:
+    from mmw.core.signing import Keyring
+    keyring = Keyring(mirror_dir)
+    try:
+        if key not in {k.name for k in keyring.list()}:
+            raise PackagesError(f"no signing key named {key!r} — make one with "
+                                f"`mmw signing-key generate {key}`")
+    finally:
+        keyring.stop_agent()
+
+
+def with_network_layers(current, changed, network: str):
+    """`current` with `network`'s layers as `changed` has them — a change
+    computed from an older copy of the config, applied to the live one."""
+    layers = next(n for n in changed.networks if n.name == network).layers
+    return current.model_copy(update={"networks": [
+        n.model_copy(update={"layers": layers}) if n.name == network else n for n in current.networks]})
+
+
 def remove_package(cfg, mirror_dir: Path, filename: str, *, into: str, network: str | None = None,
                    config_dir: Path | None = None) -> list[Path]:
     source = find_source(cfg, into)
@@ -539,7 +664,9 @@ def remove_package(cfg, mirror_dir: Path, filename: str, *, into: str, network: 
         folder = source.folder_path(config_dir)
     else:
         folder = layer_dir(mirror_dir, find_network(cfg, network).name, source.name)
-    found = [p for p in disk_io.ops.rglob(folder, filename)] if disk_io.ops.is_dir(folder) else []
+    # A name, never a pattern: `remove '*'` must not empty the folder.
+    found = ([p for p in disk_io.ops.rglob(folder, "*.deb") if p.name == filename]
+             if disk_io.ops.is_dir(folder) else [])
     if not found:
         raise PackagesError(f"{filename} is not in {into}")
     for p in found:
@@ -585,6 +712,8 @@ def set_signing(cfg, network: str, into: str, *, signing: str | None = None, key
     if drop_valid_until is not None:
         data["drop_valid_until"] = drop_valid_until
     new = NetworkLayer(**data)
+    if new.signing == "resign":
+        _check_key(cfg.settings.mirror_dir, new.key)
     layers = [la for la in net.layers if la.identity != new.identity] + [new]
     new_net = net.model_copy(update={"layers": layers})
     return cfg.model_copy(update={"networks": [new_net if n.name == net.name else n for n in cfg.networks]})

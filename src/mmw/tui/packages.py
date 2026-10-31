@@ -255,7 +255,8 @@ class NetworkPackagesPage(Page):
         except ValueError as e:
             self.set_status(str(e), "error")
             return
-        await self.app.save_config(lambda _cfg: out.cfg)
+        # Only this network's layers, applied to the config as it is now.
+        await self.app.save_config(lambda cur: layers.with_network_layers(cur, out.cfg, self.network_name))
         await self._list()
         self.set_status(f"Added {len(out.copied)} package(s). " + " ".join(out.notes[-1:]), "ok")
 
@@ -280,17 +281,20 @@ class NetworkPackagesPage(Page):
 
     @on(Button.Pressed, "#btn-pkg-sources")
     def _sources_pressed(self) -> None:
+        self.start_flow(self._sources)
+
+    async def _sources(self) -> None:
         from mmw.tui.sources_file import SourcesFilePage
         repo = self._repo()
         cfg, mirror_dir, net = self.app.cfg, self.app.cfg.settings.mirror_dir, self.network_name
         try:
-            layers.layer_sources_file(cfg, mirror_dir, net, repo.name, "deb822")
+            # Both forms now, off the event loop (they read the pool).
+            texts = {fmt: await asyncio.to_thread(layers.layer_sources_file, cfg, mirror_dir, net,
+                                                  repo.name, fmt) for fmt in ("deb822", "list")}
         except ValueError as e:
             self.set_status(str(e), "warning")
             return
-        self.app.push_screen(SourcesFilePage(
-            repo, name=f"{repo.name}-{net}",
-            render=lambda fmt: layers.layer_sources_file(cfg, mirror_dir, net, repo.name, fmt)))
+        self.app.push_screen(SourcesFilePage(repo, name=f"{repo.name}-{net}", render=texts.__getitem__))
 
 
 def _label(target: str) -> str:
@@ -378,8 +382,9 @@ class AddPackagesPage(Page):
             except ValueError as e:
                 notes.append(f"{_label(target)}: {e}")
                 continue
-            if out.cfg is not cfg:
-                await self.app.save_config(lambda _c, new=out.cfg: new)
+            if out.cfg is not cfg and network:
+                await self.app.save_config(
+                    lambda cur, new=out.cfg, net=network: layers.with_network_layers(cur, new, net))
             added += len(out.copied)
         self.set_status(f"Added {added} package file(s)." + (" " + " ".join(notes) if notes else ""),
                         "error" if notes else "ok")

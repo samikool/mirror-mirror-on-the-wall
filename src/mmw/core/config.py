@@ -1015,6 +1015,10 @@ class NetworkLayer(_StrictModel):
     def _resign_needs_a_key(self):
         if self.signing == "resign" and not self.key:
             raise ValueError(f"layer for {self.source}: signing = \"resign\" needs a key")
+        if self.drop_valid_until and self.signing != "resign":
+            # Rewriting Release breaks upstream's signature: only re-signing
+            # can drop Valid-Until without serving the repository unsigned.
+            raise ValueError(f"layer for {self.source}: drop_valid_until needs signing = \"resign\"")
         return self
 
     @property

@@ -104,3 +104,35 @@ def test_layered_sources_file(cli):
     cli("packages", "signing", cli.lab.src.name, "--network", "lab", "--unsigned")
     text = cli("sources-file", cli.lab.src.name, "--network", "lab").output
     assert "Trusted: yes" in text and "unsafe" in text
+
+
+def test_remove_takes_a_name_not_a_pattern(cli):
+    deb = make_deb(cli.lab.tmp / "new", "tools-ours", "1.0")
+    cli("packages", "add", str(deb), "--into", cli.lab.src.name, "--network", "lab", "--unsigned")
+    result = cli("packages", "remove", "*", "--into", cli.lab.src.name, "--network", "lab")
+    assert result.exit_code == 1
+    assert list(layer_dir(cli.lab.mirror_dir, "lab", cli.lab.src.name).rglob("*.deb"))
+
+
+def test_signing_with_an_unknown_key_is_refused(cli):
+    result = cli("packages", "signing", cli.lab.src.name, "--network", "lab", "--resign", "nope")
+    assert result.exit_code == 1 and "no signing key named 'nope'" in result.output
+
+
+def test_a_failed_add_leaves_nothing_copied(cli):
+    folder = layer_dir(cli.lab.mirror_dir, "lab", cli.lab.src.name) / "jammy/main"
+    a = make_deb(cli.lab.tmp / "new", "a-ours", "1.0")
+    cli("packages", "add", str(a), "--into", cli.lab.src.name, "--network", "lab", "--unsigned")
+    other = make_deb(cli.lab.tmp / "other", "a-ours", "1.0", extra={"Depends": "x"})   # same name, other bytes
+    b = make_deb(cli.lab.tmp / "other", "b-ours", "1.0")
+    result = cli("packages", "add", str(b), str(other), "--into", cli.lab.src.name, "--network", "lab")
+    assert result.exit_code == 1
+    assert not (folder / "b-ours_1.0_amd64.deb").exists()
+
+
+def test_removing_a_network_removes_its_layers(cli):
+    deb = make_deb(cli.lab.tmp / "new", "tools-ours", "1.0")
+    cli("packages", "add", str(deb), "--into", cli.lab.src.name, "--network", "lab", "--unsigned")
+    from mmw.tui.networks import clear_ledger
+    assert clear_ledger(cli.lab.mirror_dir, "lab") is None
+    assert not (cli.lab.mirror_dir / "layers" / "lab").exists()

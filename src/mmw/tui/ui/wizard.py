@@ -76,14 +76,20 @@ class Wizard(Page):
         # queued, so only those are dropped.
         if not self._accepting_next:
             return
-        if not await self.leave(self.step):
-            return
-        if self.step == len(self.STEPS) - 1:
-            await self.finish()
-            return
-        await self.go_to(self.step + 1)
+        # Off from the moment this press is handled — not after the move: a
+        # move awaits (Confirm mounts), `step` already reads the new step,
+        # and a press made then was queued behind the move and dropped as a
+        # double-click while the flag still said Next was taken.
         self._accepting_next = False
-        self.call_later(self._accept_next)
+        try:
+            if not await self.leave(self.step):
+                return
+            if self.step == len(self.STEPS) - 1:
+                await self.finish()
+                return
+            await self.go_to(self.step + 1)
+        finally:
+            self.call_later(self._accept_next)
 
     def _accept_next(self) -> None:
         self._accepting_next = True

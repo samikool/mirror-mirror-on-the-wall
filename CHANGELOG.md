@@ -6,6 +6,118 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0]
+
+Your own packages, wherever they need to be. A folder of `.deb` files becomes
+a signed repository of its own; a deb can be added to an upstream mirror as one
+network serves it, leaving the pool and every other network untouched; and the
+far side can add packages of its own that survive every apply and roll-back.
+mmw signs with keys it keeps itself, and a network can carry them across the
+airgap.
+
+**mmw is now licensed under the GNU AGPL v3.0 or later** (previously MIT) — see
+Changed. Releases up to 1.3.0 remain available under MIT.
+
+Upgrading from 1.3.0: nothing to do. Existing networks keep their far side; a
+new network now defaults to mmw. The first prune after upgrading may free more
+than usual (see Fixed). Signing your own repositories needs `gpg`.
+
+### Added
+
+- **Your own packages: folder repositories.** A folder of `.deb` files becomes
+  a signed apt repository served at an address you choose — `mmw add local
+  --folder ./debs --url https://tools.lan/apt`, or Sources → Add → Local
+  folder. Sync scans the folder (unchanged debs are not read again), builds
+  the indexes and signs them; it publishes and bundles like any other
+  repository. Flat by default, or `--structured` for `dists/{suite}/{component}/`;
+  `--contents` adds `Contents` files for apt-file. `mmw sources-file NAME`
+  (or `f` on the repository) prints the client's sources file, deb822 or
+  one-line, which is also published beside the repository.
+- **Your own packages in an upstream mirror, per network.** `mmw packages add
+  DEB --into ubuntu-archive -n lab --resign KEY` (or Networks → `k`) adds a
+  deb to the Ubuntu mirror *as `lab` serves it*: the pool keeps pure
+  upstream, other networks are untouched, and publish, snapshots and bundles
+  serve the rewritten indexes. The mirror is re-signed with an mmw key
+  (clients trust it instead — `mmw sources-file REPO -n NET` writes their
+  entry) or served `--unsigned`, which warns that clients need
+  `[trusted=yes]`. Re-signing alone, dropping `Valid-Until`, and keeping
+  `Contents` right for apt-file are options (`mmw packages signing`). A deb
+  that clashes with upstream's version is asked about and remembered.
+  `mmw packages list|remove`; Sources → `k` adds packages to several
+  repositories at once.
+- **Your own packages on the far side.** `mmw site packages add DEB --repo
+  REPO --resign KEY` (or `k` on a repository in the far-side TUI) adds debs to
+  a repository the site serves. Stored versions stay as bundles brought them,
+  so deltas keep applying; every switch — apply, roll back, forward — serves
+  the version plus the local packages. A repository whose layer cannot be
+  signed when a bundle arrives keeps serving what it did, held, with the
+  reason shown. `mmw site signing-key` manages this side's keys; a network can
+  `carry_keys` to the far side (opt-in: their private parts ride the bundle).
+  `mmw site sources-file REPO` writes the clients' entry.
+- **A site serves another mmw instance's network** (`mmw site local add PATH
+  -n NET`, then `mmw site local update` or `u`): folder repositories kept on
+  the far side, read SQLite-immutable — never written to, refused while that
+  instance is busy.
+- **Signing keys** (`mmw signing-key generate|import|export|list|remove`,
+  Settings → Signing keys): the keys mmw signs your repositories with, kept in
+  its own keyring under the pool directory. Needs `gpg`.
+- **Force delete a snapshot** (`D` on the Snapshots page, `mmw snapshot
+  delete --force`): forgets it outright, with every transfer that went to it
+  and its ledger manifest — like a force push. The far side is not touched:
+  if it may be at the forgotten snapshot, the next transfer sends everything,
+  and the dialog (or the command) says so before you confirm.
+
+### Changed
+
+- **mmw is now licensed under the GNU AGPL v3.0 or later** (previously MIT).
+  Using it — at home or at work, to run any number of mirrors — is unchanged.
+  Anyone who distributes mmw or a modified version, or serves a modified
+  version over a network, must share the complete source under the same
+  license. Releases up to 1.3.0 remain available under MIT.
+- **Failed downloads say why.** Each failed file on a sync card names its
+  reason (`http 404 (not on the server)`, `checksum mismatch`, `503 Service
+  Unavailable`…), and a card that finishes with failures sums them up —
+  `Failed packages: 12 — 10 × http 404 (not on the server), 2 × checksum
+  mismatch`. `mmw retry-failed` ends each mirror with the same `Why:` line.
+- **PyPI resolving says what it is doing.** `wave 3, 4,512 releases` is now
+  `dependencies, round 3 — reading the requirements of 4,512 release(s);
+  9,870 kept so far`, the metadata fetch between rounds counts as it goes
+  (`1,200/4,512`), and each target ends with how many releases it kept
+  after how many rounds.
+- **Retry missing says what it leaves out.** It covers VS Code and PyPI
+  mirrors; apt mirrors in the selection used to vanish silently (or read as
+  "nothing selected could be resolved"). It now names them and says a normal
+  sync fetches what they are missing.
+- **A new network's far side defaults to mmw.** The network editor offers mmw
+  first; existing networks keep what they have (no `far_side` in the config
+  still means `apply`).
+- **Deleting a snapshot a transfer went to keeps it as history only.** Its
+  files go with the next prune, but it stays listed as where the next transfer
+  can start from — so `mmw snapshot delete` no longer needs `--yes` for the
+  one the last bundle went to (it is still accepted), and Clean up no longer
+  keeps snapshots back for that. A history-only snapshot holds no files, and
+  picking one as From uses the repository versions it kept.
+
+### Fixed
+
+- **Deleted snapshots came back.** Every bundle leaves its manifest in the
+  ledger, and listing snapshots imported it again — the snapshot reappeared
+  as history only, still holding every file, so prune freed nothing.
+  Snapshots already history only stop holding their files too: the first
+  prune after upgrading may free more than usual.
+- **Finishing with the package database no longer stalls.** Each time mmw
+  wrote out its pending database rows — at the end of a sync, publish,
+  bundle or snapshot, and whenever a command closed the pool — it waited up
+  to half a second for the next batch tick instead of writing them at once.
+- **Leaving a page while it was still working could crash the app.** A page
+  that finished loading just as you quit, or just after you moved on, tried
+  to show its status on a screen that was already gone and ended mmw with
+  `NoMatches('#page-status')`.
+- **A stopped publish could leave files outside its record.** With several
+  disk write threads, files placed in the moment Stop was pressed could land
+  in the destination without being written to its record, so later publishes
+  never knew to update or prune them.
+
 ## [1.3.0]
 
 mmw comes to the far side. A network set to `far_side = "mmw"` is applied by

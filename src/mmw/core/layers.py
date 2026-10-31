@@ -322,3 +322,18 @@ def _pool_file(pool, deb) -> None:
     result = _download_sync(pkg, pool, None, None)
     if result.status is not Status.DOWNLOADED:
         raise ValueError(f"{deb.path}: {result.error or 'could not be pooled'}")
+
+
+def apply_build(network, cfg, mirror_dir: Path, pool, result) -> LayerReport:
+    """Build `network`'s layers before a walk, folding what it found into the
+    walk's result: warnings as warnings, errors as a failed "layers" entry
+    (a snapshot then refuses, a publish reports it and serves pure upstream
+    for that repository)."""
+    from mmw.core.publisher.results import MirrorPublishResult
+    report = build_network_layers(network, cfg, mirror_dir, pool)
+    result.warnings.extend(report.warnings)
+    if report.errors:
+        r = MirrorPublishResult(mirror_name="layers")
+        r.errors.extend(report.errors)
+        result.mirrors.append(r)
+    return report

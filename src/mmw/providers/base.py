@@ -347,9 +347,12 @@ class BaseProvider(ABC):
             if ctx.mirror_start_callback:
                 ctx.mirror_start_callback(members[0].name, idx + 1, len(groups))
             nested = {b for b in all_bases if b != base and b.startswith(base + "/")}
+            overlay = (ctx.pool.layer_overlay(ctx.network.name, base)
+                       if ctx.network is not None and hasattr(ctx.pool, "layer_overlay") else None)
             results.append(publish_group(
                 members, ctx.sink, ctx.pool, progress=ctx.progress, stop_event=ctx.stop_event,
-                prune=ctx.prune, prune_exclude=nested, keep_extra=set(ctx.keep_extra)))
+                prune=ctx.prune, prune_exclude=nested, keep_extra=set(ctx.keep_extra),
+                overlay=overlay or None))
         return results, all_bases
 
     def preview(self, network, cfg, pool, mirror_dir, result) -> None:

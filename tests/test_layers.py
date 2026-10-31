@@ -225,3 +225,64 @@ def test_contents_goes_where_upstream_keeps_it():
     rows = {"dists/jammy/main/Contents-amd64.gz": ("x",), "dists/jammy/Contents-amd64.gz": ("x",)}
     assert layers._contents_path(rows, "jammy", "main", "amd64") == "main/Contents-amd64"
     assert layers._contents_path({}, "jammy", "main", "amd64") == "main/Contents-amd64"
+
+
+# ── publish, snapshot, bundle (Task 5) ───────────────────────────────────────
+
+def _publish(lab, layer, extra=()):
+    from mmw.core.publisher import publish_network
+    c = lab.cfg(layer, extra)
+    results = [publish_network(n, c, lab.mirror_dir) for n in c.networks]
+    return c, results
+
+
+def _tree(root, lab):
+    return root / lab.base
+
+
+@needs_gpg
+def test_publish_serves_the_layer_and_leaves_other_networks_pure(lab):
+    make_deb(lab.folder / "jammy/main", "tools-ours", "1.0")
+    plain = config.NetworkConfig(name="plain", root=lab.tmp / "plain")
+    _, (res, res_plain) = _publish(lab, _layer(lab), [plain])
+    assert not [r for r in res.mirrors if r.errors], [r.errors for r in res.mirrors]
+    tree = _tree(lab.tmp / "pub", lab)
+    assert (tree / "pool/mmw/main/tools-ours_1.0_amd64.deb").is_file()
+    packages = (tree / "dists/jammy/main/binary-amd64/Packages").read_bytes()
+    assert b"Package: tools-ours" in packages
+    import hashlib
+    xz = (tree / "dists/jammy/main/binary-amd64/Packages.xz").read_bytes()
+    assert list(tree.glob(f"dists/jammy/**/by-hash/SHA256/{hashlib.sha256(xz).hexdigest()}"))
+    pure = _tree(lab.tmp / "plain", lab)
+    upstream = lab.up.root / "ubuntu"
+    for rel in ("dists/jammy/InRelease", "dists/jammy/main/binary-amd64/Packages.xz"):
+        assert (pure / rel).read_bytes() == (upstream / rel).read_bytes(), rel
+    assert not (pure / "pool/mmw").exists()
+
+
+@needs_gpg
+def test_a_snapshot_records_the_served_layer(lab):
+    from mmw.core.snapshots import take_snapshot
+    make_deb(lab.folder / "jammy/main", "tools-ours", "1.0")
+    c = lab.cfg(_layer(lab))
+    snap = take_snapshot(c.networks[0], c, lab.mirror_dir, label="with-layer")
+    with Pool(lab.mirror_dir, read_only=True) as pool:
+        paths = {p for p, *_ in pool.snapshot_blob_rows(snap.id)}
+    assert f"{lab.base}/pool/mmw/main/tools-ours_1.0_amd64.deb" in paths
+
+
+@needs_gpg
+def test_an_unsigned_publish_drops_signatures_and_warns(lab):
+    make_deb(lab.folder / "jammy/main", "tools-ours", "1.0")
+    _, (res,) = _publish(lab, _layer(lab, signing="unsigned", key=None))
+    tree = _tree(lab.tmp / "pub", lab)
+    assert (tree / "dists/jammy/Release").is_file()
+    assert not (tree / "dists/jammy/InRelease").exists() and not (tree / "dists/jammy/Release.gpg").exists()
+    assert any("trusted=yes" in w for w in res.warnings)
+
+
+@needs_gpg
+def test_a_broken_layer_is_a_publish_error(lab):
+    make_deb(lab.folder / "jammy/main", "tools-ours", "1.0")
+    _, (res,) = _publish(lab, None)
+    assert any("resign or unsigned" in e for r in res.mirrors for e in r.errors)

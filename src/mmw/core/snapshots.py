@@ -105,6 +105,8 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
     with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
         sink = RecordingSink(pool)
         result = NetworkPublishResult(network_name=network.name, dry_run=False)
+        from mmw.core.layers import apply_build
+        apply_build(network, cfg, mirror_dir, pool, result)     # what the network serves, layer and all
         from mmw.core.publisher import walk_network
         mirrors = walk_network(network, cfg, mirror_dir, sink, pool, result,
                                nginx_root=None, prune=False,

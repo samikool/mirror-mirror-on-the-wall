@@ -187,7 +187,14 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
                     report.warnings.append(
                         f"{network.name}: {source.name}: {d.path.name} is for {arch}, which this "
                         f"network does not publish in {s}/{c} — no index lists it")
-        clashes = _clashes(source.name, rows, published, debs, chosen)
+        # Finding clashes reads every affected upstream Packages: reuse the
+        # last answer while the inputs are the same.
+        cache = _work(mirror_dir, network.name, source.name) / "clashes.json"
+        unchanged = pool.layer_digest(network.name, base) == digest and _intact(pool, network.name, base)
+        cached = _read_clashes(cache, digest) if unchanged else None
+        clashes = cached if cached is not None else _clashes(source.name, rows, published, debs, chosen)
+        if cached is None:
+            _write_clashes(cache, digest, clashes)
         report.clashes += [c for c in clashes if c.filename not in chosen]
         for c in clashes:
             if c.filename not in chosen:
@@ -200,7 +207,7 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
             report.warnings.append(
                 f"{network.name}: {source.name} is served unsigned — this is unsafe; clients "
                 "need [trusted=yes] for it")
-        if pool.layer_digest(network.name, base) == digest and _intact(pool, network.name, base):
+        if unchanged:
             continue
         dropped = {c.filename for c in clashes if chosen.get(c.filename) == "drop"}
         try:
@@ -315,6 +322,25 @@ def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, mir
 
 
 LAYER_FORMAT = 2            # bump when the rebuild changes what it writes: every layer rebuilds
+
+
+def _read_clashes(path: Path, digest: str) -> "list[Clash] | None":
+    if not disk_io.ops.exists(path):
+        return None
+    try:
+        data = json.loads(disk_io.ops.read_bytes(path))
+    except ValueError:
+        return None
+    return [Clash(**c) for c in data["clashes"]] if data.get("digest") == digest else None
+
+
+def _write_clashes(path: Path, digest: str, clashes: list) -> None:
+    from dataclasses import asdict
+    disk_io.ops.mkdir(path.parent, parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    disk_io.ops.write_bytes(tmp, json.dumps({"digest": digest,
+                                             "clashes": [asdict(c) for c in clashes]}).encode())
+    disk_io.ops.replace(tmp, path)
 
 
 def _have(pool, checksum: str, filename: str) -> bool:

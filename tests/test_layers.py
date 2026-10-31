@@ -376,3 +376,13 @@ def test_a_deb_for_an_unpublished_arch_is_reported(lab):
     make_deb(lab.folder / "jammy/main", "risc-ours", "1.0", "riscv64")
     report, _ = lab.build(_layer(lab))
     assert any("riscv64" in w for w in report.warnings)
+
+
+@needs_gpg
+def test_an_unchanged_build_does_not_reparse_upstream_for_clashes(lab, monkeypatch):
+    make_deb(lab.folder / "jammy/main", "hello", "2.9")
+    first, _ = lab.build(_layer(lab))
+    assert [c.kind for c in first.clashes] == ["shadowed"]
+    monkeypatch.setattr(layers, "_clashes", lambda *a, **k: pytest.fail("reparsed for clashes"))
+    again, _ = lab.build(_layer(lab))
+    assert again.clashes == first.clashes and again.warnings == first.warnings

@@ -352,9 +352,16 @@ class RootApply:
                     continue
                 if progress:
                     progress("switch", repo=repo, label=meta["label"])
-                switch_in(db, roots, repo, vid)
+                switched = switch_in(db, roots, repo, vid)
+                if switched.held:
+                    result.stored_held.append(repo)
+                    result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
+                                        f"{f'still serving v{was}' if was else 'not served'} (held: "
+                                        f"{switched.held})")
+                    continue
                 result.updated.append(repo)
                 result.lines.append(f"  {meta['label']}  {f'v{was}' if was else 'full'} → v{meta['to']}")
+                result.lines.extend(f"  {w}" for w in switched.warnings)
         for repo, why in result.refused.items():
             result.lines.append(f"  {header.repos[repo]['label']}  refused: {why}")
 

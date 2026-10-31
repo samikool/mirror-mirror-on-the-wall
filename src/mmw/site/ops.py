@@ -94,13 +94,38 @@ def forward(home: Path, ref: str | None) -> list[str]:
             state = db.repo_state(repo)
             roots.check_mounted(roots.of(state))
             if state.serving is None or state.serving.id != newest.id:
-                switch_in(db, roots, repo, newest.id)
+                if switch_in(db, roots, repo, newest.id).held:
+                    continue                    # still held: its layer cannot be built yet
             else:
                 db.set_held(repo, False)
             moved.append(repo)
         if moved:
             _render(roots)
     return moved
+
+
+def relayer(home: Path, ref: str, progress=None) -> SwitchResult:
+    """Serve the repository's current version again with its site layer as it
+    is now — after local packages or the signing choice changed."""
+    with _session(home) as (db, roots):
+        repo = resolve_repo(db, ref)
+        state = db.repo_state(repo)
+        if state is None or state.serving is None:
+            raise ValueError(f"{ref} serves nothing yet — apply a bundle first")
+        roots.check_mounted(roots.of(state))
+        held = state.held
+        result = switch_in(db, roots, repo, state.serving.id,
+                           progress=(lambda rel, _kind: progress(rel)) if progress else None)
+        if not result.held:
+            db.set_held(repo, held)              # a re-layer is not a fast-forward
+        _render(roots)
+        return result
+
+
+def status_reason(home: Path, ref: str) -> str | None:
+    """Why a repository is held by its site layer, if it is."""
+    with _session(home) as (db, _roots):
+        return db.get_meta(f"hold:{resolve_repo(db, ref)}") or None
 
 
 def hold(home: Path, ref: str) -> str:

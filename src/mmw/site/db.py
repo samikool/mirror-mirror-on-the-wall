@@ -84,6 +84,7 @@ class RepoState:
 
 class SiteDB:
     def __init__(self, home: Path):
+        self.home = Path(home)                   # site layers live beside the database
         self._conn = sqlite3.connect(Path(home) / DB_FILE)
         self._conn.execute("PRAGMA journal_mode=DELETE")
         self._conn.execute("PRAGMA foreign_keys=OFF")
@@ -248,10 +249,14 @@ class SiteDB:
 
     # ── switches left halfway ────────────────────────────────────────────────
 
-    def begin_switch(self, repo: str, from_id: int | None, to_id: int) -> None:
-        self._conn.execute("INSERT OR REPLACE INTO switches (repo, from_version, to_version, phase) "
-                           "VALUES (?, ?, ?, 'pkg')", (repo, from_id, to_id))
+    def begin_switch(self, repo: str, from_id: int | None, to_id: int, overlay: str | None = None) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO switches (repo, from_version, to_version, phase, overlay) "
+                           "VALUES (?, ?, ?, 'pkg', ?)", (repo, from_id, to_id, overlay))
         self._conn.commit()
+
+    def switch_overlay(self, repo: str) -> str | None:
+        row = self._conn.execute("SELECT overlay FROM switches WHERE repo = ?", (repo,)).fetchone()
+        return row[0] if row else None
 
     def switch_phase(self, repo: str, phase: str) -> None:
         self._conn.execute("UPDATE switches SET phase = ? WHERE repo = ?", (phase, repo))

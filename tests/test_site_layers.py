@@ -154,3 +154,95 @@ def test_an_unchanged_overlay_is_reused(site, monkeypatch):
     monkeypatch.setattr(core_layers, "_rebuild", lambda *a, **k: pytest.fail("rebuilt"))
     again, _, _ = site.build()
     assert again.digest == first.digest
+
+
+# ── switching serves version + overlay (Task 4) ──────────────────────────────
+
+from apt_upstream import sync_upstream  # noqa: E402
+
+
+def _served(site, rel):
+    return (site.root / site.base / rel)
+
+
+def _delta(site):
+    """Upstream republishes; the connected side syncs and bundles a delta; the site applies it."""
+    from mmw.core.publisher.bundle import bundle_network
+    from mmw.site.apply import apply_bundle
+    lab = site.lab  # noqa: F811 — the fixture object, not the fixture
+    lab.up.republish({("jammy", "main"): [make_deb(lab.tmp / "u2", "hello", "2.10-3")],
+                      ("jammy", "universe"): [make_deb(lab.tmp / "u", "cowsay", "3.03")]},
+                     date="Fri, 22 Apr 2022 10:00:00 UTC")
+    sync_upstream(site.cfg, lab.src)
+    out = bundle_network(site.net, site.cfg, lab.mirror_dir, out_path=lab.tmp / "b2").out_path
+    return apply_bundle(site.home, str(out), say=lambda *a: None)
+
+
+@needs_gpg
+def test_a_delta_keeps_the_site_layer_and_the_version_pure(site):
+    from mmw.site.ops import relayer
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="resign", key="site")
+    relayer(site.home, site.repo)
+    assert _served(site, "pool/mmw/main/site-tool_1.0_amd64.deb").is_file()
+    assert b"Package: site-tool" in _served(site, "dists/jammy/main/binary-amd64/Packages").read_bytes()
+    result = _delta(site)
+    assert result.updated == [site.repo], result.lines
+    packages = _served(site, "dists/jammy/main/binary-amd64/Packages").read_text()
+    assert "Version: 2.10-3" in packages and "Package: site-tool" in packages
+    with SiteDB(site.home) as db:
+        v2 = db.versions(site.repo)[0]
+        stored = db.version_files(v2.id)[f"{site.base}/dists/jammy/main/binary-amd64/Packages"]
+    from mmw.site.home import load_site
+    from mmw.site.roots import Roots
+    store = Roots(load_site(site.home)).store(Roots(load_site(site.home)).primary)
+    assert b"site-tool" not in store.path(stored).read_bytes()       # the stored version stays upstream's
+
+
+@needs_gpg
+def test_rolling_back_rebuilds_the_layer_for_that_version(site):
+    from mmw.site.ops import relayer, serve
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="unsigned")
+    relayer(site.home, site.repo)
+    _delta(site)
+    serve(site.home, site.repo, 1)
+    packages = _served(site, "dists/jammy/main/binary-amd64/Packages").read_text()
+    assert "Version: 2.10-2" in packages and "Package: site-tool" in packages
+    assert not _served(site, "dists/jammy/InRelease").exists()
+
+
+@needs_gpg
+def test_dropping_the_layer_serves_the_pure_version(site):
+    from mmw.site.ops import relayer
+    deb = make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="unsigned")
+    relayer(site.home, site.repo)
+    deb.unlink()
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="upstream")
+    relayer(site.home, site.repo)
+    assert not _served(site, "pool/mmw/main/site-tool_1.0_amd64.deb").exists()
+    upstream = site.lab.up.root / "ubuntu"
+    for rel in ("dists/jammy/InRelease", "dists/jammy/main/binary-amd64/Packages"):
+        assert _served(site, rel).read_bytes() == (upstream / rel).read_bytes(), rel
+
+
+@needs_gpg
+def test_an_unsignable_layer_holds_until_its_key_arrives(site):
+    from mmw.site.ops import forward, status_reason
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="resign", key="later")
+    result = _delta(site)
+    assert result.updated == [] and site.repo in result.stored_held
+    assert "signing key" in status_reason(site.home, site.repo)
+    packages = _served(site, "dists/jammy/main/binary-amd64/Packages").read_text()
+    assert "Version: 2.10-2" in packages                              # still serving the old version
+    Keyring(site.home).generate("later")
+    assert forward(site.home, site.repo) == [site.repo]
+    assert "Version: 2.10-3" in _served(site, "dists/jammy/main/binary-amd64/Packages").read_text()
+    assert status_reason(site.home, site.repo) is None

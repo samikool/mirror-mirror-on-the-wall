@@ -477,4 +477,10 @@ enforce it.
 
 ## License
 
-MIT — see [LICENSE](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/LICENSE).
+Copyright (c) 2026 Sam Morgan. GNU Affero General Public License v3.0 or
+later — see [LICENSE](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/LICENSE).
+
+Use mmw freely, including at work to run your mirrors. If you distribute it,
+or a modified version — or offer a modified version to users over a network —
+you must make the complete source available under the same license.
+Releases up to and including 1.3.0 were published under the MIT License.

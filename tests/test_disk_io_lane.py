@@ -131,13 +131,42 @@ def test_ordered_map_stop_cancels_pending():
     lane.close()
 
 
-def test_a_stop_yields_every_item_that_ran_even_one_started_mid_cancel(monkeypatch):
-    """Workers keep taking queued items while a stop cancels the rest. Cancelled
-    front-first, a worker freed in between skipped the cancelled item and ran
-    the one after it — which then sat behind a cancelled future and was never
-    yielded: a publish stopped there left files on disk outside its record
-    (CI: test_link_many_stop_records_only_settled_rows). Forced here: the
-    first cancel that lands frees both workers and waits for one to start."""
+def test_a_stop_yields_every_item_that_ran():
+    """A stop never cancels what was submitted: a worker takes an item off the
+    queue a moment before marking it running, so a cancel could land on item
+    k while k+1 already ran — on disk behind a gap the caller never settled
+    (a stopped publish left files outside its record; CI,
+    test_link_many_stop_records_only_settled_rows). What was submitted
+    finishes and is yielded; nothing more is started."""
+    lane = _lane(2)
+    stop, gate = threading.Event(), threading.Event()
+    started = []
+
+    def fn(i):
+        started.append(i)
+        if i in (1, 2):
+            gate.wait(5)                        # both workers busy; the rest queued
+        return i
+
+    gen = lane.ordered_map(fn, range(100), stop_event=stop, window=8)
+    assert next(gen) == (0, 0)
+    deadline = time.monotonic() + 5
+    while not {1, 2} <= set(started) and time.monotonic() < deadline:
+        time.sleep(0.001)
+    stop.set()
+    gate.set()
+    yielded = [0] + [i for i, _ in gen]
+    lane.close()
+    assert yielded == list(range(len(yielded)))           # a contiguous prefix
+    assert sorted(started) == yielded                     # everything that ran, nothing else
+    assert len(yielded) <= 1 + 8                          # bounded by the window
+
+
+def test_a_stop_never_leaves_a_gap_even_with_workers_freed_mid_stop(monkeypatch):
+    """The race itself, forced: if a stop cancels anything, the first cancel
+    that lands frees both workers and waits for one to take a queued item.
+    Cancelling front-first, item 3 was cancelled and 4–7 ran unyielded (this
+    test failed every time); any cancel on a stop can open the same gap."""
     import concurrent.futures
 
     lane = _lane(2)
@@ -147,7 +176,7 @@ def test_a_stop_yields_every_item_that_ran_even_one_started_mid_cancel(monkeypat
     def fn(i):
         started.append(i)
         if i in (1, 2):
-            gate.wait(5)                        # both workers busy; 3.. queued
+            gate.wait(5)
         return i
 
     real_cancel = concurrent.futures.Future.cancel
@@ -158,10 +187,10 @@ def test_a_stop_yields_every_item_that_ran_even_one_started_mid_cancel(monkeypat
         if landed and not hooked:
             hooked.append(True)
             before = len(started)
-            gate.set()                          # free the workers mid-cancel …
+            gate.set()
             deadline = time.monotonic() + 5
             while len(started) == before and time.monotonic() < deadline:
-                time.sleep(0.001)               # … until one takes a queued item
+                time.sleep(0.001)
         return landed
 
     monkeypatch.setattr(concurrent.futures.Future, "cancel", cancel)
@@ -171,10 +200,10 @@ def test_a_stop_yields_every_item_that_ran_even_one_started_mid_cancel(monkeypat
     while not {1, 2} <= set(started) and time.monotonic() < deadline:
         time.sleep(0.001)
     stop.set()
+    gate.set()
     yielded = [0] + [i for i, _ in gen]
     lane.close()
-    assert hooked, "no cancel landed — the race was not set up"
-    assert yielded == list(range(len(yielded)))           # still a contiguous prefix
+    assert yielded == list(range(len(yielded)))
     assert set(started) <= set(yielded), f"ran but never yielded: {sorted(set(started) - set(yielded))}"
 
 

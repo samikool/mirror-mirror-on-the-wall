@@ -44,11 +44,12 @@ class Lane:
           lazily — it may be a stream of millions of rows.
         - An exception that `fn` raises is yielded as that item's result,
           not raised. BaseExceptions that are not Exceptions propagate.
-        - Once `stop_event` is set, nothing new is submitted and queued work
-          is cancelled. Items already running are waited for and yielded, in
-          order, so every operation that touched the disk reaches the
-          caller's settlement; then iteration ends. The caller checks
-          `stop_event`, as callers already do.
+        - Once `stop_event` is set, nothing new is submitted. Items already
+          submitted (at most `window`) finish and are yielded, in order, so
+          every operation that touched the disk reaches the caller's
+          settlement and what ran is always a contiguous prefix; then
+          iteration ends. The caller checks `stop_event`, as callers
+          already do.
         - Closing the generator early cancels what has not started.
         - The time the caller spent waiting on the work is added to
           `stats[route]` — not the consumer's own time between results.
@@ -93,26 +94,15 @@ class Lane:
 
         try:
             fill()
+            # A stop is honoured by `fill`, which submits nothing more: what
+            # was submitted (at most `window` items) finishes and is yielded,
+            # in order. It is never cancelled — a worker takes an item off the
+            # queue a moment before marking it running, so a cancel could
+            # land on item k while k+1 already ran: work on disk behind a gap
+            # the caller never settled (a stopped publish left files outside
+            # its record). No cancel order closes that window; not cancelling
+            # does, at the cost of at most `window` more operations.
             while pending:
-                if stopped():
-                    # Last first: workers keep taking the earliest queued item
-                    # while this runs. Cancelled front-first, a worker could
-                    # skip a just-cancelled item and run the one behind it,
-                    # which the loop below — it ends at the first cancelled
-                    # future — never yielded: work on disk the caller never
-                    # settled. Back-first, whatever starts meanwhile is
-                    # earlier than everything cancelled, so what ran stays a
-                    # contiguous prefix and is all yielded.
-                    for _item, fut in reversed(pending):
-                        fut.cancel()
-                    while pending and not pending[0][1].cancelled():
-                        item, fut = pending.popleft()
-                        started = time.perf_counter()
-                        result = _outcome(fut)
-                        waited += time.perf_counter() - started
-                        ops += 1
-                        yield item, result
-                    return
                 item, fut = pending.popleft()
                 started = time.perf_counter()
                 result = _outcome(fut)

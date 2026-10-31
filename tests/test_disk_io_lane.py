@@ -131,6 +131,53 @@ def test_ordered_map_stop_cancels_pending():
     lane.close()
 
 
+def test_a_stop_yields_every_item_that_ran_even_one_started_mid_cancel(monkeypatch):
+    """Workers keep taking queued items while a stop cancels the rest. Cancelled
+    front-first, a worker freed in between skipped the cancelled item and ran
+    the one after it — which then sat behind a cancelled future and was never
+    yielded: a publish stopped there left files on disk outside its record
+    (CI: test_link_many_stop_records_only_settled_rows). Forced here: the
+    first cancel that lands frees both workers and waits for one to start."""
+    import concurrent.futures
+
+    lane = _lane(2)
+    stop, gate = threading.Event(), threading.Event()
+    started = []
+
+    def fn(i):
+        started.append(i)
+        if i in (1, 2):
+            gate.wait(5)                        # both workers busy; 3.. queued
+        return i
+
+    real_cancel = concurrent.futures.Future.cancel
+    hooked = []
+
+    def cancel(fut):
+        landed = real_cancel(fut)
+        if landed and not hooked:
+            hooked.append(True)
+            before = len(started)
+            gate.set()                          # free the workers mid-cancel …
+            deadline = time.monotonic() + 5
+            while len(started) == before and time.monotonic() < deadline:
+                time.sleep(0.001)               # … until one takes a queued item
+        return landed
+
+    monkeypatch.setattr(concurrent.futures.Future, "cancel", cancel)
+    gen = lane.ordered_map(fn, range(8), stop_event=stop, window=8)
+    assert next(gen) == (0, 0)
+    deadline = time.monotonic() + 5
+    while not {1, 2} <= set(started) and time.monotonic() < deadline:
+        time.sleep(0.001)
+    stop.set()
+    yielded = [0] + [i for i, _ in gen]
+    lane.close()
+    assert hooked, "no cancel landed — the race was not set up"
+    assert yielded == list(range(len(yielded)))           # still a contiguous prefix
+    assert set(started) <= set(yielded), f"ran but never yielded: {sorted(set(started) - set(yielded))}"
+
+
 def test_closing_the_generator_cancels_unstarted():
     lane = _lane(2)
     calls = []

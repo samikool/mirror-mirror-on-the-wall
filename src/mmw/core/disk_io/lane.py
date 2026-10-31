@@ -95,7 +95,15 @@ class Lane:
             fill()
             while pending:
                 if stopped():
-                    for _item, fut in pending:
+                    # Last first: workers keep taking the earliest queued item
+                    # while this runs. Cancelled front-first, a worker could
+                    # skip a just-cancelled item and run the one behind it,
+                    # which the loop below — it ends at the first cancelled
+                    # future — never yielded: work on disk the caller never
+                    # settled. Back-first, whatever starts meanwhile is
+                    # earlier than everything cancelled, so what ran stays a
+                    # contiguous prefix and is all yielded.
+                    for _item, fut in reversed(pending):
                         fut.cancel()
                     while pending and not pending[0][1].cancelled():
                         item, fut = pending.popleft()

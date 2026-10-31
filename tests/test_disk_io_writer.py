@@ -31,6 +31,20 @@ def test_task_runs_after_prior_items_committed():
     w.stop()
 
 
+def test_flush_commits_now_not_on_the_next_tick():
+    """A flush does not sit out the batch interval: with a minute-long
+    interval it still returns as soon as the pending items are committed."""
+    committed = []
+    w = BatchWriter(committed.extend, name="t", batch=100, interval=60)
+    w.submit(1)
+    w.submit(2)
+    t = time.monotonic()
+    assert w.flush(timeout=30) == []
+    assert time.monotonic() - t < 10
+    assert committed == [1, 2]
+    w.stop()
+
+
 def test_flush_on_writer_thread_is_noop():
     w = BatchWriter(lambda items: None, name="t", interval=0.05)
     done, result = threading.Event(), []

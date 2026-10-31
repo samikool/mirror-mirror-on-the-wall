@@ -133,6 +133,11 @@ class BatchWriter:
         """
         if threading.current_thread() is self._thread:
             return list(self._errors)
+        if not self._idle.is_set():
+            # A no-op task: the writer commits what is pending as soon as it
+            # dequeues it, instead of on its next interval tick — otherwise
+            # every flush (each `Pool.close`) sat out up to `interval`.
+            self.submit_task(lambda: None, lambda _error: None)
         self._idle.wait(timeout)
         return list(self._errors)
 

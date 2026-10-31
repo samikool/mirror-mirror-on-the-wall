@@ -7,6 +7,8 @@ the pool on, it is a repository like any other: snapshots, publish, bundle.
 """
 import hashlib
 import json
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -183,10 +185,26 @@ def scan(folder: Path, cache_path: Path, *, contents: bool = False) -> list[Scan
     package, version and architecture with different bytes are refused."""
     if not disk_io.ops.is_dir(folder):
         raise ValueError(f"folder {folder} does not exist or is not a directory")
-    try:
-        paths = sorted(p for p in disk_io.ops.rglob(folder, "*.deb") if disk_io.ops.is_file(p))
-    except OSError as e:
-        raise ValueError(f"folder {folder} cannot be read: {e}") from None
+    # Never read an unreadable folder as an empty one: that would publish an
+    # empty repository and prune every deb clients rely on. rglob swallows
+    # permission errors, so walk, and let a walk error stop the scan.
+    if not os.access(folder, os.R_OK | os.X_OK):
+        raise ValueError(f"folder {folder} cannot be read (permissions)")
+
+    def unreadable(err: OSError):
+        raise ValueError(f"folder {err.filename} cannot be read: {err.strerror}")
+
+    paths = sorted(Path(root) / name
+                   for root, _dirs, names in disk_io.ops.walk(folder, onerror=unreadable)
+                   for name in names if name.endswith(".deb"))
+    paths = [p for p in paths if disk_io.ops.is_file(p)]
+    # Debs are served by file name, so two of one name would share a URL.
+    by_name: dict[str, Path] = {}
+    for p in paths:
+        if p.name in by_name:
+            raise ValueError(f"{by_name[p.name].relative_to(folder)} and {p.relative_to(folder)} "
+                             f"share the file name {p.name} — rename one")
+        by_name[p.name] = p
     cache = {}
     if disk_io.ops.exists(cache_path):
         try:
@@ -245,7 +263,13 @@ def build(unit) -> tuple[list[PackageInfo], list[MetadataFile]]:
                             filename=d.path.name) for d in debs]
     entries = [(d, Entry(d.control, (pool_dir or "./") + d.path.name, d.size, d.sha256, d.md5))
                for d in debs]
+    state_path = work / "state.json"
+    state = _read_json(state_path)
     arches = sorted({d.control["Architecture"] for d in debs} - {"all"}) or (["all"] if debs else [])
+    if not debs and state.get("arches"):
+        # Emptied, not new: keep serving (empty) indexes for the architectures
+        # clients already fetch, or every one of them warns on update.
+        arches = state["arches"]
 
     def for_arch(arch):
         return [e for d, e in entries if d.control["Architecture"] in (arch, "all")]
@@ -273,9 +297,20 @@ def build(unit) -> tuple[list[PackageInfo], list[MetadataFile]]:
     if structured:
         suite = o.get("suite", "stable")
         fields.update(Suite=suite, Codename=suite, Components=component)
-    fields.update(Architectures=" ".join(arches),
-                  Date=rfc2822(max((d.mtime for d in debs), default=0)))
+    fields["Architectures"] = " ".join(arches)
+    # Date only ever moves forward: apt ignores a Release older than the one
+    # it holds, so a Date from the newest deb went backwards when that deb was
+    # removed and clients silently kept the old list. Unchanged content keeps
+    # its Date, so an unchanged folder still rebuilds byte for byte.
+    body = hashlib.sha256(release_text(fields, files)).hexdigest()
+    if state.get("body") == body and state.get("date"):
+        date = state["date"]
+    else:
+        date = max(int(time.time()), int(state.get("date", 0)) + 1)
+    fields["Date"] = rfc2822(date)
     release = release_text(fields, files)
+    if state != {"arches": arches, "body": body, "date": date}:
+        _write_json(state_path, {"arches": arches, "body": body, "date": date})
     inrelease, release_gpg = _signatures(work, o["key"], mirror_dir, release)
 
     # The client's sources files, beside the repository, so `curl` gets them.
@@ -293,6 +328,22 @@ def build(unit) -> tuple[list[PackageInfo], list[MetadataFile]]:
                  for rel, body in (("Release", release), ("InRelease", inrelease),
                                    ("Release.gpg", release_gpg))]
     return packages, metadata
+
+
+def _read_json(path: Path) -> dict:
+    if not disk_io.ops.exists(path):
+        return {}
+    try:
+        return json.loads(disk_io.ops.read_bytes(path))
+    except ValueError:
+        return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    disk_io.ops.mkdir(path.parent, parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    disk_io.ops.write_bytes(tmp, json.dumps(data, sort_keys=True).encode())
+    disk_io.ops.replace(tmp, path)
 
 
 def _as_source(unit):

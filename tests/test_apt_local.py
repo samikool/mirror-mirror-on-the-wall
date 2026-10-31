@@ -178,10 +178,10 @@ def test_missing_empty_and_clashing_folders(tmp_path):
     _, summary, root = _sync_local(tmp_path, _src(tmp_path, folder="empty"))
     assert summary.ok and (root / "tools.lab/apt/Packages").read_bytes() == b""
     make_deb(tmp_path / "a", "x", "1")
-    make_deb(tmp_path / "a" / "sub", "x", "1", extra={"Depends": "y"})
+    make_deb(tmp_path / "a" / "sub", "x", "1", extra={"Depends": "y"}, filename="x_1_amd64-rebuilt.deb")
     with pytest.raises(ValueError, match="differ") as clash:
         apt_local.scan(tmp_path / "a", tmp_path / "c2.json")
-    assert "sub/x_1_amd64.deb and x_1_amd64.deb" in str(clash.value)
+    assert "sub/x_1_amd64-rebuilt.deb and x_1_amd64.deb" in str(clash.value)
 
 
 def test_a_missing_folder_is_a_resolve_error(tmp_path):
@@ -189,3 +189,90 @@ def test_a_missing_folder_is_a_resolve_error(tmp_path):
     cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "m"), sources=[src])
     resolved = get_provider("apt-local").resolve(src, context=ResolveContext.from_config(cfg))
     assert resolved.mirrors == [] and str(tmp_path / "nope") in resolved.errors[0]
+
+
+# ── review fixes ─────────────────────────────────────────────────────────────
+
+def _release_date(root, structured=False):
+    from email.utils import parsedate_to_datetime
+    rel = root / ("tools.lab/apt/dists/stable/Release" if structured else "tools.lab/apt/Release")
+    line = next(ln for ln in rel.read_text().splitlines() if ln.startswith("Date: "))
+    return parsedate_to_datetime(line[6:].replace("UTC", "+0000"))
+
+
+@needs_gpg
+def test_date_never_goes_back_when_the_newest_deb_is_removed(tmp_path):
+    """A client that saw a newer Date ignores an older one: removing the
+    newest deb must still move Date forward, or clients keep a stale list."""
+    from debs import touch_old
+    touch_old(make_deb(tmp_path / "debs", "tool", "1.0"), 7200)
+    newest = make_deb(tmp_path / "debs", "tool", "1.1")
+    _, _, root = _sync_local(tmp_path, _src(tmp_path))
+    first = _release_date(root)
+    newest.unlink()
+    _, _, root = _sync_local(tmp_path, _src(tmp_path))
+    assert _release_date(root) > first
+
+
+@needs_gpg
+def test_a_future_mtime_does_not_date_the_release_ahead(tmp_path):
+    import os
+    import time
+    deb = make_deb(tmp_path / "debs", "tool", "1.0")
+    later = time.time() + 86400
+    os.utime(deb, (later, later))
+    _, _, root = _sync_local(tmp_path, _src(tmp_path))
+    assert _release_date(root).timestamp() <= time.time() + 5
+
+
+@pytest.mark.skipif(os_getuid() == 0 if (os_getuid := __import__("os").getuid) else False,
+                    reason="root reads everything")
+def test_unreadable_folder_and_subfolder_are_errors(tmp_path):
+    folder = tmp_path / "f"
+    make_deb(folder, "a", "1")
+    make_deb(folder / "sub", "b", "1")
+    (folder / "sub").chmod(0)
+    try:
+        with pytest.raises(ValueError, match="sub"):
+            apt_local.scan(folder, tmp_path / "c.json")
+    finally:
+        (folder / "sub").chmod(0o755)
+    folder.chmod(0)
+    try:
+        with pytest.raises(ValueError, match="cannot be read"):
+            apt_local.scan(folder, tmp_path / "c.json")
+    finally:
+        folder.chmod(0o755)
+
+
+def test_the_same_file_name_twice_is_refused(tmp_path):
+    make_deb(tmp_path / "f" / "a", "alpha", "1", filename="tool.deb")
+    make_deb(tmp_path / "f" / "b", "beta", "1", filename="tool.deb")
+    with pytest.raises(ValueError) as clash:
+        apt_local.scan(tmp_path / "f", tmp_path / "c.json")
+    assert "a/tool.deb" in str(clash.value) and "b/tool.deb" in str(clash.value)
+
+
+@needs_gpg
+def test_an_emptied_structured_repo_keeps_its_architectures(tmp_path):
+    deb = make_deb(tmp_path / "debs", "tool", "1.0", "arm64")
+    _sync_local(tmp_path, _src(tmp_path, structured=True))
+    deb.unlink()
+    _, _, root = _sync_local(tmp_path, _src(tmp_path, structured=True))
+    dists = root / "tools.lab/apt/dists/stable"
+    assert "Architectures: arm64\n" in (dists / "Release").read_text()
+    assert (dists / "main/binary-arm64/Packages").read_bytes() == b""
+
+
+def test_reading_a_large_deb_does_not_load_it_whole(tmp_path):
+    import os
+    import tracemalloc
+    from debs import make_deb_with_data
+    deb = make_deb_with_data(tmp_path, "big", "1", os.urandom(24 * 1024 * 1024), compression="zst")
+    tracemalloc.start()
+    from mmw.core.apt_index import data_paths, read_control
+    assert read_control(deb)["Package"] == "big"
+    assert data_paths(deb) == ["usr/share/big/blob"]
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < 8 * 1024 * 1024, f"peak {peak / 1e6:.0f} MB for a 24 MB deb"

@@ -36,6 +36,20 @@ def _ar(members: list[tuple[str, bytes]]) -> bytes:
     return bytes(out)
 
 
+def make_deb_with_data(dir: Path, package: str, version: str, blob: bytes, *,
+                       compression: str = "gz") -> Path:
+    """A deb whose data member holds one large file, `usr/share/{package}/blob`."""
+    control = (f"Package: {package}\nVersion: {version}\nArchitecture: amd64\n"
+               f"Maintainer: T <t@example.com>\nDescription: big\n").encode()
+    deb = _ar([("debian-binary", b"2.0\n"),
+               (f"control.tar.{compression}", _tar({"./control": control}, compression)),
+               (f"data.tar.{compression}", _tar({f"./usr/share/{package}/blob": blob}, compression))])
+    dir.mkdir(parents=True, exist_ok=True)
+    path = dir / f"{package}_{version}_amd64.deb"
+    path.write_bytes(deb)
+    return path
+
+
 def make_deb(dir: Path, package: str, version: str, arch: str = "amd64", *,
              compression: str = "gz", extra: dict[str, str] | None = None,
              filename: str | None = None) -> Path:

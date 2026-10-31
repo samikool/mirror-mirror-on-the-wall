@@ -31,33 +31,51 @@ class Entry:
     md5: str
 
 
-def _ar_members(path: Path) -> dict[str, bytes]:
-    data = disk_io.ops.read_bytes(path)
-    if not data.startswith(b"!<arch>\n"):
+class _Bounded(io.RawIOBase):
+    """One ar member of an open file, read without loading it."""
+
+    def __init__(self, f, size: int):
+        self._f, self._left = f, size
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        n = min(len(b), self._left)
+        if n <= 0:
+            return 0
+        data = self._f.read(n)
+        b[:len(data)] = data
+        self._left -= len(data)
+        return len(data)
+
+
+def _member(f, path: Path, stem: str) -> tuple[str, int]:
+    """Seek `f` to the start of the `{stem}.tar*` member, skipping the rest
+    unread — a multi-GB deb must not be read whole to find its control."""
+    if f.read(8) != b"!<arch>\n":
         raise ValueError(f"{path.name}: not a .deb (no ar archive header)")
-    members, pos = {}, 8
-    while pos + 60 <= len(data):
-        header = data[pos:pos + 60]
+    while True:
+        header = f.read(60)
+        if len(header) < 60:
+            raise ValueError(f"{path.name}: not a .deb (no {stem}.tar member)")
         try:
             name = header[:16].decode().strip().rstrip("/")
             size = int(header[48:58].decode().strip())
         except ValueError:
             raise ValueError(f"{path.name}: not a .deb (bad ar member header)") from None
-        pos += 60
-        members[name] = data[pos:pos + size]
-        pos += size + (size % 2)
-    return members
+        if name.startswith(stem + ".tar"):
+            return name, size
+        f.seek(size + (size % 2), io.SEEK_CUR)
 
 
-def _open_tar(path: Path, members: dict[str, bytes], stem: str) -> tarfile.TarFile:
-    for name, body in members.items():
-        if not name.startswith(stem + ".tar"):
-            continue
-        if name.endswith(".zst"):
-            body = zstandard.ZstdDecompressor().stream_reader(io.BytesIO(body)).read()
-            return tarfile.open(fileobj=io.BytesIO(body), mode="r:")
-        return tarfile.open(fileobj=io.BytesIO(body), mode="r:*")
-    raise ValueError(f"{path.name}: not a .deb (no {stem}.tar member)")
+def _stream_tar(f, path: Path, stem: str) -> tarfile.TarFile:
+    """The member as a streaming tar: decompressed as it is read, never held."""
+    name, size = _member(f, path, stem)
+    raw = io.BufferedReader(_Bounded(f, size), 1 << 20)
+    if name.endswith(".zst"):
+        return tarfile.open(fileobj=zstandard.ZstdDecompressor().stream_reader(raw), mode="r|")
+    return tarfile.open(fileobj=raw, mode="r|*")
 
 
 def _parse_stanza(text: str) -> dict[str, str]:
@@ -76,15 +94,17 @@ def _parse_stanza(text: str) -> dict[str, str]:
 
 def read_control(path: Path) -> dict[str, str]:
     """The control stanza of a `.deb`, fields in file order."""
-    members = _ar_members(path)
+    text = None
     try:
-        with _open_tar(path, members, "control") as tar:
-            member = next((m for m in tar.getmembers() if m.name.removeprefix("./") == "control"), None)
-            if member is None:
-                raise ValueError(f"{path.name}: not a .deb (control.tar has no control file)")
-            text = tar.extractfile(member).read().decode("utf-8", errors="replace")
+        with disk_io.ops.open_rb(path) as f, _stream_tar(f, path, "control") as tar:
+            for member in tar:
+                if member.name.removeprefix("./") == "control" and member.isfile():
+                    text = tar.extractfile(member).read().decode("utf-8", errors="replace")
+                    break
     except (tarfile.TarError, lzma.LZMAError, zstandard.ZstdError, EOFError, OSError) as e:
         raise ValueError(f"{path.name}: unreadable control archive ({e})") from None
+    if text is None:
+        raise ValueError(f"{path.name}: not a .deb (control.tar has no control file)")
     fields = _parse_stanza(text)
     for required in ("Package", "Version", "Architecture"):
         if not fields.get(required):
@@ -94,10 +114,9 @@ def read_control(path: Path) -> dict[str, str]:
 
 def data_paths(path: Path) -> list[str]:
     """The files and symlinks a `.deb` installs, without the leading `./`."""
-    members = _ar_members(path)
     try:
-        with _open_tar(path, members, "data") as tar:
-            return sorted(m.name.removeprefix("./") for m in tar.getmembers() if m.isfile() or m.issym())
+        with disk_io.ops.open_rb(path) as f, _stream_tar(f, path, "data") as tar:
+            return sorted(m.name.removeprefix("./") for m in tar if m.isfile() or m.issym())
     except (tarfile.TarError, lzma.LZMAError, zstandard.ZstdError, EOFError, OSError) as e:
         raise ValueError(f"{path.name}: unreadable data archive ({e})") from None
 

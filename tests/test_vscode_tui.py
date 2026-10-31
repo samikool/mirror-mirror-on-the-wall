@@ -7,7 +7,7 @@ from textual.widgets import Checkbox, Label, TextArea
 from mmw.core import config
 from mmw.tui.ui.base import ThemedApp
 from test_add_source import _Harness
-from waiting import until
+from waiting import at_step, until
 from vscode_fakes import FakeUpstream
 
 
@@ -307,7 +307,7 @@ def test_first_setup_adds_vscode_and_writes_policy(tmp_path, upstream, mixed):
                     suites=['stable'], components=['main'], arches=['amd64'], include_sources=True)])
                 await until(pilot, lambda: app.screen is setup)
             setup.query_one('#btn-wizard-next').press()
-            await until(pilot, lambda: setup.step == 2)
+            await at_step(pilot, setup, 2)
             setup.query_one('#btn-wizard-next').press()
             await until(pilot, lambda: app.current_mode == 'repositories')
             await settle(pilot)

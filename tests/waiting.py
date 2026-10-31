@@ -42,6 +42,15 @@ async def shows(pilot, read, *expected: str, absent: tuple[str, ...] = (),
         await pilot.pause(step)
 
 
+async def at_step(pilot, wizard, step: int, timeout: float = 30.0) -> None:
+    """Wait until `wizard` is on `step` AND takes Next again. Right after a
+    move it drops Next until a queued callback has run (`_accepting_next`:
+    a double-click must not skip Confirm), so a press made the moment `step`
+    changed could be dropped as that double-click, and the test then waited
+    out its timeout for a screen that was never coming."""
+    await until(pilot, lambda: wizard.step == step and wizard._accepting_next, timeout)
+
+
 _BUSY = ("PENDING", "RUNNING")
 
 

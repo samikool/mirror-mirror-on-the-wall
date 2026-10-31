@@ -1,6 +1,6 @@
 """`p` and `b` on Networks open a picker page before anything starts; these
 take the defaults (live into the root / from the last bundle to now)."""
-from waiting import until
+from waiting import at_step, until
 
 
 async def confirm_picker(app, pilot, page_type: str) -> None:
@@ -27,4 +27,4 @@ async def choose_add_entry(app, pilot, key: str = "apt") -> None:
     page = app.screen
     page.query_one("#add-entry-list").highlighted = [e.key for e in page.entries].index(key)
     page.query_one("#btn-wizard-next").press()
-    await until(pilot, lambda: page.step == 1)
+    await at_step(pilot, page, 1)

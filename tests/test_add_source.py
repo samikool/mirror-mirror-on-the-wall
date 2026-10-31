@@ -8,7 +8,7 @@ from mmw.tui.add_source import AddSourcePage
 from mmw.tui.ui.base import ThemedApp
 from mmw.tui.custom_repo import StepCustom
 from mmw.tui.provider_ui import add_entries
-from waiting import until
+from waiting import at_step, until
 
 
 class _Harness(ThemedApp):
@@ -61,7 +61,7 @@ def test_enter_on_an_entry_advances_to_its_step():
             await until(pilot, lambda: app.screen.query("#add-entry-list"))
             app.screen.query_one("#add-entry-list", OptionList).focus()
             await pilot.press("enter")
-            await until(pilot, lambda: app.screen.step == 1)
+            await at_step(pilot, app.screen, 1)
             assert app.screen.query_one(StepCustom).display
 
     asyncio.run(scenario())
@@ -74,12 +74,12 @@ def test_back_and_next_keep_the_step_as_left():
             await until(pilot, lambda: app.screen.query("#add-entry-list"))
             page = app.screen
             page.query_one("#btn-wizard-next").press()
-            await until(pilot, lambda: page.step == 1)
+            await at_step(pilot, page, 1)
             page.query_one("#custom-url", Input).value = "http://example.com/ubuntu"
             page.query_one("#btn-wizard-back").press()
-            await until(pilot, lambda: page.step == 0)
+            await at_step(pilot, page, 0)
             page.query_one("#btn-wizard-next").press()
-            await until(pilot, lambda: page.step == 1)
+            await at_step(pilot, page, 1)
             assert page.query_one("#custom-url", Input).value == "http://example.com/ubuntu"
             assert len(page.query(StepCustom)) == 1
 

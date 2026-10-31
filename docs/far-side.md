@@ -269,6 +269,55 @@ machine yet it offers to load the mirror's existing one (its `.crt` and
   older bundle carried over (made on the connected side) is replaced once
   with one made here.
 
+## Your own packages here
+
+A site can add `.deb`s to a repository it serves — say, a build made on this
+side into the Ubuntu mirror. The stored versions stay exactly what bundles
+brought (every later delta still applies); what is served is the version
+**plus** the site's local packages, rebuilt for whichever version is served:
+applying a bundle, serving an old version and forwarding all keep them.
+
+```bash
+mmw site signing-key generate site                    # or import one, or use a carried key
+mmw site packages add ./tool_1.0_amd64.deb --repo ubuntu-archive --resign site
+mmw site sources-file ubuntu-archive                  # what clients here install
+```
+
+`--unsigned` serves it unsigned instead — unsafe; clients need `[trusted=yes]`.
+`mmw site packages list|remove|signing` change them later; each change serves
+the repository again at once. If a bundle arrives while the layer cannot be
+signed (no key here yet), the new version is stored and the repository keeps
+serving what it served, **held**, with the reason in `mmw site status` and the
+TUI; import or generate the key and `mmw site forward` it. In the TUI: `k` on a
+repository, `K` for this side's signing keys.
+
+### Keys from the connected side
+
+A network with `far_side = "mmw"` can carry signing keys across:
+`carry_keys = ["tools"]` (or the network editor's *Carry signing keys*) puts
+those keys' **private** parts in every bundle — anyone holding a bundle can then
+sign as you, so it is opt-in per key. `mmw site apply` imports them before
+anything switches; a key of the same name but a different fingerprint already
+here is kept and said.
+
+## Another mmw instance's network
+
+Folder repositories you keep on this side live in an ordinary mmw instance —
+`mmw init`, `mmw add local …`, `mmw sync` — kept current by hand, cron or CI.
+The site serves its network without that instance running and without writing
+to it:
+
+```bash
+mmw site local add /srv/our-repos -n local
+mmw site local update                                 # after each sync there; `u` in the TUI
+```
+
+The instance's pool is read SQLite-immutable (no locks: fine on a network
+share) and skipped while its `-wal` is not empty — its sync still running, or
+not closed cleanly. Unchanged repositories store nothing new. Its hostnames get
+`nginx/local-{network}.conf` (nginx loads every file of its conf.d); its keys
+are served at `/mmw-keys/`.
+
 ## Space
 
 ```bash

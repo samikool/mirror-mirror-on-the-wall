@@ -29,6 +29,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that clashes with upstream's version is asked about and remembered.
   `mmw packages list|remove`; Sources → `k` adds packages to several
   repositories at once.
+- **Your own packages on the far side.** `mmw site packages add DEB --repo
+  REPO --resign KEY` (or `k` on a repository in the far-side TUI) adds debs to
+  a repository the site serves. Stored versions stay as bundles brought them,
+  so deltas keep applying; every switch — apply, roll back, forward — serves
+  the version plus the local packages. A repository whose layer cannot be
+  signed when a bundle arrives keeps serving what it did, held, with the
+  reason shown. `mmw site signing-key` manages this side's keys; a network can
+  `carry_keys` to the far side (opt-in: their private parts ride the bundle).
+  `mmw site sources-file REPO` writes the clients' entry.
+- **A site serves another mmw instance's network** (`mmw site local add PATH
+  -n NET`, then `mmw site local update` or `u`): folder repositories kept on
+  the far side, read SQLite-immutable — never written to, refused while that
+  instance is busy.
 - **Signing keys** (`mmw signing-key generate|import|export|list|remove`,
   Settings → Signing keys): the keys mmw signs your repositories with, kept in
   its own keyring under the pool directory. Needs `gpg`.

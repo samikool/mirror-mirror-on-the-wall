@@ -342,3 +342,13 @@ def test_site_sources_file(site):
     text = _site_cli(site, "sources-file", site.repo, "--format", "list").output
     assert f"{site.lab.src.url} jammy main universe" in text and "signed-by=/etc/apt/keyrings/site.gpg" in text
     assert "/mmw-keys/site.gpg" in text
+
+
+@needs_gpg
+def test_status_names_local_packages_and_the_hold_reason(site):
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="resign", key="later")
+    _delta(site)
+    out = _site_cli(site, "status").output
+    assert "held by its local packages" in out and "signing key" in out

@@ -17,6 +17,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--contents` adds `Contents` files for apt-file. `mmw sources-file NAME`
   (or `f` on the repository) prints the client's sources file, deb822 or
   one-line, which is also published beside the repository.
+- **Your own packages in an upstream mirror, per network.** `mmw packages add
+  DEB --into ubuntu-archive -n lab --resign KEY` (or Networks → `k`) adds a
+  deb to the Ubuntu mirror *as `lab` serves it*: the pool keeps pure
+  upstream, other networks are untouched, and publish, snapshots and bundles
+  serve the rewritten indexes. The mirror is re-signed with an mmw key
+  (clients trust it instead — `mmw sources-file REPO -n NET` writes their
+  entry) or served `--unsigned`, which warns that clients need
+  `[trusted=yes]`. Re-signing alone, dropping `Valid-Until`, and keeping
+  `Contents` right for apt-file are options (`mmw packages signing`). A deb
+  that clashes with upstream's version is asked about and remembered.
+  `mmw packages list|remove`; Sources → `k` adds packages to several
+  repositories at once.
 - **Signing keys** (`mmw signing-key generate|import|export|list|remove`,
   Settings → Signing keys): the keys mmw signs your repositories with, kept in
   its own keyring under the pool directory. Needs `gpg`.

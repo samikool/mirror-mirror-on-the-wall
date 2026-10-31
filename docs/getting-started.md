@@ -396,6 +396,22 @@ folder changes; an unchanged folder re-signs nothing. Flat by default
 (`deb URL ./`); `--structured` lays it out under `dists/`. See
 [configuration](configuration.md#your-own-packages-provider--apt-local).
 
+### Adding to an upstream mirror
+
+To put your own `.deb` into, say, the Ubuntu mirror a network serves — so
+clients need no extra `sources.list` line — the network re-signs that mirror
+with an mmw key (or serves it unsigned, which is unsafe):
+
+```bash
+mmw packages add ./tool_1.0_amd64.deb --into ubuntu-archive -n lab --resign tools --suite jammy
+mmw publish -n lab
+mmw sources-file ubuntu-archive -n lab        # clients now trust mmw's key for it
+```
+
+Other networks publishing the same Ubuntu are untouched. In the TUI: Networks →
+`k` for a network's custom packages and how each mirror is signed, or Sources →
+`k` to add packages to several repositories at once.
+
 ---
 
 ## Next

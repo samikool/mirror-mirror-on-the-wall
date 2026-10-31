@@ -67,7 +67,8 @@ class SiteHomePage(Page):
             "here, the one being served marked ▶. Serving anything but the newest holds the\n"
             "repository there — bundles then store its new versions without serving them.\n"
             "k: local .debs this site adds to the repository, and how it is then signed;\n"
-            "K: this site's signing keys (carried ones from the connected side included).")
+            "K: this site's signing keys (carried ones from the connected side included);\n"
+            "u: bring in the mmw instances this site serves locally (mmw site local).")
     BINDINGS = [
         # Short, so the footer fits 80 columns; the buttons say the rest.
         Binding("enter", "serve", "Serve", show=False),
@@ -82,6 +83,7 @@ class SiteHomePage(Page):
         Binding("t", "tidy", "Tidy", show=False),
         Binding("k", "packages", "Packages", show=False),
         Binding("K", "signing_keys", "Signing keys", show=False),
+        Binding("u", "local_update", "Update local", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
 
@@ -667,6 +669,28 @@ class SiteHomePage(Page):
         from mmw.tui.site.packages import SitePackagesPage
         home, store = root.packages_target()
         self.app.push_screen(SitePackagesPage(home, store, repo), lambda _: self._load())
+
+    def action_local_update(self) -> None:
+        root = self._local_root()
+        if root is not None:
+            self._local_update(root)
+
+    @work(thread=True, exclusive=True, group="site-local", exit_on_error=False)
+    def _local_update(self, root) -> None:
+        self.app.call_from_thread(self.set_status, "Reading the local instances…")
+        try:
+            results = root.local_update()
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        if not results:
+            text, kind = "No local instances — add one with: mmw site local add PATH -n NETWORK", "warning"
+        else:
+            text = "  ".join(f"{r.network}: " + (r.error or (f"{len(r.updated)} updated" if r.updated
+                                                           else "unchanged")) for r in results)
+            kind = "error" if any(r.error for r in results) else "ok"
+        self.app.call_from_thread(self.set_status, text, kind)
+        self.app.call_from_thread(self._load)
 
     def action_signing_keys(self) -> None:
         root = self._local_root()

@@ -903,6 +903,74 @@ def cmd_site_sources_file(repo: str = _REPO,
     raise typer.Exit(sources_file(repo, fmt, root))
 
 
+site_local_app = typer.Typer(help="Another mmw instance this site serves — its folder repositories — "
+                                   "read, never written to.", no_args_is_help=True)
+site_app.add_typer(site_local_app, name="local")
+
+
+def _site_local_home(root):
+    from mmw.commands.site_packages import _local
+    try:
+        return _local(root)[0]
+    except (FileNotFoundError, ValueError, LookupError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+
+
+@site_local_app.command("add")
+def cmd_site_local_add(path: Path = typer.Argument(..., help="The instance's directory (its mmw.toml)"),
+                       network: str = typer.Option(..., "--network", "-n", help="Its network to serve"),
+                       root: Path = _ROOT):
+    """Serve another mmw instance's network here (kept current there by hand, cron or CI)."""
+    from mmw.site import local
+    try:
+        local.add(_site_local_home(root), path, network)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"added {network} from {path} — bring it in with: mmw site local update")
+
+
+@site_local_app.command("list")
+def cmd_site_local_list(root: Path = _ROOT):
+    """The local instances this site serves."""
+    from mmw.site import local
+    found = local.entries(_site_local_home(root))
+    if not found:
+        typer.echo("No local instances.")
+    for network, path in sorted(found.items()):
+        typer.echo(f"{network}  {path}")
+
+
+@site_local_app.command("remove")
+def cmd_site_local_remove(network: str = typer.Argument(...), root: Path = _ROOT):
+    """Stop bringing a local instance in (what it brought stays served)."""
+    from mmw.site import local
+    try:
+        local.remove(_site_local_home(root), network)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"removed {network}")
+
+
+@site_local_app.command("update")
+def cmd_site_local_update(root: Path = _ROOT):
+    """Bring every local instance in: unchanged repositories store nothing new."""
+    from mmw.site import local
+    results = local.update(_site_local_home(root))
+    if not results:
+        typer.echo("No local instances — add one with: mmw site local add PATH -n NETWORK")
+    for r in results:
+        if r.error:
+            typer.echo(f"{r.network}: {r.error}", err=True)
+        else:
+            typer.echo(f"{r.network}: " + (f"{len(r.updated)} updated" if r.updated else "unchanged"))
+            for line in r.lines:
+                typer.echo(line)
+    raise typer.Exit(1 if any(r.error for r in results) else 0)
+
+
 @site_app.command("serve")
 def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
                    root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):

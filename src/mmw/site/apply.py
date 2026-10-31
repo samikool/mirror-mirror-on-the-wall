@@ -110,10 +110,14 @@ class RootApply:
 
     def __init__(self, home: Path, *, dry_run: bool = False, forward: set[str] | None = None,
                  forward_all: bool = False, only: set[str] | None = None, progress=None, stop_event=None,
-                 say=print):
+                 say=print, network_files: bool = True):
+        """`network_files=False`: repositories only — a local instance's
+        update (`site.local`) leaves the network files, settings and applied
+        log exactly as the connected side's bundles made them."""
         self.home = Path(home)
         self.dry_run, self.forward, self.forward_all, self.only = dry_run, set(forward or ()), forward_all, only
         self.progress, self.stop_event, self.say = progress, stop_event, say
+        self.network_files = network_files
         self.got: dict[str, tuple[str, int]] = {}
         self.links: dict[str, str] = {}
         self.tls: dict[str, bytes] = {}
@@ -329,16 +333,17 @@ class RootApply:
             db.rollback()
             raise
 
-        old = roots.network_files(db, roots.primary)
-        db.set_network_files(network, {c: _size(store, c, sizes) for c in network.values()})
-        new = roots.network_files(db, roots.primary)
-        for rel, checksum in sorted(new.items()):
-            if old.get(rel) != checksum or not disk_io.ops.exists(root / rel):
-                place_served_file(store, root, rel, checksum, network=True)
-        for rel in sorted(set(old) - set(new)):
-            if disk_io.ops.remove(root / rel) is not None:
-                _prune_empty_parents(str(root), str((root / rel).parent))
-        if header.settings:
+        if self.network_files:
+            old = roots.network_files(db, roots.primary)
+            db.set_network_files(network, {c: _size(store, c, sizes) for c in network.values()})
+            new = roots.network_files(db, roots.primary)
+            for rel, checksum in sorted(new.items()):
+                if old.get(rel) != checksum or not disk_io.ops.exists(root / rel):
+                    place_served_file(store, root, rel, checksum, network=True)
+            for rel in sorted(set(old) - set(new)):
+                if disk_io.ops.remove(root / rel) is not None:
+                    _prune_empty_parents(str(root), str((root / rel).parent))
+        if header.settings and self.network_files:
             db.set_meta("settings", header.settings)
         if roots.multi and db.get_meta("settings"):
             result.network_changed = write_root_nginx(db, roots) or result.network_changed
@@ -391,7 +396,8 @@ class RootApply:
 
         if disk_io.ops.is_dir(root):
             render_derived(str(root), say=lambda m: say(f"  {m}"))
-        db.record_applied(header.created, header.previous, "full" if header.full else "delta")
+        if self.network_files:
+            db.record_applied(header.created, header.previous, "full" if header.full else "delta")
         if self.settings.keep_versions is not None:
             from mmw.site.ops import apply_retention
             apply_retention(db, roots, self.settings.keep_versions)

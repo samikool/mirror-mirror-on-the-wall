@@ -444,6 +444,26 @@ def shared_pool_lock(mirror_dir: Path):
         release_sync_lock()
 
 
+# Pools read in immutable mode (`immutable_reads`): another mmw instance a
+# site only reads, perhaps on a network share — no locks, no -shm, and no
+# write may happen. Keyed by the resolved mirror directory.
+_IMMUTABLE: set[str] = set()
+
+
+@contextmanager
+def immutable_reads(mirror_dir: Path):
+    """Within it, every Pool of `mirror_dir` opens read-only and SQLite-
+    immutable (`?immutable=1`): no lock files, no shared memory, safe on a
+    share — and only right while no other process writes that pool. Opening
+    it writable raises."""
+    key = str(Path(mirror_dir).resolve())
+    _IMMUTABLE.add(key)
+    try:
+        yield
+    finally:
+        _IMMUTABLE.discard(key)
+
+
 def holds_shared_pool_lock(job):
     """Decorate `job(network, cfg, mirror_dir, ...)` to run holding the pool's
     shared lock, as sync and snapshots do: a database Move or a prune
@@ -749,6 +769,10 @@ class Pool:
         WAL back into the main file with a PASSIVE checkpoint. Exposed mainly
         for tests; production code should rarely need to override it.
         """
+        immutable = str(Path(mirror_dir).resolve()) in _IMMUTABLE
+        if immutable and not read_only:
+            raise RuntimeError(f"{mirror_dir} is another instance's pool, read only here")
+        ro = "?mode=ro&immutable=1" if immutable else "?mode=ro"
         self.pool_dir = mirror_dir / ".pool"
         self._packages_dir = self.pool_dir / "packages"
         self._lock = threading.Lock()
@@ -760,7 +784,7 @@ class Pool:
                 "blobs — move the database there, or point settings.database at it")
         if read_only:
             if disk_io.ops.exists(db_path):
-                self._conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
+                self._conn = sqlite3.connect(f"file:{db_path}{ro}", uri=True, check_same_thread=False)
             else:
                 # Nothing synced yet — empty in-memory DB answers every query with "no".
                 self._conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -850,7 +874,7 @@ class Pool:
         self._rconn: "sqlite3.Connection | None" = None
         if disk_io.ops.exists(db_path):
             self._rconn = sqlite3.connect(
-                f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
+                f"file:{db_path}{ro}", uri=True, check_same_thread=False)
             _tune_reads(self._rconn)
 
         if not read_only:

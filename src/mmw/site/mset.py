@@ -195,6 +195,10 @@ class LocalRoot:
         """(home, store) for the local-packages page."""
         return self.home, self.store()
 
+    def local_update(self):
+        from mmw.site import local
+        return local.update(self.home)
+
     def keyring_root(self) -> Path:
         return self.home
 

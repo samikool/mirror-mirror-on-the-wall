@@ -47,6 +47,8 @@ def run(cfg_dir: Path, *, folder, url, structured, suite, component, key, conten
     except SigningError as e:
         eprint(str(e))
         return 1
+    finally:
+        keyring.stop_agent()
     existing = next((s for s in cfg.sources if s.identity == source.identity), None)
     sources = [source if s is existing else s for s in cfg.sources]
     if existing is None:

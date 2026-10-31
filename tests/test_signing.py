@@ -79,3 +79,17 @@ def test_bad_and_duplicate_names_and_missing_gpg(tmp_path, monkeypatch):
     monkeypatch.setattr(signing.shutil, "which", lambda _n: None)
     with pytest.raises(SigningError, match="gpg is not installed"):
         Keyring(tmp_path / "n").list()
+
+
+def test_a_passphrase_protected_key_is_refused_at_import(tmp_path):
+    home = tmp_path / "pw"
+    home.mkdir(mode=0o700)
+    gpg = ["gpg", "--homedir", str(home), "--batch", "--pinentry-mode", "loopback", "--passphrase", "pw"]
+    subprocess.run([*gpg, "--quick-gen-key", "locked", "ed25519", "sign", "never"], check=True, capture_output=True)
+    armored = subprocess.run([*gpg, "--armor", "--export-secret-keys", "locked"], check=True,
+                             capture_output=True).stdout.decode()
+    subprocess.run(["gpgconf", "--homedir", str(home), "--kill", "all"], capture_output=True)
+    kr = Keyring(tmp_path / "m")
+    with pytest.raises(SigningError, match="passphrase"):
+        kr.import_armored(armored, "locked")
+    assert kr.list() == []

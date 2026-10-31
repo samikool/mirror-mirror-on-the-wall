@@ -104,11 +104,14 @@ class AptLocalProvider(BaseProvider):
         if mirror_dir is None:
             return ResolvedSource(source, [], [], [f"{source.name}: no mirror directory to sign in"])
         folder = source.folder_path(context.config_dir)
+        keyring = Keyring(mirror_dir)
         try:
             debs = scan(folder, _work_dir(mirror_dir, source.name) / "scan.json")
-            public = Keyring(mirror_dir).public_armor(source.key)
+            public = keyring.public_armor(source.key)
         except (ValueError, SigningError) as e:
             return ResolvedSource(source, [], [], [f"{source.name}: {e}"])
+        finally:
+            keyring.stop_agent()
         if progress:
             progress(f"{source.name}: {len(debs)} package(s) in {folder}")
         [unit] = self.expand(source)
@@ -118,6 +121,25 @@ class AptLocalProvider(BaseProvider):
 
     def fetch_all(self, mirror_config, client, status_callback=None, history=None):
         return build(mirror_config)
+
+    def verify_witness(self, unit, pool, say=None, stop_event=None):
+        """Every deb each pooled `Packages` index names is in the pool."""
+        from mmw.core.verify import VerifyResult, _check_checksums
+        from mmw.providers.apt import _parse_apt_sha256
+        result = VerifyResult(unit.name, unit.provider)
+        indexes = [rel for rel in pool.ref_map(unit.name)
+                   if rel == "Packages" or rel.endswith("/Packages")]
+        if not indexes:
+            result.error = "Packages index not in pool — has this repository been synced?"
+            return result
+        checksums: set[str] = set()
+        for rel in indexes:
+            path = pool.resolve(unit.name, rel)
+            if path is None:
+                result.error = f"{rel} is listed but not in the pool"
+                return result
+            checksums.update(_parse_apt_sha256(path))
+        return _check_checksums(pool, result, sorted(checksums))
 
     def fetch_packages(self, mirror_config, client, status_callback=None):
         return build(mirror_config)[0]
@@ -216,12 +238,15 @@ def scan(folder: Path, cache_path: Path, *, contents: bool = False) -> list[Scan
         rel = path.relative_to(folder).as_posix()
         st = disk_io.ops.stat(path)
         hit = cache.get(rel)
-        if hit and hit["size"] == st.st_size and hit["mtime_ns"] == st.st_mtime_ns:
+        # ctime and inode too: `cp -p` or `rsync -t` over an old deb keeps its
+        # size and mtime, but a write always moves ctime.
+        stamp = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "ctime_ns": st.st_ctime_ns,
+                 "ino": st.st_ino}
+        if hit and all(hit.get(k) == v for k, v in stamp.items()):
             entry = hit
         else:
             sha, md5 = _hashes(path)
-            entry = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha, "md5": md5,
-                     "control": read_control(path)}
+            entry = {**stamp, "sha256": sha, "md5": md5, "control": read_control(path)}
         if contents and entry.get("files") is None:
             entry = {**entry, "files": data_paths(path)}
         fresh[rel] = entry
@@ -239,7 +264,8 @@ def scan(folder: Path, cache_path: Path, *, contents: bool = False) -> list[Scan
     if fresh != cache:
         disk_io.ops.mkdir(cache_path.parent, parents=True, exist_ok=True)
         tmp = cache_path.with_name(cache_path.name + ".tmp")
-        disk_io.ops.write_bytes(tmp, json.dumps(fresh, sort_keys=True).encode())
+        # Not sort_keys: each control keeps its field order (Package first).
+        disk_io.ops.write_bytes(tmp, json.dumps(fresh).encode())
         disk_io.ops.replace(tmp, cache_path)
     return out
 
@@ -372,7 +398,10 @@ def _signatures(work: Path, key: str, mirror_dir: Path, release: bytes) -> tuple
                 return kept["inrelease"].encode(), kept["release_gpg"].encode()
         except (ValueError, KeyError):
             pass
-    inrelease, release_gpg = keyring.clearsign(key, release), keyring.detach_sign(key, release)
+    try:
+        inrelease, release_gpg = keyring.clearsign(key, release), keyring.detach_sign(key, release)
+    finally:
+        keyring.stop_agent()        # a cron sync must not leave a daemon behind
     disk_io.ops.mkdir(work, parents=True, exist_ok=True)
     tmp = kept_path.with_name("signatures.json.tmp")
     disk_io.ops.write_bytes(tmp, json.dumps({

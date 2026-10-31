@@ -276,3 +276,53 @@ def test_reading_a_large_deb_does_not_load_it_whole(tmp_path):
     peak = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
     assert peak < 8 * 1024 * 1024, f"peak {peak / 1e6:.0f} MB for a 24 MB deb"
+
+
+# ── deferred minors ──────────────────────────────────────────────────────────
+
+def test_an_in_place_replacement_keeping_size_and_mtime_is_noticed(tmp_path):
+    import os
+    deb = make_deb(tmp_path / "f", "tool", "1.0")
+    first = apt_local.scan(tmp_path / "f", tmp_path / "c.json")[0].sha256
+    st = deb.stat()
+    data = bytearray(deb.read_bytes())
+    data[-3] ^= 0xFF                                     # same size, different bytes
+    with open(deb, "r+b") as f:                          # in place: the same inode
+        f.write(data)
+    os.utime(deb, ns=(st.st_atime_ns, st.st_mtime_ns))   # cp -p / rsync -t keep the mtime
+    assert apt_local.scan(tmp_path / "f", tmp_path / "c.json")[0].sha256 != first
+
+
+@needs_gpg
+def test_packages_stanzas_keep_the_control_field_order(tmp_path):
+    make_deb(tmp_path / "debs", "tool", "1.0")
+    _sync_local(tmp_path, _src(tmp_path))
+    _, _, root = _sync_local(tmp_path, _src(tmp_path))       # the second build reads the cache
+    assert (root / "tools.lab/apt/Packages").read_text().startswith("Package: tool\nVersion: 1.0\n")
+
+
+def test_contents_lists_hard_links(tmp_path):
+    from mmw.core.apt_index import data_paths
+    deb = make_deb(tmp_path, "tool", "1.0", hardlink="usr/share/doc/tool/README.copy")
+    assert data_paths(deb) == ["usr/share/doc/tool/README", "usr/share/doc/tool/README.copy"]
+
+
+@needs_gpg
+def test_verify_checks_a_folder_repository_against_its_packages(tmp_path):
+    from mmw.core.verify import verify_mirror
+    make_deb(tmp_path / "debs", "tool", "1.0")
+    make_deb(tmp_path / "debs", "doc", "1.0", "all")
+    unit, _, _ = _sync_local(tmp_path, _src(tmp_path, structured=True))
+    with Pool(tmp_path / "m", read_only=True) as pool:
+        result = verify_mirror(unit, tmp_path / "m", pool)
+    assert result.complete and result.total == 2
+
+
+@needs_gpg
+def test_a_sync_leaves_no_gpg_agent_running(tmp_path):
+    import subprocess
+    make_deb(tmp_path / "debs", "tool", "1.0")
+    _sync_local(tmp_path, _src(tmp_path))
+    home = tmp_path / "m" / ".signing" / "gnupg"
+    running = subprocess.run(["pgrep", "-f", f"gpg-agent --homedir {home}"], capture_output=True, text=True)
+    assert running.stdout.strip() == ""

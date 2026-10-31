@@ -116,7 +116,7 @@ def data_paths(path: Path) -> list[str]:
     """The files and symlinks a `.deb` installs, without the leading `./`."""
     try:
         with disk_io.ops.open_rb(path) as f, _stream_tar(f, path, "data") as tar:
-            return sorted(m.name.removeprefix("./") for m in tar if m.isfile() or m.issym())
+            return sorted(m.name.removeprefix("./") for m in tar if m.isfile() or m.issym() or m.islnk())
     except (tarfile.TarError, lzma.LZMAError, zstandard.ZstdError, EOFError, OSError) as e:
         raise ValueError(f"{path.name}: unreadable data archive ({e})") from None
 

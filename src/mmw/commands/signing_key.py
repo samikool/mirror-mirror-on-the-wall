@@ -24,6 +24,8 @@ def _run(cfg_dir: Path, action) -> int:
     except SigningError as e:
         eprint(str(e))
         return 1
+    finally:
+        keyring.stop_agent()
 
 
 def generate(cfg_dir: Path, name: str) -> int:

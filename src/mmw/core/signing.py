@@ -119,7 +119,16 @@ class Keyring:
             raise SigningError("that is a public key — a private key is needed to sign")
         before = set(self._secret_keys())
         self._gpg("--import", data=text.encode())
-        return self._register(name, before, imported=True)
+        key = self._register(name, before, imported=True)
+        try:
+            self.detach_sign(name, b"mmw import check\n")
+        except SigningError:
+            # mmw signs unattended (cron, CI): a key that asks for a
+            # passphrase would make every sync fail later, so refuse it now.
+            self.remove(name)
+            raise SigningError("passphrase-protected keys are not supported — remove the "
+                               "passphrase first (gpg --edit-key KEY passwd, then an empty one)") from None
+        return key
 
     def _register(self, name: str, before: set[str], imported: bool = False) -> SigningKey:
         held = self._secret_keys()
@@ -135,6 +144,14 @@ class Keyring:
 
     def public_armor(self, name: str) -> str:
         return self._gpg("--armor", "--export", self._fingerprint(name)).decode()
+
+    def stop_agent(self) -> None:
+        """gpg starts an agent per keyring and leaves it running; a one-shot
+        command (a cron sync) stops it when done. The next call starts one."""
+        if shutil.which("gpgconf") is None or not disk_io.ops.exists(self.home):
+            return
+        subprocess.run(["gpgconf", "--homedir", str(self.home), "--kill", "gpg-agent"],
+                       capture_output=True, timeout=_TIMEOUT)
 
     def private_armor(self, name: str) -> str:
         return self._gpg("--armor", "--export-secret-keys", self._fingerprint(name)).decode()

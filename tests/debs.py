@@ -13,7 +13,12 @@ def _tar(members: dict[str, bytes], compression: str) -> bytes:
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.GNU_FORMAT) as tar:
         for name, data in members.items():
             info = tarfile.TarInfo(name)
-            info.size, info.mtime, info.mode = len(data), 0, 0o644
+            info.mtime, info.mode = 0, 0o644
+            if isinstance(data, tuple):              # ("link", target): a hard link
+                info.type, info.linkname = tarfile.LNKTYPE, data[1]
+                tar.addfile(info)
+                continue
+            info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
     data = raw.getvalue()
     if compression == "gz":
@@ -52,7 +57,7 @@ def make_deb_with_data(dir: Path, package: str, version: str, blob: bytes, *,
 
 def make_deb(dir: Path, package: str, version: str, arch: str = "amd64", *,
              compression: str = "gz", extra: dict[str, str] | None = None,
-             filename: str | None = None) -> Path:
+             filename: str | None = None, hardlink: str | None = None) -> Path:
     fields = {"Package": package, "Version": version, "Architecture": arch,
               "Maintainer": "Test <t@example.com>", "Section": "utils",
               "Description": f"{package} for tests\n test package", **(extra or {})}
@@ -60,7 +65,9 @@ def make_deb(dir: Path, package: str, version: str, arch: str = "amd64", *,
     readme = f"{package} {version}\n".encode()
     deb = _ar([("debian-binary", b"2.0\n"),
                (f"control.tar.{compression}", _tar({"./control": control}, compression)),
-               ("data.tar.gz", _tar({f"./usr/share/doc/{package}/README": readme}, "gz"))])
+               ("data.tar.gz", _tar({f"./usr/share/doc/{package}/README": readme,
+                                     **({f"./{hardlink}": ("link", f"./usr/share/doc/{package}/README")}
+                                        if hardlink else {})}, "gz"))])
     dir.mkdir(parents=True, exist_ok=True)
     path = dir / (filename or f"{package}_{version}_{arch}.deb")
     path.write_bytes(deb)

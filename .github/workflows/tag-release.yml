@@ -1,0 +1,46 @@
+name: Tag release
+
+# The release PR's rebase-merge is the release: when `version bump for X`
+# lands on dev as the pushed tip, tag it vX — which starts release.yml.
+#
+# Pushed with the AUTOTAG_DEPLOY_KEY deploy key, not GITHUB_TOKEN: a tag
+# pushed with GITHUB_TOKEN never triggers another workflow, so release.yml
+# would not run. Every other push to dev is a no-op here.
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ssh-key: ${{ secrets.AUTOTAG_DEPLOY_KEY }}
+
+      - name: Tag the version bump
+        run: |
+          subject=$(git log -1 --format=%s "$GITHUB_SHA")
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          tag="v$version"
+          if [ "$subject" != "version bump for $version" ]; then
+            echo "Tip is not 'version bump for $version' — nothing to tag."
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists — nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          echo "::notice::Tagged $GITHUB_SHA as $tag — release.yml takes it from here."

@@ -837,6 +837,72 @@ def cmd_site_key_remove(name: str = typer.Argument(...), root: Path = _ROOT):
     raise typer.Exit(remove(_cfg_dir(), name, keyring, in_use))
 
 
+site_packages_app = typer.Typer(help="Local .debs this site adds to a repository it serves.",
+                                no_args_is_help=True)
+site_app.add_typer(site_packages_app, name="packages")
+
+
+@site_packages_app.command("add")
+def cmd_site_packages_add(
+    paths: list[Path] = typer.Argument(..., help=".deb files or folders of them"),
+    repo: str = typer.Option(..., "--repo", help="Repository (URL or name)"),
+    suite: str = typer.Option(None, "--suite", help="Default: the first it has"),
+    component: str = typer.Option(None, "--component", help="Default main"),
+    resign: str = typer.Option(None, "--resign", metavar="KEY", help="Re-sign with this site key"),
+    unsigned: bool = typer.Option(False, "--unsigned", help="Serve unsigned — unsafe, clients need trusted=yes"),
+    on_clash: str = typer.Option(None, "--on-clash", help="keep or drop a deb that clashes with upstream's"),
+    root: Path = _ROOT,
+):
+    """Add local .debs to a repository this site serves; it is served again with them."""
+    from mmw.commands.site_packages import add
+    if on_clash not in (None, "keep", "drop"):
+        typer.echo("--on-clash is keep or drop", err=True)
+        raise typer.Exit(2)
+    raise typer.Exit(add(paths, repo=repo, suite=suite, component=component, resign=resign,
+                         unsigned=unsigned, on_clash=on_clash, root=root))
+
+
+@site_packages_app.command("list")
+def cmd_site_packages_list(root: Path = _ROOT):
+    """Every local .deb, by repository."""
+    from mmw.commands.site_packages import list_
+    raise typer.Exit(list_(root))
+
+
+@site_packages_app.command("remove")
+def cmd_site_packages_remove(filename: str = typer.Argument(...),
+                             repo: str = typer.Option(..., "--repo"), root: Path = _ROOT):
+    """Remove a local .deb; the repository is served again without it."""
+    from mmw.commands.site_packages import remove
+    raise typer.Exit(remove(filename, repo=repo, root=root))
+
+
+@site_packages_app.command("signing")
+def cmd_site_packages_signing(
+    repo: str = _REPO,
+    resign: str = typer.Option(None, "--resign", metavar="KEY"),
+    unsigned: bool = typer.Option(False, "--unsigned"),
+    upstream: bool = typer.Option(False, "--upstream"),
+    contents: bool = typer.Option(None, "--contents/--no-contents",
+                                  help="Keep Contents right for apt-file (can make signing much slower)"),
+    drop_valid_until: bool = typer.Option(None, "--drop-valid-until/--keep-valid-until"),
+    root: Path = _ROOT,
+):
+    """How this site serves a repository it adds local packages to."""
+    from mmw.commands.site_packages import signing
+    raise typer.Exit(signing(repo, resign=resign, unsigned=unsigned, upstream=upstream, contents=contents,
+                             drop_valid_until=drop_valid_until, root=root))
+
+
+@site_app.command("sources-file")
+def cmd_site_sources_file(repo: str = _REPO,
+                          fmt: str = typer.Option("deb822", "--format", help="deb822 or list"),
+                          root: Path = _ROOT):
+    """The sources file clients use for a repository with local packages."""
+    from mmw.commands.site_packages import sources_file
+    raise typer.Exit(sources_file(repo, fmt, root))
+
+
 @site_app.command("serve")
 def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
                    root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):

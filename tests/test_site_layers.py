@@ -299,3 +299,46 @@ def test_site_signing_key_commands(site):
         db.set_layer(site.repo, signing="resign", key="farkey")
     refused = run("remove", "farkey")
     assert refused.exit_code == 1 and "signs" in refused.output
+
+
+# ── far-side CLI (Task 6) ────────────────────────────────────────────────────
+
+def _site_cli(site, *args, input=None):
+    from typer.testing import CliRunner
+    from mmw.cli import app
+    return CliRunner().invoke(app, ["site", *args, "--root", str(site.root)], input=input)
+
+
+@needs_gpg
+def test_site_packages_add_needs_a_signing_choice_then_serves(site):
+    deb = make_deb(site.lab.tmp / "new", "site-tool", "1.0")
+    refused = _site_cli(site, "packages", "add", str(deb), "--repo", site.repo)
+    assert refused.exit_code == 2 and "--resign" in refused.output
+    added = _site_cli(site, "packages", "add", str(deb), "--repo", site.repo, "--resign", "site")
+    assert added.exit_code == 0, added.output
+    assert deb.exists() and _served(site, "pool/mmw/main/site-tool_1.0_amd64.deb").is_file()
+    assert "site-tool_1.0_amd64.deb" in _site_cli(site, "packages", "list").output
+
+
+@needs_gpg
+def test_site_packages_remove_and_signing(site):
+    deb = make_deb(site.lab.tmp / "new", "site-tool", "1.0")
+    _site_cli(site, "packages", "add", str(deb), "--repo", site.repo, "--unsigned")
+    assert not _served(site, "dists/jammy/InRelease").exists()
+    signed = _site_cli(site, "packages", "signing", site.repo, "--resign", "site", "--drop-valid-until")
+    assert signed.exit_code == 0, signed.output
+    assert _served(site, "dists/jammy/InRelease").is_file()
+    removed = _site_cli(site, "packages", "remove", "site-tool_1.0_amd64.deb", "--repo", site.repo)
+    assert removed.exit_code == 0
+    assert not _served(site, "pool/mmw/main/site-tool_1.0_amd64.deb").exists()
+    bad = _site_cli(site, "packages", "signing", site.repo, "--resign", "nope")
+    assert bad.exit_code == 1 and "no signing key named 'nope'" in bad.output
+
+
+@needs_gpg
+def test_site_sources_file(site):
+    deb = make_deb(site.lab.tmp / "new", "site-tool", "1.0")
+    _site_cli(site, "packages", "add", str(deb), "--repo", site.repo, "--resign", "site")
+    text = _site_cli(site, "sources-file", site.repo, "--format", "list").output
+    assert f"{site.lab.src.url} jammy main universe" in text and "signed-by=/etc/apt/keyrings/site.gpg" in text
+    assert "/mmw-keys/site.gpg" in text

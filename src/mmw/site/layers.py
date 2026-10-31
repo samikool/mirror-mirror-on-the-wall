@@ -149,3 +149,155 @@ def build_overlay(home: Path, db, store, repo: str, version_id: int) -> OverlayR
     db.put_overlay(repo, version_id, digest, overlay)
     result.digest = digest
     return result
+
+
+# ── what `mmw site packages` and the far-side TUI do ─────────────────────────
+
+def _published_of(db, store, repo: str) -> tuple[str, dict, dict]:
+    """(base, upstream rows relative to it, published dims) of the version served."""
+    from mmw.core import layers as core
+    state = db.repo_state(repo)
+    if state is None or state.serving is None:
+        raise core.PackagesError(f"{repo} serves nothing yet — apply a bundle first")
+    files = db.version_files(state.serving.id)
+    base = max((b for b in (state.bases or [repo]) if any(p.startswith(b + "/dists/") for p in files)),
+               key=len, default=None)
+    if base is None:
+        raise core.PackagesError(f"{state.label} has no dists/ tree to add packages to")
+    rows = {p[len(base) + 1:]: (p[len(base) + 1:], str(store.path(cs)), 0, "", cs)
+            for p, cs in files.items() if p.startswith(base + "/")}
+    return base, rows, core._published(rows)
+
+
+def check_site_clashes(home: Path, db, store, repo: str, paths, suite: str | None,
+                       component: str | None) -> tuple[str, str, list]:
+    """(suite, component, clashes) adding `paths` would meet, nothing copied."""
+    from mmw.core import layers as core
+    _base, rows, published = _published_of(db, store, repo)
+    suite = suite or (sorted(published)[0] if published else None)
+    component = component or "main"
+    if suite is None or component not in published.get(suite, {}):
+        raise core.PackagesError(f"{repo} does not have {suite}/{component} — pick a suite and component it has")
+    debs = [core._scanned(p) for p in core.collect_debs(paths)]
+    return suite, component, core._clashes(repo, rows, {suite: {component: published[suite][component]}},
+                                           {(suite, component): debs}, {})
+
+
+def add_site_packages(home: Path, db, store, repo: str, paths, *, suite=None, component=None,
+                      signing=None, key=None, decisions: dict[str, str] | None = None) -> list[str]:
+    """Copy debs into the site layer of `repo` (setting its signing when it
+    has none) — the caller relayers. Returns lines to tell."""
+    from mmw.core import layers as core
+    layer = db.layer(repo)
+    if layer is None or layer.signing == "upstream":
+        if signing not in ("resign", "unsigned"):
+            raise core.PackagesError(core.needs_signing(db.repo_state(repo).label if db.repo_state(repo)
+                                                        else repo), usage=True)
+    if signing is not None:
+        set_site_signing(home, db, repo, signing=signing, key=key)
+    suite, component, clashes = check_site_clashes(home, db, store, repo, paths, suite, component)
+    notes = []
+    folder = site_layer_dir(Path(home), repo)
+    chosen = core.read_decisions(folder)
+    for c in clashes:
+        choice = (decisions or {}).get(c.filename, "keep")
+        if choice == "cancel":
+            raise core.PackagesError("cancelled — nothing was added")
+        chosen[c.filename] = choice
+        notes.append(f"{c.filename} ({c.package} {c.version}) clashes with upstream's — {choice}")
+    outcome = core.AddOutcome(None)
+    core._copy_in(core.collect_debs(paths), folder / suite / component, outcome)
+    if clashes:
+        core.write_decisions(folder, chosen)
+    notes += [f"added {p.name} to {suite}/{component}" for p in outcome.copied]
+    notes += [f"already there: {p.name}" for p in outcome.skipped]
+    return notes
+
+
+def remove_site_package(home: Path, repo: str, filename: str) -> list[Path]:
+    from mmw.core import layers as core
+    folder = site_layer_dir(Path(home), repo)
+    found = ([p for p in disk_io.ops.rglob(folder, "*.deb") if p.name == filename]
+             if disk_io.ops.is_dir(folder) else [])
+    if not found:
+        raise core.PackagesError(f"{filename} is not in {repo}'s local packages")
+    for p in found:
+        disk_io.ops.unlink(p)
+    return found
+
+
+def list_site_packages(home: Path, db) -> list[tuple[str, str, str]]:
+    out = []
+    for state in db.repo_states():
+        folder = site_layer_dir(Path(home), state.repo)
+        if disk_io.ops.is_dir(folder):
+            out += [(state.label, f"{p.parent.parent.name}/{p.parent.name}", p.name)
+                    for p in sorted(disk_io.ops.rglob(folder, "*.deb"))]
+    return out
+
+
+def set_site_signing(home: Path, db, repo: str, *, signing=None, key=None, contents=None,
+                     drop_valid_until=None) -> None:
+    from mmw.core import layers as core
+    layer = db.layer(repo)
+    signing = signing or (layer.signing if layer else "upstream")
+    key = key if signing == "resign" and key else (layer.key if layer and signing == "resign" else None)
+    contents = layer.contents if contents is None and layer else bool(contents)
+    dvu = layer.drop_valid_until if drop_valid_until is None and layer else bool(drop_valid_until)
+    if signing == "resign" and not key:
+        raise core.PackagesError("re-signing needs a key — --resign KEY", usage=True)
+    if dvu and signing != "resign":
+        raise core.PackagesError("dropping Valid-Until needs re-signing (anything else serves it unsigned)",
+                                 usage=True)
+    if signing == "resign":
+        core._check_key(Path(home), key)
+    db.set_layer(repo, signing=signing, key=key, contents=contents, drop_valid_until=dvu)
+
+
+def site_sources_file(home: Path, db, store, repo: str, fmt: str) -> str:
+    from urllib.parse import urlparse
+
+    from mmw.core import layers as core
+    from mmw.core.apt_sources import render_deb822, render_one_line, AptEntry
+    from mmw.providers.apt_local import SOURCES_FORMATS
+    if fmt not in SOURCES_FORMATS:
+        raise core.PackagesError(f"format must be one of {', '.join(SOURCES_FORMATS)}", usage=True)
+    layer = db.layer(repo)
+    if layer is None or layer.signing == "upstream":
+        raise core.PackagesError(f"{repo} has no local packages: its clients use upstream's own sources "
+                                 "file and key")
+    base, _rows, published = _published_of(db, store, repo)
+    url = _repo_url(db, repo, base)
+    parsed = urlparse(url)
+    keyring = f"/etc/apt/keyrings/{layer.key}.gpg"
+    head = [f"# {db.repo_state(repo).label} as this site serves it — with local packages."]
+    if layer.signing == "resign":
+        head += ["# Signed by this site's key, not upstream's. Install it first:",
+                 "#   sudo install -d -m 0755 /etc/apt/keyrings",
+                 f"#   sudo curl -fsSL {parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}/mmw-keys/"
+                 f"{layer.key}.gpg -o {keyring}"]
+    else:
+        head += ["# UNSIGNED — this is unsafe: apt cannot tell these files came from you."]
+    render = render_deb822 if fmt == "deb822" else render_one_line
+    body = [render(AptEntry(url.rstrip("/"), suite, sorted(published[suite]), []),
+                   signed_by=keyring if layer.signing == "resign" else None,
+                   trusted=layer.signing == "unsigned") for suite in sorted(published)]
+    return "\n".join(head) + "\n" + ("\n" if fmt == "deb822" else "").join(body)
+
+
+def _repo_url(db, repo: str, base: str) -> str:
+    """The address clients use: the upstream URL the bundle's settings name
+    (DNS points it here), else one made from the base."""
+    from mmw.core.config import normalize_url
+    try:
+        settings = json.loads(db.get_meta("settings") or "{}")
+    except ValueError:
+        settings = {}
+    for m in settings.get("mirrors", []):
+        if normalize_url(m.get("source") or "") == repo and m.get("source_url"):
+            return m["source_url"]
+    host, _, path = base.partition("/")
+    if "_" in host:
+        name, _, port = host.rpartition("_")
+        host = f"{name}:{port}" if port.isdigit() else host
+    return f"https://{host}/{path}"

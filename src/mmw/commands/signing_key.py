@@ -83,14 +83,25 @@ def remove(cfg_dir: Path, name: str, keyring=None, in_use=None) -> int:
 
 # ── the far side: a site root's own keyring ──────────────────────────────────
 
+def _the_local_root(mset, root: Path | None):
+    """The local root `--root` names (each root keeps its own keyring and
+    local list), else the first on this machine."""
+    from mmw.site.mset import LocalRoot
+    local = [r for r in mset.roots if isinstance(r, LocalRoot)]
+    if root is not None:
+        want = Path(root).resolve()
+        named = next((r for r in local if Path(r.info.path).resolve() == want), None)
+        if named is not None:
+            return named
+    return local[0] if local else None
+
 def site_keyring(root: Path | None):
     """The keyring of a local site root (the opened one by default), and a
     function naming the repositories whose site layer signs with a key."""
     from mmw.commands.site import _set
     from mmw.core.signing import Keyring
-    from mmw.site.mset import LocalRoot
     mset = _set(root)
-    local = next((r for r in mset.roots if isinstance(r, LocalRoot)), None)
+    local = _the_local_root(mset, root)
     if local is None:
         raise FileNotFoundError("no root of this mirror is on this machine — run it where one is")
     from mmw.site.db import SiteDB

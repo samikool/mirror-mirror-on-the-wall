@@ -214,10 +214,12 @@ def add_site_packages(home: Path, db, store, repo: str, paths, *, suite=None, co
     return notes
 
 
-def remove_site_package(home: Path, repo: str, filename: str) -> list[Path]:
+def remove_site_package(home: Path, repo: str, filename: str, *, location: str | None = None) -> list[Path]:
+    """`location`: `suite/component`, to remove one of several of that name."""
     from mmw.core import layers as core
     folder = site_layer_dir(Path(home), repo)
-    found = ([p for p in disk_io.ops.rglob(folder, "*.deb") if p.name == filename]
+    found = ([p for p in disk_io.ops.rglob(folder, "*.deb") if p.name == filename
+              and (location is None or f"{p.parent.parent.name}/{p.parent.name}" == location)]
              if disk_io.ops.is_dir(folder) else [])
     if not found:
         raise core.PackagesError(f"{filename} is not in {repo}'s local packages")
@@ -231,7 +233,7 @@ def list_site_packages(home: Path, db) -> list[tuple[str, str, str]]:
     for state in db.repo_states():
         folder = site_layer_dir(Path(home), state.repo)
         if disk_io.ops.is_dir(folder):
-            out += [(state.label, f"{p.parent.parent.name}/{p.parent.name}", p.name)
+            out += [(state.label, f"{p.parent.parent.name}/{p.parent.name}", p.name, state.repo)
                     for p in sorted(disk_io.ops.rglob(folder, "*.deb"))]
     return out
 

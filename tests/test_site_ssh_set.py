@@ -140,3 +140,18 @@ def test_roots_says_why_an_ssh_root_is_missing(hosts, tmp_path, monkeypatch):  #
     monkeypatch.setenv("FAKE_SSH_MODE", "down")
     out = CliRunner().invoke(cli.app, ["site", "roots"]).output
     assert "MISSING" in out and "can't reach farhost" in out
+
+
+@pytest.mark.skipif(__import__("shutil").which("gpg") is None, reason="needs gpg")
+def test_a_bundle_carrying_keys_applies_to_a_set_with_an_ssh_root(hosts, tmp_path):  # noqa: F811
+    from mmw.core.signing import Keyring
+    cfg, net, md = hosts
+    Keyring(md).generate("tools")
+    net = net.model_copy(update={"carry_keys": ["tools"]})
+    cfg = cfg.model_copy(update={"networks": [net]})
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
+                 place={HOST_A: str(r1), HOST_B: f"farhost:{r2}"}, say=quiet)
+    assert "tools" in {k.name for k in Keyring(read_root(str(r1)).home).list()}
+    Keyring(md).stop_agent()
+    Keyring(read_root(str(r1)).home).stop_agent()

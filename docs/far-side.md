@@ -288,7 +288,11 @@ mmw site sources-file ubuntu-archive                  # what clients here instal
 the repository again at once. If a bundle arrives while the layer cannot be
 signed (no key here yet), the new version is stored and the repository keeps
 serving what it served, **held**, with the reason in `mmw site status` and the
-TUI; import or generate the key and `mmw site forward` it. In the TUI: `k` on a
+TUI; import or generate the key (or choose unsigned) and it goes on to the
+newest version by itself — on the next `mmw site packages` change or apply,
+or `mmw site forward` now. `serve` says so (exit 1) when a layer holds it.
+Moving a repository to another root (`mmw site move`) takes its local
+packages along; the new root needs the signing key too. In the TUI: `k` on a
 repository, `K` for this side's signing keys.
 
 ### Keys from the connected side
@@ -316,7 +320,8 @@ The instance's pool is read SQLite-immutable (no locks: fine on a network
 share) and skipped while its `-wal` is not empty — its sync still running, or
 not closed cleanly. Unchanged repositories store nothing new. Its hostnames get
 `nginx/local-{network}.conf` (nginx loads every file of its conf.d); its keys
-are served at `/mmw-keys/`.
+are served at `/mmw-keys/`. A repository the connected side's bundles already
+serve here cannot also come from a local instance (its versions would fork).
 
 ## Space
 

@@ -218,6 +218,11 @@ def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
         r = r_.serve(key, number)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
+    if getattr(r, "held", None):
+        eprint(f"{p.label}: not switched — held: {r.held}")
+        return 1
+    for w in getattr(r, "warnings", ()):
+        eprint(w)
     print(f"{p.label} serves v{p.target.number} ({r.placed} placed, {r.removed} removed)")
     return 0
 

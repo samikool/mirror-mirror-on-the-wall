@@ -46,6 +46,11 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
     for rel in sorted(changed):
         by_kind[replay_kind(rel, _base(rel, state.bases))].append(rel)
     placed = 0
+    gone = set(before) - set(after)
+    # A release file that goes (an unsigned layer drops InRelease) goes with
+    # the release phase, not after: never upstream's signature beside new indexes.
+    release_gone = sorted(r for r in gone if replay_kind(r, _base(r, state.bases)) == KIND_RELEASE)
+    removed = 0
     for kind in PHASES:
         db.switch_phase(repo, kind)
         for rel in by_kind[kind]:
@@ -53,9 +58,12 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
             placed += 1
             if progress:
                 progress(rel, kind)
+        if kind == KIND_RELEASE:
+            for rel in release_gone:
+                if disk_io.ops.remove(root / rel) is not None:
+                    removed += 1
     db.switch_phase(repo, "delete")
-    removed = 0
-    for rel in sorted(set(before) - set(after)):
+    for rel in sorted(gone - set(release_gone)):
         if disk_io.ops.remove(root / rel) is not None:
             removed += 1
             _prune_empty_parents(str(root), str((root / rel).parent))
@@ -63,6 +71,7 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
     db.set_overlay(repo, overlay, commit=False)
     db.set_serving(repo, to_id, held=to_id != newest)
     db.set_meta(f"hold:{repo}", "")
+    db.retire_overlays(repo, to_id, overlay)
     db.end_switch(repo)
     return SwitchResult(placed, removed)
 

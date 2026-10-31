@@ -194,6 +194,9 @@ class SiteDB:
             c.execute("DELETE FROM version_files WHERE version = ?", (vid,))
         c.execute("DELETE FROM versions WHERE repo = ?", (repo,))
         c.execute("DELETE FROM repos WHERE repo = ?", (repo,))
+        c.execute("DELETE FROM overlays WHERE repo = ?", (repo,))        # its site layer went with it
+        c.execute("DELETE FROM site_layers WHERE repo = ?", (repo,))
+        c.execute("DELETE FROM meta WHERE key = ?", (f"hold:{repo}",))
         c.commit()
 
     def metas(self, prefix: str) -> dict[str, str]:
@@ -337,6 +340,12 @@ class SiteDB:
         c.executemany("INSERT INTO overlays VALUES (?, ?, ?, ?, ?, ?)",
                       [(repo, version_id, digest, p, cs, size) for p, cs, size in rows])
         c.commit()
+
+    def retire_overlays(self, repo: str, version_id: int, digest: str | None) -> None:
+        """Keep only the overlay being served (their blobs are GC roots)."""
+        self._conn.execute("DELETE FROM overlays WHERE repo = ? AND NOT (version = ? AND digest = ?)",
+                           (repo, version_id, digest or ""))
+        self._conn.commit()
 
     def has_overlay(self, repo: str, version_id: int, digest: str) -> bool:
         return self._conn.execute("SELECT 1 FROM overlays WHERE repo = ? AND version = ? AND digest = ? "

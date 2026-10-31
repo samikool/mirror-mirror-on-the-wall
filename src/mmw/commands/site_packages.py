@@ -17,7 +17,8 @@ def _local(root: Path | None, repo_ref: str | None = None):
         if not isinstance(r, LocalRoot):
             raise FileNotFoundError(f"{repo_ref} is on a root reached over ssh — run this on that host")
         return r.home, r.store(), key
-    local = next((r for r in mset.roots if isinstance(r, LocalRoot)), None)
+    from mmw.commands.signing_key import _the_local_root
+    local = _the_local_root(mset, root)
     if local is None:
         raise FileNotFoundError("no root of this mirror is on this machine — run it where one is")
     return local.home, local.store(), None
@@ -69,6 +70,10 @@ def add(paths, *, repo, suite, component, resign, unsigned, on_clash, root) -> i
         home, store, key = _local(root, repo)
         signing = "resign" if resign else "unsigned" if unsigned else None
         with SiteDB(home) as db:
+            layer = db.layer(key)
+            if signing is None and (layer is None or layer.signing == "upstream"):
+                from mmw.core.layers import PackagesError, needs_signing
+                raise PackagesError(needs_signing(db.repo_state(key).label), usage=True)   # before any question
             _s, _c, clashes = check_site_clashes(home, db, store, key, paths, suite, component)
             decisions = {c.filename: (on_clash or (_ask(c) if sys.stdin.isatty() else "keep")) for c in clashes}
             for line in add_site_packages(home, db, store, key, paths, suite=suite, component=component,
@@ -88,17 +93,17 @@ def list_(root) -> int:
             rows = list_site_packages(home, db)
         if not rows:
             typer.echo("No local packages.")
-        for label, location, name in rows:
+        for label, location, name, _repo in rows:
             typer.echo(f"{label}  {location}  {name}")
     return _run(act)
 
 
-def remove(filename, *, repo, root) -> int:
+def remove(filename, *, repo, root, location=None) -> int:
     from mmw.site.layers import remove_site_package
 
     def act():
         home, _store, key = _local(root, repo)
-        for p in remove_site_package(home, key, filename):
+        for p in remove_site_package(home, key, filename, location=location):
             typer.echo(f"removed {p}")
         _relayer(home, key)
     return _run(act)

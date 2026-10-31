@@ -352,3 +352,106 @@ def test_status_names_local_packages_and_the_hold_reason(site):
     _delta(site)
     out = _site_cli(site, "status").output
     assert "held by its local packages" in out and "signing key" in out
+
+
+# ── review fixes (plan 3) ────────────────────────────────────────────────────
+
+@needs_gpg
+def test_verify_knows_a_layered_repository_and_repair_keeps_it(site):
+    from mmw.site.ops import relayer, repair, verify
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="resign", key="site")
+    relayer(site.home, site.repo)
+    assert verify(site.home) == []
+    _served(site, "dists/jammy/main/binary-amd64/Packages").unlink()
+    assert repair(site.home) == 1
+    assert b"site-tool" in _served(site, "dists/jammy/main/binary-amd64/Packages").read_bytes()
+
+
+@needs_gpg
+def test_serve_preview_counts_the_layer(site):
+    from mmw.site.ops import relayer, serve_preview
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="unsigned")
+    relayer(site.home, site.repo)
+    assert serve_preview(site.home, site.repo, 1).relinks > 0          # same version, minus the layer
+
+
+@needs_gpg
+def test_serve_says_when_a_layer_holds_it(site):
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    _delta(site)
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="resign", key="gone")
+    out = _site_cli(site, "serve", site.repo, "1", "--yes")
+    assert out.exit_code == 1 and "signing key" in out.output
+
+
+@needs_gpg
+def test_a_layer_hold_clears_when_its_cause_is_fixed(site):
+    from mmw.site.ops import status_reason
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="resign", key="later")
+    result = _delta(site)
+    assert site.repo in result.stored_held
+    out = _site_cli(site, "packages", "signing", site.repo, "--unsigned")
+    assert out.exit_code == 0, out.output
+    assert "Version: 2.10-3" in _served(site, "dists/jammy/main/binary-amd64/Packages").read_text()
+    assert status_reason(site.home, site.repo) is None
+    with SiteDB(site.home) as db:
+        assert not db.repo_state(site.repo).held
+
+
+@needs_gpg
+def test_unsigned_with_no_debs_serves_the_pure_version(site):
+    from mmw.site.ops import relayer
+    deb = make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="unsigned")
+    relayer(site.home, site.repo)
+    deb.unlink()
+    relayer(site.home, site.repo)
+    upstream = site.lab.up.root / "ubuntu"
+    assert _served(site, "dists/jammy/InRelease").read_bytes() == (upstream / "dists/jammy/InRelease").read_bytes()
+
+
+@needs_gpg
+def test_old_overlays_are_retired(site):
+    from mmw.site.ops import relayer
+    make_deb(site.folder / "jammy/main", "a-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="unsigned")
+    relayer(site.home, site.repo)
+    make_deb(site.folder / "jammy/main", "b-tool", "1.0")
+    relayer(site.home, site.repo)
+    with SiteDB(site.home) as db:
+        digests = {d for (d,) in db._conn.execute("SELECT DISTINCT digest FROM overlays")}
+        assert digests == {db.repo_overlay(site.repo)}
+
+
+@needs_gpg
+def test_moving_a_layered_repository_carries_its_layer(site, tmp_path):
+    from mmw.site.mset import open_set
+    from mmw.site.ops import add_root, move_repo, relayer, tidy_set
+    make_deb(site.folder / "jammy/main", "site-tool", "1.0")
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="unsigned")
+    relayer(site.home, site.repo)
+    from mmw.site import recents
+    recents.remember(str(site.root))
+    mset = open_set(set_id="s1")
+    add_root(mset, str(tmp_path / "r2"))
+    mset = open_set(set_id="s1")
+    move_repo(mset, site.repo, "r2")
+    r2 = open_set(set_id="s1").root_named("r2")
+    with SiteDB(r2.home) as db:
+        assert db.layer(site.repo).signing == "unsigned" and db.repo_overlay(site.repo)
+    assert (tmp_path / "r2" / site.base / "pool/mmw/main/site-tool_1.0_amd64.deb").is_file()
+    with SiteDB(site.home) as db:
+        assert db.layer(site.repo) is None
+        assert not db._conn.execute("SELECT 1 FROM overlays").fetchone()
+    tidy_set(open_set(set_id="s1"))
+    assert not (site.root / site.base / "pool/mmw/main/site-tool_1.0_amd64.deb").exists()

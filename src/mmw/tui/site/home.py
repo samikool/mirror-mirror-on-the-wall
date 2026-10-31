@@ -693,7 +693,8 @@ class SiteHomePage(Page):
         self.app.call_from_thread(self._load)
 
     def action_signing_keys(self) -> None:
-        root = self._local_root()
+        # The selected repository's root: a site layer signs with its own root's keyring.
+        root = self._local_root(self.selected_repo())
         if root is None:
             return
         from mmw.tui.signing_keys import SigningKeysPage

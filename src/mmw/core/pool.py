@@ -447,7 +447,7 @@ def shared_pool_lock(mirror_dir: Path):
 # Pools read in immutable mode (`immutable_reads`): another mmw instance a
 # site only reads, perhaps on a network share — no locks, no -shm, and no
 # write may happen. Keyed by the resolved mirror directory.
-_IMMUTABLE: set[str] = set()
+_IMMUTABLE: dict[str, int] = {}       # key → how many are open (re-entrant)
 
 
 @contextmanager
@@ -457,11 +457,13 @@ def immutable_reads(mirror_dir: Path):
     share — and only right while no other process writes that pool. Opening
     it writable raises."""
     key = str(Path(mirror_dir).resolve())
-    _IMMUTABLE.add(key)
+    _IMMUTABLE[key] = _IMMUTABLE.get(key, 0) + 1
     try:
         yield
     finally:
-        _IMMUTABLE.discard(key)
+        _IMMUTABLE[key] -= 1
+        if not _IMMUTABLE[key]:
+            del _IMMUTABLE[key]
 
 
 def holds_shared_pool_lock(job):

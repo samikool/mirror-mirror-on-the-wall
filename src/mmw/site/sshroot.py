@@ -271,6 +271,9 @@ class RemoteApply:
         self.got: dict[str, tuple[str, int]] = {}
         self.links: dict[str, str] = {}
         self.tls: dict[str, bytes] = {}
+        # Carried signing keys: kept by this side's roots, not sent down the
+        # pipe (a site layer on an ssh root signs with that host's keyring).
+        self.signing: dict[str, bytes] = {}
         self.dry_run = dry_run
         self.expected: dict[str, str] | None = None
         self.first_time = False

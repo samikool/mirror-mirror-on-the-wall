@@ -117,3 +117,38 @@ def test_site_local_cli(site, instance):  # noqa: F811
     assert "unchanged" in run("update").output
     assert run("remove", "local").exit_code == 0
     assert "No local instances" in run("list").output
+
+
+def test_the_first_update_says_to_reload_nginx(site, instance):  # noqa: F811
+    from mmw.site import local
+    local.add(site.home, instance, "local")
+    [first] = local.update(site.home)
+    assert any("reload nginx" in line for line in first.lines)
+    [again] = local.update(site.home)
+    assert not any("reload nginx" in line for line in again.lines)
+
+
+def test_a_local_repository_cannot_take_a_connected_one(site, tmp_path):  # noqa: F811
+    from mmw.site import local
+    inst = tmp_path / "clash"
+    inst.mkdir()
+    make_deb(inst / "debs", "x", "1")
+    src = config.LocalAptSource(provider="apt-local", url=site.lab.src.url, folder="debs", key="tools")
+    config.save(config.Config(settings=config.Settings(mirror_dir=inst / "pool"), sources=[src],
+                              networks=[config.NetworkConfig(name="clash")]), inst)
+    Keyring(inst / "pool").generate("tools")
+    _sync_instance(inst)
+    local.add(site.home, inst, "clash")
+    [result] = local.update(site.home)
+    assert result.error and "another network" in result.error
+
+
+def test_immutable_reads_nest(tmp_path):
+    from mmw.core.pool import _IMMUTABLE, immutable_reads
+    with immutable_reads(tmp_path):
+        with immutable_reads(tmp_path):
+            pass
+        assert str(tmp_path.resolve()) in _IMMUTABLE
+        with pytest.raises(RuntimeError):
+            Pool(tmp_path)
+    assert str(tmp_path.resolve()) not in _IMMUTABLE

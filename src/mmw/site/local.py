@@ -20,6 +20,7 @@ from pathlib import Path
 from mmw.core import disk_io
 
 _META = "local:"
+_OWNER = "local-repo:"               # repository → the local network that brought it"
 
 
 @dataclass
@@ -156,6 +157,15 @@ def _apply(home: Path, cfg, net, mirrors, files: dict, repo_bases: dict[str, lis
     labels = {s.identity: s.name for s in cfg.sources}
     repos = {}
     with SiteDB(home) as db:
+        # A repository the connected side's bundles serve here is theirs: a
+        # local network serving the same key would fork its version numbers.
+        theirs = sorted(r for r in digests if db.repo_state(r) is not None
+                        and db.get_meta(f"{_OWNER}{r}") != net.name)
+        if theirs:
+            raise ValueError(f"{', '.join(theirs)} already come(s) from another network here — a local "
+                             "instance cannot serve the same repository")
+        for repo in digests:
+            db.set_meta(f"{_OWNER}{repo}", net.name)
         for repo, digest in digests.items():
             versions = db.versions(repo)
             same = next((v for v in versions if v.digest == digest), None)
@@ -168,10 +178,11 @@ def _apply(home: Path, cfg, net, mirrors, files: dict, repo_bases: dict[str, lis
     rows = sorted((rel, files[rel][0], repo) for rel, repo in repo_rows.items() if repo)
     ra = RootApply(home, say=lambda *_a: None, network_files=False)
     with ra:
-        missing = {}
+        missing, seen = {}, set()
         for rel, cs, _repo in rows:
-            if not ra.store.has(cs) and cs not in {files[r][0] for r in missing}:
+            if cs not in seen and not ra.store.has(cs):
                 missing[rel] = files[rel]
+            seen.add(cs)
         header = ManifestHeader(network=net.name, created=stamp, previous=None, full=True,
                                 file_count=len(missing), format=2, repos=repos, created_label="local")
         manifest = Path(home) / "local-manifest.jsonl"
@@ -187,12 +198,13 @@ def _apply(home: Path, cfg, net, mirrors, files: dict, repo_bases: dict[str, lis
             finally:
                 fh.close()
         applied = ra.finish()
-        _serve_extras(ra, net, mirrors, files, set(repos))
-    return applied.updated, applied.lines
+        notes = _serve_extras(ra, net, mirrors, files, set(repos))
+    return applied.updated, applied.lines + notes
 
 
-def _serve_extras(ra, net, mirrors, files: dict, repos: set[str]) -> None:
-    """The instance's hostnames in nginx, its keys under keys/."""
+def _serve_extras(ra, net, mirrors, files: dict, repos: set[str]) -> list[str]:
+    """The instance's hostnames in nginx, its keys under keys/; lines to tell."""
+    notes = []
     from mmw.site.nginx import site_nginx_files
     root = Path(ra.root)
     settings = json.dumps({"network": net.model_dump(mode="json"),
@@ -200,11 +212,19 @@ def _serve_extras(ra, net, mirrors, files: dict, repos: set[str]) -> None:
     built = site_nginx_files(settings, repos, ra.roots.primary, primary=False)
     conf = next((data for rel, data in built.items() if rel.startswith("nginx/") and rel.endswith(".conf")), None)
     if conf is not None:
-        disk_io.ops.mkdir(root / "nginx", parents=True, exist_ok=True)
-        disk_io.ops.atomic_write(root / "nginx" / f"local-{net.name}.conf", conf,
-                                 tmp_dir=ra.store.place_tmp)
+        target = root / "nginx" / f"local-{net.name}.conf"
+        if not disk_io.ops.exists(target) or disk_io.ops.read_bytes(target) != conf:
+            disk_io.ops.mkdir(root / "nginx", parents=True, exist_ok=True)
+            disk_io.ops.atomic_write(target, conf, tmp_dir=ra.store.place_tmp)
+            notes.append(f"  nginx/local-{net.name}.conf changed — reload nginx on the serving host "
+                         "(docker compose … restart nginx)")
+    network = ra.roots.network_files(ra.db, ra.roots.primary)
     for rel, (_cs, _size, src, data) in files.items():
         if rel.startswith("keys/"):
+            if rel in network:                 # the connected network's key file: never overwritten
+                notes.append(f"  {rel} is the connected network's — kept, the instance's not served")
+                continue
             body = data if data is not None else disk_io.ops.read_bytes(src)
             disk_io.ops.mkdir((root / rel).parent, parents=True, exist_ok=True)
             disk_io.ops.atomic_write(root / rel, body, tmp_dir=ra.store.place_tmp)
+    return notes

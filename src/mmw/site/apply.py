@@ -333,6 +333,8 @@ class RootApply:
             db.rollback()
             raise
 
+        if not self.network_files:
+            result.network_changed = False     # nothing of the network's was touched
         if self.network_files:
             old = roots.network_files(db, roots.primary)
             db.set_network_files(network, {c: _size(store, c, sizes) for c in network.values()})
@@ -375,7 +377,10 @@ class RootApply:
                     result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
                                         f"{f'still serving v{was}' if was else 'not served'} (held)")
                     continue
-                if state and state.held and not self.forward_all and repo not in forward:
+                # A repository held only by its site layer (no key then, say)
+                # tries again: a key this bundle carried may be the fix.
+                layer_held = bool(db.get_meta(f"hold:{repo}"))
+                if state and state.held and not layer_held and not self.forward_all and repo not in forward:
                     result.stored_held.append(repo)
                     result.lines.append(f"  {meta['label']}  stored v{meta['to']}, still serving v{was} (held)")
                     continue

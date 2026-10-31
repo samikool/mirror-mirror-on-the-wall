@@ -101,9 +101,8 @@ class SitePackagesPage(Page):
     async def _list(self) -> None:
         def rows():
             with SiteDB(self.home) as db:
-                label = db.repo_state(self.repo).label
-                return [(loc, name) for lab, loc, name in site_layers.list_site_packages(self.home, db)
-                        if lab == label]
+                return [(loc, name) for _lab, loc, name, repo in site_layers.list_site_packages(self.home, db)
+                        if repo == self.repo]
         self._rows = await asyncio.to_thread(rows)
         listing = self.query_one("#spkg-debs", ListView)
         await listing.clear()
@@ -196,10 +195,10 @@ class SitePackagesPage(Page):
         if index is None or not 0 <= index < len(self._rows):
             self.set_status("Highlight a package to remove.", "warning")
             return
-        _, name = self._rows[index]
+        location, name = self._rows[index]
 
         def remove():
-            site_layers.remove_site_package(self.home, self.repo, name)
+            site_layers.remove_site_package(self.home, self.repo, name, location=location)
             return self._relayer()
         try:
             said = await asyncio.to_thread(remove)

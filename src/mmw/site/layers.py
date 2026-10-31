@@ -6,8 +6,14 @@ version, inputs digest); a repository serves `version ⊕ overlay`, so every
 switch — apply, hold, roll back, forward — carries the layer. The rebuild is
 the connected side's (`mmw.core.layers._rebuild`) over the site store.
 """
+import hashlib
+import io
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
+
+from mmw.core import disk_io
 
 LAYERS_DIR = "layers"
 
@@ -15,3 +21,131 @@ LAYERS_DIR = "layers"
 def site_layer_dir(home: Path, repo: str) -> Path:
     """`{suite}/{component}/*.deb` below it; the repository key made one safe segment."""
     return Path(home) / LAYERS_DIR / quote(repo, safe="")
+
+
+LAYER_FORMAT = 1
+
+
+@dataclass
+class OverlayResult:
+    digest: str | None = None          # None: serve the version as it is (or hold, below)
+    hold_reason: str | None = None     # set: do not switch — keep what is served, held
+    warnings: list[str] = field(default_factory=list)
+
+
+class StoreBlobs:
+    """The site store as a layer's blob store (see `mmw.core.layers.PoolBlobs`)."""
+
+    def __init__(self, store):
+        self.store = store
+
+    def have(self, checksum: str, filename: str) -> bool:
+        return self.store.has(checksum)
+
+    def add_bytes(self, body: bytes, checksum: str, filename: str) -> None:
+        self.store.add_stream(io.BytesIO(body), expect=checksum)
+
+    def add_deb(self, deb) -> None:
+        with disk_io.ops.open_rb(deb.path) as fh:          # copied, never moved: the folder is the user's
+            self.store.add_stream(fh, expect=deb.sha256)
+
+
+def _work(home: Path, repo: str) -> Path:
+    return Path(home) / "local" / LAYERS_DIR / quote(repo, safe="")
+
+
+def site_debs(home: Path, repo: str) -> dict[tuple[str, str], list]:
+    """(suite, component) → the scanned debs a site added to `repo`."""
+    from mmw.providers.apt_local import scan
+    folder = site_layer_dir(home, repo)
+    out: dict[tuple[str, str], list] = {}
+    if not disk_io.ops.is_dir(folder):
+        return out
+    for suite_dir in sorted(p for p in disk_io.ops.iterdir(folder) if disk_io.ops.is_dir(p)):
+        for comp_dir in sorted(p for p in disk_io.ops.iterdir(suite_dir) if disk_io.ops.is_dir(p)):
+            debs = scan(comp_dir, _work(home, repo) / f"scan-{suite_dir.name}-{comp_dir.name}.json")
+            if debs:
+                out[(suite_dir.name, comp_dir.name)] = debs
+    return out
+
+
+def build_overlay(home: Path, db, store, repo: str, version_id: int) -> OverlayResult:
+    """The overlay that serving `version_id` of `repo` needs, built (or
+    found) and stored. No layer: no overlay. A layer that cannot be built
+    — debs with upstream signing, no key — is a hold, with the reason."""
+    from mmw.core import layers as core
+    result = OverlayResult()
+    layer = db.layer(repo)
+    debs = site_debs(Path(home), repo)
+    if not debs and (layer is None or layer.signing == "upstream"):
+        return result
+    state = db.repo_state(repo)
+    label = state.label if state else repo
+    if debs and (layer is None or layer.signing == "upstream"):
+        result.hold_reason = (f"{label} has local packages, so its signature cannot stay — choose "
+                              "resign or unsigned for it (mmw site packages signing)")
+        return result
+    fingerprint, public = "", None
+    if layer.signing == "resign":
+        from mmw.core.signing import Keyring, SigningError
+        keyring = Keyring(home)
+        try:
+            found = next((k for k in keyring.list() if k.name == layer.key), None)
+            if found is None:
+                result.hold_reason = (f"{label} needs a signing key named {layer.key!r} here — import "
+                                      "or generate it (mmw site signing-key)")
+                return result
+            fingerprint, public = found.fingerprint, keyring.public_armor(layer.key)
+        except SigningError as e:
+            result.hold_reason = f"{label}: {e}"
+            return result
+        finally:
+            keyring.stop_agent()
+    version = db.version_by_id(version_id)
+    files = db.version_files(version_id)
+    bases = (state.bases if state and state.bases else [repo])
+    base = max((b for b in bases if any(p.startswith(b + "/dists/") for p in files)), key=len, default=None)
+    if base is None:
+        result.hold_reason = f"{label} v{version.number} has no dists/ tree to add packages to"
+        return result
+    rows = {p[len(base) + 1:]: (p[len(base) + 1:], str(store.path(cs)), 0, "", cs)
+            for p, cs in files.items() if p.startswith(base + "/")}
+    published = core._published(rows)
+    missing = [f"{s}/{c}" for s, c in debs if c not in published.get(s, {})]
+    if missing:
+        result.hold_reason = (f"{label} has local packages for {', '.join(missing)}, which "
+                              f"v{version.number} does not have")
+        return result
+    folder = site_layer_dir(Path(home), repo)
+    chosen = core.read_decisions(folder)
+    digest = hashlib.sha256(json.dumps({
+        "format": LAYER_FORMAT, "version": version.digest,
+        "debs": sorted((s, c, d.path.name, d.sha256) for (s, c), ds in debs.items() for d in ds),
+        "layer": [layer.signing, layer.key, layer.contents, layer.drop_valid_until],
+        "key": fingerprint, "decisions": chosen,
+    }, sort_keys=True).encode()).hexdigest()
+    clashes = core._clashes(label, rows, published, debs, chosen)
+    for c in clashes:
+        if c.filename not in chosen:
+            what = ("the same version as upstream's, with different contents" if c.kind == "same-version"
+                    else f"older than upstream's {c.upstream_version}")
+            result.warnings.append(f"{label}: {c.filename} ({c.package} {c.version}) is {what} — kept")
+    if layer.signing == "unsigned":
+        result.warnings.append(f"{label} is served unsigned — unsafe; clients need [trusted=yes] for it")
+    if db.has_overlay(repo, version_id, digest) and all(
+            not cs or store.has(cs) for cs in db.overlay_files(repo, version_id, digest).values()):
+        result.digest = digest
+        return result
+    dropped = {c.filename for c in clashes if chosen.get(c.filename) == "drop"}
+    out = core._rebuild("site", quote(repo, safe=""), layer, rows, published, debs, dropped,
+                        Path(home), _work(Path(home), repo), StoreBlobs(store))
+    overlay = [(f"{base}/{rel}", cs, size) for rel, cs, size, _kind, _fn in out]
+    if public is not None:
+        from mmw.core.keys import dearmor
+        key = dearmor(public if public.endswith("\n") else public + "\n")
+        cs = hashlib.sha256(key).hexdigest()
+        StoreBlobs(store).add_bytes(key, cs, f"{layer.key}.gpg")
+        overlay.append((f"{base}/mmw-keys/{layer.key}.gpg", cs, len(key)))
+    db.put_overlay(repo, version_id, digest, overlay)
+    result.digest = digest
+    return result

@@ -105,6 +105,13 @@ def publish_network(
     warm_for_publish(mirror_dir, progress, stop_event)
     if stop_event and stop_event.is_set():
         return result               # stopped before anything was written
+    # Layers first, with the pool writable: their rebuilt indexes and debs
+    # must be in the pool before the (read-only) walk swaps them in.
+    from mmw.core.layers import apply_build
+    from mmw.core.pool import database_path
+    if disk_io.ops.exists(database_path(mirror_dir)):      # never create a pool to publish from
+        with Pool(mirror_dir) as writable:
+            apply_build(network, cfg, mirror_dir, writable, result)
     from mmw.core.publisher.deployment import prepare_tree
     # The pool opens before the record is touched: a database that will not
     # open (moved, missing) must not cost the tree its record.

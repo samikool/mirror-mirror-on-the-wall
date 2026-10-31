@@ -521,13 +521,81 @@ def cmd_signing_key_remove(name: str = typer.Argument(...)):
 
 @app.command("sources-file")
 def cmd_sources_file(
-    name: str = typer.Argument(..., help="The folder repository's name"),
+    name: str = typer.Argument(..., help="The repository's name"),
     fmt: str = typer.Option("deb822", "--format",
                             help="deb822 (Ubuntu 24.04+, Debian 12+) or list (one line: jammy, Debian 11)"),
+    network: str = typer.Option(None, "--network", "-n",
+                                help="An upstream mirror with custom packages: as this network serves it"),
 ):
-    """Print the sources file a client saves in /etc/apt/sources.list.d/ for a folder repository."""
+    """Print the sources file a client saves in /etc/apt/sources.list.d/ — for a folder
+    repository, or (with --network) an upstream mirror a network adds packages to."""
     from mmw.commands.sources_file import run
-    raise typer.Exit(run(_cfg_dir(), name, fmt))
+    raise typer.Exit(run(_cfg_dir(), name, fmt, network))
+
+
+packages_app = typer.Typer(help="Your own .debs: into a folder repository, or into an upstream "
+                                "mirror as one network serves it.", no_args_is_help=True)
+app.add_typer(packages_app, name="packages")
+
+
+@packages_app.command("add")
+def cmd_packages_add(
+    paths: list[Path] = typer.Argument(..., help=".deb files or folders of them"),
+    into: str = typer.Option(..., "--into", help="The repository: a folder repository or an upstream mirror"),
+    network: str = typer.Option(None, "--network", "-n", help="Upstream mirrors: the network that serves them"),
+    suite: str = typer.Option(None, "--suite", help="Upstream: the suite (default: the first it publishes)"),
+    component: str = typer.Option(None, "--component", help="Upstream: the component (default main)"),
+    resign: str = typer.Option(None, "--resign", metavar="KEY",
+                               help="Upstream: re-sign it with this mmw key (clients trust that key instead)"),
+    unsigned: bool = typer.Option(False, "--unsigned",
+                                  help="Upstream: serve it unsigned — unsafe, clients need [trusted=yes]"),
+    on_clash: str = typer.Option(None, "--on-clash", help="keep or drop a deb that clashes with upstream's "
+                                                          "(default: ask on a terminal, else keep)"),
+):
+    """Add .debs to a repository."""
+    from mmw.commands.packages import add
+    if on_clash not in (None, "keep", "drop"):
+        typer.echo("--on-clash is keep or drop", err=True)
+        raise typer.Exit(2)
+    raise typer.Exit(add(_cfg_dir(), paths, into=into, network=network, suite=suite, component=component,
+                         resign=resign, unsigned=unsigned, on_clash=on_clash))
+
+
+@packages_app.command("list")
+def cmd_packages_list(network: str = typer.Option(None, "--network", "-n", help="Only this network's")):
+    """Every custom .deb, by repository."""
+    from mmw.commands.packages import list_
+    raise typer.Exit(list_(_cfg_dir(), network))
+
+
+@packages_app.command("remove")
+def cmd_packages_remove(
+    filename: str = typer.Argument(..., help="The .deb's file name"),
+    into: str = typer.Option(..., "--into", help="The repository it is in"),
+    network: str = typer.Option(None, "--network", "-n", help="Upstream mirrors: the network"),
+):
+    """Remove a custom .deb (the next sync or publish drops it from the index)."""
+    from mmw.commands.packages import remove
+    raise typer.Exit(remove(_cfg_dir(), filename, into=into, network=network))
+
+
+@packages_app.command("signing")
+def cmd_packages_signing(
+    into: str = typer.Argument(..., help="The upstream mirror"),
+    network: str = typer.Option(..., "--network", "-n"),
+    resign: str = typer.Option(None, "--resign", metavar="KEY", help="Re-sign with this mmw key"),
+    unsigned: bool = typer.Option(False, "--unsigned", help="Serve unsigned (unsafe: clients need trusted=yes)"),
+    upstream: bool = typer.Option(False, "--upstream", help="Keep upstream's signature (no custom packages)"),
+    contents: bool = typer.Option(None, "--contents/--no-contents",
+                                  help="Keep Contents files right for apt-file (can make signing much slower)"),
+    drop_valid_until: bool = typer.Option(None, "--drop-valid-until/--keep-valid-until",
+                                          help="Re-signing: drop Valid-Until, so an airgapped copy never "
+                                               "expires (a client can no longer tell it is stale)"),
+):
+    """How a network serves an upstream mirror it adds packages to."""
+    from mmw.commands.packages import signing
+    raise typer.Exit(signing(_cfg_dir(), into, network=network, resign=resign, unsigned=unsigned,
+                             upstream=upstream, contents=contents, drop_valid_until=drop_valid_until))
 
 
 @app.command("move-database")

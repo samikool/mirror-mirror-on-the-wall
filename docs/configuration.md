@@ -276,6 +276,37 @@ destination is unset says so rather than inventing one.
 | `runtime_python` | string | `'3.12'` | `mmw` networks: the Python version shipped in that runtime (a python-build-standalone build). |
 
 
+### `[[networks.layers]]`
+
+Custom packages this network adds to an upstream mirror it publishes. The
+source stays pure upstream in the pool; only what *this* network serves
+changes, so another network publishing the same source is untouched. The debs
+themselves live in `{mirror_dir}/layers/{network}/{repo name}/{suite}/{component}/`
+— put them there with `mmw packages add … --into REPO --network NAME`, or
+Networks → `k`.
+
+```toml
+[[networks.layers]]
+source  = "http://archive.ubuntu.com/ubuntu"
+signing = "resign"
+key     = "tools"
+```
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `source` | string | **required** | The upstream repository's URL, as in `[[sources]]`. One layer per repository. |
+| `signing` | `upstream` \| `resign` \| `unsigned` | `'upstream'` | Adding packages changes the index, so upstream's signature cannot survive. `resign` signs every suite this network publishes with an mmw key — clients trust that key for this repository instead of upstream's (`mmw sources-file REPO -n NAME` writes their entry). `unsigned` drops the signatures where the index changed: **unsafe**, clients need `[trusted=yes]`; every publish warns. `upstream` refuses custom packages. |
+| `key` | string | none | The mmw signing key, for `resign`. It is published at `/mmw-keys/{label}/{key}.gpg`. |
+| `drop_valid_until` | bool | `false` | Remove `Valid-Until` from the rewritten `Release`, so an airgapped copy never expires. A security trade-off: a client can no longer tell a stale mirror from a fresh one. |
+| `contents` | bool | `false` | Rewrite `Contents-{arch}` so `apt-file` finds the custom packages. Upstream's Contents files are large, so this can make signing take significantly longer. |
+
+A rewritten `Release` keeps upstream's `Date` and `Valid-Until`; only the
+changed index files' hash lines change. A rebuild with unchanged inputs (the
+same upstream release, debs and settings) is skipped. A custom deb with the
+same version as upstream's but different contents, or older than upstream's,
+is a **clash**: `mmw packages add` asks (or `--on-clash keep|drop`), and the
+answer is remembered.
+
 ### `[[networks.select]]`
 
 Selection is **by dimension, never by mirror name**. A frozen list of names

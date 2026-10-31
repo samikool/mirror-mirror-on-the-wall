@@ -46,13 +46,14 @@ codes — see [airgap.md](airgap.md#exit-codes).
 | [`mmw installer`](#mmw-installer) | Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh` on the far side puts mmw on the path, offline |
 | [`mmw manage`](#mmw-manage) | Manage configured mirrors (add, remove) |
 | [`mmw move-database`](#mmw-move-database) | Move the pool database (settings.database) and point mmw.toml at it |
+| [`mmw packages`](#mmw-packages) | Your own .debs: into a folder repository, or into an upstream mirror as one network serves it |
 | [`mmw prune`](#mmw-prune) | Remove orphaned pool packages not referenced by any mirror |
 | [`mmw publish`](#mmw-publish) | Publish mirrors to network targets |
 | [`mmw retry-failed`](#mmw-retry-failed) | Retry missing VS Code files from saved metadata, without a full sync |
 | [`mmw signing-key`](#mmw-signing-key) | The keys mmw signs repositories with |
 | [`mmw site`](#mmw-site) | mmw on the far side of the airgap: apply bundles to your mirror's roots, serve any kept version |
 | [`mmw snapshot`](#mmw-snapshot) | Network snapshots: a network's exact state, kept to bundle to or publish again |
-| [`mmw sources-file`](#mmw-sources-file) | Print the sources file a client saves in /etc/apt/sources.list.d/ for a folder repository |
+| [`mmw sources-file`](#mmw-sources-file) | Print the sources file a client saves in /etc/apt/sources.list.d/ — for a folder repository, or (with --network) an upstream mirror a network adds packages to |
 | [`mmw stage`](#mmw-stage) | Lay a bundle out as a directory of hardlinks to the pool — the same members as `mmw bundle`, almost no disk — to tar, rsync or inspect without mmw |
 | [`mmw sync`](#mmw-sync) | Sync configured mirrors |
 | [`mmw update`](#mmw-update) | Update mmw to the newest release, the way it was installed (uv tool, pipx, pip) |
@@ -180,6 +181,12 @@ Move the pool database (settings.database) and point mmw.toml at it.
 |--------|---------|-------------|
 | `PATH` |  | New path for the pool database file, e.g. on a fast disk *(required)* |
 
+### `mmw packages`
+
+Your own .debs: into a folder repository, or into an upstream mirror as one network serves it.
+
+Takes no options.
+
 ### `mmw prune`
 
 Remove orphaned pool packages not referenced by any mirror.
@@ -237,12 +244,14 @@ Takes no options.
 
 ### `mmw sources-file`
 
-Print the sources file a client saves in /etc/apt/sources.list.d/ for a folder repository.
+Print the sources file a client saves in /etc/apt/sources.list.d/ — for a folder
+repository, or (with --network) an upstream mirror a network adds packages to.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `NAME` |  | The folder repository's name *(required)* |
+| `NAME` |  | The repository's name *(required)* |
 | `--format` | `deb822` | deb822 (Ubuntu 24.04+, Debian 12+) or list (one line: jammy, Debian 11) |
+| `--network`, `-n` |  | An upstream mirror with custom packages: as this network serves it |
 
 ### `mmw stage`
 

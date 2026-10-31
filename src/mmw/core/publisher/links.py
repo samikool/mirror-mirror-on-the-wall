@@ -263,6 +263,7 @@ def publish_group(
     prune: bool = True,
     prune_exclude: set[str] | None = None,
     keep_extra: set[str] | frozenset[str] = frozenset(),
+    overlay: dict | None = None,
 ) -> MirrorPublishResult:
     """Publish all mirrors sharing one mirror_base through a Sink.
 
@@ -291,6 +292,16 @@ def publish_group(
         bucket = buckets.get(row[3])
         if bucket is not None:
             bucket.append(row)
+    if overlay:
+        # A network's layer (`core/layers.py`): its rows replace upstream's at
+        # the same path, None drops one; the rest is published as upstream.
+        for kind, bucket in buckets.items():
+            buckets[kind] = [r for r in bucket if r[0] not in overlay]
+        for row in overlay.values():
+            if row is not None and row[3] in buckets:
+                buckets[row[3]].append(row)
+        for bucket in buckets.values():
+            bucket.sort(key=lambda r: r[0])
     pkg_rows, meta_rows, rel_rows = buckets[KIND_PKG], buckets[KIND_META], buckets[KIND_RELEASE]
     if progress:
         progress(base, f"enumerate-done:{len(pkg_rows) + len(meta_rows) + len(rel_rows)}")

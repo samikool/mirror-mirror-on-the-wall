@@ -54,3 +54,53 @@ def test_release_lists_every_file_with_both_hashes():
     sha = rel.split("SHA256:\n", 1)[1].splitlines()
     assert sha[0].endswith(" 1 a") and sha[1].endswith(" 2 b")
     assert "MD5Sum:\n" in rel
+
+
+# ── plan 2: Release rewriting, versions ──────────────────────────────────────
+
+from mmw.core.apt_index import parse_packages, release_body, rewrite_release, version_cmp  # noqa: E402
+
+_REL = (b"Origin: Ubuntu\nSuite: jammy\nDate: Thu, 21 Apr 2022 17:16:08 UTC\n"
+        b"Valid-Until: Thu, 28 Apr 2022 17:16:08 UTC\nAcquire-By-Hash: yes\n"
+        b"MD5Sum:\n 0123 10 main/binary-amd64/Packages\n 4567 20 main/binary-amd64/Packages.gz\n"
+        b" 89ab 30 universe/binary-amd64/Packages.gz\n"
+        b"SHA256:\n aaaa 10 main/binary-amd64/Packages\n bbbb 20 main/binary-amd64/Packages.gz\n"
+        b" cccc 30 universe/binary-amd64/Packages.gz\n")
+
+
+def test_release_body_from_inrelease():
+    signed = (b"-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA512\n\nOrigin: x\n- -dashed\n"
+              b"-----BEGIN PGP SIGNATURE-----\n\nabc\n-----END PGP SIGNATURE-----\n")
+    assert release_body(signed) == b"Origin: x\n-dashed\n"
+    assert release_body(b"Origin: x\n") == b"Origin: x\n"
+
+
+def test_rewrite_release_updates_every_hash_section_and_appends_new():
+    import hashlib
+    new = {"main/binary-amd64/Packages.gz": b"new gz", "main/binary-amd64/Packages.xz": b"xz!"}
+    text = rewrite_release(_REL, new).decode()
+    md5 = hashlib.md5(b"new gz").hexdigest()
+    sha = hashlib.sha256(b"new gz").hexdigest()
+    assert f" {md5} {6:>16} main/binary-amd64/Packages.gz" in text
+    assert f" {sha} {6:>16} main/binary-amd64/Packages.gz" in text
+    assert text.count("main/binary-amd64/Packages.xz") == 2           # appended to both sections
+    assert " cccc 30 universe/binary-amd64/Packages.gz" in text         # untouched as upstream wrote it
+    assert "Valid-Until: Thu, 28 Apr 2022" in text and "Date: Thu, 21 Apr 2022" in text
+
+
+def test_rewrite_release_drops_valid_until():
+    assert b"Valid-Until" not in rewrite_release(_REL, {}, drop_valid_until=True)
+
+
+def test_version_cmp():
+    order = ["1.0~rc1", "1.0", "1.0-1", "1.0-1ubuntu1", "1.1", "2.9", "2.10", "1:0.1"]
+    for a, b in zip(order, order[1:]):
+        assert version_cmp(a, b) < 0 and version_cmp(b, a) > 0, (a, b)
+    assert version_cmp("1.0-1", "1.0-1") == 0
+    assert version_cmp("0:1.0", "1.0") == 0
+
+
+def test_parse_packages():
+    stanzas = parse_packages("Package: a\nVersion: 1\nDescription: x\n more\n\nPackage: b\nVersion: 2\n")
+    assert [s["Package"] for s in stanzas] == ["a", "b"]
+    assert stanzas[0]["Description"] == "x\n more"

@@ -996,6 +996,36 @@ def retention_days(value: str) -> int | None:
     return int(match.group(1))
 
 
+class NetworkLayer(_StrictModel):
+    """Custom debs this network adds to an upstream repository it publishes.
+
+    The source stays pure upstream in the pool; only what this network serves
+    changes, so another network publishing the same source is untouched. The
+    debs live in `{mirror_dir}/layers/{network}/{repo name}/{suite}/{component}/`.
+    Adding any changes the index, so the upstream signature cannot survive:
+    `resign` signs every published suite with an mmw key (clients trust that
+    key instead), `unsigned` drops the signatures (clients need trusted=yes)."""
+    source: str
+    signing: Literal["upstream", "resign", "unsigned"] = "upstream"
+    key: str | None = None
+    drop_valid_until: bool = False
+    contents: bool = False            # Contents-* files kept right, for apt-file (slow)
+
+    @model_validator(mode="after")
+    def _resign_needs_a_key(self):
+        if self.signing == "resign" and not self.key:
+            raise ValueError(f"layer for {self.source}: signing = \"resign\" needs a key")
+        if self.drop_valid_until and self.signing != "resign":
+            # Rewriting Release breaks upstream's signature: only re-signing
+            # can drop Valid-Until without serving the repository unsigned.
+            raise ValueError(f"layer for {self.source}: drop_valid_until needs signing = \"resign\"")
+        return self
+
+    @property
+    def identity(self) -> str:
+        return normalize_url(self.source)
+
+
 class NetworkConfig(_StrictModel):
     """A named downselect of the mirror — what one site gets.
 
@@ -1022,6 +1052,7 @@ class NetworkConfig(_StrictModel):
     # architectures it may run on, and the Python it runs on.
     runtime_arches: list[Literal["x86_64", "aarch64"]] = ["x86_64"]
     runtime_python: str = DEFAULT_RUNTIME_PYTHON
+    layers: list[NetworkLayer] = []   # custom debs added to upstream repositories
 
     @field_validator("runtime_python")
     @classmethod
@@ -1059,6 +1090,20 @@ class NetworkConfig(_StrictModel):
         if isinstance(data, dict) and _LEGACY_NETWORK_KEYS.intersection(data):
             data = {k: v for k, v in data.items() if k not in _LEGACY_NETWORK_KEYS}
         return data
+
+    @model_validator(mode="after")
+    def _one_layer_per_repository(self):
+        seen = set()
+        for layer in self.layers:
+            if layer.identity in seen:
+                raise ValueError(f"network {self.name}: one layer per repository — "
+                                 f"{layer.source} has two")
+            seen.add(layer.identity)
+        return self
+
+    def layer_for(self, source: str) -> "NetworkLayer | None":
+        ident = normalize_url(source)
+        return next((la for la in self.layers if la.identity == ident), None)
 
     @model_validator(mode="after")
     def _name_is_a_safe_path_segment(self):
@@ -1410,6 +1455,13 @@ def _select_to_dict(sel: NetworkSelect) -> dict:
     return {"source": sel.source, **{k: sel.dims[k] for k in keys}}
 
 
+def _layer_to_dict(layer: NetworkLayer) -> dict:
+    defaults = NetworkLayer(source=layer.source)
+    return {"source": layer.source, **{k: getattr(layer, k) for k in
+                                       ("signing", "key", "drop_valid_until", "contents")
+                                       if getattr(layer, k) != getattr(defaults, k)}}
+
+
 def source_to_dict(s) -> dict:
     """TOML form of one source — the single serializer, shared by `save()` and
     every `--dry-run` preview so a preview always matches what gets written."""
@@ -1482,7 +1534,7 @@ def rename_network_state(mirror_dir: Path, old: str, new: str) -> list[str]:
             problem = f"could not move the pool's records of '{old}': {e}"
         if problem:
             problems.append(problem)
-    for kind in ("certs", "bundles"):
+    for kind in ("certs", "bundles", "layers"):
         src, dst = mirror_dir / kind / old, mirror_dir / kind / new
         if not disk_io.ops.exists(src):
             continue
@@ -1525,6 +1577,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"far_side": "mmw"} if n.far_side == "mmw" else {}),
             **({"runtime_arches": n.runtime_arches} if n.runtime_arches != ["x86_64"] else {}),
             **({"runtime_python": n.runtime_python} if n.runtime_python != DEFAULT_RUNTIME_PYTHON else {}),
+            **({"layers": [_layer_to_dict(la) for la in n.layers]} if n.layers else {}),
         }
         for n in cfg.networks
     ]

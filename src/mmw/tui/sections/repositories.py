@@ -97,7 +97,9 @@ class RepositoriesPage(Page):
     SCROLLS = False
     HELP = ("Edit is the only way to [i]narrow[/i] a repository — adding can only widen it.\n"
             "s syncs the ticked repositories, or all of them when none are ticked.\n"
-            "r retries missing VS Code files using saved metadata, without marketplace discovery.\n"
+            "r retries missing VS Code and PyPI files using saved metadata, without a full sync.\n"
+            "k adds your own .debs — to a folder repository, or to an upstream mirror per network;\n"
+            "f shows a folder repository's sources file for clients.\n"
             "Prune drops packages no index references; wipe deletes every downloaded byte.")
     BINDINGS = [
         Binding("space", "tick", "Tick"),
@@ -110,7 +112,8 @@ class RepositoriesPage(Page):
         Binding("ctrl+w", "wipe", "Wipe pool", show=False),
         Binding("s", "sync", "Sync"),
         Binding("r", "retry_failed", "Retry missing", show=False),
-        Binding("f", "sources_file", "Sources file"),
+        Binding("f", "sources_file", "Sources file", show=False),
+        Binding("k", "add_packages", "Add packages", show=False),
     ]
 
     def __init__(self):
@@ -358,6 +361,10 @@ class RepositoriesPage(Page):
             return
         await self._after_write()
         self.notify(f"Updated {edited.name}.")
+
+    def action_add_packages(self) -> None:
+        from mmw.tui.packages import AddPackagesPage
+        self.app.push_screen(AddPackagesPage())
 
     def action_sources_file(self) -> None:
         src = self._highlighted_source()

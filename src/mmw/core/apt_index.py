@@ -162,3 +162,116 @@ def release_text(fields: dict[str, str], files: dict[str, bytes]) -> bytes:
 
 def rfc2822(ts: float) -> str:
     return formatdate(ts, usegmt=True).replace("GMT", "UTC")
+
+
+# ── reading and rewriting upstream indexes (per-network layers) ───────────────
+
+def parse_packages(text: str) -> list[dict[str, str]]:
+    """A `Packages` file's stanzas, in order, fields in order."""
+    return [_parse_stanza(block) for block in text.split("\n\n") if block.strip()]
+
+
+def release_body(data: bytes) -> bytes:
+    """The Release text from `Release` or a clearsigned `InRelease`."""
+    if not data.startswith(b"-----BEGIN PGP SIGNED MESSAGE-----"):
+        return data
+    head, _, rest = data.partition(b"\n\n")
+    body = rest.split(b"\n-----BEGIN PGP SIGNATURE-----", 1)[0]
+    lines = [ln[2:] if ln.startswith(b"- ") else ln for ln in body.split(b"\n")]
+    return b"\n".join(lines) + b"\n"
+
+
+_HASHES = {"MD5Sum": hashlib.md5, "SHA1": hashlib.sha1, "SHA256": hashlib.sha256,
+           "SHA512": hashlib.sha512}
+
+
+def rewrite_release(release: bytes, changed: dict[str, bytes], *,
+                    drop_valid_until: bool = False) -> bytes:
+    """`release` with every hash section's entry for each `changed` path
+    replaced (new paths appended, sorted); every other line exactly as
+    upstream wrote it. Date and Valid-Until are kept unless asked."""
+    out: list[str] = []
+    section = None
+    pending: set[str] = set()
+
+    def flush():
+        if section in _HASHES:
+            algo = _HASHES[section]
+            for path in sorted(pending):
+                body = changed[path]
+                out.append(f" {algo(body).hexdigest()} {len(body):>16} {path}")
+
+    for line in release.decode("utf-8", errors="replace").splitlines():
+        if line.startswith(" ") and section is not None:
+            parts = line.split()
+            if section in _HASHES and len(parts) == 3 and parts[2] in changed:
+                pending.discard(parts[2])
+                body = changed[parts[2]]
+                out.append(f" {_HASHES[section](body).hexdigest()} {len(body):>16} {parts[2]}")
+            else:
+                out.append(line)
+            continue
+        flush()
+        key = line.split(":", 1)[0]
+        section = key if line.endswith(":") else None
+        pending = set(changed)
+        if drop_valid_until and key == "Valid-Until":
+            continue
+        out.append(line)
+    flush()
+    return ("\n".join(out) + "\n").encode()
+
+
+def _order(c: str) -> int:
+    if c == "~":
+        return -1
+    if c.isdigit():
+        return 0
+    if c.isalpha():
+        return ord(c)
+    return ord(c) + 256
+
+
+def _cmp_part(a: str, b: str) -> int:
+    """dpkg's verrevcmp: alternating non-digit and digit runs."""
+    i = j = 0
+    while i < len(a) or j < len(b):
+        first_diff = 0
+        while (i < len(a) and not a[i].isdigit()) or (j < len(b) and not b[j].isdigit()):
+            ac = _order(a[i]) if i < len(a) else 0
+            bc = _order(b[j]) if j < len(b) else 0
+            if ac != bc:
+                return ac - bc
+            i += 1
+            j += 1
+        while i < len(a) and a[i] == "0":
+            i += 1
+        while j < len(b) and b[j] == "0":
+            j += 1
+        while i < len(a) and a[i].isdigit() and j < len(b) and b[j].isdigit():
+            if not first_diff:
+                first_diff = ord(a[i]) - ord(b[j])
+            i += 1
+            j += 1
+        if i < len(a) and a[i].isdigit():
+            return 1
+        if j < len(b) and b[j].isdigit():
+            return -1
+        if first_diff:
+            return first_diff
+    return 0
+
+
+def _split_version(v: str) -> tuple[int, str, str]:
+    epoch, _, rest = v.rpartition(":") if ":" in v else ("0", "", v)
+    upstream, _, revision = rest.rpartition("-") if "-" in rest else (rest, "", "")
+    return int(epoch or 0), upstream, revision
+
+
+def version_cmp(a: str, b: str) -> int:
+    """dpkg's version ordering: < 0, 0 or > 0."""
+    ea, ua, ra = _split_version(a)
+    eb, ub, rb = _split_version(b)
+    if ea != eb:
+        return ea - eb
+    return _cmp_part(ua, ub) or _cmp_part(ra, rb)

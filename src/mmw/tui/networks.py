@@ -88,6 +88,13 @@ def clear_ledger(mirror_dir: Path, name: str) -> str | None:
                 pool.forget_network(name)
         except Exception as e:  # noqa: BLE001 — reported, never fatal to the removal
             problems.append(f"Could not remove the snapshots of '{name}': {e}")
+    from mmw.core.layers import LAYERS_DIR
+    for layers in (Path(mirror_dir) / LAYERS_DIR / name, Path(mirror_dir) / "local" / LAYERS_DIR / name):
+        if disk_io.ops.exists(layers):
+            try:
+                disk_io.ops.rmtree(layers)       # its custom debs went with the network
+            except OSError as e:
+                problems.append(f"Could not remove {layers}: {e}")
     ledger = ledger_dir(mirror_dir, name)
     if disk_io.ops.exists(ledger):
         try:

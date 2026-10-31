@@ -16,7 +16,7 @@ from mmw.tui.sections.network_detail import NetworkDetail
 from mmw.tui.ui.base import ThemedApp
 
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
-from waiting import until
+from waiting import shows, until
 
 
 def _host(check):
@@ -73,9 +73,10 @@ def test_the_mirror_list_does_not_wait_for_the_sizes(two_mirrors, monkeypatch): 
         d.show(net, cfg)
         await _until(pilot, lambda: d._selected is not None)
         assert d._stats is None
-        await _until(pilot, lambda: d.query("#mirror-list"))
-        line = str(d.query_one(".stats-line").render())
-        assert "Reading published indexes" in line, line
+        # The line itself, not the list beside it: it can mount a moment later.
+        await shows(pilot, lambda: "".join(str(w.render()) for w in d.query(".stats-line")),
+                    "Reading published indexes")
+        assert d.query("#mirror-list")
         gate.set()
         await _until(pilot, lambda: d._stats is not None)
     _host(check)

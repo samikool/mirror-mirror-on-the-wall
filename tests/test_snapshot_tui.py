@@ -219,8 +219,9 @@ def test_deleting_a_transferred_snapshot_keeps_it_as_history_only(two_mirrors): 
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
                     and len(_rows(app)) == 1)
         await pilot.press("d")
-        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
-        assert "history only" in str(app.screen.query_one("#confirm-message").render())
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog"
+                    and app.screen.query("#confirm"))                # pushed AND built
+        await shows(pilot, lambda: app.screen.query_one("#confirm-message").render(), "history only")
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
                     and _rows(app) and "history only" in _rows(app)[0][5])
@@ -242,8 +243,9 @@ def test_force_delete_forgets_and_says_the_next_transfer_is_full(two_mirrors):  
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
                     and len(_rows(app)) == 1)
         await pilot.press("D")
-        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
-        assert "sends everything" in str(app.screen.query_one("#confirm-message").render())
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog"
+                    and app.screen.query("#confirm"))                # pushed AND built
+        await shows(pilot, lambda: app.screen.query_one("#confirm-message").render(), "sends everything")
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
                     and not _rows(app))

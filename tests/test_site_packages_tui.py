@@ -55,7 +55,8 @@ def test_adding_a_clashing_deb_asks(site):  # noqa: F811
             page = app.screen
             await until(pilot, lambda: page.query("#spkg-debs"))
             page.start_flow(lambda: page.add_debs([clash], "jammy", "main"))
-            await until(pilot, lambda: type(app.screen).__name__ == "ClashDialog")
+            await until(pilot, lambda: type(app.screen).__name__ == "ClashDialog"
+                        and app.screen.query("#btn-clash-drop"))      # pushed AND built
             app.screen.query_one("#btn-clash-drop").press()
             await until(pilot, lambda: len(page.query_one("#spkg-debs", ListView).children) == 1)
     asyncio.run(scenario())

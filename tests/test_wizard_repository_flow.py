@@ -132,7 +132,9 @@ async def _paste(pilot, text) -> StepCustom:
 async def _pick(pilot, step, dim, values):
     """Open a dimension's modal, tick exactly `values`, confirm."""
     step.query_one(f"#btn-{dim}", Button).press()
-    await _settle(pilot)
+    # The modal itself, not "no thread work": pushing it is not thread work,
+    # so settle could return with the step still on screen.
+    await until(pilot, lambda: pilot.app.screen.query("#pick-list"))
     modal = pilot.app.screen
     lst = modal.query_one("#pick-list", SelectionList)
     lst.deselect_all()
@@ -140,6 +142,7 @@ async def _pick(pilot, step, dim, values):
         lst.select(v)
     await pilot.pause()
     modal.query_one("#btn-done", Button).press()
+    await until(pilot, lambda: pilot.app.screen is not modal)
     await _settle(pilot)
 
 

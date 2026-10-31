@@ -1,5 +1,6 @@
 """Offline nginx image and Compose setup for each published network."""
 import json
+import os
 import re
 from pathlib import Path
 
@@ -8,7 +9,9 @@ from mmw.core.container_image import ImageResult, container_image
 from mmw.core.pool import KIND_PKG
 from mmw.core.publisher.results import MirrorPublishResult
 
-DOCKER = "docker"
+# MMW_DOCKER: the docker command (tests set one that does not exist, so a
+# CLI run in a subprocess gets no Docker either).
+DOCKER = os.environ.get("MMW_DOCKER") or "docker"
 IMAGE = "nginx:latest"
 PLATFORM = "linux/amd64"
 TAR_NAME = "nginx-latest-linux-amd64.tar"

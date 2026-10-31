@@ -83,7 +83,13 @@ COOLDOWNS = HostCooldowns()
 class RetryTransport(httpx.BaseTransport):
     def __init__(self, inner: httpx.BaseTransport, *, cooldowns=None):
         self.inner = inner
-        self.cooldowns = cooldowns if cooldowns is not None else COOLDOWNS
+        self._cooldowns = cooldowns
+
+    @property
+    def cooldowns(self) -> HostCooldowns:
+        """The process-wide table unless one was given — looked up per
+        request, so a long-lived client follows a replaced table."""
+        return self._cooldowns if self._cooldowns is not None else COOLDOWNS
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         host = request.url.host

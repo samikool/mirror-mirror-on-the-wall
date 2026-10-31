@@ -7,7 +7,7 @@ from mmw.core import config
 from mmw.tui.provider_ui import add_entries
 from pickers import choose_add_entry
 from test_add_source import _Harness
-from waiting import until
+from waiting import shows, until
 
 IDENT = config.normalize_url(config.PYPI_URL)
 
@@ -158,10 +158,10 @@ def _check(src, body):
 def test_check_lists_each_target(fake_uv):
     async def body(app, pilot):
         app.screen.query_one("#btn-pypi-check").press()
-        await until(pilot, lambda: "✗" in _status(app))
-        assert "3.12-linux-glibc-amd64: ✓ 14 packages" in _status(app)
-        assert ("3.12-windows-amd64: ✗ Because you require a==1 and a>=2, we can conclude that your "
-                "requirements are unsatisfiable.") in _status(app)
+        await shows(pilot, lambda: _status(app),
+                    "3.12-linux-glibc-amd64: ✓ 14 packages",
+                    "3.12-windows-amd64: ✗ Because you require a==1 and a>=2, we can conclude that your "
+                    "requirements are unsatisfiable.")
         assert "No solution found" not in _status(app)
     _check(_src(platforms=["linux-glibc", "windows"], requirements=["a"]), body)
 
@@ -176,8 +176,7 @@ def test_check_with_no_requirements_says_so(fake_uv):
 def test_check_reports_an_unreadable_file(fake_uv, tmp_path):
     async def body(app, pilot):
         app.screen.query_one("#btn-pypi-check").press()
-        await until(pilot, lambda: "Requirements not read" in _status(app))
-        assert "nope.txt" in _status(app)
+        await shows(pilot, lambda: _status(app), "Requirements not read", "nope.txt")
     _check(_src(requirements_file=str(tmp_path / "nope.txt")), body)
 
 
@@ -267,9 +266,10 @@ def test_pypi_edit_saves_in_page_through_sources(tmp_path, monkeypatch):
 def test_check_says_when_a_target_needs_source_builds(fake_uv):
     async def body(app, pilot):
         app.screen.query_one("#btn-pypi-check").press()
-        await until(pilot, lambda: "macos" in _status(app))
-        assert "3.12-macos-amd64: ✓ 1 packages — needs source builds" in _status(app)
-        assert "linux-glibc-amd64: ✓ 14 packages\n" in _status(app) + "\n"
+        text = await shows(pilot, lambda: _status(app) + "\n",
+                           "3.12-macos-amd64: ✓ 1 packages — needs source builds",
+                           "linux-glibc-amd64: ✓ 14 packages\n")
+        assert "Checking" not in text
     _check(_src(platforms=["linux-glibc", "macos"], requirements=["a"]), body)
 
 

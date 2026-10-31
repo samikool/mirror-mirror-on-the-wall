@@ -10,11 +10,33 @@ import time
 from mmw.core.profiler import SamplingProfiler, _cpu_deltas
 
 
-def _spin(stop: threading.Event) -> None:
+def _spin(stop: threading.Event, used: list | None = None) -> None:
+    """Burn CPU until stopped; `used[0]` is this thread's CPU time so far."""
     x = 0
     while not stop.is_set():
         for i in range(20_000):
             x += i * i
+        if used is not None:
+            used[0] = time.thread_time()
+
+
+def _wait(cond, timeout: float = 30.0) -> None:
+    """Until `cond()` — work done, not wall time: a fixed sleep is a guess
+    about how much CPU a thread gets, and a loaded parallel run starves it."""
+    deadline = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < deadline, "condition never became true"
+        time.sleep(0.01)
+
+
+def _hot(prof, stop, name="HOT", cpu: float = 0.3, samples: int = 30):
+    """Start a spinning thread and return once it has burned `cpu` seconds
+    and the profiler has taken `samples` samples."""
+    used = [0.0]
+    t = threading.Thread(target=_spin, args=(stop, used), name=name, daemon=True)
+    t.start()
+    _wait(lambda: used[0] >= cpu and prof._samples >= samples)
+    return t
 
 
 def _block_forever() -> None:
@@ -30,9 +52,8 @@ def test_cpu_is_credited_to_the_busy_thread_not_the_blocked_one():
     stop = threading.Event()
     prof = SamplingProfiler(interval=0.005)
     prof.start()
-    threading.Thread(target=_spin, args=(stop,), name="HOT", daemon=True).start()
     threading.Thread(target=_block_forever, name="BLOCKED", daemon=True).start()
-    time.sleep(1.5)
+    _hot(prof, stop)
     stop.set()
     prof.stop()
 
@@ -49,8 +70,7 @@ def test_the_report_names_the_function_that_was_running():
     stop = threading.Event()
     prof = SamplingProfiler(interval=0.005)
     prof.start()
-    threading.Thread(target=_spin, args=(stop,), name="HOT", daemon=True).start()
-    time.sleep(1.0)
+    _hot(prof, stop)
     stop.set()
     prof.stop()
 
@@ -64,12 +84,11 @@ def test_a_thread_that_exits_early_is_still_accounted_for():
     stop = threading.Event()
     prof = SamplingProfiler(interval=0.005)
     prof.start()
-    t = threading.Thread(target=_spin, args=(stop,), name="SHORTLIVED", daemon=True)
-    t.start()
-    time.sleep(1.5)
+    t = _hot(prof, stop, name="SHORTLIVED")
     stop.set()
-    t.join(timeout=5)
-    time.sleep(0.3)          # thread is gone from /proc by now
+    t.join(timeout=30)
+    n = prof._samples
+    _wait(lambda: prof._samples >= n + 20)   # sampled again after it left /proc
     prof.stop()
 
     assert "SHORTLIVED" in prof.report(), prof.report()
@@ -122,10 +141,8 @@ def test_interim_snapshots_are_written_during_a_long_run(tmp_path):
     stop = threading.Event()
     prof = SamplingProfiler(interval=0.005, snapshot=out, snapshot_every=0.3)
     prof.start()
-    threading.Thread(target=_spin, args=(stop,), name="HOT", daemon=True).start()
-    time.sleep(1.0)
-    assert out.exists(), "no interim report while still running"
-    assert "HOT" in out.read_text()
+    _hot(prof, stop)
+    _wait(lambda: out.exists() and "HOT" in out.read_text())   # an interim report while still running
     stop.set()
     prof.stop()
 

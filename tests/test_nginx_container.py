@@ -135,7 +135,11 @@ def test_tls_uses_the_portable_tree_without_external_certificate_mounts():
 @pytest.mark.parametrize("with_gallery", [False, True])
 def test_compose_parses_with_the_docker_compose_cli(tmp_path, with_gallery):
     import shutil
-    if shutil.which("docker") is None:
+    # A `docker` that cannot run Compose — none at all, no compose plugin, or
+    # WSL's stub for Docker Desktop without the distro integration (on PATH,
+    # but every command fails) — is "unavailable", not a failure.
+    if shutil.which("docker") is None or subprocess.run(
+            ["docker", "compose", "version"], capture_output=True).returncode != 0:
         pytest.skip("Docker Compose CLI unavailable")
     compose = tmp_path / "compose.yaml"
     compose.write_bytes(nginx.deployment_files("oak", with_gallery=with_gallery)["nginx/compose.yaml"])

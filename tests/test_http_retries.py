@@ -25,6 +25,9 @@ def clock(monkeypatch):
     monkeypatch.setattr(http.time, "sleep", clock.sleep)
     monkeypatch.setattr(http.random, "uniform", lambda a, b: 1.0)
     monkeypatch.setattr(http, "COOLDOWNS", http.HostCooldowns())
+    # The policy under test, not conftest's zeroed waits (the clock is fake).
+    monkeypatch.setattr(http, "BACKOFF", 1.0)
+    monkeypatch.setattr(http, "RATE_LIMIT_WAIT", 60.0)
     return clock
 
 

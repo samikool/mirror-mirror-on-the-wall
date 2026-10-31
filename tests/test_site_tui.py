@@ -256,16 +256,24 @@ def test_apply_flow_stop_before_switch(env, tmp_path, monkeypatch):  # noqa: F81
     before = _tree(root)
     real = apply_mod.members_of
 
+    import threading
+    gate = threading.Event()
+
     def slow(*a, **kw):                 # the stop lands while the bundle is still arriving
-        import time
-        time.sleep(1.0)
+        gate.wait(30)
         return real(*a, **kw)
-    monkeypatch.setattr(apply_mod, "members_of", slow)
 
     async def check(app, pilot):
-        await _review_and_go(app, pilot, bundle)
-        app.screen.query_one("#btn-run-stop").press()
-        await until(pilot, lambda: app.screen.finished)
+        await _choose(app, pilot, bundle)
+        monkeypatch.setattr(apply_mod, "members_of", slow)   # the apply's read, not the review's
+        app.screen.query_one("#btn-review-go").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "ApplyRunPage"
+                    and app.screen.query("#btn-run-stop"))
+        page = app.screen
+        page.query_one("#btn-run-stop").press()
+        await until(pilot, lambda: page._stop.is_set())
+        gate.set()
+        await until(pilot, lambda: page.finished)
         assert "stopped" in str(app.screen.query_one("#run-done").render())
     _run(home, check)
     assert _tree(root) == before

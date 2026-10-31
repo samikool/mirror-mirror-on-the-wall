@@ -5,6 +5,11 @@ that are true of every test — which is why the download backoff below was able
 to add three real seconds to every failure-path test the moment it was
 introduced.
 """
+import os
+import socket
+import tempfile
+import threading
+
 import pytest
 from pathlib import Path
 
@@ -42,6 +47,50 @@ def _no_download_backoff(monkeypatch):
     """
     monkeypatch.setattr(downloader, "_PKG_BACKOFF", 0.0, raising=True)
     monkeypatch.setattr(downloader, "_STOP_POLL", 0.0, raising=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_http_backoff(monkeypatch):
+    """The HTTP layer's own retries, neutralised — and its state per test.
+
+    `mmw.core.http` replays a failed GET four times, 1s → 2s → 4s apart, and
+    defers the host in a process-wide cooldown table. In tests that was ~8s
+    per request to a fake host (`test_failed_download_still_wanted` took 27s),
+    and because the table and the downloader's per-thread clients outlive a
+    test, one test's cooldown stalled whichever test reached that host next on
+    the same xdist worker — random multi-second stalls, by test order.
+
+    `test_http_retries.py` sets its own values to test the policy itself.
+    """
+    from mmw.core import http
+    monkeypatch.setattr(http, "BACKOFF", 0.0, raising=True)
+    monkeypatch.setattr(http, "RATE_LIMIT_WAIT", 0.0, raising=True)
+    monkeypatch.setattr(http, "COOLDOWNS", http.HostCooldowns(), raising=True)
+    monkeypatch.setattr(downloader, "_thread_local", threading.local(), raising=True)
+
+
+_LOOPBACK = ("localhost", "127.", "::1", "0.0.0.0")
+
+
+@pytest.fixture(autouse=True)
+def _no_internet(request, monkeypatch):
+    """Ordinary tests never resolve a real host name. A test that "fails to
+    reach" `http://x/` or `example.com` gets an instant, deterministic
+    resolution error instead of whatever this machine's DNS does (a timeout
+    of seconds, or a real answer). Opt-in network tests (`network` marker or
+    an `MMW_*_E2E=1` run) keep real resolution."""
+    if request.node.get_closest_marker("network") or any(
+            k.startswith("MMW_") and k.endswith("_E2E") and v == "1"
+            for k, v in os.environ.items()):
+        return
+    real = socket.getaddrinfo
+
+    def guarded(host, *a, **kw):
+        name = host.decode() if isinstance(host, bytes) else (host or "")
+        if name and not name.startswith(_LOOPBACK) and not name.endswith(".localhost"):
+            raise socket.gaierror(socket.EAI_NONAME, f"tests resolve no real hosts ({name})")
+        return real(host, *a, **kw)
+    monkeypatch.setattr(socket, "getaddrinfo", guarded)
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +144,10 @@ def _no_real_docker(monkeypatch):
     from mmw.core.publisher import nginx_container
     monkeypatch.setattr(image, "DOCKER", "mmw-test-has-no-docker", raising=True)
     monkeypatch.setattr(nginx_container, "DOCKER", "mmw-test-has-no-docker", raising=True)
+    # …and for mmw run as a subprocess (`mmw bundle --out -`), which these
+    # patches never reach: it used the host's real Docker and put a 167 MB
+    # nginx image in the test's pool twice.
+    monkeypatch.setenv("MMW_DOCKER", "mmw-test-has-no-docker")
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +158,16 @@ def _no_runtime_downloads(monkeypatch):
     from mmw.core import runtime
     from test_runtime import FakeFetcher
     monkeypatch.setattr(runtime, "default_fetcher", FakeFetcher)
+
+
+@pytest.fixture(autouse=True)
+def _temp_files_stay_in_the_test(tmp_path_factory, monkeypatch):
+    """`tempfile` (mkdtemp, TemporaryDirectory, …) writes under this test's
+    pytest temp tree, which pytest prunes — never loose in /tmp, where a
+    `mkdtemp()` nobody removes (the layout sweep made 16 per run) piled up
+    run after run. In-process only: subprocesses keep the real TMPDIR, since
+    a deep pytest path can overflow the Unix socket path limit (gpg, ssh)."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path_factory.mktemp("tmp")))
 
 
 @pytest.fixture(autouse=True)

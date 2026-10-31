@@ -139,6 +139,7 @@ def test_stock_client_live_publish_and_applied_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(downloader, '_thread_client', fake.client)
     monkeypatch.setattr(image, 'DOCKER', 'docker')  # Explicit opt-in; never enable Docker for ordinary tests.
     monkeypatch.setattr(nginx_container, 'DOCKER', 'docker')
+    monkeypatch.delenv('MMW_DOCKER', raising=False)
     original_run = container_image._run
     def cached_images_only(docker, *args, **kwargs):
         if args[0] == 'pull':

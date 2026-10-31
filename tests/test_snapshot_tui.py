@@ -13,7 +13,7 @@ from mmw.tui.app import MmwApp
 
 from pickers import confirm_picker
 from test_dry_run_totals import SHARED, _index, two_mirrors  # noqa: F401 — the shared pool fixture
-from waiting import until
+from waiting import shows, until
 
 
 def _move_on(mirror_dir):
@@ -122,10 +122,8 @@ def test_b_bundles_between_two_snapshots_with_an_estimate(two_mirrors, tmp_path)
         await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage" and app.screen.query("#pick-from"))
         app.screen.query_one("#pick-from", Select).value = s1.stamp
         app.screen.query_one("#pick-to", Select).value = s2.stamp
-        await until(pilot, lambda: "Sends about" in str(
-            app.screen.query_one("#pick-estimate").render()))
         # a2.deb, the new index and its by-hash link
-        assert "3 files" in str(app.screen.query_one("#pick-estimate").render())
+        await shows(pilot, lambda: app.screen.query_one("#pick-estimate").render(), "Sends about", "3 files")
         await confirm_picker(app, pilot, "BundlePickPage")
         await until(pilot, lambda: _finished(app))
         assert app.active_transfer.outcome == "ok", app.notes

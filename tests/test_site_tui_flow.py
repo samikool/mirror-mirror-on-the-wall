@@ -1,5 +1,6 @@
 """The far-side TUI flow: first launch, placing hostnames, applying, done."""
 import asyncio
+import threading
 
 from mmw.site import recents
 from mmw.site.apply import apply_to_set, plan_set_apply
@@ -10,7 +11,7 @@ from mmw.tui.site.app import SiteApp
 from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fixture
 from test_site_apply import _bundle
 from test_site_set_apply import HOST_A, HOST_B, hosts  # noqa: F401
-from waiting import until
+from waiting import shows, until
 
 quiet = lambda *a: None  # noqa: E731
 
@@ -183,7 +184,6 @@ def test_rows_move_one_repository_at_a_time(tmp_path):
 
 
 def test_stop_before_switch_changes_nothing(hosts, tmp_path, monkeypatch):  # noqa: F811
-    import time
 
     from test_site_apply import _tree
     from test_bundle_mmw import _change_b
@@ -196,8 +196,10 @@ def test_stop_before_switch_changes_nothing(hosts, tmp_path, monkeypatch):  # no
     before = _tree(r1)
     real = apply_mod.members_of
 
+    gate = threading.Event()             # the bundle is still arriving until the test says
+
     def slow(*a, **kw):
-        time.sleep(1.0)
+        gate.wait(30)
         return real(*a, **kw)
     monkeypatch.setattr(apply_mod, "members_of", slow)
 
@@ -208,6 +210,8 @@ def test_stop_before_switch_changes_nothing(hosts, tmp_path, monkeypatch):  # no
         app.push_screen(page)
         await until(pilot, lambda: page.query("#btn-run-stop"))
         page.query_one("#btn-run-stop").press()
+        await until(pilot, lambda: page._stop.is_set())
+        gate.set()
         await until(pilot, lambda: page.finished, timeout=20)
         assert "stopped" in str(page.query_one("#run-done").render())
         assert "stored" in str(page.query_one("#run-done").render())
@@ -481,8 +485,7 @@ def test_move_explains_the_whole_host_and_shows_progress(two_mirrors, tmp_path):
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: _name(app) == "MoveRunPage" and app.screen.query("#run-done"))
         page = app.screen
-        await until(pilot, lambda: "moved a and b" in str(page.query_one("#run-done").render()))
-        assert "recreate nginx" in str(page.query_one("#run-done").render())
+        await shows(pilot, lambda: page.query_one("#run-done").render(), "moved a and b", "recreate nginx")
         page.query_one("#btn-run-close").press()
         await until(pilot, lambda: _name(app) == "SiteHomePage")
         await until(pilot, lambda: {r for r in home._root_of.values()} == {"r2"})

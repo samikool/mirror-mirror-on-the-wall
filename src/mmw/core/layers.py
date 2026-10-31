@@ -165,6 +165,12 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
             if not fingerprint:
                 report.errors.append(f"{network.name}: {source.name}: no signing key named {layer.key!r}")
                 continue
+            # Clients fetch it from /mmw-keys/{label}/ beside upstream's own key.
+            from mmw.core.keys import write_key
+            try:
+                write_key(source.label, keyring.public_armor(layer.key), mirror_dir, layer.key)
+            finally:
+                keyring.stop_agent()
         digest = hashlib.sha256(json.dumps({
             "upstream": sorted((rel, r[4]) for rel, r in rows.items()
                                if rel.startswith("dists/") and rel.rsplit("/", 1)[-1] in _RELEASE_NAMES),
@@ -337,3 +343,262 @@ def apply_build(network, cfg, mirror_dir: Path, pool, result) -> LayerReport:
         r.errors.extend(report.errors)
         result.mirrors.append(r)
     return report
+
+
+# ── adding, removing and listing packages (CLI and TUI share these) ──────────
+
+class PackagesError(ValueError):
+    """A refused packages operation; `usage` = the caller asked wrongly (exit 2)."""
+
+    def __init__(self, message: str, *, usage: bool = False):
+        super().__init__(message)
+        self.usage = usage
+
+
+def needs_signing(name: str) -> str:
+    return (f"Adding packages to {name} changes its index, so its upstream signature cannot stay. "
+            "Choose --resign KEY (clients then trust that mmw key for it instead) or --unsigned "
+            "(unsafe: clients need [trusted=yes] for it).")
+
+
+@dataclass
+class AddOutcome:
+    cfg: object
+    copied: list[Path] = field(default_factory=list)
+    skipped: list[Path] = field(default_factory=list)     # already there, same bytes
+    clashes: list[Clash] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+def collect_debs(paths) -> list[Path]:
+    debs: list[Path] = []
+    for p in map(Path, paths):
+        if disk_io.ops.is_dir(p):
+            debs += sorted(q for q in disk_io.ops.rglob(p, "*.deb") if disk_io.ops.is_file(q))
+        elif p.suffix == ".deb" and disk_io.ops.is_file(p):
+            debs.append(p)
+        else:
+            raise PackagesError(f"{p} is not a .deb file or a folder of them")
+    if not debs:
+        raise PackagesError("no .deb files found in " + ", ".join(map(str, paths)))
+    return debs
+
+
+def find_source(cfg, name: str):
+    source = next((s for s in cfg.sources if s.name == name), None)
+    if source is None:
+        raise PackagesError(f"no repository named {name!r}")
+    if source.provider not in ("apt", "apt-local"):
+        raise PackagesError(f"{name} is not an apt repository")
+    return source
+
+
+def find_network(cfg, name: str | None):
+    if not name:
+        raise PackagesError("an upstream repository takes packages per network — pass --network",
+                            usage=True)
+    net = next((n for n in cfg.networks if n.name == name), None)
+    if net is None:
+        raise PackagesError(f"no network named {name!r}")
+    return net
+
+
+def published_dims(network, cfg, mirror_dir: Path, source) -> dict[str, dict[str, set[str]]]:
+    """suite → component → arches of `source` that `network` publishes."""
+    from mmw.core.resolve import network_mirrors
+    out: dict[str, dict[str, set[str]]] = {}
+    for u in network_mirrors(network, cfg, mirror_dir):
+        if u.source == source.identity and u.dims.get("suite") and u.dims.get("component"):
+            out.setdefault(u.dims["suite"], {}).setdefault(u.dims["component"], set()).add(u.dims.get("arch", ""))
+    return out
+
+
+def _scanned(path: Path):
+    from mmw.core.apt_index import read_control
+    from mmw.providers.apt_local import ScannedDeb, _hashes
+    st = disk_io.ops.stat(path)
+    sha, md5 = _hashes(path)
+    return ScannedDeb(path, st.st_size, st.st_mtime, sha, md5, read_control(path))
+
+
+def _copy_in(debs: list[Path], dest: Path, outcome: AddOutcome) -> None:
+    disk_io.ops.mkdir(dest, parents=True, exist_ok=True)
+    for deb in debs:
+        target = dest / deb.name
+        if disk_io.ops.exists(target):
+            from mmw.providers.apt_local import _hashes
+            if _hashes(target)[0] == _hashes(deb)[0]:
+                outcome.skipped.append(deb)
+                continue
+            raise PackagesError(f"{target} already exists with different contents — remove it first")
+        disk_io.ops.copy_file(deb, target)
+        outcome.copied.append(target)
+
+
+def add_packages(cfg, mirror_dir: Path, paths, *, into: str, network: str | None = None,
+                 suite: str | None = None, component: str | None = None, signing: str | None = None,
+                 key: str | None = None, on_clash: str | None = None, ask=None,
+                 config_dir: Path | None = None) -> AddOutcome:
+    """Copy debs into a folder repository, or into a network's layer of an
+    upstream repository (creating its layer entry from `signing`/`key`).
+    `ask(clash) -> "keep" | "drop" | "cancel"` decides clashes when given;
+    else `on_clash`, else keep (with a note). Returns the new config."""
+    debs = collect_debs(paths)
+    source = find_source(cfg, into)
+    outcome = AddOutcome(cfg)
+    if source.provider == "apt-local":
+        if network or suite or component or signing:
+            raise PackagesError(f"{into} is a folder repository: no --network, --suite, --component "
+                                "or signing — its own settings decide", usage=True)
+        _copy_in(debs, source.folder_path(config_dir), outcome)
+        outcome.notes.append(f"sync {source.name} to publish them")
+        return outcome
+    net = find_network(cfg, network)
+    layer = net.layer_for(source.url)
+    if layer is None or layer.signing == "upstream":
+        if signing not in ("resign", "unsigned"):
+            raise PackagesError(needs_signing(source.name), usage=True)
+    if signing is not None:
+        from mmw.core.config import NetworkLayer
+        layer = NetworkLayer(**{**(layer.model_dump() if layer else {"source": source.url}),
+                                "signing": signing, "key": key if signing == "resign" else None})
+    if layer.signing == "resign":
+        from mmw.core.signing import Keyring
+        keyring = Keyring(mirror_dir)
+        try:
+            if layer.key not in {k.name for k in keyring.list()}:
+                raise PackagesError(f"no signing key named {layer.key!r} — make one with "
+                                    f"`mmw signing-key generate {layer.key}`")
+        finally:
+            keyring.stop_agent()
+    dims = published_dims(net, cfg, mirror_dir, source)
+    suite = suite or (sorted(dims)[0] if dims else None)
+    component = component or "main"
+    if suite is None or component not in dims.get(suite, {}):
+        raise PackagesError(f"{net.name} does not publish {source.name} {suite}/{component} — pick a "
+                            "suite and component it publishes")
+    folder = layer_dir(mirror_dir, net.name, source.name)
+    decisions = read_decisions(folder)
+    from mmw.core.pool import Pool
+    from mmw.core.publisher.links import _dedup_rows
+    from mmw.core.resolve import network_mirrors
+    names = [u.name for u in network_mirrors(net, cfg, mirror_dir) if u.source == source.identity]
+    with Pool(mirror_dir, read_only=True) as pool:
+        rows = {r[0]: r for r in _dedup_rows(pool.mirror_files(names))}
+    clashes = _clashes(source.name, rows, {suite: {component: dims[suite][component]}},
+                       {(suite, component): [_scanned(d) for d in debs]}, {})
+    for clash in clashes:
+        choice = ask(clash) if ask is not None else (on_clash or "keep")
+        if choice == "cancel":
+            raise PackagesError("cancelled — nothing was added")
+        decisions[clash.filename] = choice
+        what = ("the same version as upstream's, with different contents" if clash.kind == "same-version"
+                else f"older than upstream's {clash.upstream_version}")
+        outcome.notes.append(f"{clash.filename} ({clash.package} {clash.version}) is {what} — {choice}")
+    outcome.clashes = clashes
+    _copy_in(debs, folder / suite / component, outcome)
+    if clashes:
+        write_decisions(folder, decisions)
+    layers = [la for la in net.layers if la.identity != layer.identity] + [layer]
+    new_net = net.model_copy(update={"layers": layers})
+    outcome.cfg = cfg.model_copy(update={"networks": [new_net if n.name == net.name else n
+                                                      for n in cfg.networks]})
+    if layer.signing == "unsigned":
+        outcome.notes.append(f"{source.name} will be served unsigned on {net.name} — unsafe; clients "
+                             "need [trusted=yes] for it")
+    outcome.notes.append(f"publish (or bundle) {net.name} to serve them")
+    return outcome
+
+
+def remove_package(cfg, mirror_dir: Path, filename: str, *, into: str, network: str | None = None,
+                   config_dir: Path | None = None) -> list[Path]:
+    source = find_source(cfg, into)
+    if source.provider == "apt-local":
+        folder = source.folder_path(config_dir)
+    else:
+        folder = layer_dir(mirror_dir, find_network(cfg, network).name, source.name)
+    found = [p for p in disk_io.ops.rglob(folder, filename)] if disk_io.ops.is_dir(folder) else []
+    if not found:
+        raise PackagesError(f"{filename} is not in {into}")
+    for p in found:
+        disk_io.ops.unlink(p)
+    return found
+
+
+def list_packages(cfg, mirror_dir: Path, network: str | None = None,
+                  config_dir: Path | None = None) -> list[tuple[str, str, str]]:
+    """(where, location, file name) for every custom deb: folder repositories
+    (unless a network is named), then each network's layers."""
+    out = []
+    if network is None:
+        for s in cfg.sources:
+            if s.provider == "apt-local":
+                folder = s.folder_path(config_dir)
+                if disk_io.ops.is_dir(folder):
+                    out += [(s.name, "folder", p.name) for p in sorted(disk_io.ops.rglob(folder, "*.deb"))]
+    for net in cfg.networks:
+        if network is not None and net.name != network:
+            continue
+        for s in cfg.sources:
+            folder = layer_dir(mirror_dir, net.name, s.name)
+            if disk_io.ops.is_dir(folder):
+                out += [(f"{net.name}: {s.name}", f"{p.parent.parent.name}/{p.parent.name}", p.name)
+                        for p in sorted(disk_io.ops.rglob(folder, "*.deb"))]
+    return out
+
+
+def set_signing(cfg, network: str, into: str, *, signing: str | None = None, key: str | None = None,
+                contents: bool | None = None, drop_valid_until: bool | None = None):
+    from mmw.core.config import NetworkLayer
+    source = find_source(cfg, into)
+    if source.provider != "apt":
+        raise PackagesError(f"{into} is not an upstream mirror — a folder repository is always signed")
+    net = find_network(cfg, network)
+    layer = net.layer_for(source.url)
+    data = layer.model_dump() if layer else {"source": source.url}
+    if signing is not None:
+        data.update(signing=signing, key=key if signing == "resign" else None)
+    if contents is not None:
+        data["contents"] = contents
+    if drop_valid_until is not None:
+        data["drop_valid_until"] = drop_valid_until
+    new = NetworkLayer(**data)
+    layers = [la for la in net.layers if la.identity != new.identity] + [new]
+    new_net = net.model_copy(update={"layers": layers})
+    return cfg.model_copy(update={"networks": [new_net if n.name == net.name else n for n in cfg.networks]})
+
+
+def layer_sources_file(cfg, mirror_dir: Path, network: str, into: str, fmt: str) -> str:
+    """What a client of `network` puts in sources.list.d/ for a layered
+    upstream repository: one entry per published suite, signed-by the mmw
+    key (resign) or trusted=yes (unsigned, and said to be unsafe)."""
+    from urllib.parse import urlparse
+
+    from mmw.core.apt_sources import AptEntry, render_deb822, render_one_line
+    from mmw.providers.apt_local import SOURCES_FORMATS
+    if fmt not in SOURCES_FORMATS:
+        raise PackagesError(f"format must be one of {', '.join(SOURCES_FORMATS)}, not {fmt!r}", usage=True)
+    source = find_source(cfg, into)
+    net = find_network(cfg, network)
+    layer = net.layer_for(source.url)
+    if layer is None or layer.signing == "upstream":
+        raise PackagesError(f"{source.name} has no layer on {net.name}: its clients use upstream's "
+                            "own sources file and key")
+    dims = published_dims(net, cfg, mirror_dir, source)
+    parsed = urlparse(source.url)
+    keyring = f"/etc/apt/keyrings/{layer.key}.gpg"
+    head = [f"# {source.name} as {net.name} serves it — with custom packages."]
+    if layer.signing == "resign":
+        head += ["# Signed by mmw's key, not upstream's. Install it first:",
+                 "#   sudo install -d -m 0755 /etc/apt/keyrings",
+                 f"#   sudo curl -fsSL {parsed.scheme}://{parsed.netloc}/mmw-keys/{source.label}/"
+                 f"{layer.key}.gpg -o {keyring}"]
+    else:
+        head += ["# UNSIGNED — this is unsafe: apt cannot tell these files came from you."]
+    render = render_deb822 if fmt == "deb822" else render_one_line
+    body = []
+    for suite in sorted(dims):
+        entry = AptEntry(source.url.rstrip("/"), suite, sorted(dims[suite]), [])
+        body.append(render(entry, signed_by=keyring if layer.signing == "resign" else None,
+                           trusted=layer.signing == "unsigned"))
+    return "\n".join(head) + "\n" + ("\n" if fmt == "deb822" else "").join(body)

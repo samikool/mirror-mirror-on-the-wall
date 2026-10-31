@@ -228,6 +228,28 @@ CREATE TABLE IF NOT EXISTS published (
 
 -- A network whose far side may sit at a snapshot force-deleted here: the
 -- record of what it has is gone, so its next default transfer is full.
+-- What a network serves instead of the pure upstream rows of one base: its
+-- layer's debs and rebuilt indexes (`core/layers.py`). checksum '' = the
+-- path is not served (a signature an unsigned layer drops).
+CREATE TABLE IF NOT EXISTS layer_rows (
+    network   TEXT NOT NULL,
+    base      TEXT NOT NULL,
+    repo_path TEXT NOT NULL,
+    checksum  TEXT NOT NULL,
+    size      INTEGER NOT NULL,
+    kind      TEXT NOT NULL,
+    filename  TEXT NOT NULL,
+    PRIMARY KEY (network, base, repo_path)
+) WITHOUT ROWID;
+
+-- The inputs a base's layer rows were built from; equal means skip.
+CREATE TABLE IF NOT EXISTS layer_digests (
+    network TEXT NOT NULL,
+    base    TEXT NOT NULL,
+    digest  TEXT NOT NULL,
+    PRIMARY KEY (network, base)
+);
+
 CREATE TABLE IF NOT EXISTS full_next (
     network  TEXT PRIMARY KEY,
     stamp    TEXT NOT NULL                    -- the snapshot forgotten
@@ -1621,7 +1643,8 @@ class Pool:
             if clash:
                 return (f"snapshots or bundles of a network called '{new}' are already in "
                         f"the pool — '{old}''s were left under the old name")
-            for table in ("snapshots", "bundles", "published", "repo_versions", "full_next"):
+            for table in ("snapshots", "bundles", "published", "repo_versions", "full_next",
+                          "layer_rows", "layer_digests"):
                 self._conn.execute(f"UPDATE {table} SET network = ? WHERE network = ?",
                                    (new, old))
             self._conn.commit()
@@ -1644,8 +1667,65 @@ class Pool:
             self._conn.execute("DELETE FROM bundles WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM published WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM full_next WHERE network = ?", (network,))
+            self._conn.execute("DELETE FROM layer_rows WHERE network = ?", (network,))
+            self._conn.execute("DELETE FROM layer_digests WHERE network = ?", (network,))
             self._conn.commit()
         return len(ids)
+
+    # ── per-network layers ──────────────────────────────────────────────────
+
+    def replace_layer(self, network: str, base: str, rows, digest: str) -> None:
+        """`rows`: (repo_path, checksum, size, kind, filename); checksum '' =
+        not served. Replaces the base's rows and digest in one transaction."""
+        with self._lock:
+            self._conn.execute("DELETE FROM layer_rows WHERE network = ? AND base = ?", (network, base))
+            self._conn.executemany(
+                "INSERT INTO layer_rows VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(network, base, *row) for row in rows])
+            self._conn.execute("INSERT OR REPLACE INTO layer_digests VALUES (?, ?, ?)",
+                               (network, base, digest))
+            self._conn.commit()
+
+    def clear_layer(self, network: str, base: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM layer_rows WHERE network = ? AND base = ?", (network, base))
+            self._conn.execute("DELETE FROM layer_digests WHERE network = ? AND base = ?", (network, base))
+            self._conn.commit()
+
+    def layer_overlay(self, network: str, base: str) -> dict:
+        """repo_path → a `mirror_files`-shaped row, or None (not served)."""
+        try:
+            with self._read() as c:
+                rows = c.execute("SELECT repo_path, checksum, size, kind, filename FROM layer_rows "
+                                 "WHERE network = ? AND base = ?", (network, base)).fetchall()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return {}
+            raise
+        blob = self._blob_strs()
+        return {rel: ((rel, blob(cs, fn), size, kind, cs) if cs else None)
+                for rel, cs, size, kind, fn in rows}
+
+    def layer_bases(self, network: str) -> set[str]:
+        try:
+            with self._read() as c:
+                return {b for (b,) in c.execute(
+                    "SELECT base FROM layer_digests WHERE network = ?", (network,))}
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return set()
+            raise
+
+    def layer_digest(self, network: str, base: str) -> str | None:
+        try:
+            with self._read() as c:
+                row = c.execute("SELECT digest FROM layer_digests WHERE network = ? AND base = ?",
+                                (network, base)).fetchone()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return None
+            raise
+        return row[0] if row else None
 
     def snapshot_blob_rows(self, snapshot_id: int):
         """(path, checksum, pool_path, size) for every file of a snapshot, in

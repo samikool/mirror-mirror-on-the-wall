@@ -65,7 +65,9 @@ class SiteHomePage(Page):
     SCROLLS = False
     HELP = ("Every repository this site serves. Its history is on the right: every version kept\n"
             "here, the one being served marked ▶. Serving anything but the newest holds the\n"
-            "repository there — bundles then store its new versions without serving them.")
+            "repository there — bundles then store its new versions without serving them.\n"
+            "k: local .debs this site adds to the repository, and how it is then signed;\n"
+            "K: this site's signing keys (carried ones from the connected side included).")
     BINDINGS = [
         # Short, so the footer fits 80 columns; the buttons say the rest.
         Binding("enter", "serve", "Serve", show=False),
@@ -78,6 +80,8 @@ class SiteHomePage(Page):
         Binding("m", "move", "Move"),
         Binding("c", "certs", "Certs"),
         Binding("t", "tidy", "Tidy", show=False),
+        Binding("k", "packages", "Packages", show=False),
+        Binding("K", "signing_keys", "Signing keys", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
 
@@ -301,6 +305,9 @@ class SiteHomePage(Page):
                 details.update(root.details())
             except Exception:  # noqa: BLE001 — an older mmw over ssh has no `details`: the rest still shows
                 pass
+            layer_details = getattr(root, "layer_details", None)       # a local root's only
+            if layer_details is not None:
+                details.update(layer_details(repo))
         self.app.call_from_thread(self._history_loaded, repo, rows, details)
 
     def _detail_text(self, repo: str | None, rows, details: dict) -> str:
@@ -326,7 +333,10 @@ class SiteHomePage(Page):
             f"[b]{_esc(state.label)}[/]",
             f"[dim]root[/]       {_esc(details.get('root', ''))}  [dim]({_esc(where(details.get('location', '')))})[/]",
             f"[dim]hostname[/]   {_esc(hosts)}",
-            f"[dim]serving[/]    {_esc(serving)}",
+            f"[dim]serving[/]    {_esc(serving)}"
+            + (f"  [$mmw-ok]+ local packages ({_esc(details['local'])})[/]" if details.get("local") else ""),
+            *([f"[$mmw-warn]held by its local packages: {_esc(details['layer_hold'])}[/]"]
+              if details.get("layer_hold") else []),
             "[dim]newest[/]     " + (f"v{newest.number} · {_date(newest.stamp)}" if newest else "—")
             + ("  [$mmw-ok]current[/]" if not state.held else "") + held,
             f"[dim]kept[/]       {len(rows)} version{'s' if len(rows) != 1 else ''} · {fmt_size(total)}"
@@ -639,6 +649,31 @@ class SiteHomePage(Page):
 
     def _ask_passphrase(self) -> None:
         self.app.push_screen(PassphrasePage(), lambda pw: pw and self.action_certs(pw.encode()))
+
+    def _local_root(self, repo: str | None = None):
+        """A root on this machine (the repository's, or any): local packages
+        and keys need its files; an ssh root has none here."""
+        roots = [self.app.root_of(repo)] if repo is not None else list(self.app.mset.roots)
+        root = next((r for r in roots if hasattr(r, "packages_target")), None)
+        if root is None:
+            self.set_status("That is on a root reached over ssh — run mmw site there for this.", "warning")
+        return root
+
+    def action_packages(self) -> None:
+        repo = self.selected_repo()
+        root = self._local_root(repo) if repo is not None else None
+        if root is None:
+            return
+        from mmw.tui.site.packages import SitePackagesPage
+        home, store = root.packages_target()
+        self.app.push_screen(SitePackagesPage(home, store, repo), lambda _: self._load())
+
+    def action_signing_keys(self) -> None:
+        root = self._local_root()
+        if root is None:
+            return
+        from mmw.tui.signing_keys import SigningKeysPage
+        self.app.push_screen(SigningKeysPage(root.keyring_root(), root.key_users))
 
     def action_tidy(self) -> None:
         self.app.push_screen(TidyRunPage([r.info.name for r in self.app.mset.roots]), lambda _: self._load())

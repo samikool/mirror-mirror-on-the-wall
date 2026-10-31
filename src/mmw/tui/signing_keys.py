@@ -19,9 +19,12 @@ class SigningKeysPage(Page):
     HINT = ("Keys mmw signs your own repositories with. Generate one, or import an armoured "
             "private key. Export shows the public key clients install.")
 
-    def __init__(self):
+    def __init__(self, keyring_root: Path | None = None, in_use=None):
+        """The config's keyring (the pool directory's), or — on the far side —
+        a site's: `keyring_root` and `in_use(name) -> [what it signs]`."""
         super().__init__()
         self._key_rows = []
+        self._root, self._in_use = keyring_root, in_use
 
     def compose_body(self) -> ComposeResult:
         yield ListView(id="keys-list")
@@ -40,9 +43,11 @@ class SigningKeysPage(Page):
         self.run_worker(self._reload(), group="keys-load", exit_on_error=False)
 
     def _keyring(self) -> Keyring:
-        return Keyring(self.app.cfg.settings.mirror_dir)
+        return Keyring(self._root if self._root is not None else self.app.cfg.settings.mirror_dir)
 
     def _users(self, name: str) -> list[str]:
+        if self._in_use is not None:
+            return list(self._in_use(name))
         return [s.name for s in self.app.cfg.sources if getattr(s, "key", None) == name]
 
     async def _reload(self) -> None:

@@ -136,6 +136,17 @@ def test_status_line_kinds(tmp_path):
     _run(check, tmp_path)
 
 
+def test_a_status_for_a_page_being_taken_down_is_dropped(tmp_path):
+    """A worker that finishes while its page is going away (quit right after
+    opening it) says its status to a page with no status line any more —
+    that ended the app with WorkerFailed(NoMatches('#page-status'))."""
+    async def check(app, pilot):
+        page = app.screen
+        await page.query_one("#page-status").remove()
+        page.set_status("finished", "ok")
+    _run(check, tmp_path)
+
+
 def _app_with_notes(cfg, tmp_path, **kw):
     app = MmwApp(cfg, tmp_path, **kw)
     app.notes = []

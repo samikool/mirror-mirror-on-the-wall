@@ -93,7 +93,12 @@ class Page(LiveHitTest, Screen):
                           if isinstance(s, Page) and s.TITLE)
 
     def set_status(self, message: str, kind: str = "info") -> None:
-        status = self.query_one("#page-status", Static)
+        # A worker can finish while its page is being taken down (quitting,
+        # or leaving right after opening it): the status line is already
+        # gone, and there is no one to tell — saying so must not crash.
+        status = next(iter(self.query("#page-status").results(Static)), None)
+        if status is None:
+            return
         status.update(message)
         for k in _STATUS_KINDS:
             status.set_class(k == kind, f"-{k}")

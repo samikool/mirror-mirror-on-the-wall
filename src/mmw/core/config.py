@@ -184,7 +184,7 @@ def derive_name(url: str, taken: set[str] | None = None,
     return name
 
 
-Provider = Literal["apt", "apt-flat", "vscode", "pypi"]
+Provider = Literal["apt", "apt-flat", "vscode", "pypi", "apt-local"]
 """Every provider a unit may belong to. A free string let `provider =
 "apt_flat"` load clean, expand to zero mirrors, and exit 0 having mirrored
 nothing."""
@@ -774,7 +774,68 @@ class PypiSource(_StrictModel):
         return True
 
 
-AnySource = Annotated[Union[SourceConfig, VscodeSource, PypiSource], Field(discriminator="provider")]
+_PART_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+class LocalAptSource(_StrictModel):
+    """A folder of `.deb` files mmw turns into a signed apt repository, served
+    at `url` — the address clients use, and the identity, exactly as an
+    upstream's URL is. Flat (`deb URL ./`) unless `structured`, which lays it
+    out as `dists/{suite}/{component}/`. `key` names the mmw signing key."""
+    provider: Literal["apt-local"]
+    url: str
+    folder: str
+    key: str
+    name: str = ""
+    label: str = ""
+    structured: bool = False
+    suite: str = "stable"
+    component: str = "main"
+    contents: bool = False            # Contents-* files, so apt-file finds these packages
+    # Where mmw.toml lives, so a relative folder means "next to the config".
+    _config_dir: Path | None = PrivateAttr(default=None)
+
+    def __eq__(self, other):
+        return type(other) is type(self) and self.model_dump() == other.model_dump()
+
+    __hash__ = None
+
+    @model_validator(mode="after")
+    def _checked_and_derived(self):
+        parsed = urlparse(self.url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"url must be the http(s) address clients use, not {self.url!r}")
+        for field in ("suite", "component"):
+            if not _PART_RE.fullmatch(getattr(self, field)):
+                raise ValueError(f"{field} {getattr(self, field)!r} must be letters, digits, "
+                                 "'.', '_' or '-'")
+        if not self.folder.strip():
+            raise ValueError("folder is required")
+        if not self.name:
+            self.name = derive_name(self.url, provider="apt-local")
+        if not self.label:
+            self.label = derive_label(self.url)
+        return self
+
+    @property
+    def identity(self) -> str:
+        return normalize_url(self.url)
+
+    def folder_path(self, config_dir: Path | None = None) -> Path:
+        path = Path(self.folder).expanduser()
+        if not path.is_absolute():
+            path = (config_dir or self._config_dir or Path.cwd()) / path
+        return path
+
+    def configured_units(self) -> set:
+        return set()
+
+    def covers(self, unit) -> bool:
+        return (unit.source or "") == self.identity
+
+
+AnySource = Annotated[Union[SourceConfig, VscodeSource, PypiSource, LocalAptSource],
+                      Field(discriminator="provider")]
 
 
 # The TUI's colour theme when none is chosen. Lives here, not in tui/, because
@@ -1325,7 +1386,7 @@ def load(directory: Path = Path(".")) -> Config:
         data = tomllib.load(f)
     cfg = Config.model_validate(data)
     for source in cfg.sources:
-        if isinstance(source, PypiSource):
+        if isinstance(source, (PypiSource, LocalAptSource)):
             source._config_dir = Path(directory).resolve()
     from mmw.core.pool import register_database
     register_database(cfg.settings.mirror_dir, cfg.settings.database)

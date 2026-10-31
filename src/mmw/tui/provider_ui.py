@@ -50,20 +50,33 @@ def _pypi_edit(source, existing_names, existing_urls):
     return EditPypiPage(source, existing_names=existing_names, existing_urls=existing_urls)
 
 
+def _local_step(existing_urls):
+    from mmw.tui.local_source import StepLocal
+    return StepLocal(existing_urls)
+
+
+def _local_edit(source, existing_names, existing_urls):
+    from mmw.tui.local_source import EditLocalPage
+    return EditLocalPage(source, existing_names=existing_names, existing_urls=existing_urls)
+
+
 # provider name → (Add entry or None, Edit page factory). apt's step adds
 # flat repositories too (probing tells them apart), so apt-flat has no entry.
 _ADD: dict[str, AddEntry] = {
     "apt": AddEntry("apt", "APT repository",
                     "Debian, Ubuntu or vendor apt repository — dists/ tree or flat",
                     "Repository", _apt_step, offer_source_packages=True),
+    "apt-local": AddEntry("apt-local", "Local folder",
+                          "A folder of .deb files, signed and served at a URL you choose",
+                          "Local folder", _local_step, False, confirm_required=False),
     "vscode": AddEntry("vscode", "VS Code", "Marketplace extensions, desktop and server builds",
                        "VS Code", _vscode_step, False, confirm_required=False),
     "pypi": AddEntry("pypi", "PyPI",
                      "Python packages: all of PyPI per target, or a requirements list resolved together",
                      "PyPI", _pypi_step, False, confirm_required=False),
 }
-_EDIT: dict[str, Callable] = {"apt": _apt_edit, "apt-flat": _apt_edit, "vscode": _vscode_edit,
-                              "pypi": _pypi_edit}
+_EDIT: dict[str, Callable] = {"apt": _apt_edit, "apt-flat": _apt_edit, "apt-local": _local_edit,
+                              "vscode": _vscode_edit, "pypi": _pypi_edit}
 
 _DETECT = AddEntry("detect", "Detect from URL or paste…",
                    "A repository URL, a .list / .sources file, or pasted config",

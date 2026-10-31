@@ -434,9 +434,11 @@ def _download_sync(
     """
     if start_callback:
         start_callback()
+    tmp = partial if partial is not None else _partial_path(pool, pkg)
+    if pkg.url.startswith("file://"):
+        return _copy_local(pkg, pool, tmp, chunk_callback, stop_event)
     client = _thread_client()
     h = hashlib.new(pkg.checksum_type)
-    tmp = partial if partial is not None else _partial_path(pool, pkg)
 
     offset = 0
     if resume and disk_io.ops.exists(tmp):
@@ -473,16 +475,7 @@ def _download_sync(
                     bytes_written += len(chunk)
                     if chunk_callback:
                         chunk_callback(len(chunk))
-        checksum = h.hexdigest()
-        if pkg.checksum_known and checksum != pkg.checksum:
-            disk_io.ops.unlink(tmp, missing_ok=True)   # a resumed partial may be the culprit
-            return DownloadResult(status=Status.FAILED, path=tmp, error="checksum mismatch")
-        pool_path = pool.add(tmp, checksum, pkg.checksum_type, pkg.filename, bytes_written,
-                             source_url=pkg.url if not pkg.checksum_known else "")
-        return DownloadResult(
-            status=Status.DOWNLOADED, path=pool_path,
-            bytes_transferred=bytes_written, checksum=checksum,
-        )
+        return _pool_verified(pkg, pool, tmp, h.hexdigest(), bytes_written)
     except (PermanentFetchError, InterruptedError):
         disk_io.ops.unlink(tmp, missing_ok=True)
         raise
@@ -491,6 +484,44 @@ def _download_sync(
         # resumes from. Only a clean finish, a permanent answer or a bad digest
         # discards it; anything left behind is swept by the tmp reaper.
         raise
+
+
+def _pool_verified(pkg: PackageInfo, pool: Pool, tmp: Path, checksum: str,
+                   size: int) -> DownloadResult:
+    if pkg.checksum_known and checksum != pkg.checksum:
+        disk_io.ops.unlink(tmp, missing_ok=True)   # a resumed partial may be the culprit
+        return DownloadResult(status=Status.FAILED, path=tmp, error="checksum mismatch")
+    pool_path = pool.add(tmp, checksum, pkg.checksum_type, pkg.filename, size,
+                         source_url=pkg.url if not pkg.checksum_known else "")
+    return DownloadResult(status=Status.DOWNLOADED, path=pool_path,
+                          bytes_transferred=size, checksum=checksum)
+
+
+def _copy_local(pkg: PackageInfo, pool: Pool, tmp: Path, chunk_callback,
+                stop_event) -> DownloadResult:
+    """A `file://` package (a folder repository's deb): copied, hashed and
+    pooled exactly like a download, never moved — the folder is the user's."""
+    from urllib.parse import unquote, urlparse
+    src = Path(unquote(urlparse(pkg.url).path))
+    if not disk_io.ops.is_file(src):
+        raise PermanentFetchError(f"not found: {src}")
+    h = hashlib.new(pkg.checksum_type)
+    size = 0
+    disk_io.ops.unlink(tmp, missing_ok=True)
+    try:
+        with disk_io.ops.open_append(tmp, 0) as f:
+            for block in disk_io.ops.iter_chunks(src):
+                if stop_event and stop_event.is_set():
+                    raise InterruptedError("sync stopped")
+                f.write(block)
+                h.update(block)
+                size += len(block)
+                if chunk_callback:
+                    chunk_callback(len(block))
+    except BaseException:
+        disk_io.ops.unlink(tmp, missing_ok=True)
+        raise
+    return _pool_verified(pkg, pool, tmp, h.hexdigest(), size)
 
 
 def lookup_packages(

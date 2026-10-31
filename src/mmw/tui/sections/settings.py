@@ -67,6 +67,12 @@ class SettingsPage(Page):
                 hint="On every start, ask PyPI for a newer mmw and offer it. "
                      "MMW_NO_UPDATE_CHECK=1 also turns it off (for cron and CI).",
             ),
+            ActionField(
+                "Signing keys", "the keys your own repositories are signed with", "Manage…",
+                id="settings-signing-keys", summary_id="settings-signing-keys-summary",
+                hint="Generate, import, export or delete the keys mmw signs folder "
+                     "repositories with (`mmw signing-key`).",
+            ),
             ChoiceField(
                 "Theme", [(n, n) for n in names], self.app.theme, id="settings-theme",
                 hint="Applies and saves at once. Custom themes: themes/*.toml beside mmw.toml "
@@ -127,6 +133,11 @@ class SettingsPage(Page):
             escape(str(self.app.cfg.settings.database)))
         self.set_status("Saved." + (f" Pool directory is now {mirror_dir} — nothing was moved."
                                     if moved else ""), "ok")
+
+    @on(Button.Pressed, "#settings-signing-keys")
+    def _signing_keys_pressed(self) -> None:
+        from mmw.tui.signing_keys import SigningKeysPage
+        self.app.push_screen(SigningKeysPage())
 
     @on(Button.Pressed, "#settings-database")
     def _move_pressed(self) -> None:

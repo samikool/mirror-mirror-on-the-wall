@@ -476,6 +476,39 @@ def _flat_target(url: str, distribution: str | None) -> tuple[str, str | None]:
     return (f"{url}/{rel}" if rel else url), None
 
 
+# ── writing ───────────────────────────────────────────────────────────────────
+# The inverse of the parsers above, for the sources files mmw hands clients;
+# each round-trips through `parse_apt_sources`.
+
+def render_one_line(entry: AptEntry, *, signed_by: str | None, trusted: bool = False) -> str:
+    """`deb [options] URL SUITE COMPONENTS` — the format before deb822 (Ubuntu
+    jammy, Debian 11). A flat entry (`suite is None`) is `URL ./`."""
+    options = []
+    if entry.arches:
+        options.append(f"arch={','.join(entry.arches)}")
+    if signed_by:
+        options.append(f"signed-by={signed_by}")
+    if trusted:
+        options.append("trusted=yes")
+    target = "./" if entry.suite is None else " ".join([entry.suite, *entry.components])
+    bracket = f"[{' '.join(options)}] " if options else ""
+    return f"deb {bracket}{entry.url} {target}\n"
+
+
+def render_deb822(entry: AptEntry, *, signed_by: str | None, trusted: bool = False) -> str:
+    """A deb822 `.sources` stanza — the default from Ubuntu 24.04 and Debian 12."""
+    lines = ["Types: deb", f"URIs: {entry.url}", f"Suites: {entry.suite or './'}"]
+    if entry.suite is not None and entry.components:
+        lines.append(f"Components: {' '.join(entry.components)}")
+    if entry.arches:
+        lines.append(f"Architectures: {' '.join(entry.arches)}")
+    if signed_by:
+        lines.append(f"Signed-By: {signed_by}")
+    if trusted:
+        lines.append("Trusted: yes")
+    return "\n".join(lines) + "\n"
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _unescape(text: str) -> str:

@@ -42,6 +42,7 @@ def test_network_retention_round_trips(tmp_path):
 
 
 async def _edit(app, pilot, value):
+    await until(pilot, lambda: app.screen.query("#net-list") and "lab" in _names(app))
     lst = app.screen.query_one("#net-list", ListView)
     lst.index = _names(app).index("lab")
     await _settle(pilot)

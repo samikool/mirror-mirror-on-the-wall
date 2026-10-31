@@ -60,7 +60,10 @@ def _run(tmp_path, check, cfg=None, monkeypatch=None, mirrors=True):
 
 
 def _names(app):
-    return [str(i.query_one("Label").render()).strip()
+    """Each row's name — "" for a row still being built (the list is rebuilt
+    on every return to the page; reading a label not yet mounted raised
+    NoMatches). Wait for the name you need: `until(... "lab" in _names(app))`."""
+    return [next((str(label.render()).strip() for label in i.query("Label")), "")
             for i in app.screen.query_one("#net-list", ListView).children]
 
 

@@ -128,6 +128,7 @@ def test_tui_edits_runtime_settings(tmp_path, monkeypatch):
     from waiting import until
 
     async def edit(app, pilot, arches, python):
+        await until(pilot, lambda: app.screen.query("#net-list") and "lab" in _names(app))
         app.screen.query_one("#net-list", ListView).index = _names(app).index("lab")
         await _settle(pilot)
         await pilot.press("e")

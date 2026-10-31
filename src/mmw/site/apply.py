@@ -33,6 +33,7 @@ from mmw.site.switch import resume_switches, switch_in
 # v1 bundles carried mmw's runtime; mmw comes from its installer now, and
 # the far side updates from the installer next to a bundle (site/update.py).
 RUNTIME_PREFIX = ".mmw/runtime/"
+SIGNING_PREFIX = ".mmw/signing/"           # carried private keys: name.asc
 RUNTIME_NOTE = "this bundle carries an mmw runtime — ignored; install mmw from its installer file"
 
 
@@ -116,6 +117,7 @@ class RootApply:
         self.got: dict[str, tuple[str, int]] = {}
         self.links: dict[str, str] = {}
         self.tls: dict[str, bytes] = {}
+        self.signing: dict[str, bytes] = {}      # carried keys: name → armour
         self.seen: set[str] = set()
         self.manifest_path = self.home / "incoming-manifest.jsonl"
         self._manifest = False
@@ -152,6 +154,8 @@ class RootApply:
         """One member of the bundle (never the manifest: that is `begin`)."""
         if m.name.startswith(TLS_PREFIX):
             self.tls[m.name[len(TLS_PREFIX):]] = m.fh.read()
+        elif m.name.startswith(SIGNING_PREFIX):
+            self.signing[m.name[len(SIGNING_PREFIX):].removesuffix(".asc")] = m.fh.read()
         elif m.name.startswith(RUNTIME_PREFIX):
             self.seen.add("runtime")
         elif m.name.startswith(".mmw/"):
@@ -196,6 +200,24 @@ class RootApply:
             self.got[name] = self.got[target]
         if not self._manifest:
             raise ApplyError(2, "bundle is malformed: no .mmw/manifest.jsonl")
+
+    def _import_keys(self) -> list[str]:
+        if not self.signing:
+            return []
+        from mmw.core.signing import Keyring, SigningError
+        keyring = Keyring(self.home)
+        lines = []
+        try:
+            for name, armor in sorted(self.signing.items()):
+                try:
+                    said = keyring.import_carried(name, armor.decode())
+                except SigningError as e:
+                    said = f"signing key {name!r} not imported: {e}"
+                if said:
+                    lines.append(f"  {said}")
+        finally:
+            keyring.stop_agent()
+        return lines
 
     def switch_order(self, repos: dict) -> list[list[str]]:
         """The repositories grouped by hostname, each hostname whole, in order."""
@@ -293,6 +315,8 @@ class RootApply:
             raise ApplyError(5, "stopped before anything changed — what arrived is stored")
         # Nothing applied here before: nginx was never started for this root.
         self.first_time = not db.applied()
+        # Carried signing keys first: a site layer re-signs as its repository switches.
+        result.lines.extend(self._import_keys())
         recorded: dict[str, int] = {}
         try:
             for repo, plan in planned.items():
@@ -1066,6 +1090,11 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     data = m.fh.read()
                     for ra in appliers.values():
                         ra.tls[m.name[len(TLS_PREFIX):]] = data
+                    continue
+                if m.name.startswith(SIGNING_PREFIX):
+                    data = m.fh.read()
+                    for ra in appliers.values():
+                        ra.signing[m.name[len(SIGNING_PREFIX):].removesuffix(".asc")] = data
                     continue
                 if m.name.startswith(RUNTIME_PREFIX):
                     runtime_seen = True                    # said once, for the whole set

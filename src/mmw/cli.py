@@ -784,6 +784,59 @@ def cmd_site_roots(root: Path = _ROOT):
     raise typer.Exit(roots(root))
 
 
+site_key_app = typer.Typer(help="The far side's signing keys: site layers re-sign with them.",
+                           no_args_is_help=True)
+site_app.add_typer(site_key_app, name="signing-key")
+
+
+def _site_keys(root):
+    from mmw.commands.signing_key import site_keyring
+    try:
+        return site_keyring(root)
+    except (FileNotFoundError, ValueError, LookupError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+
+
+@site_key_app.command("generate")
+def cmd_site_key_generate(name: str = typer.Argument(...), root: Path = _ROOT):
+    """Make a signing key on this side."""
+    from mmw.commands.signing_key import generate
+    raise typer.Exit(generate(_cfg_dir(), name, _site_keys(root)[0]))
+
+
+@site_key_app.command("import")
+def cmd_site_key_import(name: str = typer.Argument(...),
+                        file: Path = typer.Option(None, "--file", "-f", help="Armoured private key ('-': stdin)"),
+                        root: Path = _ROOT):
+    """Import an armoured private key to sign with."""
+    from mmw.commands.signing_key import import_
+    raise typer.Exit(import_(_cfg_dir(), name, file, _site_keys(root)[0]))
+
+
+@site_key_app.command("export")
+def cmd_site_key_export(name: str = typer.Argument(...), private: bool = typer.Option(False, "--private"),
+                        root: Path = _ROOT):
+    """Print a key, armoured: the public half unless --private."""
+    from mmw.commands.signing_key import export
+    raise typer.Exit(export(_cfg_dir(), name, private, _site_keys(root)[0]))
+
+
+@site_key_app.command("list")
+def cmd_site_key_list(root: Path = _ROOT):
+    """This side's signing keys (carried ones included)."""
+    from mmw.commands.signing_key import list_
+    raise typer.Exit(list_(_cfg_dir(), _site_keys(root)[0]))
+
+
+@site_key_app.command("remove")
+def cmd_site_key_remove(name: str = typer.Argument(...), root: Path = _ROOT):
+    """Delete a key no site layer signs with."""
+    from mmw.commands.signing_key import remove
+    keyring, in_use = _site_keys(root)
+    raise typer.Exit(remove(_cfg_dir(), name, keyring, in_use))
+
+
 @site_app.command("serve")
 def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
                    root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):

@@ -246,3 +246,56 @@ def test_an_unsignable_layer_holds_until_its_key_arrives(site):
     assert forward(site.home, site.repo) == [site.repo]
     assert "Version: 2.10-3" in _served(site, "dists/jammy/main/binary-amd64/Packages").read_text()
     assert status_reason(site.home, site.repo) is None
+
+
+# ── keys across the airgap (Task 5) ──────────────────────────────────────────
+
+def test_carry_keys_needs_an_mmw_far_side():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="far_side"):
+        config.NetworkConfig(name="lab", carry_keys=["tools"])
+    assert config.NetworkConfig(name="lab", far_side="mmw", carry_keys=["tools"]).carry_keys == ["tools"]
+
+
+@needs_gpg
+def test_a_carried_key_rides_the_bundle_and_is_imported(site):
+    import tarfile
+    from mmw.core.publisher.bundle import bundle_network
+    from mmw.site.apply import apply_bundle
+    net = site.net.model_copy(update={"carry_keys": ["tools"]})
+    cfg = site.cfg.model_copy(update={"networks": [net]})
+    make_deb(site.lab.tmp / "u3", "noop", "1")
+    out = bundle_network(net, cfg, site.lab.mirror_dir, out_path=site.lab.tmp / "b-keys", from_ref=None).out_path
+    with tarfile.open(out) as tar:
+        names = tar.getnames()
+    assert ".mmw/signing/tools.asc" in names
+    apply_bundle(site.home, str(out), say=lambda *a: None)
+    here = {k.name: k.fingerprint for k in Keyring(site.home).list()}
+    assert here["tools"] == next(k.fingerprint for k in Keyring(site.lab.mirror_dir).list() if k.name == "tools")
+
+
+@needs_gpg
+def test_a_carried_key_never_overwrites_a_different_one(site):
+    from mmw.core.publisher.bundle import bundle_network
+    from mmw.site.apply import apply_bundle
+    Keyring(site.home).generate("tools")                          # the site's own, another fingerprint
+    mine = next(k.fingerprint for k in Keyring(site.home).list() if k.name == "tools")
+    net = site.net.model_copy(update={"carry_keys": ["tools"]})
+    cfg = site.cfg.model_copy(update={"networks": [net]})
+    out = bundle_network(net, cfg, site.lab.mirror_dir, out_path=site.lab.tmp / "b-keys2", from_ref=None).out_path
+    result = apply_bundle(site.home, str(out), say=lambda *a: None)
+    assert next(k.fingerprint for k in Keyring(site.home).list() if k.name == "tools") == mine
+    assert any("tools" in line and "different" in line for line in result.lines)
+
+
+@needs_gpg
+def test_site_signing_key_commands(site):
+    from typer.testing import CliRunner
+    from mmw.cli import app
+    run = lambda *a: CliRunner().invoke(app, ["site", "signing-key", *a, "--root", str(site.root)])  # noqa: E731
+    assert run("generate", "farkey").exit_code == 0
+    assert "farkey" in run("list").output
+    with SiteDB(site.home) as db:
+        db.set_layer(site.repo, signing="resign", key="farkey")
+    refused = run("remove", "farkey")
+    assert refused.exit_code == 1 and "signs" in refused.output

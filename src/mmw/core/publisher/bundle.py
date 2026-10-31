@@ -124,6 +124,18 @@ def _resolve_from(pool: Pool, network: str, from_ref):
     return find_snapshot(pool, network, from_ref)
 
 
+def _carried_keys(network, mirror_dir: Path) -> dict[str, bytes]:
+    """The private parts of the keys `network` carries to its far side."""
+    if not network.carry_keys:
+        return {}
+    from mmw.core.signing import Keyring
+    keyring = Keyring(mirror_dir)
+    try:
+        return {name: keyring.private_armor(name).encode() for name in network.carry_keys}
+    finally:
+        keyring.stop_agent()
+
+
 def _same_filesystem(a: Path, b: Path) -> bool:
     """Whether hardlinks from `a` can land under `b` (the nearest existing
     parent of `b` is what is checked)."""
@@ -254,6 +266,7 @@ def bundle_network(
     # A far side running mmw makes its own keys (`mmw site certs`): an mmw
     # network's bundles never put a private key on the transfer media.
     tls_files = bundle_tls_files(network, cfg) if network.certs and not mmw_far_side else {}
+    signing_files = _carried_keys(network, mirror_dir) if mmw_far_side else {}
 
     name = dest.stamp if start is None else f"{start.stamp}-to-{dest.stamp}"
     target = _free_stage_dir(network, name, out_path) if stage else _free_target(network, name, out_path)
@@ -334,7 +347,7 @@ def bundle_network(
                           apply_script_bytes(), prune=network.prune and not mmw_far_side,
                           full=header.full if mmw_far_side else start is None, row_repo=row_repo,
                           progress=progress, tls_files=tls_files, stop_event=stop_event,
-                          writer=writer,
+                          writer=writer, signing_files=signing_files,
                           scratch_dir=ledger_dir(mirror_dir, network.name) if streaming or stage else None)
         bases = recorded_bases(dest.settings)
         dest_paths: set[str] = set()

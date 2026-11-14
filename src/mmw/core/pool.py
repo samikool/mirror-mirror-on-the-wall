@@ -712,16 +712,26 @@ def _legacy_dims(arch: str | None, suite: str | None, component: str | None) -> 
 
 
 def _current_dims(raw: str | None, arch: str | None, suite: str | None,
-                  component: str | None) -> dict[str, str]:
+                  component: str | None, provider: str) -> dict[str, str]:
     """A mirrors row's coordinates. The stored JSON, except that the legacy
     columns win for every key it already has: an older mmw re-recording a
     mirror updates only those columns, so where they disagree they are the
     newer truth. They never add a key — a unit with no arch must not gain
-    `arch: ""` from an empty column."""
+    `arch: ""` from an empty column.
+
+    An empty `dims` means "written before the column" only for apt rows —
+    the column predates every other provider. A non-apt `{}` is a unit with
+    no coordinates (PyPI's universal unit); reading it as legacy gave it
+    `arch: ""`, and its label then raised KeyError: 'python'. Every writable
+    open saved that misreading, so a non-apt `{"arch": ""}` — never a real
+    unit's coordinates — is read as the `{}` it was."""
+    apt = provider in ("apt", "apt-flat")
     legacy = _legacy_dims(arch, suite, component)
     if not raw or raw == "{}":
-        return legacy
+        return legacy if apt else {}
     dims = json.loads(raw)
+    if not apt and dims == {"arch": ""}:
+        return {}
     return {k: legacy.get(k, v) for k, v in dims.items()}
 
 
@@ -835,10 +845,10 @@ class Pool:
             # Fill pre-dims rows, and repair rows an older mmw re-recorded
             # (it updates the legacy columns only, leaving dims stale).
             rows = self._conn.execute(
-                "SELECT name, dims, arch, suite, component FROM mirrors").fetchall()
+                "SELECT name, dims, arch, suite, component, provider FROM mirrors").fetchall()
             stale = []
-            for n, raw, a, s, c in rows:
-                fresh = json.dumps(_current_dims(raw, a, s, c), sort_keys=True)
+            for n, raw, a, s, c, prov in rows:
+                fresh = json.dumps(_current_dims(raw, a, s, c, prov), sort_keys=True)
                 if fresh != raw:
                     stale.append((fresh, n))
             self._conn.executemany("UPDATE mirrors SET dims = ? WHERE name = ?", stale)
@@ -1396,7 +1406,7 @@ class Pool:
             rows = _c.execute(sql, params).fetchall()
         units = []
         for r in rows:
-            dims = _current_dims(r[10] if self._has_mirror_dims else None, r[4], r[5], r[6])
+            dims = _current_dims(r[10] if self._has_mirror_dims else None, r[4], r[5], r[6], r[2])
             units.append(MirrorConfig(
                 name=r[0], source=r[1], provider=r[2], source_url=r[3], label=r[7],
                 dims=dims,

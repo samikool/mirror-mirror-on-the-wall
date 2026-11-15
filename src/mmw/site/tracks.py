@@ -78,7 +78,7 @@ def _fields(text: str) -> dict[str, str]:
     return out
 
 
-def _content_ident(files: dict[str, str]) -> str:
+def content_ident(files: dict[str, str]) -> str:
     h = hashlib.sha256()
     for path in sorted(files):
         h.update(f"{path}\0{files[path]}\n".encode())
@@ -204,5 +204,5 @@ def split_tracks(rows: dict[str, str], bases: list[str],
         claimed |= set(files)
     rest = {p: c for p, c in rows.items() if p not in claimed}
     if rest:
-        drafts.append(PointDraft("", _content_ident(rest), fallback_stamp, {}, rest))
+        drafts.append(PointDraft("", content_ident(rest), fallback_stamp, {}, rest))
     return drafts

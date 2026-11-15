@@ -81,8 +81,9 @@ class SiteHomePage(Page):
         Binding("a", "apply", "Apply"),
         Binding("r", "add_root", "Add root"),
         Binding("b", "serve_bundle", "As of", show=False),
+        Binding("x", "export", "Export"),
         Binding("m", "move", "Move"),
-        Binding("c", "certs", "Certs"),
+        Binding("c", "certs", "Certs", show=False),         # its button is in the bar
         Binding("t", "tidy", "Tidy", show=False),
         Binding("k", "packages", "Packages", show=False),
         Binding("K", "signing_keys", "Signing keys", show=False),
@@ -536,6 +537,29 @@ class SiteHomePage(Page):
 
     def _acted(self, done: str) -> None:
         self._load(done)
+
+    def action_export(self) -> None:
+        """Write a bundle of this mirror's history for another network."""
+        if self.app.mset is None or not self._states:
+            self.set_status("Nothing to export yet — apply a bundle first.", "error")
+            return
+        self._export_targets()
+
+    @work(thread=True, exclusive=True, group="site-export", exit_on_error=False)
+    def _export_targets(self) -> None:
+        targets: list[str] = []
+        try:                                     # over ssh, a round trip: never on the screen's thread
+            for root in self.app.mset.roots:
+                targets += [t for t in root.export_targets() if t not in targets]
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(self._export_page, targets)
+
+    def _export_page(self, targets: list[str]) -> None:
+        from mmw.tui.site.export_flow import ExportPage, ExportRunPage
+        page = ExportPage(self.app.mset.network, targets, [(s.repo, s.label) for s in self._states])
+        self.app.push_screen(page, lambda c: c and self.app.push_screen(ExportRunPage(c), lambda _: self._load()))
 
     def action_serve_bundle(self) -> None:
         if not self._bundles:

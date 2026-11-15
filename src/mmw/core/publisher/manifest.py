@@ -95,6 +95,11 @@ class ManifestHeader:
     # Format 2: the destination snapshot's settings (its mirrors, bases,
     # hosts), so a far side can set nginx up per root. Written only when set.
     settings: str | None = None
+    # Format 3 (a far side's export: timeline points, not states): per
+    # repository key {"label", "bases", "points": [{"track", "ident", "date",
+    # "stamp", "snap_label", "fields"}]}; rows say which points hold each
+    # file ("k", their indices). Written only when set.
+    points: dict | None = None
 
 
 def write_manifest(path: Path, header: ManifestHeader,
@@ -111,7 +116,7 @@ def write_manifest(path: Path, header: ManifestHeader,
     try:
         with disk_io.ops.open_file(tmp, "w", encoding="utf-8") as out:
             fields = asdict(header)
-            for optional in ("format", "repos", "settings"):
+            for optional in ("format", "repos", "settings", "points"):
                 if fields[optional] is None:
                     del fields[optional]
             out.write(json.dumps(fields, sort_keys=True) + "\n")
@@ -121,6 +126,8 @@ def write_manifest(path: Path, header: ManifestHeader,
                     line["r"] = row[2]
                 if len(row) >= 4 and row[3] is not None:
                     line["s"] = row[3]
+                if len(row) >= 5 and row[4]:
+                    line["k"] = list(row[4])
                 out.write(json.dumps(line) + "\n")
         disk_io.ops.replace(tmp, path)
     finally:
@@ -172,6 +179,33 @@ def iter_manifest_sized(path: Path):
                 if line.strip():
                     row = json.loads(line)
                     yield row["p"], row["c"], row.get("r"), row.get("s")
+        finally:
+            text.close()
+    return header, rows()
+
+
+def blob_member(checksum: str) -> str:
+    """A format-3 member's name: its checksum — one path holds several
+    contents across points (every suite's Release), so never its path."""
+    return f"blobs/{checksum[:2]}/{checksum}"
+
+
+def iter_manifest_points(path: Path):
+    """(header, rows) with rows (path, checksum, repository or None, size or
+    None, the indices of the points holding it) — format 3."""
+    text = _open_text(path)
+    try:
+        header = ManifestHeader(**json.loads(text.readline()))
+    except BaseException:
+        text.close()
+        raise
+
+    def rows():
+        try:
+            for line in text:
+                if line.strip():
+                    row = json.loads(line)
+                    yield row["p"], row["c"], row.get("r"), row.get("s"), tuple(row.get("k", ()))
         finally:
             text.close()
     return header, rows()

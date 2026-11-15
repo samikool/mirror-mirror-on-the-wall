@@ -148,6 +148,21 @@ class LocalRoot:
     def export_blob(self, checksum: str):
         return disk_io.ops.open_rb(self.store().path(checksum))
 
+    def export_plan(self, target: str, repos: list[str] | None, mode: str, since: str | None) -> dict:
+        from mmw.site.export import root_export_plan
+        return root_export_plan(self.home, target, repos=repos, mode=mode, since=since)
+
+    def export_targets(self) -> list[str]:
+        from mmw.site.db import SiteDB
+        with SiteDB(self.home) as db:
+            return db.export_targets()
+
+    def record_export(self, target: str, sent: list, stamp: str) -> None:
+        from mmw.site.db import SiteDB
+        from mmw.site.lock import SiteLock
+        with SiteLock(self.home), SiteDB(self.home) as db:
+            db.record_export(target, [tuple(x) for x in sent], stamp)
+
     def import_blob(self, fh, checksum: str) -> None:
         self.store().add_stream(fh, expect=checksum)
 

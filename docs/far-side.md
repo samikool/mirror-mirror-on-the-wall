@@ -134,6 +134,33 @@ history. Applying A's bundle on B:
 A repository is matched by its upstream URL: two networks mirroring Debian
 from different hosts don't merge yet.
 
+### Sending history to another network
+
+A far side writes such a bundle itself:
+
+```bash
+mmw site bundle --to elm --out /media/drive/to-elm.tar          # what elm hasn't had from here
+mmw site bundle --to elm --out to-elm.tar --since 2026-11-01    # points dated after that day
+mmw site bundle --to elm --out to-elm.tar --all                 # every point again
+mmw site bundle --to elm --out to-elm.tar --repo debian --dry-run   # one repository; size only
+```
+
+`--to` is a name you choose for the other network. This mirror remembers,
+under it, which points it has sent there, so by default the next bundle
+carries only newer points and only the files they add. The first bundle to
+a name sends everything, and says so (`first export to 'elm': … everything
+goes`, with the names it already knows). The record is written only once a
+bundle is complete: one cut short leaves no file and sends the same again
+next time. Points that are incomplete or deleted here are listed as skipped,
+never sent. `--out -` writes the tar to stdout (the summary goes to stderr).
+
+On the other side, `mmw site apply to-elm.tar` merges it as above: its
+repositories take the points, `--deploy LABEL` adds one it lacks, and each
+point's `Release` is checked against its digest — one that doesn't match is
+refused on its own. In the TUI, **x** opens **Export to another network**:
+the network (those sent to before, or a new one), the repositories, what
+goes, and what that would send — then a progress page.
+
 ### Updates to mmw itself
 
 The far side never checks a network: its newer mmw is the installer file
@@ -396,7 +423,8 @@ for a deleted one), with Serve, Forward, Hold and Delete under them. Keys:
 **Enter** on a point serves it (pinning its suite, after a confirmation
 saying what changes), **f** forwards, **h** holds, **d** deletes a point,
 **a** applies a bundle (one from another network asks first which of its
-repositories this mirror doesn't hold to deploy), **r** adds a root (an empty folder or
+repositories this mirror doesn't hold to deploy), **x** exports to another
+network, **r** adds a root (an empty folder or
 `host:/path` becomes a new root of this mirror), **m** moves a repository to
 another root, **b** serves the whole mirror as of a bundle, **c** manages
 certificates, **t** tidies, **ctrl+r** refreshes.

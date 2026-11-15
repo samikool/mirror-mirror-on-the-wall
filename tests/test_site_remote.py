@@ -38,7 +38,7 @@ def test_info_round_trip(hosts, tmp_path):  # noqa: F811
     cfg, net, md, r1 = _root(hosts, tmp_path)
     code, out = _call(["info", str(r1)])
     (info,) = _lines(out)
-    assert code == 0 and info["name"] == "r1" and info["network"] == net.name and info["protocol"] == 2
+    assert code == 0 and info["name"] == "r1" and info["network"] == net.name and info["protocol"] == 3
     assert set(info["hostnames"]) == {"example.com", "example.org"} and info["free"] > 0
 
 

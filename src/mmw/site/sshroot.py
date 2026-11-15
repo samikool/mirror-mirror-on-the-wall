@@ -173,6 +173,16 @@ class SshRoot:
     def space(self):
         return _ns(self._call("space"))
 
+    def export_plan(self, target: str, repos: list[str] | None, mode: str, since: str | None) -> dict:
+        return self._call("export-plan", input=json.dumps({"target": target, "repos": repos, "mode": mode,
+                                                            "since": since}).encode())
+
+    def export_targets(self) -> list[str]:
+        return self._call("export-targets")
+
+    def record_export(self, target: str, sent: list, stamp: str) -> None:
+        self._call("record-export", input=json.dumps({"target": target, "sent": sent, "stamp": stamp}).encode())
+
     def verify(self, repair: bool = False):
         return self._call("verify", *(["--repair"] if repair else []))
 

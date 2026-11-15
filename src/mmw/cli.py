@@ -987,6 +987,23 @@ def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help=_V
     raise typer.Exit(serve(repo, version, root, yes, break_lock, track=track))
 
 
+@site_app.command("bundle")
+def cmd_site_bundle(to: str = typer.Option(..., "--to", help="The network it is for (a name you choose; "
+                                                            "what went there before is remembered under it)"),
+                    out: str = typer.Option(..., "--out", help="The bundle to write (.tar), or - for stdout"),
+                    repo: list[str] = typer.Option(None, "--repo", help="Only this repository (repeatable)"),
+                    since: str = typer.Option(None, "--since", help="Points dated after this day, sent before or not"),
+                    all_: bool = typer.Option(False, "--all", help="Every point again (the other side's store "
+                                                                  "keeps one copy)"),
+                    dry_run: bool = typer.Option(False, "--dry-run", help="Say what it would send; write nothing"),
+                    root: Path = _ROOT, break_lock: bool = _BREAK_LOCK):
+    """Send this mirror's repository history to another network: the points it
+    hasn't sent there before (or --since a day, or --all). The other side
+    applies it with `mmw site apply`; its own network files never change."""
+    from mmw.commands.site import bundle
+    raise typer.Exit(bundle(to, out, repo, since, all_, dry_run, root, break_lock))
+
+
 @site_app.command("serve-bundle")
 def cmd_site_serve_bundle(when: str = typer.Argument(..., help="The bundle: its date (28oct, 2026-10-28), "
                                                                "stamp or label"),

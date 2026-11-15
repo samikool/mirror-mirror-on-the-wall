@@ -17,7 +17,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-PROTOCOL = 2          # 2: timelines — versions named by date, per suite
+PROTOCOL = 3          # 2: timelines — versions named by date, per suite; 3: export to another network
 
 
 # ── framing (the local side writes, the remote side reads) ────────────────────
@@ -297,6 +297,9 @@ _VERBS = {
     "set-identity": _simple(lambda r, a, i: r.set_identity(**_json_in(i)) or {"ok": True}),
     "keep-versions": _simple(lambda r, a, i: {"keep": r.keep_versions()}),
     "history": _simple(_history),
+    "export-plan": _simple(lambda r, a, i: r.export_plan(**_json_in(i))),
+    "export-targets": _simple(lambda r, a, i: r.export_targets()),
+    "record-export": _simple(lambda r, a, i: r.record_export(**_json_in(i)) or {"ok": True}),
     "serve-preview": _simple(lambda r, a, i: r.serve_preview(a[0], a[1], a[2] if len(a) > 2 else None)),
     "serve": _simple(lambda r, a, i: r.serve(a[0], a[1], a[2] if len(a) > 2 else None)),
     "forward": _simple(lambda r, a, i: r.forward(a[0] if a else None)),

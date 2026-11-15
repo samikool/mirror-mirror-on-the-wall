@@ -84,6 +84,54 @@ def import_rows(db, store, repo: str, label: str, bases: list[str], rows: dict[s
     return out
 
 
+def _release_matches(store, draft) -> bool | None:
+    """Whether a `release:` point's Release is the one its ident names —
+    True / False, or None when it can't be told yet (its InRelease isn't
+    here). A Release's ident is its own checksum; an InRelease's is read."""
+    from mmw.site.tracks import release_ident
+    want = draft.ident.split(":", 1)[1]
+    release, inrelease = f"{draft.track}/Release", f"{draft.track}/InRelease"
+    if release in draft.files:
+        return draft.files[release] == want
+    if inrelease in draft.files:
+        cs = draft.files[inrelease]
+        if not store.has(cs):
+            return None
+        with disk_io.ops.open_rb(store.path(cs)) as fh:
+            return release_ident(None, fh.read()) == draft.ident
+    return False
+
+
+def import_points(db, store, repo: str, label: str, bases: list[str], points, sizes: dict[str, int],
+                  arrived: set[str]) -> list[TrackOutcome]:
+    """Points that arrive already split (a far side's export, format 3):
+    each checked — a Release point must carry the Release its ident names,
+    else it alone is refused — then added to its track. Never retires a
+    suite. `points`: [(PointDraft, stamp, snap_label)]."""
+    out: list[TrackOutcome] = []
+    try:
+        if db.repo_state(repo) is None:
+            db.ensure_repo(repo, label, bases, commit=False)
+        for d, stamp, snap_label in points:
+            suite = _suite(d.fields, d.track)
+            if d.ident.startswith("release:") and _release_matches(store, d) is False:
+                out.append(TrackOutcome(d.track, suite, None, d.date, "conflict",
+                                        note="its Release does not match its digest"))
+                continue
+            tid = db.ensure_track(repo, d.track, d.fields, commit=False)
+            pid, status = db.import_point(tid, d, sizes, stamp, snap_label, commit=False)
+            if status.startswith("conflict:"):
+                out.append(TrackOutcome(d.track, suite, pid, d.date, "conflict", note=status.split(":", 1)[1]))
+                continue
+            missing = is_complete(db, store, pid, arrived, cached=False)
+            out.append(TrackOutcome(d.track, suite, pid, d.date, "incomplete" if missing else status, missing))
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return out
+
+
 def choose(db, store, repo: str) -> tuple[dict[int, int], list[str]]:
     """{track id: point id}: the pinned point, else the newest complete one.
     A track with no complete point is left out."""

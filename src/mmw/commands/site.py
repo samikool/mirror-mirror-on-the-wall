@@ -580,3 +580,39 @@ def certs(root: Path | None = None, days: int = 730, force: bool = False) -> int
     if recreate:
         print(f"! recreate nginx in {', '.join(recreate)} on the serving host")
     return 0
+
+
+def bundle(to: str, out: str, repos: list[str] | None, since: str | None, all_: bool, dry_run: bool,
+           root: Path | None = None, break_lock: bool = False) -> int:
+    """`mmw site bundle`: this mirror's points for another network."""
+    from mmw.core.format import fmt_size
+    from mmw.site.export import export_bundle
+    from mmw.site.lock import LockHeld
+    if since and all_:
+        eprint("choose one: --since or --all")
+        return 2
+    mode = "all" if all_ else "since" if since else "new"
+    say = eprint if out == "-" else print            # stdout carries the tar itself
+    try:
+        mset = _set(root, break_lock)
+        plan = export_bundle(mset, to, out, repos=set(repos) if repos else None, mode=mode, since=since,
+                             dry_run=True)
+        if plan.new_target and mode == "new":
+            known = f" (known targets: {', '.join(plan.known_targets)})" if plan.known_targets else ""
+            say(f"first export to '{plan.target}': nothing recorded as sent there, so everything goes{known}")
+        n = len(plan.per_repo)
+        say(f"{mset.network} → {plan.target}: {plan.points} point(s) of {n} "
+              f"repositor{'y' if n == 1 else 'ies'}, {plan.files} file(s), {fmt_size(plan.bytes)}")
+        for label, points in sorted(plan.per_repo.items()):
+            say(f"  {label}  {', '.join(points)}")
+        for s in plan.skipped:
+            say(f"  skipped: {s}")
+        if dry_run:
+            say(f"would write {out}")
+            return 0
+        export_bundle(mset, to, out, repos=set(repos) if repos else None, mode=mode, since=since)
+    except (LockHeld, *_ERRORS) as e:
+        return _fail(e)
+    if out != "-":
+        print(f"wrote {out}")
+    return 0

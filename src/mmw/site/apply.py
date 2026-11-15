@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mmw.core import disk_io
-from mmw.core.publisher.manifest import iter_manifest_v2
+from mmw.core.publisher.manifest import blob_member, iter_manifest_points, iter_manifest_v2
 from mmw.core.snapshots import repo_digests
 from mmw.resources.apply import (
     MANIFEST_MEMBER, ROOT_PLACEHOLDER, TLS_PREFIX, _install_tls, _nginx_root_config,
@@ -28,7 +28,8 @@ from mmw.site.reader import SourceError, open_source
 from mmw.site.store import ChecksumMismatch, Store
 from mmw.site.roots import Roots
 from mmw.site.switch import resume_switches, switch_in
-from mmw.site.timeline import choose, ensure_state, import_rows, migrate
+from mmw.site.timeline import choose, ensure_state, import_points, import_rows, migrate
+from mmw.site.tracks import PointDraft, content_ident
 
 
 # v1 bundles carried mmw's runtime; mmw comes from its installer now, and
@@ -124,6 +125,7 @@ class RootApply:
         # Another network's repositories deployed here: their nginx entries.
         self.foreign_mirrors = dict(foreign_mirrors or {})
         self.foreign = foreign                   # another network's bundle: never retires a suite
+        self.points_bundle = False               # format 3: points, never network files
         self.got: dict[str, tuple[str, int]] = {}
         self.links: dict[str, str] = {}
         self.tls: dict[str, bytes] = {}
@@ -190,8 +192,8 @@ class RootApply:
         if self.expected is not None:
             return self.expected
         if getattr(self, "_want", None) is None and self._manifest:
-            _header, rows = iter_manifest_v2(self.manifest_path)
-            self._want = {p: c for p, c, _r in rows}
+            header, rows = iter_manifest_v2(self.manifest_path)
+            self._want = _member_checksums(header, rows)
         return getattr(self, "_want", None) or {}
 
     def take_blob(self, name: str, checksum: str, size: int, from_root) -> None:
@@ -257,8 +259,16 @@ class RootApply:
         if (header.format or 1) < 2:
             raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
                                 'or set far_side = "mmw" on the connected side and bundle again')
+        _check_paths(p for p, _c, _r in rows)
+        held_by: dict[str, tuple[int, ...]] = {}
+        if header.format == 3:
+            # Points, not a selection: its network files, settings, TLS and
+            # keys never apply, and it retires no suite.
+            self.points_bundle, self.network_files = True, False
+            _h, rows5 = iter_manifest_points(self.manifest_path)
+            held_by = {(p, c): k for p, c, _r, _s, k in rows5}
         result.created = header.created
-        expected = {p: c for p, c, _r in rows}
+        expected = _member_checksums(header, rows)
         for name, (checksum, _size_) in got.items():
             if name not in expected:
                 raise ApplyError(2, f"bundle is malformed: {name!r} is not in its manifest")
@@ -279,7 +289,23 @@ class RootApply:
         # Check everything before writing anything: each repository's new
         # version is complete (or refused alone), and so are the network files.
         planned: dict[str, dict] = {}
-        for repo, meta in sorted((header.repos or {}).items()):
+        for repo, pmeta in sorted((header.points or {}).items() if header.format == 3 else ()):
+            mine = [(p, c) for p, c, r in rows if r == repo]
+            drafts = []
+            for i, pt in enumerate(pmeta["points"]):
+                files = {p: c for p, c in mine if i in held_by.get((p, c), ())}
+                drafts.append((PointDraft(pt["track"], pt["ident"], pt["date"], pt.get("fields") or {}, files),
+                               pt["stamp"], pt.get("snap_label")))
+            # Its rows no point holds (a deployed repository's keys/LABEL/):
+            # files no Release claims, as their own content point.
+            loose = {p: c for p, c in mine if not held_by.get((p, c))}
+            if loose:
+                # Their own track: never newer than, so never hiding, the repo's own loose files.
+                drafts.append((PointDraft("keys", content_ident(loose), header.created, {}, loose),
+                               header.created, header.created_label))
+            planned[repo] = {"meta": {"label": pmeta["label"], "bases": pmeta["bases"]}, "rows": mine,
+                             "points": drafts}
+        for repo, meta in sorted((header.repos or {}).items() if header.format != 3 else ()):
             mine = [(p, c) for p, c, r in rows if r == repo]
             label = meta["label"]
             if repo_digests(mine, {repo: meta["bases"]})[repo] != meta["digest"]:
@@ -287,7 +313,7 @@ class RootApply:
             # Out of order or missing its start: never refused — its points
             # join the timeline, and any whose files are not all here wait.
             planned[repo] = {"meta": meta, "rows": mine}
-        network = {p: c for p, c, r in rows if r is None}
+        network = {p: c for p, c, r in rows if r is None} if header.format != 3 else {}
         missing = [p for p, c in network.items() if not have(c)]
         if missing:
             raise ApplyError(3, f"{len(missing)} network file(s) are not here (first: {missing[0]}) — "
@@ -298,7 +324,8 @@ class RootApply:
 
         if self.dry_run:
             for repo, plan in planned.items():
-                result.lines.append(f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
+                result.lines.append(f"  {plan['meta']['label']}  would take {len(plan['points'])} point(s)"
+                                    if "points" in plan else f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
             if "runtime" in self.seen:
                 result.lines.append(f"  {RUNTIME_NOTE}")
         self._checked = (header, rows, result, planned, network, sizes)
@@ -330,28 +357,36 @@ class RootApply:
         # Nothing applied here before: nginx was never started for this root.
         self.first_time = not db.applied()
         # Carried signing keys first: a site layer re-signs as its repository switches.
-        result.lines.extend(self._import_keys())
+        if not self.points_bundle:
+            result.lines.extend(self._import_keys())
         recorded: dict[str, list] = {}
         arrived = set(sizes)
         for repo, plan in planned.items():
             meta = plan["meta"]
             rows = dict(plan["rows"])
-            outcomes = import_rows(db, store, repo, meta["label"], meta["bases"], rows,
-                                   {c: _size(store, c, sizes) for c in set(rows.values())
-                                    if c in sizes or store.has(c)},
-                                   header.created, header.created_label, arrived, own=not self.foreign)
+            known = {c: _size(store, c, sizes) for c in set(rows.values()) if c in sizes or store.has(c)}
+            if "points" in plan:
+                outcomes = import_points(db, store, repo, meta["label"], meta["bases"], plan["points"], known,
+                                         arrived)
+            else:
+                outcomes = import_rows(db, store, repo, meta["label"], meta["bases"], rows, known,
+                                       header.created, header.created_label, arrived, own=not self.foreign)
             recorded[repo] = outcomes
             label = meta["label"]
             for o in outcomes:
                 what = f"{o.suite or 'files'} {_day(o.date)}"
                 if o.status == "conflict":
-                    result.refused[repo] = f"{o.note} differs inside one Release"
-                    result.lines.append(f"  {label}  {what} refused: {o.note} differs inside one Release — "
+                    why = o.note if o.note.startswith("its ") else f"{o.note} differs inside one Release"
+                    result.refused[repo] = why
+                    result.lines.append(f"  {label}  {what} refused: {why} — "
                                         "the bundle or this mirror is damaged; run mmw site verify")
                 elif o.status == "incomplete":
                     result.incomplete.setdefault(repo, []).append(o)
+                    fix = (f"on {header.network}'s far side: mmw site bundle --to {self.settings.network} "
+                           f"--repo '{label}' --all" if self.points_bundle else
+                           f"mmw bundle -n {header.network} --repo '{label}' --from none")
                     result.lines.append(f"  {label}  {what} stored, incomplete: {o.missing} file(s) missing — "
-                                        f"bring them: mmw bundle -n {header.network} --repo '{label}' --from none")
+                                        f"bring them: {fix}")
 
         if not self.network_files:
             result.network_changed = False     # nothing of the network's was touched
@@ -375,15 +410,15 @@ class RootApply:
         # repository is deployed here: then nginx is generated, as for several.
         if (roots.multi or db.get_meta("foreign_mirrors")) and db.get_meta("settings"):
             result.network_changed = write_root_nginx(db, roots) or result.network_changed
-        for name, data in sorted(self.tls.items()):
+        for name, data in sorted(self.tls.items() if not self.points_bundle else ()):
             _install_tls(str(root), name, io.BytesIO(data))
 
         forward, stopped = self.forward, False
-        for group in self.switch_order({r: header.repos[r] for r in recorded}):
+        for group in self.switch_order({r: planned[r]["meta"] for r in recorded}):
             # A hostname switches whole: Stop is looked at before each one.
             stopped = stopped or (stop_event is not None and stop_event.is_set())
             for repo in group:
-                label, state = header.repos[repo]["label"], db.repo_state(repo)
+                label, state = planned[repo]["meta"]["label"], db.repo_state(repo)
                 served = _served_by_track(db, state)
                 was = ", ".join(_day(d) for d in served.values()) if served else None
                 chosen, warnings = choose(db, store, repo)
@@ -506,6 +541,7 @@ class PlanRow:
     held: bool
     unchanged: bool
     root: Path
+    points: int | None = None        # format 3: how many points it brings
 
 
 @dataclass(frozen=True)
@@ -596,11 +632,12 @@ def plan_apply(target, src: str) -> ApplyPlan:
     if (header.format or 1) < 2:
         raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
                             'or set far_side = "mmw" on the connected side and bundle again')
-    repos = header.repos or {}
+    repos = _repo_meta(header)
     bases = {r: m["bases"] for r, m in repos.items()}
     sent: dict[str, list[int]] = {r: [0, 0] for r in repos}
+    owner = ({blob_member(c): r for _p, c, r in rows if r is not None} if header.format == 3 else {})
     for name, size in sizes.items():
-        repo = attribute(name, bases)
+        repo = owner.get(name) if header.format == 3 else attribute(name, bases)
         if repo in sent:
             sent[repo][0] += 1
             sent[repo][1] += size
@@ -626,7 +663,8 @@ def plan_apply(target, src: str) -> ApplyPlan:
         out.append(PlanRow(repo, meta["label"], meta["from"], meta["to"], sent[repo][0], sent[repo][1],
                            serving, bool(st and st.held),
                            # By content: version numbers on the two sides are not the same count.
-                           bool(st and st.serving and st.serving.digest == meta["digest"]), root))
+                           bool(st and st.serving and meta["digest"] and st.serving.digest == meta["digest"]),
+                           root, meta.get("points")))
     network = sum(1 for _p, _c, r in rows if r is None)
     return ApplyPlan(header.created, header.network, out, network,
                      sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))
@@ -807,7 +845,7 @@ def _read_manifest_member(gen, scratch: Path):
 
 
 def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPlan", dict]:
-    repos = header.repos or {}
+    repos = _repo_meta(header)
     hosts: dict[str, list[str]] = {}
     for repo, meta in sorted(repos.items()):
         hosts.setdefault(_host(meta, repo), []).append(repo)
@@ -934,7 +972,7 @@ def plan_set_apply(mset, src: str, deploy: set[str] | None = None) -> SetApplyPl
         if foreign:
             from mmw.site import ops
             held = {st.repo for _n, st in ops.set_status(mset)}
-            not_here = {k: m["label"] for k, m in (header.repos or {}).items() if k not in held}
+            not_here = {k: m["label"] for k, m in _repo_meta(header).items() if k not in held}
             header, rows, _dropped, _fm = _foreign(mset, header, rows, set(deploy or ()), SetApplyResult())
         plan, _ = _plan(mset, header, rows, src, Path(tmp))
     from dataclasses import replace
@@ -952,7 +990,7 @@ def _foreign(mset, header, rows, deploy: set[str], result) -> tuple:
     from mmw.core.repos import repository_key
     from mmw.site import ops
     held = {st.repo for _name, st in ops.set_status(mset)}
-    labels = {k: m["label"] for k, m in (header.repos or {}).items()}
+    labels = {k: m["label"] for k, m in _repo_meta(header).items()}
     wanted = {k for k in labels if k in held or k in deploy or labels[k] in deploy}
     deployed = {k for k in wanted if k not in held}
     key_dirs = {f"keys/{labels[k]}/": k for k in deployed}
@@ -976,24 +1014,60 @@ def _foreign(mset, header, rows, deploy: set[str], result) -> tuple:
         key = repository_key(MirrorConfig.model_validate(d))
         if key in deployed:
             foreign_mirrors.setdefault(key, []).append(d)
-    header = replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in wanted})
+    header = (replace(header, points={k: v for k, v in (header.points or {}).items() if k in wanted})
+              if header.format == 3 else
+              replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in wanted}))
     return header, kept, dropped, foreign_mirrors
 
 
-def _filtered_manifest(header, rows, repos: set[str]) -> bytes:
+def _repo_meta(header) -> dict[str, dict]:
+    """Each repository the bundle carries → its label and bases (format 2's
+    `repos`, or format 3's `points` with their count as "to")."""
+    if header.format == 3:
+        return {k: {"label": m["label"], "bases": m["bases"], "from": None, "to": len(m["points"]),
+                    "digest": None, "points": len(m["points"])} for k, m in (header.points or {}).items()}
+    return header.repos or {}
+
+
+def _check_paths(paths) -> None:
+    """Every path a manifest names stays inside the root — a row the bundle
+    carries, or one served from the store (a delta's unchanged file, any
+    format-3 row): refused before anything is written."""
+    from mmw.resources.apply import is_safe_path
+    for p in paths:
+        if not is_safe_path(p):
+            raise ApplyError(2, f"bundle is malformed: unsafe path {p!r} — refusing it")
+
+
+def _member_checksums(header, rows) -> dict[str, str]:
+    """Each member a bundle may carry → its checksum: by path, or (format 3)
+    by checksum-named member."""
+    if header.format == 3:
+        return {blob_member(c): c for _p, c, *_r in rows}
+    return {p: c for p, c, *_r in rows}
+
+
+def _filtered_manifest(header, rows, repos: set[str], k_of: dict | None = None) -> bytes:
     """This root's part of the manifest: its repositories and every
-    network-level file. `file_count` is checked for the whole set instead."""
+    network-level file (format 3: its points, each row's point indices).
+    `file_count` is checked for the whole set instead."""
     from dataclasses import asdict, replace
-    head = replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in repos},
-                   file_count=None)
+    if header.format == 3:
+        head = replace(header, points={k: v for k, v in (header.points or {}).items() if k in repos},
+                       file_count=None)
+    else:
+        head = replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in repos},
+                       file_count=None)
     fields = asdict(head)
-    for optional in ("format", "repos", "settings"):
+    for optional in ("format", "repos", "settings", "points"):
         if fields[optional] is None:
             del fields[optional]
     out = [json.dumps(fields, sort_keys=True)]
     for p, c, r, _s in rows:
         if r is None or r in repos:
-            out.append(json.dumps({"p": p, "c": c, **({"r": r} if r is not None else {})}))
+            k = (k_of or {}).get((p, c))
+            out.append(json.dumps({"p": p, "c": c, **({"r": r} if r is not None else {}),
+                                   **({"k": list(k)} if k else {})}))
     return ("\n".join(out) + "\n").encode()
 
 
@@ -1033,9 +1107,13 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
             _read_manifest_member(gen, scratch)
         header, rows = iter_manifest_sized(scratch)
         rows = list(rows)
+        _check_paths(p for p, _c, _r, _s in rows)                 # before anything is written anywhere
         if (header.format or 1) < 2:
             raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
                                 'or set far_side = "mmw" on the connected side and bundle again')
+        k_of: dict = {}
+        if header.format == 3:
+            k_of = {(p, c): k for p, c, _r, _s, k in iter_manifest_points(scratch)[1]}
         foreign = mset is not None and header.network != mset.network
         network = mset.network if foreign else header.network
         dropped: set[str] = set()
@@ -1185,13 +1263,17 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                                                          only=only, progress=progress, stop_event=stop_event,
                                                          say=say, **extra_opts))
             ra.via = roots[name]          # the root this applier writes into (its interface)
-            ra.begin(_filtered_manifest(header, rows, repos))
+            ra.begin(_filtered_manifest(header, rows, repos, k_of))
             appliers[name] = ra
-        cs_all = {p: c for p, c, _r, _s in rows}
+        cs_all = _member_checksums(header, rows)
         for ra in appliers.values():
             ra.expected = cs_all                   # one map for every root, not one each
         repo_of = {p: r for p, _c, r, _s in rows}
         cs_of = {p: c for p, c, _r, _s in rows}
+        points_bundle = header.format == 3
+        if points_bundle:                          # members are named by checksum
+            repo_of = {blob_member(c): r for _p, c, r, _s in rows}
+            cs_of = {blob_member(c): c for _p, c, _r, _s in rows}
         size_of = {c: size or 0 for _p, c, _r, size in rows}
         # Content more than one root needs (the network's own files, and
         # files hostnames in different roots share) is spooled here once and
@@ -1228,7 +1310,8 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     progress("receive", name=m.name, bytes=m.size)
                 if foreign and m.name.startswith((TLS_PREFIX, SIGNING_PREFIX, RUNTIME_PREFIX)):
                     continue                               # another network's: never applied here
-                if m.name in dropped:
+                if m.name in dropped or (points_bundle and not m.name.startswith(".mmw/")
+                                          and m.name not in cs_of):
                     if not m.name.startswith(".mmw/"):
                         received += 1                      # counted, not kept: not mirrored here
                     continue
@@ -1258,6 +1341,12 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     continue
                 if c in shared:
                     spool.put(m.fh, c, m.name)             # held back or not: another root needs it
+                if points_bundle:
+                    # One member per content: every root whose rows hold it takes it.
+                    takers = [appliers[n] for n in order if n in needs.get(c, ())]
+                    for ra in takers:
+                        ra.take(_Member(m.name, "file", spool.open(c) if c in shared else m.fh, None, m.size))
+                    continue
                 if repo is not None and h in result.held_back:
                     continue                               # its root isn't here
                 takers = list(appliers.values()) if repo is None else [appliers[targets[h].info.name]]

@@ -56,6 +56,9 @@ def _row_text(r, location: str) -> str:
     """A repository the bundle changes, and the root it lands in — on which
     machine, for one over ssh."""
     from mmw.tui.site.home import where
+    if getattr(r, "points", None) is not None:          # another far side's points (format 3)
+        return (f"{r.label}  +{r.points} point(s)  ·  {r.files_sent:,} files  "
+                f"{fmt_size(r.bytes_sent)}  ·  {where(location)}")
     start = f"v{r.from_number}" if r.from_number else "full"
     return (f"{r.label}  {start} → v{r.to_number}  ·  {r.files_sent:,} files  "
             f"{fmt_size(r.bytes_sent)}  ·  {where(location)}")

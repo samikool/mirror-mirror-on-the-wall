@@ -64,6 +64,12 @@ CREATE TABLE IF NOT EXISTS point_files (
     point INTEGER NOT NULL, path INTEGER NOT NULL, blob INTEGER NOT NULL,
     PRIMARY KEY (point, path)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_point_files_blob ON point_files(blob, point);
+-- What this far side has sent each other network (its export ledger):
+-- written once a bundle is complete, so the next one sends only newer points.
+CREATE TABLE IF NOT EXISTS exports (
+    target TEXT NOT NULL, repo TEXT NOT NULL, ident TEXT NOT NULL, stamp TEXT NOT NULL,
+    files TEXT NOT NULL DEFAULT '',            -- the digest of the files it went with
+    PRIMARY KEY (target, repo, ident)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS applied (
     id INTEGER PRIMARY KEY, created TEXT NOT NULL, previous TEXT, kind TEXT NOT NULL,
     applied_at TEXT NOT NULL);
@@ -469,6 +475,35 @@ class SiteDB:
             c.execute("DELETE FROM versions WHERE id = ?", (vid,))
         c.commit()
         return len(gone)
+
+    # ── the export ledger ────────────────────────────────────────────────────
+
+    def exported(self, target: str, repo: str) -> dict[str, str]:
+        """ident → the digest of the files it went with ('' if not known)."""
+        return dict(self._conn.execute(
+            "SELECT ident, files FROM exports WHERE target = ? AND repo = ?", (target, repo)))
+
+    def record_export(self, target: str, rows: list, stamp: str) -> None:
+        """`rows`: (repo, ident) or (repo, ident, files) — files a digest, or
+        the point's {path: checksum} to digest."""
+        from mmw.site.tracks import content_ident
+        out = []
+        for row in rows:
+            repo, ident, files = (*row, "")[:3]
+            out.append((target, repo, ident, stamp, content_ident(files) if isinstance(files, dict) else files))
+        self._conn.executemany("INSERT OR REPLACE INTO exports (target, repo, ident, stamp, files) "
+                               "VALUES (?, ?, ?, ?, ?)", out)
+        self._conn.commit()
+
+    def export_targets(self) -> list[str]:
+        """Every network this site has sent to, the latest first."""
+        return [r[0] for r in self._conn.execute(
+            "SELECT target FROM exports GROUP BY target ORDER BY MAX(stamp) DESC, target")]
+
+    def point_by_ident(self, track_id: int, ident: str) -> PointInfo | None:
+        row = self._conn.execute(f"SELECT {self._P} FROM points WHERE track = ? AND ident = ?",
+                                 (track_id, ident)).fetchone()
+        return self._point(row) if row else None
 
     def metas(self, prefix: str) -> dict[str, str]:
         return dict(self._conn.execute("SELECT key, value FROM meta WHERE key LIKE ? || '%'",

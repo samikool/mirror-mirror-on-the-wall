@@ -287,28 +287,6 @@ def test_a_stale_file_that_cannot_be_removed_stays_in_the_record(tmp_path):
     assert ("base/locked/stale.deb", "c1") not in sink.manifest_rows
 
 
-def test_an_interrupted_apply_leaves_no_record(seeded, tmp_path):
-    import subprocess
-    import sys
-
-    from mmw.core.publisher.bundle import bundle_network
-    mirror_dir, cfg = seeded
-    net = NetworkConfig(name="lab", bundle_dir=tmp_path / "out", nginx=False)
-    first = bundle_network(net, cfg, mirror_dir)
-    far = tmp_path / "far"
-    apply = str(tmp_path / "out" / "apply.py")
-    subprocess.run([sys.executable, apply, str(first.out_path), "--root", str(far)], check=True)
-    assert (far / RECORD_PATH).exists()
-    _set_refs(mirror_dir, extra=[("pool/main/h/hello/hello_1.0_amd64.deb", b"x" * 200_000)])
-    second = bundle_network(net, cfg, mirror_dir)
-    data = second.out_path.read_bytes()
-    second.out_path.write_bytes(data[: len(data) // 2])          # cut mid-payload
-    run = subprocess.run([sys.executable, apply, str(second.out_path), "--root", str(far)],
-                         capture_output=True, text=True)
-    assert run.returncode != 0
-    assert not (far / RECORD_PATH).exists()
-
-
 def test_a_corrupt_record_header_is_ignored_without_leaking_its_file(tmp_path):
     from mmw.core.publisher.manifest import read_record
     path = tmp_path / RECORD_PATH

@@ -8,7 +8,6 @@ import concurrent.futures
 import hashlib
 import json
 import os
-import sys
 import uuid
 from pathlib import Path
 
@@ -25,7 +24,7 @@ from mmw.providers.pypi import index
 from mmw.providers.pypi import uv as uvmod
 from pypi_real import FLIT_CORE, committed_wheel, fake_from_real, real_flit_sdist, real_wheel
 from pypi_server import serve
-from e2e_stack import ComposeStack, _run
+from e2e_stack import ComposeStack
 from test_vscode_client_e2e import _ca
 
 pytestmark = pytest.mark.skipif(os.environ.get("MMW_PYPI_E2E") != "1",
@@ -165,9 +164,7 @@ def test_stock_clients_live_publish_and_applied_bundle(tmp_path, monkeypatch):
     with tarfile.open(bundled.out_path) as archive:          # pages are rendered there, never shipped
         assert not any(m.name.startswith("pypi.org/") for m in archive.getmembers())
     far = scratch / "applied"
-    far.mkdir()
-    _run([sys.executable, bundled.out_path.parent / "apply.py", bundled.out_path, "--root", far],
-         scratch / "apply.log")
+    _site_apply(bundled.out_path, far, net.name, net.root)
     assert (far / "pypi.org" / "simple" / "mmw-a" / "index.html").is_file()
     with PypiStack(scratch, far, ca, net.name) as stack:
         stack.probe()
@@ -180,3 +177,19 @@ def test_stock_clients_live_publish_and_applied_bundle(tmp_path, monkeypatch):
         (stack.state / "proj" / "uv.lock").write_text(lockfile)
         stack.hashed_install()
         stack.locked_sync()
+
+
+def _site_apply(bundle, far, network, tls_from):
+    """The far side: `mmw site apply` lays the bundle out; its HTTPS key and
+    certificate — what `mmw site certs` would make — come from the
+    published tree, signed by the same CA."""
+    import shutil
+    from mmw.core.served_tree import https_state
+    from mmw.site import home as H
+    from mmw.site.apply import apply_bundle
+    apply_bundle(H.init_root(far, name="main", set_id="e2e", network=network), str(bundle), say=lambda *a: None)
+    tls = far / ".mmw" / "tls"
+    tls.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name in ("mirror.key", "mirror.crt"):
+        shutil.copy2(tls_from / ".mmw" / "tls" / name, tls / name)
+    https_state(str(far))

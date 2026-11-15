@@ -120,7 +120,7 @@ Under the network `root`:
 
 `mmw bundle` carries the same tree. A delta bundle carries only what changed —
 the image tar travels again only when the image itself changed — and
-`apply.py` lays it out on the far side exactly as publish does here. A pruning
+`mmw site apply` lays it out on the far side exactly as publish does here. A pruning
 publish removes everything VS Code once the source leaves the network.
 
 Publishing needs Docker on the connected machine the first time, to pull
@@ -173,9 +173,9 @@ the two wildcard zones.
 
 VS Code talks HTTPS only, so leave the network's TLS on (the default). The
 certificate mmw generates covers all seven names, wildcards included:
-`mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs it here, or
-`sign.py` signs it on the far side (see [Airgapped operation](airgap.md#https));
-no CA yet? `make-ca.py`, beside `sign.py`, makes one.
+`mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs a published
+tree here; on the far side `mmw site certs` signs with a CA held there (no CA
+yet? `mmw site ca make`) — see [Airgapped operation](airgap.md#https).
 Install the CA on every client: Windows — Local Machine → Trusted Root
 Certification Authorities; macOS — the System keychain, Always Trust; Linux —
 the system store, which VS Code reads.
@@ -201,7 +201,7 @@ docker load -i ../vscode-gallery/python-3.13-slim-linux-amd64.tar
 ```
 
 The generated nginx Compose file includes the gallery. A publish or
-`apply.py` swaps the catalog; the gallery notices by itself, without a restart.
+`mmw site apply` swaps the catalog; the gallery notices by itself, without a restart.
 
 ### 4. Start nginx and the gallery
 

@@ -77,11 +77,11 @@ def test_missing_network_file_leaves_the_db_unchanged(env, tmp_path):  # noqa: F
     _change_a(md)
     delta = _bundle(cfg, net, md, tmp_path / "2")
     with SiteDB(home) as db:                         # the site lost a network file's blob
-        cs = db.network_files()["apply.py"]
+        rel, cs = sorted(db.network_files().items())[0]
     Store(root).path(cs).unlink()
-    (root / "apply.py").unlink()
+    (root / rel).unlink()
     with SiteDB(home) as db:
-        db.set_network_files({**db.network_files(), "apply.py": "0" * 64}, sizes={})
+        db.set_network_files({**db.network_files(), rel: "0" * 64}, sizes={})
     with pytest.raises(ApplyError):
         apply_bundle(home, str(_rewrite(delta, tmp_path / "noapply.tar",
                                         lambda m, d: None if m.name == "apply.py" else d)), say=quiet)

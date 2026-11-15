@@ -672,8 +672,7 @@ def cmd_bundle(
         None, "--to", help="Snapshot to bring it to (stamp, label or id). "
                            "Default: a new snapshot of now."),
     repo: list[str] = typer.Option(
-        None, "--repo", help="Only this repository (URL or name; repeatable). Needs -n and "
-                             'far_side = "mmw".'),
+        None, "--repo", help="Only this repository (URL or name; repeatable). Needs -n."),
     installer: bool = typer.Option(
         False, "--installer", help="Include mmw installer: write mmw-<version>-<arch>.tar beside it, "
                                    "for a far side to install mmw from."),
@@ -725,7 +724,7 @@ def cmd_stage(
 ):
     """Lay a bundle out as a directory of hardlinks to the pool — the same
     members as `mmw bundle`, almost no disk — to tar, rsync or inspect without
-    mmw. For networks whose far side runs mmw (far_side = "mmw")."""
+    mmw."""
     from mmw.commands.stage import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
@@ -1195,10 +1194,12 @@ def cmd_site_ca_show():
 @site_app.command("certs")
 def cmd_site_certs(root: Path = _ROOT,
                    days: int = typer.Option(730, "--days", help="Validity of each certificate"),
-                   force: bool = typer.Option(False, "--force", help="Re-sign even a certificate that is fine")):
+                   force: bool = typer.Option(False, "--force", help="Re-sign even a certificate that is fine"),
+                   out: Path = typer.Option(None, "--out", help="Also collect each root's NETWORK-ROOT.crt and "
+                                                                ".key, and ca.crt, here — for Nginx Proxy Manager")):
     """Sign every root's certificate with the CA and turn HTTPS on."""
     from mmw.commands.site import certs
-    raise typer.Exit(certs(root, days, force))
+    raise typer.Exit(certs(root, days, force, out))
 
 
 snapshot_app = typer.Typer(

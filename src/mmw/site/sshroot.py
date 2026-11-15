@@ -363,14 +363,14 @@ class RemoteApply:
         raise self._failure()
 
     def begin(self, manifest: bytes) -> None:
-        from mmw.resources.apply import MANIFEST_MEMBER
+        from mmw.core.served_tree import MANIFEST_MEMBER
         self._send(lambda out: remote.write_bytes_member(out, MANIFEST_MEMBER, manifest))
         if self.expected is None:
             rows = [json.loads(x) for x in manifest.decode().splitlines()[1:] if x.strip()]
             self.expected = {r["p"]: r["c"] for r in rows}
 
     def take(self, m) -> None:
-        from mmw.resources.apply import TLS_PREFIX
+        from mmw.core.served_tree import TLS_PREFIX
         if m.name.startswith(TLS_PREFIX):
             self.tls[m.name[len(TLS_PREFIX):]] = m.fh.read()
         elif m.name.startswith(".mmw/"):
@@ -388,7 +388,7 @@ class RemoteApply:
         self.got[name] = (checksum, size)
 
     def check(self):
-        from mmw.resources.apply import TLS_PREFIX
+        from mmw.core.served_tree import TLS_PREFIX
         from mmw.site.apply import ApplyResult
 
         def tail(out):

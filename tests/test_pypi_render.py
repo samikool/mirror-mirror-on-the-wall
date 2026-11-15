@@ -7,7 +7,7 @@ from mmw.core.pool import Pool
 from mmw.core.publisher import publish_snapshot
 from mmw.core.publisher.bundle import bundle_network
 from mmw.core.snapshots import take_snapshot
-from mmw.resources import apply as apply_mod
+from mmw.core import served_tree as apply_mod
 from test_pypi_publish import _bump_pysocks, _cfg, _publish, _src, _sync
 
 
@@ -53,8 +53,11 @@ def test_bundle_apply_renders_the_pages(tmp_path, up):
     live = pages(_publish(cfg))
     result = bundle_network(cfg.networks[0], cfg, cfg.settings.mirror_dir, out_path=tmp_path / "b.tar",
                             from_ref=None)
+    from mmw.site import home as H
+    from mmw.site.apply import apply_bundle
     far = tmp_path / "far"
-    assert apply_mod.apply(str(result.out_path), str(far)) == 0
+    apply_bundle(H.init_root(far, name="main", set_id="s1", network=cfg.networks[0].name), str(result.out_path),
+                 say=lambda *a: None)
     assert pages(far) == live
 
 

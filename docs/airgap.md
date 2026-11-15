@@ -3,13 +3,12 @@
 This is the far side, end to end: how a bundle is produced, carried across,
 applied, served, and verified — and what to do when one of those goes wrong.
 
-A network with `far_side = "mmw"` runs mmw on the far side instead, which
-keeps every version and can take one repository back without a new bundle:
-see [far-side.md](far-side.md). The rest of this page is the `apply.py` way.
-
-Nothing here needs `mmw` installed on the airgapped machine. The only thing
-that travels is a tarball, a small applier script, and (optionally) a checksum
-file.
+The far side runs mmw too (`mmw site`): it keeps every version, serves any
+of them, and can take one repository back without a new bundle — see
+[far-side.md](far-side.md) for everything it does. Installing it needs no
+network: the first bundle carries mmw's installer beside it. A far side that
+still runs the old `apply.py` converts in place with `mmw site adopt`
+([far-side.md](far-side.md#a-far-side-applypy-manages)).
 
 ---
 
@@ -20,9 +19,9 @@ file.
  ──────────────                   ────────                ──────────────
  mmw sync      → pool
  mmw verify    → is the pool complete?
- mmw bundle    → lab-<stamp>.tar  ──[ USB / disk ]──→  python3 apply.py
-                 apply.py                                  → /srv/www
-                 lab-<stamp>.tar.sha256                → nginx + DNS
+ mmw bundle    → lab-<stamp>.tar  ──[ USB / disk ]──→  mmw site apply
+                 lab-<stamp>.tar.sha256                    → /srv/www
+                 (mmw-<version>-<arch>.tar)            → nginx + DNS
 ```
 
 Each re-bundle carries only what changed since the previous one, so the first
@@ -43,16 +42,16 @@ mmw bundle -n lab
 `mmw bundle` runs the completeness check itself and refuses if the pool cannot
 serve everything the indexes promise. That check matters more here than
 anywhere else: a missing package is invisible to the bundle (it simply is not
-listed), the transfer succeeds, `apply.py --verify` passes, and the only
+listed), the transfer succeeds, the far side applies it, and the only
 symptom is `apt install` failing months later on a machine nobody can reach.
 
-It writes three files next to each other in the network's `bundle_dir`:
+It writes these next to each other in the network's `bundle_dir`:
 
 | File | What it is |
 |---|---|
 | `lab-<stamp>.tar` | the payload |
 | `lab-<stamp>.tar.sha256` | `sha256sum -c` format, to check the transfer |
-| `apply.py` | the applier, stdlib-only Python 3.6+ |
+| `mmw-<version>-<arch>.tar` | mmw's installer — the first time, and whenever this mmw is newer (`--installer`) |
 
 Useful flags:
 
@@ -84,13 +83,9 @@ breaks, nothing is recorded and the same command starts it again.
 Streaming runs at the disk's speed, about the same as `tar cf -` over the
 same files.
 
-`--from none` still computes deletions. It means "send every file", not "forget what
-the far side has".
-
 ### Stage instead of bundle
 
-For a network whose far side runs mmw (`far_side = "mmw"`), `mmw stage`
-lays the bundle out as a directory instead of a tar: the same members,
+`mmw stage` lays the bundle out as a directory instead of a tar: the same members,
 with every package hardlinked from the pool, so it costs almost no disk.
 It exists without mmw, so tar it over ssh, rsync it or look inside it with
 whatever you like:
@@ -107,10 +102,9 @@ the stage directory on the pool's filesystem: elsewhere mmw warns and copies
 the files instead. It counts as sent once the directory is complete; delete
 it yourself when it has gone across.
 
-### What an mmw network's bundle carries
+### What a bundle carries
 
-A network whose far side runs mmw (`far_side = "mmw"`) gets a bundle of
-**points**, not a jump from one snapshot to another. Every sync records a
+A bundle carries **points**, not a jump from one snapshot to another. Every sync records a
 point per suite that changed; a bundle lists each chosen repository's
 points, and carries only the files the network was never sent — each file
 once, however many points hold it. The far side adds the points to its
@@ -135,39 +129,16 @@ default. The summary names each suite's dates:
 No snapshot is taken: a snapshot is a label you add by hand
 (`mmw snapshot take`), and `--to <snapshot>` sends the points it holds.
 `--from <snapshot>` only bounds `--history`; what was sent decides which
-files travel. Force-deleting a snapshot never makes the next bundle full
-for these networks. In the TUI, the transfer page's **Points** choice is
+files travel. Force-deleting a snapshot never makes the next bundle full.
+In the TUI, the transfer page's **Points** choice is
 the same switch.
-
-### Between any two snapshots
-
-For a network whose far side runs `apply.py`, every bundle goes from one [snapshot](getting-started.md#snapshots-roll-a-network-back)
-of the network to another. By default that is from where the last bundle went
-to a new snapshot of now, but any two work — forwards, backwards, or skipping
-some:
-
-```bash
-mmw snapshot list -n lab                        # stamps, labels, what each holds
-mmw bundle -n lab --from 20260901T090000Z --to pre-upgrade
-mmw bundle -n lab --from none --to pre-upgrade  # full, to an older state
-```
-
-Backwards (bringing the far side back to an older state) works because a snapshot keeps every file
-it lists in the pool until the snapshot is deleted. A deleted one a transfer went to stays as
-history only: still a starting point, never a destination. In the TUI, `b` on a network
-asks From and To and estimates what the bundle sends.
-
-On the far side, `python3 apply.py --status --root /srv/www` says which
-snapshot a mirror is at, and a refused bundle names the exact
-`mmw bundle --from … --to …` to ask for.
 
 ---
 
 ## 2. Carry it across
 
-Copy **the tarball, the `.sha256`, and `apply.py`** to your transfer media.
-Forgot `apply.py`? Every bundle carries its own copy as its third member:
-`tar -xf lab-20260906T143000Z.tar .mmw/apply.py`.
+Copy **the tarball and the `.sha256`** to your transfer media — and mmw's
+installer, when one was written beside them.
 
 On arrival, check the transfer before spending an hour on anything else:
 
@@ -183,51 +154,23 @@ cheapest way to tell a bad copy from a bad bundle.
 ## 3. Apply it
 
 ```bash
-python3 apply.py lab-20260906T143000Z.tar --root /srv/www
-# 20260901T090000Z -> 20260906T143000Z
-# 12,481 applied  3,902 removed
+mmw site apply /media/drive/lab-20260906T143000Z.tar --root '*'=/srv/www   # the first time
+mmw site apply /media/drive/lab-20261006T143000Z.tar                       # after that
 ```
 
-Requirements on the far side: Python 3.6 or newer. Nothing else — no `mmw`,
-no pip install, no network. Bundles are plain tars: the payload is packages,
-which are already compressed. If your transfer medium wants compression,
-`zstd` the tar yourself and `zstd -d` it before applying — `apply.py` refuses a
-compressed file with exactly that message.
-
-| Flag | Effect |
-|---|---|
-| `--root DIR` | where the tree is written (required) |
-| `--dry-run` | report what would change; touch nothing |
-| `--verify` | after applying, hash every file the manifest names |
-
-**Bundles must be applied in order.** `apply.py` records the last-applied stamp
-in `{root}/.mmw-state` and refuses a bundle whose `previous` does not match.
-Applying 1 then 3 would silently leave the tree missing everything 2 carried.
-
-**Deletions are applied last**, after every payload file has been written, so a
-machine running `apt update` mid-apply never sees a release file whose indexes
-have already been removed.
-
-**A failed apply never advances `.mmw-state`**, so it is always safe to retry.
-
-### Exit codes
-
-| Code | Meaning | What to do |
-|---|---|---|
-| 0 | applied cleanly | — |
-| 2 | unsafe or malformed bundle | do not retry; re-bundle on the connected side |
-| 3 | out of order | apply the missing bundle, or just take the next ordinary delta |
-| 4 | `--verify` found a mismatch | see below |
-| 5 | tooling problem (a compressed or truncated archive, an older bundle's manifest) | decompress it, re-check the `.sha256`, or use the `apply.py` that came with that bundle |
+Everything arrives and is checked against the bundle's manifest before
+anything served changes; bundles can come in any order, from this network or
+another; a point whose files aren't all here is stored and said. The details
+— roots, holding a repository back, serving an older day, exit codes — are in
+[far-side.md](far-side.md#apply-a-bundle).
 
 ---
 
 ## 4. Serve it
 
-A directly copied publish tree has the same deployment files and setup as an
-applied bundle; there is no apply step for files already copied into place.
-Publishing snapshots remain manual; bundling current content snapshots it
-automatically.
+A tree `mmw site apply` lays out serves the same files as a publish of the
+same network; a copied publish tree becomes a far side with
+`mmw site adopt PATH`. Neither publishing nor bundling takes a snapshot.
 
 Every nginx-enabled network includes `nginx:latest` for Linux amd64, a Compose
 file, the generated `mirror.conf`, and a guide in `nginx/README.md`. The config
@@ -390,66 +333,35 @@ certificate they trust. No server-side trick can fake a public certificate;
 this works when every client trusts **your** CA, which on an airgapped network
 lives on the airgapped side. Nothing has to come back across.
 
-With TLS on (the default; `certs = false` turns it off), both published trees and bundles carry the private key,
-certificate signing request, OpenSSL config and signing tools. Publish installs
-them directly; `apply.py` installs a bundle's copies in the same
-`{root}/.mmw/tls/` layout (key 0600, directory 0700; outside every web root).
-Both include top-level `apply.py`, `sign.py` and `make-ca.py`, so a published tree copied
-to a drive can be signed and deployed without the original mirror pool.
-Until there is a signed certificate, TLS setup reports:
-
-```
-HTTPS waits for a signed certificate: python3 sign.py --ca CA.crt --ca-key CA.key /srv/www/lab
-```
-
-No CA yet? Make one once, where it will live — `make-ca.py` sits beside
-`sign.py`, and prints how to trust `ca.crt` on each kind of client:
+The far side makes its own key and signs it with a CA held there; a bundle
+never carries a private key. Make the CA once (or load one you have), then
+sign every root of the mirror:
 
 ```bash
-python3 make-ca.py --out ~/site-ca --name "Lab CA"    # --encrypt asks for a passphrase
+mmw site ca make --out ~/site-ca --name "Lab CA"    # --encrypt asks for a passphrase
+mmw site certs                                      # every root; then recreate nginx
 ```
 
 It never overwrites an existing CA. Keep `ca.key` private and backed up:
-losing it means re-trusting a new CA on every client.
+losing it means re-trusting a new CA on every client. Each server block of
+the generated config includes `/srv/mmw/.mmw/tls/https*.conf`, a wildcard
+nginx ignores while nothing matches; `https.conf` — `listen 443 ssl` and the
+certificate paths — is written only once the certificate fits the key, so
+the config loads before, during and after, and plain HTTP never stops. A
+certificate that still fits, covers every hostname and isn't expiring
+within 30 days is left alone (`--force` re-signs); when a new repository
+brings a hostname, `mmw site status` says the certificate doesn't cover it.
 
-On the airgapped side, sign every mirror at once — name mirror roots, a
-directory of them, or `.csr` files; `sign.py` sits beside each bundle (and in
-`{root}/.mmw/tls/`):
+Using Nginx Proxy Manager or your own config instead? `mmw site certs --out
+DIR` also collects each root's `NETWORK-ROOT.crt`, `.key` and `ca.crt` there.
 
-```bash
-python3 sign.py --ca site-ca.crt --ca-key site-ca.key /srv/www   # every root under it
-# lab  signed (no certificate yet): 7 hostname(s), until Oct 11 14:10:00 2028 GMT
-# oak  signed (no certificate yet): 7 hostname(s), until Oct 11 14:10:00 2028 GMT
-python3 apply.py --tls --root /srv/www/lab                       # then recreate nginx
-```
-
-Each certificate lands beside its request as `mirror.crt`. `apply.py --tls`
-(and every later apply) turns HTTPS on in the generated config: each server
-block includes `/srv/mmw/.mmw/tls/https*.conf`, a wildcard nginx ignores while
-nothing matches, and `apply.py` writes `https.conf` — `listen 443 ssl` and the
-certificate paths — only once the certificate fits the key. So the config
-loads before, during and after; plain HTTP never stops. Later bundles never
-carry a certificate they do not have, so the far side's survives every apply.
-
-Using Nginx Proxy Manager or your own config instead? `--out DIR` also collects
-`NAME.crt`, `NAME.key` and `ca.crt` per mirror to load from there.
-
-`sign.py` needs Python 3.6+ and the `openssl` binary (1.1.1 or 3.x). It asks
-for an encrypted CA key's passphrase once, refuses a CA key that is not the
-CA certificate's, and leaves alone a certificate that still fits its key,
-covers every hostname and is not expiring within 30 days (`--force` re-signs).
-When a new repository brings a hostname, the next apply says the certificate
-does not cover it; run `sign.py` again.
-
-This puts the private key on your transfer media. A network whose media must
-not hold it keeps `certs` off, and its far side is served over HTTP only.
-
-A network with `far_side = "mmw"` never does: its far side makes its own keys
-(`mmw site certs`, see [far-side.md](far-side.md#https)), so its bundles carry none.
+A published tree (served on the connected side) carries the connected
+side's key, request and config in `{root}/.mmw/tls/` (key 0600, directory
+0700; outside every web root) and is signed with `mmw certs`.
 
 If your CA is reachable from the connected side instead,
-`mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs there and the
-certificate rides every bundle too.
+`mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key` signs a published
+tree there.
 
 If you would rather not run a CA at all, turn off the client checks that use HTTPS instead —
 for the release-upgrade check, `Prompt=never` in
@@ -474,17 +386,15 @@ says the same thing.
 
 ## Troubleshooting
 
-**`apply.py` exits 3 (out of order).**
-The far side is not where this bundle expects it to be. Either apply the bundle
-you skipped, or ask for one from where the far side actually is — the refusal
-prints the exact `mmw bundle -n … --from … --to …` to run on the connected
-side. `--from none` also works and bypasses the check.
+**`mmw site apply` stores a point "incomplete".**
+The far side lacks files that point needs (it missed a bundle). The line
+names what to ask for — usually `mmw bundle -n lab --repo 'LABEL' --full` on
+the connected side; the rest of the bundle still applies.
 
-**`apply.py --verify` reports mismatches.**
+**`mmw site verify` reports mismatches.**
 Keep generated files unchanged; edit Compose mount sources in a deployment
-copy outside the published folder. Re-check the `.sha256` and re-transfer damaged
-files. Older bundles used host-root config substitution, so verify those
-against the same `--root` you originally applied to.
+copy outside the served folder. Re-check the `.sha256` and re-transfer a
+damaged bundle; `mmw site verify --repair` puts back what the store still holds.
 
 **`apt install` 404s on a package `apt update` listed.**
 The bundle shipped an index without its package. Run `mmw verify` on the

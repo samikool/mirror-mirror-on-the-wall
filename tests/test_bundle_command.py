@@ -81,7 +81,7 @@ def test_second_network_still_bundles_after_first_is_skipped(cfg_dir, monkeypatc
     calls = []
 
     def fake_bundle_network(net, cfg, mirror_dir, out_path=None,
-                            from_ref=None, to_ref="now"):
+                            from_ref=None, to_ref="now", **kw):
         calls.append((net.name, from_ref is None))
         return result
 
@@ -105,7 +105,7 @@ def test_successful_bundle_prints_path_and_forwards_from_none(cfg_dir, monkeypat
     calls = []
 
     def fake_bundle_network(net, cfg, mirror_dir, out_path=None,
-                            from_ref=None, to_ref="now"):
+                            from_ref=None, to_ref="now", **kw):
         # --from none reaches the builder as "start from nothing".
         calls.append({"network": net.name, "out_path": out_path,
                       "full": from_ref is None})
@@ -133,7 +133,7 @@ def test_exception_from_one_network_does_not_abort_the_run(cfg_dir, monkeypatch,
     calls = []
 
     def fake_bundle_network(net, cfg, mirror_dir, out_path=None,
-                            from_ref=None, to_ref="now"):
+                            from_ref=None, to_ref="now", **kw):
         calls.append(net.name)
         if net.name == "lab-a":
             raise RuntimeError("pool is locked")
@@ -163,7 +163,7 @@ def test_out_option_overrides_missing_bundle_dir(cfg_dir, monkeypatch):
     calls = []
 
     def fake_bundle_network(net, cfg, mirror_dir, out_path=None,
-                            from_ref=None, to_ref="now"):
+                            from_ref=None, to_ref="now", **kw):
         calls.append(out_path)
         return result
 
@@ -193,12 +193,6 @@ def test_cli_unknown_repo_lists_valid_names(two_mirrors, tmp_path, monkeypatch):
     run = _repo_cli(two_mirrors, tmp_path, monkeypatch, "mmw")
     r = run("bundle", "-n", "oak", "--out", str(tmp_path / "o"), "--allow-incomplete", "--repo", "nope")
     assert r.exit_code == 1 and "this network has: a, b" in r.output
-
-
-def test_cli_repo_on_apply_network_refused(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
-    run = _repo_cli(two_mirrors, tmp_path, monkeypatch, "apply")
-    r = run("bundle", "-n", "oak", "--out", str(tmp_path / "o"), "--allow-incomplete", "--repo", "a")
-    assert r.exit_code == 1 and 'far_side = "mmw"' in r.output
 
 
 def test_cli_repo_by_label(two_mirrors, tmp_path, monkeypatch):  # noqa: F811

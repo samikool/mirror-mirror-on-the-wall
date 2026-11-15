@@ -47,5 +47,5 @@ def test_current_points(two_mirrors):  # noqa: F811
     points.record_network_points(net, cfg, md)
     with Pool(md, read_only=True) as pool:
         cur = points.current_points(pool, net.name)
-        assert set(cur) >= {"https://example.com/a", "https://example.com/b", f"network:{net.name}"}
+        assert set(cur) >= {"https://example.com/a", "https://example.com/b"}   # (no network files here)
         assert all(len(ids) == 1 for ids in cur.values())

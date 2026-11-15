@@ -1,7 +1,6 @@
 # mmw on the far side
 
-For a network whose far side runs mmw (`far_side = "mmw"` on the connected
-side), `mmw site` keeps a **timeline** of every repository it is sent, and
+On the airgapped side, `mmw site` keeps a **timeline** of every repository it is sent, and
 serves any point on it again by relinking files it already has. Take Debian
 back to how it was last month without a new bundle, leave everything else
 where it is, and move it forward when you are ready.
@@ -14,9 +13,9 @@ them. Points are identified by their contents, so the same `Release` from
 anywhere is the same point: bundles that arrive out of order, or from
 another network, are **merged into the timeline** — never refused for it.
 
-A network whose far side runs only `apply.py` keeps working exactly as
-[airgap.md](airgap.md) describes; `mmw site` refuses its bundles, and
-`apply.py` refuses an mmw network's.
+A far side that still runs the old `apply.py` converts in place — see
+[A far side apply.py manages](#a-far-side-applypy-manages). A bundle an older
+mmw made for `apply.py` is refused with that pointer.
 
 ---
 
@@ -295,8 +294,7 @@ mmw site adopt /srv/www --yes        # it becomes a root of an mmw mirror
 Every file is checked against that manifest and linked into a store beside
 it; served files stay exactly as they are. Each APT repository is found by
 its `dists/`; everything else (VS Code, PyPI, keys, nginx) is kept as the
-network's files. Then set `far_side = "mmw"` for the network on the
-connected side: its next bundle names the repositories, carries only what
+network's files. The network's next bundle names the repositories, carries only what
 the far side didn't have, and from then on this is an mmw mirror like any
 other. (`--root` adopts the tree into another mirror instead.)
 
@@ -421,7 +419,7 @@ repository, `K` for this side's signing keys.
 
 ### Keys from the connected side
 
-A network with `far_side = "mmw"` can carry signing keys across:
+A network can carry signing keys across:
 `carry_keys = ["tools"]` (or the network editor's *Carry signing keys*) puts
 those keys' **private** parts in every bundle — anyone holding a bundle can then
 sign as you, so it is opt-in per key. `mmw site apply` imports them before
@@ -520,4 +518,4 @@ who holds it; `--break-lock` clears a lock a dead run left behind.
 | 2 | an unsafe or damaged bundle — copy it again, or bundle again |
 | 3 | a repository was refused: its new version needs files this site doesn't have |
 | 4 | `verify` found a mismatch |
-| 5 | the lock is held, the bundle is an apply.py one, truncated or compressed |
+| 5 | the lock is held, the bundle was made for apply.py, truncated or compressed |

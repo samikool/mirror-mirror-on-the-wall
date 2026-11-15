@@ -192,7 +192,7 @@ class NetworksPage(Page):
             mirror_dir = self.app.cfg.settings.mirror_dir
             status = await asyncio.to_thread(load_status, mirror_dir, net)
             repos = None
-            if verb == "bundle" and net.far_side == "mmw":
+            if verb == "bundle":
                 from mmw.core.repos import network_repos
                 repos = await asyncio.to_thread(network_repos, net, self.app.cfg, mirror_dir)
             page = (PublishPickPage(net, status) if verb == "publish"

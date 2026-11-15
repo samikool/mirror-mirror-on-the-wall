@@ -114,7 +114,7 @@ def publish_network(
     if disk_io.ops.exists(database_path(mirror_dir)):      # never create a pool to publish from
         with Pool(mirror_dir) as writable:
             apply_build(network, cfg, mirror_dir, writable, result)
-    from mmw.core.publisher.deployment import prepare_tree
+    from mmw.core.publisher.deployment import drop_retired, prepare_tree
     # The pool opens before the record is touched: a database that will not
     # open (moved, missing) must not cost the tree its record.
     with Pool(mirror_dir, read_only=True) as pool:
@@ -128,9 +128,8 @@ def publish_network(
             if not (stop_event and stop_event.is_set()):
                 _render_derived(network.root, progress, stop_event)
                 prepare_tree(network.root, network, cfg)
-                if network.prune and not network.certs:
-                    for script in ("sign.py", "make-ca.py"):
-                        disk_io.ops.unlink(network.root / script, missing_ok=True)
+                if network.prune:
+                    drop_retired(network.root)
         finally:
             sink.close()
             result.timings.update(sink.job.stats.timings())
@@ -145,7 +144,7 @@ def _render_derived(root: Path, progress=None, stop_event=None) -> None:
     """The derived pages (PyPI's) from the tree's shards — the same rule
     apply.py runs on the far side, its page writes on this job's write lane
     (a full index is millions of small files)."""
-    from mmw.resources.apply import render_derived
+    from mmw.core.served_tree import render_derived
 
     with disk_io.DiskJob("render", stop_event=stop_event) as job:
         def write_pages(pages):
@@ -349,7 +348,10 @@ def _lay_out(network: NetworkConfig, cfg: Config, root: Path, rows, settings: st
     out at `root` with `settings`' nginx: what publishing a snapshot or a
     date does. `record_target`: (mirror_dir, what `root` now serves)."""
     from mmw.core.certs import CHANGELOGS_HOST as CHANGELOGS_DIR
+    from mmw.core.publisher.deployment import RETIRED
     from mmw.core.snapshots import recorded_bases
+    # A snapshot from before mmw ran both sides lists the far-side scripts: never laid out again.
+    rows = (row for row in rows if row[0] not in RETIRED)
     bases = recorded_bases(settings)
     per_base = {b: MirrorPublishResult(mirror_name=b) for b in sorted(bases)}
     other = MirrorPublishResult(mirror_name="keys and extra files")
@@ -419,9 +421,10 @@ def _lay_out(network: NetworkConfig, cfg: Config, root: Path, rows, settings: st
 
         if not (stop_event and stop_event.is_set()):
             nginx_rels = {rel for rel in keep[None] if rel.startswith("nginx/")}
-            from mmw.core.publisher.deployment import prepare_tree, write_scripts
-            write_scripts(sink, network.certs, existing=keep[None])
+            from mmw.core.publisher.deployment import drop_retired, prepare_tree
             prepare_tree(root, network, cfg)
+            if network.prune:
+                drop_retired(root)
             # Regenerate nginx from the recorded snapshot settings.
             from mmw.core.publisher.nginx import recorded_nginx_files
             from mmw.core.publisher.nginx_container import TLS_INCLUDE
@@ -542,8 +545,6 @@ def walk_network(
     # whole archive there, so anything written after close is dropped.
     if not (stop_event and stop_event.is_set()):
         nginx_rels: set[str] = set()
-        from mmw.core.publisher.deployment import write_scripts
-        write_scripts(sink, network.certs)
         if network.nginx:
             from mmw.core.publisher.nginx_container import publish_image
             nginx_rels |= publish_image(mirror_dir, sink, result, progress=progress, stop_event=stop_event)

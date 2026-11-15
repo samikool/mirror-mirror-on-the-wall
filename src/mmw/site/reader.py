@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import BinaryIO, Iterator
 
 from mmw.core import disk_io
-from mmw.resources.apply import is_safe_path
+from mmw.core.served_tree import is_safe_path
 
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 

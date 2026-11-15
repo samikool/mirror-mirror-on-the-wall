@@ -7,18 +7,19 @@ from mmw.core.publisher.bundle import bundle_network
 from mmw.site.adopt import adopt_apply_tree, apt_bases, find_apply_tree
 from mmw.site.db import SiteDB
 
-from test_bundle_snapshots import _apply, _tree, states  # noqa: F401
+from test_bundle_snapshots import _tree, states  # noqa: F401
 
 BASE = "archive.ubuntu.com/ubuntu"
 
 
 @pytest.fixture
 def far(states, tmp_path):  # noqa: F811
-    """A far side apply.py brought to snapshot s3."""
+    """A far side as apply.py left it at snapshot s3 — the tree and its
+    `.mmw/manifest.jsonl` record, which a publish keeps the same way."""
+    from mmw.core.publisher import publish_snapshot
     cfg, net, md, snaps, published = states
-    r = bundle_network(net, cfg, md, from_ref=None, to_ref="s3")
     dest = tmp_path / "far"
-    assert _apply(tmp_path, r, dest).returncode == 0
+    assert not publish_snapshot(net, cfg, md, "s3", root=dest).errors
     return cfg, net, md, snaps, published, dest
 
 

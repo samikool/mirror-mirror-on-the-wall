@@ -109,11 +109,10 @@ This directory contains the official `{IMAGE}` image for `{PLATFORM}`,
 The repository always mounts at `{CONTAINER_ROOT}` inside the container.
 Replace the host-side `/path/to/{name}` placeholders in the bind mounts
 with the actual network folder; leave container paths unchanged.
-Keep your edited deployment copy outside the published folder so later
-publishes do not overwrite it and bundle manifest verification still passes.
-Published trees can be copied directly to a drive. They include `apply.py`,
-plus `sign.py` and private `.mmw/tls/` assets when TLS is enabled.
-For a bundle, run `apply.py` first. Then, from this directory on the Linux
+Keep your edited deployment copy outside the served folder so later
+publishes and applies do not overwrite it. A bundle is laid out by
+`mmw site apply` on the far side; a published tree copied to a drive becomes
+a far side with `mmw site adopt PATH`. Then, from this directory on the Linux
 serving host:
 
 ```sh
@@ -125,11 +124,12 @@ docker compose -f /path/to/{name}-compose.yaml run --rm nginx nginx -t
 docker compose -f /path/to/{name}-compose.yaml up -d --force-recreate
 ```
 
-The repository and `nginx/` directory mounts are read-only. TLS in both publish and bundle deployments
-lives under the network folder's `.mmw/tls`: `apply.py` enables HTTPS once
-the signed certificate fits its key. After signing on the far side, run
-`apply.py --tls --root /actual/path/to/{name}`, then recreate the container.
-Clients must trust the signing CA.
+The repository and `nginx/` directory mounts are read-only. TLS lives under
+the network folder's `.mmw/tls`, and HTTPS turns on once a signed certificate
+fits its key: on the far side `mmw site certs` makes the key and signs it
+with your CA (`mmw site ca make` makes one); a published tree is signed with
+`mmw certs` on the connected side. Then recreate the container. Clients must
+trust the signing CA.
 
 If no image tar was included (publish warned that Docker and its cache were
 unavailable), load `{IMAGE}` for `{PLATFORM}` separately before starting.

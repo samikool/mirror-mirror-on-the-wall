@@ -14,7 +14,7 @@ would online.)
 
 > **Status: 1.0.** Everything below is exercised by an offline test suite and
 > has run against real upstreams. Bundling is tested end to end — a real bundle
-> is applied by `apply.py` and diffed against a directly published tree — but
+> is applied by `mmw site apply` and diffed against a directly published tree — but
 > report anything a physical airgap turns up. See [CHANGELOG.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/CHANGELOG.md).
 
 ## Highlights
@@ -100,7 +100,7 @@ end, from zero to a client running `apt update` against your mirror.
 | Document | What it covers |
 |----------|----------------|
 | [Getting started](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/getting-started.md) | Zero → first sync → first published tree → served → verified from a real client |
-| [Airgapped operation](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md) | Bundle, transfer, `apply.py`, nginx, DNS, GPG import on the far side, troubleshooting |
+| [Airgapped operation](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md) | Bundle, transfer, `mmw site`, nginx, DNS, GPG import on the far side, troubleshooting |
 | [Configuration](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/configuration.md) | Every `mmw.toml` key and default, generated from the models |
 | [CLI reference](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/cli.md) | Every command and flag, generated from the CLI |
 | [VS Code](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/vscode.md) | Mirror the VS Code Marketplace, installers and Remote-SSH server builds |
@@ -190,11 +190,11 @@ directory, not the host — but "zero client-side configuration" no longer
 applies: every client needs editing, and every client needs re-editing if you
 ever move the mirror.
 
-Publish and bundle have the same deployable contents, including `apply.py`,
-container images/configs, and TLS/signing assets when enabled. Published trees
-can be copied directly to a drive. Publishing never creates a snapshot
-automatically; publish snapshots are manual, while bundling current content
-creates its snapshot automatically.
+Publish and bundle have the same deployable contents — container images and
+configs included — except TLS keys: a published tree carries this side's, and
+a far side makes its own. A published tree copied to a drive becomes a far
+side with `mmw site adopt`. Neither publishing nor bundling takes a snapshot:
+a snapshot is a label you add by hand.
 
 ## Serving it
 
@@ -255,14 +255,12 @@ already wrote its key and signing request:
 uv run mmw certs -n lab --ca site-ca.crt --ca-key site-ca.key
 ```
 
-signs a certificate for every hostname the network serves. Both publish and
-bundle deployments carry the key, signing request, certificate when available,
-and signing tools in private `.mmw/tls/` (key 0600, directory 0700). No
-generated web root serves that directory. The same container config enables
-HTTPS when the certificate fits the key. A published tree can be copied
-directly to a drive and signed offline using its included `sign.py` and
-`apply.py --tls`, just like an applied bundle. Source key material is kept in
-`{mirror_dir}/certs/`. See [Airgapped operation](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md#https).
+signs a certificate for every hostname the network serves. A published tree
+carries the key, signing request and certificate in private `.mmw/tls/` (key
+0600, directory 0700); no generated web root serves that directory, and the
+same container config enables HTTPS when the certificate fits the key. A far
+side makes its own key and signs it with `mmw site certs` — a bundle never
+carries a private key. Source key material is kept in `{mirror_dir}/certs/`. See [Airgapped operation](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md#https).
 
 ## Recommended operational order
 
@@ -272,8 +270,7 @@ sync  →  verify  →  publish   (or bundle)
 
 `verify` is the step people skip. Publish and bundle enumerate `refs ⋈
 packages` — a package the index wants but the pool does not hold is simply
-absent from both, with no error. The result applies cleanly, `apply.py --verify`
-passes, and the gap only surfaces as a 404 during `apt install` on the far side
+absent from both, with no error. The result applies cleanly, and the gap only surfaces as a 404 during `apt install` on the far side
 of an airgap. `mmw verify` is the read-only check that catches it while you can
 still fix it. (`publish` and `bundle` run it themselves too, but running it
 separately tells you *before* you start a multi-hour transfer.)
@@ -373,28 +370,25 @@ being published right away, and the next prune frees what only it used.
 ## Moving a mirror to the airgapped side
 
 **Bundling is the supported route.** `mmw bundle` writes one plain `.tar` per
-network containing exactly what `publish` would have written, plus a manifest
-and a stdlib-only `apply.py` that runs on the far side with no `mmw` install
-(Python 3.6+, nothing else). Each re-bundle carries only what changed since
-the last one, and `apply.py` refuses to apply bundles out of order.
+network holding each repository's newest sync points (or, with `--history`,
+every one since the last bundle) and only the files that network was never
+sent. On the far side, mmw — installed offline from the installer the first
+bundle carries — applies it with `mmw site apply`, in any order, keeping every
+point so any day can be served again.
 
 ```bash
 uv run mmw bundle -n lab                    # delta since the last bundle
 uv run mmw bundle -n lab --from none        # send everything
 ssh mirrorhost mmw bundle -n lab --out - > /media/drive/lab.tar   # straight onto a drive, no disk spent
 # ...carry lab-20260906T143000Z.tar across...
-tar -xf lab-20260906T143000Z.tar .mmw/apply.py   # every bundle carries its own applier
-python3 .mmw/apply.py lab-20260906T143000Z.tar --root /srv/www
+mmw site apply lab-20260906T143000Z.tar --root '*'=/srv/www
 ```
 
-Use `apply.py` rather than plain `tar -x`: it stages each file and renames it
-into place, refuses a truncated archive, and records which bundle the tree is
-at, so the next delta applies. An interrupted plain extraction leaves a
-partial tree and no record of where it stopped.
-
-A network whose far side will run mmw itself (`far_side = "mmw"`) can also
-bundle only some repositories (`--repo debian`), and `mmw stage` lays a bundle
-out as a directory of hardlinks to the pool, to tar or rsync across yourself.
+Everything arrives and is checked before anything served changes. A bundle
+can name only some repositories (`--repo debian`), and `mmw stage` lays a
+bundle out as a directory of hardlinks to the pool, to tar or rsync across
+yourself. A far side that ran the old `apply.py` converts in place:
+`mmw site adopt /srv/www`.
 
 Full walkthrough, including the far side's nginx, DNS, GPG import and a
 troubleshooting table: **[docs/airgap.md](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md)**.
@@ -471,9 +465,6 @@ Note for anyone poking around: `mirror/` in a working copy may be a **live
 multi-terabyte mirror tree**. Do not point recursive tools at the repo root
 (pytest and ruff are already scoped away from it).
 
-`src/mmw/resources/apply.py` runs on the far side of the airgap and must stay
-stdlib-only and Python 3.6 compatible; `tests/test_apply_script.py` and CI
-enforce it.
 
 ## License
 

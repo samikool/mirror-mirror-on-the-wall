@@ -128,7 +128,7 @@ def test_b_bundles_between_two_snapshots_with_an_estimate(two_mirrors, tmp_path)
         await until(pilot, lambda: _finished(app))
         assert app.active_transfer.outcome == "ok", app.notes
     _run(cfg, mirror_dir.parent, check)
-    assert [p.name for p in out.glob("*.tar*") if not p.name.endswith(".sha256")] == [
+    assert [p.name for p in out.glob("oak-*.tar*") if not p.name.endswith(".sha256")] == [
         f"oak-{s1.stamp}-to-{s2.stamp}.tar"]
 
 
@@ -231,28 +231,6 @@ def test_deleting_a_transferred_snapshot_keeps_it_as_history_only(two_mirrors): 
         assert type(app.screen).__name__ == "SnapshotsPage" and len(_rows(app)) == 1
     _run(cfg, mirror_dir.parent, check)
 
-
-def test_force_delete_forgets_and_says_the_next_transfer_is_full(two_mirrors):  # noqa: F811
-    cfg, net, mirror_dir = two_mirrors
-    sent = take_snapshot(net, cfg, mirror_dir, label="sent")
-    with Pool(mirror_dir) as pool:
-        pool.record_bundle(net.name, None, sent.stamp, "/o/x.tar", 1, 1, 0)
-
-    async def check(app, pilot):
-        await pilot.press("n")
-        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
-                    and len(_rows(app)) == 1)
-        await pilot.press("D")
-        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog"
-                    and app.screen.query("#confirm"))                # pushed AND built
-        await shows(pilot, lambda: app.screen.query_one("#confirm-message").render(), "sends everything")
-        app.screen.query_one("#confirm").press()
-        await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage"
-                    and not _rows(app))
-        assert any("Forgot" in n and "sends everything" in n for n in app.notes)
-        with Pool(mirror_dir, read_only=True) as pool:
-            assert pool.full_next(net.name) == sent.stamp
-    _run(cfg, mirror_dir.parent, check)
 
 def test_the_detail_pane_says_what_the_root_serves(two_mirrors):  # noqa: F811
     from mmw.core.publisher import publish_snapshot
@@ -378,19 +356,6 @@ def test_bundle_pick_mmw_has_repos_and_stage(two_mirrors, tmp_path):  # noqa: F8
     import json
     header = json.loads((staged / ".mmw/manifest.jsonl").read_text().splitlines()[0])
     assert {m["label"] for m in header["points"].values()} == {"a"}       # b left out
-
-
-def test_bundle_pick_apply_unchanged(two_mirrors, tmp_path):  # noqa: F811
-    cfg, net, mirror_dir = two_mirrors
-    cfg = cfg.model_copy(update={"networks": [net.model_copy(update={"bundle_dir": tmp_path / "usb"})]})
-
-    async def check(app, pilot):
-        await pilot.press("t")
-        await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage"
-                    and app.screen.query("#pick-to"))
-        assert not app.screen.query("#pick-repos") and not app.screen.query("#pick-as")
-        app.screen.query_one("#btn-pick-cancel").press()
-    _run(cfg, mirror_dir.parent, check)
 
 
 def test_snapshots_page_shows_changed_repos(two_mirrors):  # noqa: F811

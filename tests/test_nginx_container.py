@@ -4,7 +4,6 @@ import hashlib
 import json
 import shlex
 import subprocess
-import sys
 import tarfile
 from pathlib import Path
 
@@ -34,8 +33,13 @@ def _docker(tmp_path, monkeypatch, payload=b"nginx image", image_id="sha256:one"
 
 
 def _members(path):
+    """Served path → bytes, for what the bundle carries (format 3: by checksum)."""
     with tarfile.open(path) as archive:
-        return {m.name: archive.extractfile(m).read() for m in archive if m.isfile() or m.islnk()}
+        raw = {m.name: archive.extractfile(m).read() for m in archive if m.isfile() or m.islnk()}
+    lines = raw[".mmw/manifest.jsonl"].decode().splitlines()
+    from mmw.core.publisher.manifest import blob_member
+    rows = [json.loads(x) for x in lines[1:]]
+    return {r["p"]: raw[blob_member(r["c"])] for r in rows if blob_member(r["c"]) in raw}
 
 
 def test_publish_ships_image_and_mounts_generated_config(two_mirrors, tmp_path, monkeypatch):
@@ -85,17 +89,17 @@ def test_delta_only_resends_image_when_it_changes_and_apply_leaves_binary_untouc
     first = bundle_network(net, cfg, mirror_dir, from_ref=None, out_path=tmp_path / "first.tar")
     assert not first.errors
     assert _members(first.out_path)[f"nginx/{nginx.TAR_NAME}"] == payload
-    same = bundle_network(net, cfg, mirror_dir, out_path=tmp_path / "same.tar")
-    assert f"nginx/{nginx.TAR_NAME}" not in _members(same.out_path)
+    with pytest.raises(ValueError, match="nothing to send"):        # the image unchanged: nothing goes
+        bundle_network(net, cfg, mirror_dir, out_path=tmp_path / "same.tar")
     _docker(tmp_path, monkeypatch, payload + b"updated", "sha256:two")
     changed = bundle_network(net, cfg, mirror_dir, out_path=tmp_path / "changed.tar")
     assert _members(changed.out_path)[f"nginx/{nginx.TAR_NAME}"] == payload + b"updated"
 
-    apply = tmp_path / "apply.py"
-    for result in (first, same, changed):
-        run = subprocess.run([sys.executable, str(apply), str(result.out_path), "--root", str(destination), "--verify"],
-                             capture_output=True, text=True)
-        assert run.returncode == 0, run.stdout + run.stderr
+    from mmw.site import home as H
+    from mmw.site.apply import apply_bundle
+    home = H.init_root(destination, name="main", set_id="s1", network=net.name)
+    for result in (first, changed):
+        apply_bundle(home, str(result.out_path), say=lambda *a: None)
     assert (destination / "nginx" / nginx.TAR_NAME).read_bytes() == payload + b"updated"
     compose = (destination / "nginx/compose.yaml").read_text()
     assert ROOT_PLACEHOLDER not in compose

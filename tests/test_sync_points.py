@@ -26,8 +26,8 @@ def _idents(md, network):
 def test_sync_records_a_point_per_suite(oak):
     cfg, net, md = oak
     r = points.record_network_points(net, cfg, md)
-    assert sorted(_idents(md, "oak")) == [(_key(cfg, "a"), "example.com/a", 1), (_key(cfg, "b"), "", 1),
-                                          ("network:oak", "network", 1)]
+    # (no network track: this network serves no files of its own — no keys, no nginx in the walk)
+    assert sorted(_idents(md, "oak")) == [(_key(cfg, "a"), "example.com/a", 1), (_key(cfg, "b"), "", 1)]
     assert any("2026-11-01" in n for n in r.new)
 
 

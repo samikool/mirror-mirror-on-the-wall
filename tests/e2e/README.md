@@ -91,7 +91,7 @@ It checks:
   and `uv sync --frozen` works from a fresh copy;
 - the straight mirror carries these anyway, so the test also asserts that the
   requirements unit itself selected the sdist and its build tool;
-- after bundle → `apply.py` on an empty directory, the far side renders its
+- after bundle → `mmw site apply` on an empty directory, the far side renders its
   own `pypi.org/` pages, the installs work again, and the hashed requirements
   file and `uv.lock` made on the connected side work there unchanged (synced
   with an empty uv cache);

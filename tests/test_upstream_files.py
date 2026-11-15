@@ -14,8 +14,6 @@ Plus `keys/` served at `/mmw-keys/` on every host.
 """
 import contextlib
 import hashlib
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -23,7 +21,6 @@ import pytest
 from mmw.core import config, keys, upstream
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE, Pool
 from mmw.core.publisher import publish_network
-from mmw.core.publisher.bundle import bundle_network
 from mmw.core.publisher.nginx import nginx_files
 
 ARMOUR = ("-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQINBGXf\n"
@@ -300,24 +297,6 @@ def test_a_network_gets_only_its_own_repositories_files(seeded, tmp_path):
     publish_network(net, cfg, mirror_dir)
     assert (root / _rel(MS_KEY)).exists()
     assert not (root / _rel(NV_LIST)).exists()
-
-
-def test_bundle_delta_never_deletes_a_vendor_file(seeded, tmp_path):
-    mirror_dir, cfg = seeded
-    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", prune=True)
-    bundle_network(net, cfg, mirror_dir)
-    assert bundle_network(net, cfg, mirror_dir).deleted == 0
-
-
-def test_bundle_round_trip_carries_vendor_files(seeded, tmp_path):
-    mirror_dir, cfg = seeded
-    net = config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out")
-    result = bundle_network(net, cfg, mirror_dir)
-    dest = tmp_path / "far"
-    subprocess.run([sys.executable, str(tmp_path / "out" / "apply.py"),
-                    str(result.out_path), "--root", str(dest), "--verify"], check=True)
-    assert (dest / _rel(NV_LIST)).read_bytes() == NV_LIST_BODY
-    assert (dest / _rel(MS_KEY)).read_bytes() == ARMOUR.encode()
 
 
 def test_cert_names_cover_vendor_file_hosts(seeded, monkeypatch):

@@ -167,7 +167,7 @@ def _good(tls: Path, hosts: list[str], ca_cert) -> bool:
 
 def _sign_root(r, ca_cert, s, password, days, force) -> "RootCertResult":
     from mmw.core.certs import sign_csr
-    from mmw.resources.apply import https_state
+    from mmw.core.served_tree import https_state
     hosts, notes, csr, action = prepare_csr(r, ca_cert, force)
     if action in ("not mounted", "no hostnames"):
         return RootCertResult(r.name, [], action, [])
@@ -207,7 +207,7 @@ def prepare_csr(r, ca_cert, force: bool) -> tuple[list[str], list[str], bytes | 
 
 def install_cert(r, pem: bytes) -> list[str]:
     """A root's other half: the signed certificate in place, HTTPS to match."""
-    from mmw.resources.apply import https_state
+    from mmw.core.served_tree import https_state
     root = Path(r.path)
     disk_io.ops.atomic_write(root / ".mmw" / "tls" / "mirror.crt", pem)
     return https_state(str(root))
@@ -259,7 +259,7 @@ def tls_notes(home: Path) -> list[str]:
     CA is loaded), HTTPS on or off to match. Never raises: a bad file is a
     note."""
     from mmw.core.certs import check_cert
-    from mmw.resources.apply import https_state
+    from mmw.core.served_tree import https_state
     s = load_site(home)
     roots = [r for r in s.roots if disk_io.ops.is_dir(Path(r.path) / ".mmw" / "store")]
     signed = {r.name for r in roots if disk_io.ops.exists(Path(r.path) / ".mmw" / "tls" / "mirror.crt")}
@@ -276,7 +276,36 @@ def tls_notes(home: Path) -> list[str]:
                 continue
             for problem in check_cert(tls, hosts):
                 notes.append(f"{r.name}: {problem.replace('re-sign', 'mmw site certs')}")
-            notes.extend(f"{r.name}: {n}" for n in https_state(str(root)) if "sign.py" not in n)
+            notes.extend(f"{r.name}: {n}" for n in https_state(str(root)) if "re-sign:" not in n)
         except (ValueError, OSError) as e:
             notes.append(f"{r.name}: its certificate or key can't be read ({e}) — mmw site certs")
     return notes
+
+
+def collect_certs(roots: list[tuple[str, Path]], network: str, out: Path) -> list[str]:
+    """For a proxy in front of the mirror (Nginx Proxy Manager): each signed
+    root's certificate and key as `NETWORK-ROOT.crt` / `.key` (0600), and the
+    CA's `ca.crt`, in `out`. A root not signed yet is skipped. The names
+    written."""
+    import os
+    import shutil
+    ca = _ca_paths(None)
+    if ca is None:
+        raise ValueError("no CA yet — mmw site ca load --cert … --key …, or mmw site ca make --out …")
+    out = Path(out)
+    disk_io.ops.mkdir(out, parents=True, exist_ok=True)
+    written = []
+    for name, path in roots:
+        tls = Path(path) / ".mmw" / "tls"
+        if not (disk_io.ops.exists(tls / "mirror.crt") and disk_io.ops.exists(tls / "mirror.key")):
+            continue
+        stem = f"{network}-{name}"
+        shutil.copyfile(tls / "mirror.crt", out / f"{stem}.crt")
+        dest = out / f"{stem}.key"
+        disk_io.ops.unlink(dest, missing_ok=True)
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as w:
+            w.write(disk_io.ops.read_bytes(tls / "mirror.key"))
+        written += [f"{stem}.crt", f"{stem}.key"]
+    shutil.copyfile(ca[0], out / "ca.crt")
+    return sorted(written + ["ca.crt"])

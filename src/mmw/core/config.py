@@ -964,7 +964,7 @@ class NetworkSelect(_StrictModel):
         return True
 
 
-_LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port"})
+_LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port", "far_side"})
 
 
 DEFAULT_RETENTION = "90d"
@@ -1045,9 +1045,6 @@ class NetworkConfig(_StrictModel):
     # How long a release that left a provider's keep set stays published
     # (providers with version history — PyPI). Widening is not retroactive.
     retention: str = DEFAULT_RETENTION
-    # What runs on the airgapped side: `apply.py` alone, or mmw itself.
-    # Partial bundles and `mmw stage` need mmw there.
-    far_side: Literal["apply", "mmw"] = "apply"
     # mmw's own runtime, shipped to an `mmw` far side: the machine
     # architectures it may run on, and the Python it runs on.
     runtime_arches: list[Literal["x86_64", "aarch64"]] = ["x86_64"]
@@ -1108,17 +1105,17 @@ class NetworkConfig(_StrictModel):
           tars now: the payload is packages, already compressed.
         - `gallery_port` was the host port of a standalone VS Code gallery
           container. The gallery runs in the nginx Compose stack now, where
-          nginx reaches it at `gallery:8080`."""
+          nginx reaches it at `gallery:8080`.
+        - `far_side` chose apply.py or mmw on the airgapped side. mmw runs
+          there now; "apply" warns once (`mmw site adopt` converts a tree)."""
+        if isinstance(data, dict) and data.get("far_side") == "apply":
+            import warnings
+            warnings.warn(f"network {data.get('name', '?')}: far_side = \"apply\" is retired — its far side "
+                          "runs mmw now (convert an apply.py tree there with `mmw site adopt PATH`); "
+                          "the setting is ignored", stacklevel=2)
         if isinstance(data, dict) and _LEGACY_NETWORK_KEYS.intersection(data):
             data = {k: v for k, v in data.items() if k not in _LEGACY_NETWORK_KEYS}
         return data
-
-    @model_validator(mode="after")
-    def _carry_keys_need_mmw(self):
-        if self.carry_keys and self.far_side != "mmw":
-            raise ValueError(f"network {self.name}: carry_keys needs far_side = \"mmw\" — apply.py has "
-                             "no keyring to put a key in")
-        return self
 
     @model_validator(mode="after")
     def _one_layer_per_repository(self):
@@ -1605,7 +1602,6 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
             **({"keep_points": n.keep_points} if n.keep_points != 3 else {}),
             **({"history": True} if n.history else {}),
-            **({"far_side": "mmw"} if n.far_side == "mmw" else {}),
             **({"runtime_arches": n.runtime_arches} if n.runtime_arches != ["x86_64"] else {}),
             **({"runtime_python": n.runtime_python} if n.runtime_python != DEFAULT_RUNTIME_PYTHON else {}),
             **({"layers": [_layer_to_dict(la) for la in n.layers]} if n.layers else {}),

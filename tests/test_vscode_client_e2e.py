@@ -6,7 +6,6 @@ See tests/e2e/README.md for tooling preparation and isolated local execution.
 import hashlib
 import json
 import os
-import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -186,9 +185,7 @@ def test_stock_client_live_publish_and_applied_bundle(tmp_path, monkeypatch):
     bundled = bundle_network(net, cfg, mirror_dir)
     assert not bundled.errors and not bundled.warnings
     far = scratch/'applied'
-    far.mkdir()
-    _run([sys.executable, bundled.out_path.parent/'apply.py', bundled.out_path, '--root', far],
-         scratch/'apply.log')
+    _site_apply(bundled.out_path, far, net.name, net.root)
     for file in (net.root/'vscode-gallery').iterdir():
         assert (far/'vscode-gallery'/file.name).read_bytes() == file.read_bytes(), file.name
     _run(['docker', 'load', '-i', far/'vscode-gallery'/image.TAR_NAME], scratch/'image-load.log')
@@ -196,8 +193,21 @@ def test_stock_client_live_publish_and_applied_bundle(tmp_path, monkeypatch):
         _expected(fake, far, scratch)
         stack.probe()
         stack.install(SIGNED_EXTENSION, '6.3.5')
-    unchanged = bundle_network(net, cfg, mirror_dir)
-    assert not unchanged.errors
-    import tarfile
-    with tarfile.open(unchanged.out_path) as archive:
-        assert not any(m.name == 'vscode-gallery/'+image.TAR_NAME for m in archive.getmembers())
+    with pytest.raises(ValueError, match='nothing to send'):     # unchanged: not even the image goes again
+        bundle_network(net, cfg, mirror_dir)
+
+
+def _site_apply(bundle, far, network, tls_from):
+    """The far side: `mmw site apply` lays the bundle out; its HTTPS key and
+    certificate — what `mmw site certs` would make — come from the
+    published tree, signed by the same CA."""
+    import shutil
+    from mmw.core.served_tree import https_state
+    from mmw.site import home as H
+    from mmw.site.apply import apply_bundle
+    apply_bundle(H.init_root(far, name="main", set_id="e2e", network=network), str(bundle), say=lambda *a: None)
+    tls = far / ".mmw" / "tls"
+    tls.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name in ("mirror.key", "mirror.crt"):
+        shutil.copy2(tls_from / ".mmw" / "tls" / name, tls / name)
+    https_state(str(far))

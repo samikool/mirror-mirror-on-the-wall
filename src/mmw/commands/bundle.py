@@ -110,20 +110,19 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
         try:
             picked = {"repos": keys} if keys else {}
-            if installer and net.far_side != "mmw":
-                if network:
-                    eprint(f"Network '{net.name}': the mmw installer is for a far side running mmw "
-                           f"(far_side = \"mmw\") — write one on its own with `mmw installer --out DIR`")
-                    return 1
-                say(f"  {net.name}: no mmw installer — its far side runs apply.py")
-            elif installer:
+            if installer:
                 where = (str(out or net.bundle_dir), tuple(sorted(net.runtime_arches)), net.runtime_python)
                 if where not in installers_written:
                     picked["installer"] = True
                     installers_written.add(where)
+            elif not streaming:
+                from mmw.core.runtime import installer_due
+                if installer_due(net, mirror_dir):
+                    say(f"  {net.name}: its far side hasn't had this mmw yet — add --installer to write "
+                        f"mmw's installer beside the bundle (the far side applies bundles with mmw)")
             if runtime_wheel is not None:
                 picked["runtime_wheel"] = runtime_wheel
-            if history is not None and net.far_side == "mmw":
+            if history is not None:
                 picked["history"] = history
             # A warning the run raises before its long part (a stage that will
             # copy, not hardlink) is said then, while there is time to stop it.
@@ -135,10 +134,9 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                     eprint(f"    ⚠ {told[-1]}")
                 elif status.startswith("runtime:") and status != "runtime:done":
                     eprint(f"  mmw installer: {status.split(':', 1)[1]}")
-            # A stage warns before its long part; an mmw network's runtime
-            # build takes minutes the first time — both are said as they happen.
-            if stage or net.far_side == "mmw":
-                picked["progress"] = progress
+            # A stage warns before its long part; the runtime build takes
+            # minutes the first time — both are said as they happen.
+            picked["progress"] = progress
             if stage:
                 result = stage_network(net, cfg, mirror_dir, out_dir=out,
                                        from_ref=start, to_ref=to_ref or "now", **picked)
@@ -192,10 +190,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
 def _repo_keys(net, cfg, mirror_dir, refs: list[str]) -> list[str] | None:
     """The repository keys `--repo` names on `net`, or None after saying why not."""
-    from mmw.core.far_side import require_mmw
     from mmw.core.repos import network_repos, resolve_repo_refs
     try:
-        require_mmw(net, "partial bundles")
         return resolve_repo_refs(refs, network_repos(net, cfg, mirror_dir))
     except (ValueError, LookupError) as e:
         eprint(str(e).strip("'\""))

@@ -377,10 +377,9 @@ mmw publish -n lab --snapshot pre-upgrade --root /srv/www-old   # beside the liv
 ```
 
 Publishing into another directory writes an nginx config for that directory
-with the same hostnames, so serve it on its own address. A bundle for an
-apply.py far side still records the state it sent as a snapshot (see
-[airgap](airgap.md#between-any-two-snapshots)); `mmw snapshot list --repos`
-says each suite's date and which changed since the snapshot before.
+with the same hostnames, so serve it on its own address. Neither publishing
+nor bundling takes one; `mmw snapshot list --repos` says each suite's date
+and which changed since the snapshot before.
 
 `mmw prune` never deletes a file a snapshot lists; `mmw snapshot delete` /
 `clean --keep N` let it go (the next prune frees it). One a transfer went to
@@ -432,7 +431,7 @@ Other networks publishing the same Ubuntu are untouched. In the TUI: Networks �
 
 ## Next
 
-- **[Airgapped operation](airgap.md)** — bundling, transfer, `apply.py`, and
+- **[Airgapped operation](airgap.md)** — bundling, transfer, `mmw site`, and
   the far side end to end.
 - **[Configuration](configuration.md)** — every key, generated from the models.
 - **[CLI reference](cli.md)** — every command and flag.

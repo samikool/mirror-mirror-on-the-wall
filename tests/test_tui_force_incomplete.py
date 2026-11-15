@@ -1,7 +1,5 @@
 """Incomplete content requires an explicit TUI action, for both deployments."""
 import asyncio
-import subprocess
-import sys
 
 import pytest
 
@@ -80,11 +78,11 @@ def test_anyway_button_continues_after_refusal_with_warning(tmp_path, monkeypatc
         assert not net.root.exists()
     else:
         assert deployed.out_path.is_file()
+        from mmw.site import home as H
+        from mmw.site.apply import apply_bundle
         applied = tmp_path / "applied"
-        result = subprocess.run(
-            [sys.executable, str(net.bundle_dir / "apply.py"), str(deployed.out_path),
-             "--root", str(applied), "--verify"], capture_output=True, text=True)
-        assert result.returncode == 0, result.stdout + result.stderr
+        apply_bundle(H.init_root(applied, name="main", set_id="s1", network=net.name), str(deployed.out_path),
+                     say=lambda *a: None)
         assert (applied / "example.com/repo/pool/a.deb").read_bytes() == b"present"
         assert not (applied / "example.com/repo/pool/b.deb").exists()
         from mmw.core.publisher import publish_network
@@ -92,7 +90,7 @@ def test_anyway_button_continues_after_refusal_with_warning(tmp_path, monkeypatc
         assert not publish_network(net, cfg, cfg.settings.mirror_dir).errors
         assert _files(applied) == _files(net.root)
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
-        assert len(pool.snapshots(net.name)) == (1 if verb == "bundle" else 0)
+        assert len(pool.snapshots(net.name)) == 0
 
 
 def test_cancel_in_the_incomplete_dialog_publishes_nothing(tmp_path):

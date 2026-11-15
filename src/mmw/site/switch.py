@@ -13,7 +13,7 @@ from pathlib import Path
 from mmw.core import disk_io
 from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE
 from mmw.core.publisher import replay_kind
-from mmw.resources.apply import _prune_empty_parents
+from mmw.core.served_tree import _prune_empty_parents
 
 PHASES = (KIND_PKG, KIND_META, KIND_RELEASE)
 

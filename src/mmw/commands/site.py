@@ -558,7 +558,7 @@ def ca_show() -> int:
     return 0
 
 
-def certs(root: Path | None = None, days: int = 730, force: bool = False) -> int:
+def certs(root: Path | None = None, days: int = 730, force: bool = False, out: Path | None = None) -> int:
     from mmw.core.certs import CAKeyEncrypted
     from mmw.site import certs as site_certs
     try:
@@ -584,6 +584,17 @@ def certs(root: Path | None = None, days: int = 730, force: bool = False) -> int
             recreate.append(r.root)
     if recreate:
         print(f"! recreate nginx in {', '.join(recreate)} on the serving host")
+    if out is not None:
+        local = [(r.info.name, Path(r.info.path)) for r in h.roots if hasattr(r, "adopt_tree")]
+        try:
+            names = site_certs.collect_certs(local, h.network, out)
+        except (ValueError, OSError) as e:
+            eprint(str(e))
+            return 1
+        print(f"collected in {out}: {', '.join(names)}")
+        skipped = [r.info.name for r in h.roots if not hasattr(r, "adopt_tree")]
+        if skipped:
+            print(f"  (over ssh, collect on that machine: {', '.join(skipped)})")
     return 0
 
 

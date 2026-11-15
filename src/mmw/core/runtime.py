@@ -426,8 +426,6 @@ def installer_due(network, mirror_dir: Path) -> bool:
     """Whether the next transfer should carry mmw's installer: never sent to
     this network, or this mmw is newer than the last one sent (bundles carry
     the newest mmw, so the far side can update from it)."""
-    if getattr(network, "far_side", None) != "mmw":
-        return False
     from packaging.version import InvalidVersion, Version
 
     from mmw.core.pool import Pool

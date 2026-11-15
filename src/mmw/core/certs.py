@@ -218,21 +218,19 @@ expire.
 
 ## Portable deployments
 
-Both publish and bundle outputs for a `certs = true` network carry `{key_path.name}`, `{csr_path.name}`
-and `{cnf_path.name}` to `{{root}}/.mmw/tls/` on the far side (no generated server
-block serves it), with `sign.py` and `make-ca.py`. If your CA lives on the
-airgapped network, sign there — any number of mirrors at once (no CA yet?
-`python3 make-ca.py --out ~/site-ca` makes one and says how clients trust it):
+A published tree for a `certs = true` network carries `{key_path.name}`, `{csr_path.name}`
+and `{cnf_path.name}` in `{{root}}/.mmw/tls/` (no generated server block serves it);
+`mmw certs` signs it here. A bundle never carries a private key: the far
+side makes its own and signs it with a CA held there —
 
 ```bash
-python3 sign.py --ca ca.crt --ca-key ca.key /srv/www/lab /srv/www/oak
+mmw site ca make --out ~/site-ca      # once (or: mmw site ca load --cert … --key …)
+mmw site certs                         # every root; --out DIR also collects NAME.crt,
+                                       # NAME.key and ca.crt for Nginx Proxy Manager
 ```
 
-Each certificate lands beside its request; `python3 apply.py --tls --root DIR`
-then turns HTTPS on in the generated nginx config (recreate the container). `--out DIR`
-also collects `NAME.crt` + `NAME.key` for Nginx Proxy Manager. This puts the
-private key on your transfer media; a network whose media must not hold it
-keeps `certs` off.
+A copied publish tree becomes a far side with `mmw site adopt PATH`, then
+`mmw site certs`.
 
 ## Regenerating the CSR
 
@@ -412,18 +410,15 @@ def check_cert(out_dir: Path, hostnames: list[str]) -> list[str]:
 def bundle_tls_files(network: NetworkConfig, cfg: Config) -> dict[str, bytes]:
     """What both deployment paths carry to `{root}/.mmw/tls/`: the key,
     the signing request and its OpenSSL config (refreshed for the current
-    hostnames first), the far side's CA and signing scripts, and the certificate
-    when one was signed on this side. **Blocking** (a first key is RSA-4096).
+    hostnames first), and the certificate when one was signed on this side. **Blocking** (a first key is RSA-4096).
 
     Nothing for a network that serves no hostname yet (every source dropped):
     TLS is on by default, and an empty network has nothing to certify."""
-    from mmw.resources import ca_script_bytes, sign_script_bytes
     if not collect_hostnames(network, cfg):
         return {}
     _, key, cnf, csr, _ = generate_certs(network, cfg)
     files = {"mirror.key": disk_io.ops.read_bytes(key), "mirror.csr": disk_io.ops.read_bytes(csr),
-             "mirror.cnf": disk_io.ops.read_bytes(cnf), "sign.py": sign_script_bytes(),
-             "make-ca.py": ca_script_bytes()}
+             "mirror.cnf": disk_io.ops.read_bytes(cnf)}
     paths = servable_paths(network, cfg)
     if paths is not None:
         files["mirror.crt"] = disk_io.ops.read_bytes(paths[0])

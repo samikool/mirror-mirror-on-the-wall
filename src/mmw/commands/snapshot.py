@@ -145,7 +145,7 @@ def _forget_one(cfg, net, pool: Pool, s: SnapshotInfo, yes: bool) -> int:
         eprint(f"{s.stamp} is published at {', '.join(roots)} — publish something else there first.")
         return 1
     print(f"Force delete {name} — this rewrites history:")
-    for line in snapshots.forget_warnings(pool, s, getattr(net, "far_side", "apply")):
+    for line in snapshots.forget_warnings(pool, s):
         print(f"  {line}")
     if not yes:
         if not sys.stdin.isatty():
@@ -154,8 +154,7 @@ def _forget_one(cfg, net, pool: Pool, s: SnapshotInfo, yes: bool) -> int:
         if input("Force delete it? [y/N] ").strip().lower() not in ("y", "yes"):
             return 1
     try:
-        full = snapshots.forget_snapshot(pool, cfg.settings.mirror_dir, s,
-                                             getattr(net, "far_side", "apply"))
+        full = snapshots.forget_snapshot(pool, cfg.settings.mirror_dir, s)
     except ValueError as e:
         eprint(str(e))
         return 1

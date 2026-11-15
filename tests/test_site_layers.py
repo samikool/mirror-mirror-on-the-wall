@@ -251,13 +251,6 @@ def test_an_unsignable_layer_holds_until_its_key_arrives(site):
 
 # ── keys across the airgap (Task 5) ──────────────────────────────────────────
 
-def test_carry_keys_needs_an_mmw_far_side():
-    from pydantic import ValidationError
-    with pytest.raises(ValidationError, match="far_side"):
-        config.NetworkConfig(name="lab", carry_keys=["tools"])
-    assert config.NetworkConfig(name="lab", far_side="mmw", carry_keys=["tools"]).carry_keys == ["tools"]
-
-
 @needs_gpg
 def test_a_carried_key_rides_the_bundle_and_is_imported(site):
     import tarfile

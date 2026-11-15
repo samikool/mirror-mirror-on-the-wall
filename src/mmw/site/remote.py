@@ -203,7 +203,7 @@ def _apply(root, args, stdin, stdout) -> int:
     p.add_argument("--foreign", action="store_true")
     p.add_argument("--foreign-mirrors", default=None)
     o = p.parse_args(args)
-    from mmw.resources.apply import MANIFEST_MEMBER
+    from mmw.core.served_tree import MANIFEST_MEMBER
 
     def progress(event, **data):
         if event in ("check", "switch", "done"):

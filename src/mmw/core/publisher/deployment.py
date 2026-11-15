@@ -1,30 +1,26 @@
-"""Deployment assets shared by copied publish trees and applied bundles."""
+"""Deployment assets shared by published trees and far sides: the TLS
+material under `{root}/.mmw/tls/`. Nothing else is shipped beside a tree —
+the far side runs mmw (`mmw site`)."""
 import io
 from pathlib import Path
 
+from mmw.core import disk_io
 from mmw.core.certs import bundle_tls_files
-from mmw.resources import apply_script_bytes, ca_script_bytes, sign_script_bytes
-from mmw.resources.apply import _install_tls, https_state
+from mmw.core.served_tree import _install_tls, https_state
+
+# Shipped beside trees until mmw ran on both sides: removed where a prune
+# finds them (top level, and the signing tools once kept in .mmw/tls/).
+RETIRED = ("apply.py", "sign.py", "make-ca.py")
 
 
-def scripts(certs: bool) -> dict[str, bytes]:
-    files = {"apply.py": apply_script_bytes()}
-    if certs:
-        files["sign.py"] = sign_script_bytes()
-        files["make-ca.py"] = ca_script_bytes()
-    return files
-
-
-def write_scripts(sink, certs: bool, *, existing=()) -> set[str]:
-    files = scripts(certs)
-    for rel, data in files.items():
-        if rel not in existing:
-            sink.write(rel, data)
-    return set(files)
+def drop_retired(root: Path) -> None:
+    for name in RETIRED:
+        disk_io.ops.unlink(Path(root) / name, missing_ok=True)
+        disk_io.ops.unlink(Path(root) / ".mmw" / "tls" / name, missing_ok=True)
 
 
 def install_tls(root: Path, files: dict[str, bytes]) -> None:
-    """Use the far-side installer's atomic writes and private-key permissions."""
+    """Atomic writes, and private-key permissions."""
     for name, data in files.items():
         _install_tls(str(root), name, io.BytesIO(data))
     https_state(str(root))

@@ -86,12 +86,6 @@ def test_partial_then_full_chain(two_mirrors, tmp_path):  # noqa: F811
         assert set(final[repo].values()) <= have                       # every file arrived at some point
 
 
-def test_partial_refused_on_apply_network(two_mirrors, tmp_path):  # noqa: F811
-    cfg, net, md = two_mirrors
-    with pytest.raises(ValueError, match="far_side"):
-        bundle_network(net, cfg, md, out_path=tmp_path, repos=[_key(cfg, "a")])
-
-
 def test_unknown_repo_lists_valid(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
     with pytest.raises(LookupError, match="example.com/a"):

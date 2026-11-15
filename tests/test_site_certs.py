@@ -157,7 +157,7 @@ def test_a_new_ca_re_signs(env, tmp_path):  # noqa: F811
 def test_a_key_from_an_older_bundle_is_replaced_once(env, tmp_path):  # noqa: F811
     import io
     from mmw.core.certs import generate_key_and_csr
-    from mmw.resources.apply import _install_tls
+    from mmw.core.served_tree import _install_tls
     home, root = _applied(env, tmp_path)
     near = tmp_path / "near"
     key, _cnf, _csr = generate_key_and_csr(["example.com"], near)          # what the near side made …
@@ -200,3 +200,20 @@ def test_certs_takes_the_lock(env, tmp_path):  # noqa: F811
     with SiteLock(home):
         with pytest.raises(LockHeld):
             C.sign_roots(home, password=None)
+
+
+def test_certs_out_collects_every_root(env, tmp_path):  # noqa: F811
+    home, root = _applied(env, tmp_path)
+    C.sign_roots(home, password=None)
+    out = tmp_path / "npm"
+    names = C.collect_certs([("main", root)], "oak", out)
+    assert sorted(names) == ["ca.crt", "oak-main.crt", "oak-main.key"]
+    assert (out / "oak-main.crt").read_bytes() == (root / ".mmw/tls/mirror.crt").read_bytes()
+    assert ((out / "oak-main.key").stat().st_mode & 0o777) == 0o600
+    assert (out / "ca.crt").read_bytes().startswith(b"-----BEGIN CERTIFICATE")
+
+
+def test_certs_out_skips_a_root_not_signed_yet(env, tmp_path):  # noqa: F811
+    home, root = _applied(env, tmp_path)
+    names = C.collect_certs([("main", root)], "oak", tmp_path / "npm")
+    assert names == ["ca.crt"]

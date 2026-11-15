@@ -72,13 +72,21 @@ def test_apply_from_stage_and_stdin(env, tmp_path, monkeypatch):
     assert r.updated == [_key(cfg, "a")] and _tree(root) != first
 
 
-def test_apply_refuses_format_1(two_mirrors, tmp_path):  # noqa: F811
-    cfg, net, md = two_mirrors                                     # an apply.py network
+def test_apply_refuses_format_1(tmp_path):
+    """A bundle an older mmw made for apply.py: said, never half-applied."""
+    import json
+    import tarfile
+    src = tmp_path / "old.tar"
+    head = json.dumps({"network": "oak", "created": "20261101T000000Z", "previous": None, "full": True}).encode()
+    with tarfile.open(src, "w") as tar:
+        info = tarfile.TarInfo(".mmw/manifest.jsonl")
+        info.size = len(head) + 1
+        tar.addfile(info, io.BytesIO(head + b"\n"))
     home = tmp_path / "site"
     H.init_site(home, tmp_path / "srv")
-    with pytest.raises(ApplyError, match="apply.py bundle") as e:
-        apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
-    assert e.value.code == 5
+    with pytest.raises(ApplyError, match="made for apply.py") as e:
+        apply_bundle(home, str(src), say=lambda *a: None)
+    assert e.value.code == 5 and "mmw site adopt" in str(e.value)
 
 
 def _rewrite(src: Path, dst: Path, change):
@@ -207,7 +215,7 @@ def test_cli_apply(env, tmp_path):
 
 def test_root_apply_takes_members_pushed_to_it(env, tmp_path):
     """RootApply, driven by hand, does what apply_bundle does."""
-    from mmw.resources.apply import MANIFEST_MEMBER
+    from mmw.core.served_tree import MANIFEST_MEMBER
     from mmw.site.apply import RootApply, members_of
     cfg, net, md, home, root = env
     b = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)

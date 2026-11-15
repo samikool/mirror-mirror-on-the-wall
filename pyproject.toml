@@ -75,6 +75,6 @@ src = ["src", "tests"]
 extend-exclude = ["mirror"]
 
 [tool.ruff.lint.per-file-ignores]
-# Shipped verbatim to machines running Python 3.6 with no pip. Modern syntax,
-# f-strings with %-style alternatives, and pathlib are all deliberate omissions.
-"src/mmw/resources/apply.py" = ["UP", "PTH", "SIM", "C4"]
+# Moved from the far-side apply.py (once Python 3.6, stdlib only): its older
+# style stays until the code is next touched.
+"src/mmw/core/served_tree.py" = ["UP", "PTH", "SIM", "C4"]

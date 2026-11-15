@@ -138,9 +138,9 @@ def test_snapshot_publish_per_base_counts_unchanged(states, tmp_path):  # noqa: 
     counts = lambda r: [(m.mirror_name, m.linked, m.skipped, m.linked_bytes, m.skipped_bytes,  # noqa: E731
                          len(m.errors)) for m in r.mirrors]
     assert counts(publish_snapshot(net, cfg, mirror_dir, "s1")) == [
-        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0), ("keys and extra files", 1, 0, 39105, 0, 0)]
+        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0)]
     assert counts(publish_snapshot(net, cfg, mirror_dir, "s2")) == [
-        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0), ("keys and extra files", 0, 1, 0, 39105, 0)]
+        ("archive.ubuntu.com/ubuntu", 5, 0, 39, 0, 0)]
 
 
 def test_snapshot_publish_links_concurrently(states, tmp_path, monkeypatch, disk_limits):  # noqa: F811
@@ -161,9 +161,23 @@ def test_snapshot_publish_links_concurrently(states, tmp_path, monkeypatch, disk
             second.set()
         return real(self, src, rel)
 
+    # Two packages, so one placement can wait for the other.
+    import hashlib
+    from test_bundle_snapshots import MIRROR, SRC
+    from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE
+    with Pool(mirror_dir) as pool:
+        refs = []
+        for rel, data, kind in [("pool/main/h/hello/hello_7.0_amd64.deb", b"seven", KIND_PKG),
+                                ("pool/main/h/hello/hello_8.0_amd64.deb", b"eight", KIND_PKG),
+                                ("dists/noble/main/binary-amd64/Packages.gz", b"index 78", KIND_META),
+                                ("dists/noble/InRelease", b"release 78", KIND_RELEASE)]:
+            cs = hashlib.sha256(data).hexdigest()
+            pool.add(data, cs, "sha256", rel.rsplit("/", 1)[1], len(data))
+            refs.append((cs, rel, kind))
+        pool.reconcile_refs(MIRROR, refs, source=SRC)
+    S.take_snapshot(net, cfg, mirror_dir, label="two")
     monkeypatch.setattr(TreeSink, "_place", place)
     disk_limits(write_threads=8)
-    publish_snapshot(net.model_copy(update={"root": tmp_path / "p"}), cfg, mirror_dir, "s1")
+    publish_snapshot(net.model_copy(update={"root": tmp_path / "p"}), cfg, mirror_dir, "two")
     assert timed_out == [False]
-    files, _ = _split(_tree(tmp_path / "p"))
-    assert files == _split(published[1])[0]
+    assert (tmp_path / "p" / "archive.ubuntu.com/ubuntu/pool/main/h/hello/hello_8.0_amd64.deb").exists()

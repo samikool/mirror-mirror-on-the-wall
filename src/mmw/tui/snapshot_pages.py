@@ -179,16 +179,14 @@ class BundlePickPage(Page):
                            "bundle", id="pick-as",
                            hint="A folder costs almost no disk; tar, rsync or copy it across yourself.")]
               if self._repos else []),
-            *([ChoiceField("Points", [("Each suite's newest", "newest"),
-                                      ("Every point since the last transfer", "history")],
-                           "history" if self._net.history else "newest", id="pick-points",
-                           hint="Every point gives the far side each sync's state, for old builds; "
-                                "the newest is smaller.")]
-              if self._net.far_side == "mmw" else []),
-            *([ChoiceField("mmw installer", [("Include mmw installer", "yes"), ("Not this time", "no")],
-                           "yes" if self._installer_due() else "no", id="pick-installer",
-                           hint="Written beside it: the far side installs mmw from it, offline.")]
-              if self._net.far_side == "mmw" else []),
+            ChoiceField("Points", [("Each suite's newest", "newest"),
+                                   ("Every point since the last transfer", "history")],
+                        "history" if self._net.history else "newest", id="pick-points",
+                        hint="Every point gives the far side each sync's state, for old builds; "
+                             "the newest is smaller."),
+            ChoiceField("mmw installer", [("Include mmw installer", "yes"), ("Not this time", "no")],
+                        "yes" if self._installer_due() else "no", id="pick-installer",
+                        hint="Written beside it: the far side installs mmw from it, offline."),
             id="pick-form")
         if self._repos:
             yield Label("[dim]Repositories · space toggles · ctrl+a toggles all[/]")
@@ -203,8 +201,7 @@ class BundlePickPage(Page):
     def on_mount(self) -> None:
         self._estimate_now()
         self.query_one("#btn-pick-go").focus()
-        if self._net.far_side == "mmw":
-            self._installer_size()
+        self._installer_size()
 
     @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-installer")
     def _installer_size(self) -> None:
@@ -642,7 +639,7 @@ class SnapshotsPage(Page):
 
         def where() -> tuple[list[str], list[str]]:
             with Pool(self._mirror_dir, read_only=True) as pool:
-                return served_by(pool, snap), forget_warnings(pool, snap, self._net.far_side)
+                return served_by(pool, snap), forget_warnings(pool, snap)
         roots, lines = await asyncio.to_thread(where)
         if roots:
             self.notify(f"{snap.stamp} is published at {', '.join(roots)} — publish something "
@@ -657,7 +654,7 @@ class SnapshotsPage(Page):
 
         def forget() -> bool:
             with Pool(self._mirror_dir) as pool:
-                return forget_snapshot(pool, self._mirror_dir, snap, self._net.far_side)
+                return forget_snapshot(pool, self._mirror_dir, snap)
         try:
             full = await asyncio.to_thread(forget)
         except ValueError as e:                     # published meanwhile

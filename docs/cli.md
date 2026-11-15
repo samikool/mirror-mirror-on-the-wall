@@ -31,8 +31,8 @@ command that quietly did nothing is worse than one that fails.
 | `1` | Something failed: a download or metadata error, a repository that could not be listed, an incomplete mirror, an unwritable destination. |
 | `2` | Usage error (bad flag, missing argument) — typer's own. |
 
-`apply.py`, which runs on the far side of an airgap, has its own finer-grained
-codes — see [airgap.md](airgap.md#exit-codes).
+`mmw site`, which runs on the far side of an airgap, has its own finer-grained
+codes — see [far-side.md](far-side.md#exit-codes).
 
 ## Commands
 
@@ -117,7 +117,7 @@ bundle went, to a new snapshot of now.
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
 | `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for a full bundle. Default: where the last bundle went. |
 | `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |
-| `--repo` |  | Only this repository (URL or name; repeatable). Needs -n and far_side = "mmw". |
+| `--repo` |  | Only this repository (URL or name; repeatable). Needs -n. |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
 | `--history`, `--newest` |  | mmw far side: every point since the last bundle, or each suite's newest (default: the network's `history`). |
@@ -260,7 +260,7 @@ repository, or (with --network) an upstream mirror a network adds packages to.
 
 Lay a bundle out as a directory of hardlinks to the pool — the same
 members as `mmw bundle`, almost no disk — to tar, rsync or inspect without
-mmw. For networks whose far side runs mmw (far_side = "mmw").
+mmw.
 
 | Option | Default | Description |
 |--------|---------|-------------|

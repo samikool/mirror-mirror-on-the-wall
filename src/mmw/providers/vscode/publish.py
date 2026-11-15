@@ -329,8 +329,8 @@ with `@` and `*` pointing at the mirror.
 ## 2. TLS
 
 VS Code only talks HTTPS. Sign a certificate covering every name above
-(`mmw certs` / `sign.py` include both wildcards) with a CA the clients trust
-(no CA yet? `python3 make-ca.py`, beside `sign.py`, makes one),
+(`mmw certs` here, `mmw site certs` on the far side — both include both
+wildcards) with a CA the clients trust (no CA yet? `mmw site ca make`),
 and install that CA on every client (Windows: Local Machine → Trusted Root;
 macOS: System keychain, Always Trust; Linux: the system store — VS Code uses it).
 

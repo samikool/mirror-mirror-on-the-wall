@@ -84,9 +84,8 @@ jobs:
           uv venv --python ${{ matrix.python-version }} /tmp/bare
           VIRTUAL_ENV=/tmp/bare uv pip install dist/*.whl
           /tmp/bare/bin/mmw --help
-          # apply.py ships inside every bundle — if it is missing from the
-          # wheel, bundling produces an archive the far side cannot apply.
-          /tmp/bare/bin/python -c "from mmw.resources import apply_script_bytes; assert apply_script_bytes()"
+          # The far side runs mmw: `mmw site` must come with the wheel.
+          /tmp/bare/bin/mmw site --help
 
   vscode-client:
     name: VS Code client (isolated offline network)
@@ -188,25 +187,3 @@ jobs:
         env:
           MMW_RUNTIME_E2E: "1"
         run: uv run --python 3.13 pytest -q tests/test_runtime_e2e.py
-
-  apply-script-compat:
-    # `resources/apply.py` and `resources/sign.py` are the only parts of mmw
-    # that run on the far side of an airgap: no mmw install, no pip, sometimes
-    # Python 3.6 (RHEL 8). 3.8 is
-    # the oldest interpreter GitHub-hosted runners still provide, so this job
-    # catches 3.9+ syntax but NOT a 3.7/3.8-only construct. The residual gap
-    # (3.6, 3.7) is unguarded here — `tests/` enforces the stdlib-only import
-    # allowlist, and nothing in CI can exercise the real RHEL 8 interpreter.
-    name: far-side scripts compile on the oldest available interpreter
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
-
-      - name: py_compile under Python 3.8
-        run: |
-          uv python install 3.8
-          uv run --python 3.8 --no-project python -m py_compile \
-            src/mmw/resources/apply.py src/mmw/resources/sign.py

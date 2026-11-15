@@ -415,49 +415,35 @@ def changed_suites(pool: Pool, snap: SnapshotInfo, older: SnapshotInfo | None) -
                   if before.get((repo, t), (None,))[0] != pid)
 
 
-def forget_warnings(pool: Pool, snap: SnapshotInfo, far_side: str = "apply") -> list[str]:
+def forget_warnings(pool: Pool, snap: SnapshotInfo) -> list[str]:
     """What forgetting `snap` would do, a line each — exactly what
     `forget_snapshot` then decides."""
     went = sum(1 for b in pool.bundles(snap.network) if b.to_stamp == snap.stamp)
-    lines = [("It, the record of the " + (f"{went} transfer(s) that went to it" if went else
-              "transfers") + " and its ledger manifest go for good. The far side is not touched.")]
-    start = default_start(pool, snap.network)
-    # An mmw network's bundles remember the points and files sent, not
-    # snapshots: forgetting one never loses what the far side has.
-    if far_side != "mmw" and ((start is not None and start.id == snap.id) or (
-            went and pool.last_sent_versions(snap.network, without=snap.stamp)
-            != pool.last_sent_versions(snap.network))):
-        lines.append("The far side may be at it, and nothing here would record what it has: "
-                     "the next transfer sends everything.")
-    if went and far_side == "apply":
-        lines.append("Files only it listed are never deleted over there.")
-    return lines
+    return [("It, the record of the " + (f"{went} transfer(s) that went to it" if went else
+             "transfers") + " and its ledger manifest go for good. The far side is not touched.")]
 
 
-def forget_snapshot(pool: Pool, mirror_dir: Path, snap: SnapshotInfo, far_side: str = "apply") -> bool:
+def forget_snapshot(pool: Pool, mirror_dir: Path, snap: SnapshotInfo) -> bool:
     """Force delete — rewrite history, like a force push: the snapshot, the
     transfers that went to it and its ledger manifest all go. The far side
-    is untouched and may sit at it; then the next default transfer is full
-    (`Pool.full_next`). Refused while a directory serves it. Returns whether
-    the next transfer is full now. An mmw network's next bundle stays a
-    delta: what its format-2 bundles sent is recorded as sent points first."""
+    is untouched. Bundles remember the points and files each network was
+    sent, not snapshots, so the next one stays a delta (what format-2
+    bundles sent is recorded as sent points first). Refused while a
+    directory serves it. Returns whether the next transfer is full: never."""
     roots = served_by(pool, snap)
     if roots:
         raise ValueError(f"snapshot {snap.stamp} is published at {', '.join(roots)} — "
                          f"publish something else there first (e.g. `mmw publish -n "
                          f"{snap.network} --snapshot live`)")
-    start = default_start(pool, snap.network)
     # The manifest first: left behind, the next listing would import it back.
     d = ledger_dir(mirror_dir, snap.network)
     if disk_io.ops.is_dir(d):
         for path in disk_io.ops.iterdir(d):
             if is_manifest(path.name) and path.name.split(".", 1)[0] == snap.stamp:
                 disk_io.ops.remove(path)
-    if far_side == "mmw":
-        from mmw.core.points import migrate_sent
-        migrate_sent(pool, snap.network)
-        return pool.forget_snapshot(snap, False, mark_full=False)
-    return pool.forget_snapshot(snap, start is not None and start.id == snap.id)
+    from mmw.core.points import migrate_sent
+    migrate_sent(pool, snap.network)
+    return pool.forget_snapshot(snap, False, mark_full=False)
 
 
 def delete_snapshots(pool: Pool, snaps: list[SnapshotInfo]) -> None:

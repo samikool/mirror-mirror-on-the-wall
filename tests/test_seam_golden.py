@@ -92,15 +92,31 @@ def _capture(tmp_path: Path) -> dict:
         config.NetworkConfig(name="lab", bundle_dir=tmp_path / "out", dist_upgrade=True,
                              certs=False),
         cfg, mirror_dir)
+    # A bundle carries each file once, named by its checksum: read it back by
+    # the paths its manifest gives them.
+    from mmw.core.publisher.manifest import blob_member
     bundled = {}
     with tarfile.open(result.out_path) as tar:
-        for member in tar:
-            if (member.isfile() or member.islnk()) and not member.name.startswith(".mmw/"):
-                bundled[member.name] = hashlib.sha256(tar.extractfile(member).read()).hexdigest()
+        members = {m.name for m in tar if m.isfile()}
+        rows = [json.loads(x) for x in tar.extractfile(".mmw/manifest.jsonl").read().decode().splitlines()[1:]]
+    for row in rows:
+        if blob_member(row["c"]) in members and not row["p"].startswith(".mmw/"):
+            bundled[row["p"]] = row["c"]
     return {"published": published, "bundled": bundled}
 
 
-def test_seam_publish_and_bundle_are_unchanged(tmp_path):
+# The far-side scripts mmw no longer ships (phase 5: mmw runs on both sides).
+RETIRED = ("apply.py", "sign.py", "make-ca.py")
+# Deliberately rewritten since the golden (phase 5: the nginx guide names
+# `mmw site` instead of apply.py/sign.py). path → its sha256 now.
+REWRITTEN = {"nginx/README.md": "a39c33d08f24"}
+
+
+def test_seam_publish_and_bundle_are_unchanged(tmp_path, monkeypatch):
+    # The golden was taken with no Docker image at hand: keep it that way,
+    # whatever this machine has cached.
+    from mmw.core.publisher import nginx_container
+    monkeypatch.setattr(nginx_container, "DOCKER", str(tmp_path / "no-docker"))
     actual = _capture(tmp_path)
     # The fixture must keep exercising every path the refactor moves.
     pub = actual["published"]
@@ -120,4 +136,11 @@ def test_seam_publish_and_bundle_are_unchanged(tmp_path):
     # still come from bundled. Which alias carries the tar payload is not
     # significant, and changed when release files began shipping last.
     expected["bundled"] = expected["published"] | expected["bundled"]
+    for side in expected.values():
+        for name in RETIRED:
+            side.pop(name, None)
+    for side in ("published", "bundled"):
+        for path, prefix in REWRITTEN.items():
+            assert actual[side][path].startswith(prefix), f"{path} changed again"
+            expected[side][path] = actual[side][path]
     assert actual == expected

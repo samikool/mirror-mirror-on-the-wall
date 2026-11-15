@@ -41,10 +41,14 @@ def test_the_published_gallery_answers_vscode(tmp_path, up, docker):  # noqa: F8
 
 
 def _bundle(tmp_path, cfg, name="lab"):
+    """The bundle, and the served paths whose files it carries."""
+    from mmw.core.publisher.manifest import blob_member
     net = config.NetworkConfig(name=name, bundle_dir=tmp_path / "out")
     r = bundle_network(net, cfg, cfg.settings.mirror_dir)
     with tarfile.open(r.out_path) as tar:
-        return r, {m.name for m in tar if m.isfile()}
+        members = {m.name for m in tar if m.isfile()}
+        rows = [json.loads(x) for x in tar.extractfile(".mmw/manifest.jsonl").read().decode().splitlines()[1:]]
+    return r, {row["p"] for row in rows if blob_member(row["c"]) in members}
 
 
 def test_bundle_carries_it_and_a_delta_does_not_resend_it(tmp_path, up, docker):  # noqa: F811
@@ -52,20 +56,18 @@ def test_bundle_carries_it_and_a_delta_does_not_resend_it(tmp_path, up, docker):
     first, names = _bundle(tmp_path, cfg)
     assert "vscode-gallery/python-3.13-slim-linux-amd64.tar" in names
     assert "vscode-gallery/catalog.json" in names
-    second, names2 = _bundle(tmp_path, cfg)
     # Nothing changed: no gallery file — least of all the image tar — is resent.
-    assert not [n for n in names2 if n.startswith("vscode-gallery/")]
+    with pytest.raises(ValueError, match="nothing to send"):
+        _bundle(tmp_path, cfg)
 
 
 def test_apply_lays_out_the_same_tree(tmp_path, up, docker):  # noqa: F811
-    import subprocess
-    import sys
+    from mmw.site import home as H
+    from mmw.site.apply import apply_bundle
     root, _, cfg = _published(tmp_path, up, docker)
     r, _ = _bundle(tmp_path, cfg)
     far = tmp_path / "far"
-    far.mkdir()
-    subprocess.run([sys.executable, str(r.out_path.parent / "apply.py"), str(r.out_path),
-                    "--root", str(far)], check=True)
+    apply_bundle(H.init_root(far, name="main", set_id="s1", network="lab"), str(r.out_path), say=lambda *a: None)
     for f in (root / "vscode-gallery").iterdir():
         assert (far / "vscode-gallery" / f.name).read_bytes() == f.read_bytes(), f.name
     assert list(far.glob("*.gallerycdn.vsassets.io"))
@@ -118,20 +120,6 @@ def test_a_bundling_machine_without_docker_still_bundles(tmp_path, up, monkeypat
     assert not [n for n in names if n.endswith(".tar")]
     assert any("python:3.13-slim" in w for w in r.warnings)
     assert not r.errors
-
-
-def test_the_gallery_index_lands_after_the_files_it_names(tmp_path, up, docker):  # noqa: F811
-    """`vscode-gallery/` sorts before `vscode.download…/`: in path order a far
-    side mid-apply would advertise builds that are not there yet."""
-    _, _, cfg = _published(tmp_path, up, docker)
-    r, _ = _bundle(tmp_path, cfg)
-    with tarfile.open(r.out_path) as tar:
-        order = [m.name for m in tar if m.isfile()]
-    last_payload = max(i for i, n in enumerate(order)
-                       if n.startswith(("vscode.download.prss.microsoft.com/", "main.vscode-cdn.net/"))
-                       or ".gallerycdn.vsassets.io/" in n)
-    for name in ("vscode-gallery/catalog.json", "vscode-gallery/updates.json"):
-        assert order.index(name) > last_payload, name
 
 
 def test_snapshot_replay_places_the_gallery_index_last(tmp_path, up, docker):  # noqa: F811

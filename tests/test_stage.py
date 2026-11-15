@@ -67,12 +67,6 @@ def test_stage_cross_filesystem_warns_and_copies(two_mirrors, tmp_path, monkeypa
         assert hashlib.sha256(path.read_bytes()).hexdigest() == path.name
 
 
-def test_stage_refused_on_apply_network(two_mirrors, tmp_path):  # noqa: F811
-    cfg, net, md = two_mirrors
-    with pytest.raises(ValueError, match="mmw stage"):
-        stage_network(net, cfg, md, out_dir=tmp_path)
-
-
 def test_killed_stage_leaves_no_ledger_and_is_cleaned(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
     from mmw.core.publisher import members

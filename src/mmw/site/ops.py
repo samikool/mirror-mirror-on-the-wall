@@ -7,7 +7,7 @@ from pathlib import Path
 
 from mmw.core import disk_io
 from mmw.core.repos import resolve_repo_refs
-from mmw.resources.apply import render_derived
+from mmw.core.served_tree import render_derived
 from mmw.site.db import PointInfo, SiteDB, TrackInfo, VersionInfo
 
 if TYPE_CHECKING:
@@ -439,7 +439,7 @@ def _expected(db: SiteDB, roots: Roots) -> dict[str, dict[str, str]]:
 def _wrong(root: Path, store: Store, expected: dict[str, str]):
     """(rel, checksum, what is wrong) for every served file not as it should be."""
     import hashlib
-    from mmw.resources.apply import ROOT_PLACEHOLDER, _nginx_root_config
+    from mmw.core.served_tree import ROOT_PLACEHOLDER, _nginx_root_config
     for rel, checksum in sorted(expected.items()):
         path = root / rel
         if not disk_io.ops.exists(path):
@@ -611,7 +611,7 @@ def move_in(home: Path, key: str, info: dict) -> bool:
     from mmw.core.publisher import replay_kind
     from mmw.site.apply import place_served_file, write_root_nginx
     from mmw.site.switch import PHASES, _base
-    from mmw.resources.apply import is_safe_path
+    from mmw.core.served_tree import is_safe_path
     for files in [*(v["files"] for v in info["versions"]),
                   *(pt["files"] for t in info.get("tracks", []) for pt in t["points"])]:
         for rel, c, _size in files:                  # another root's word: checked, never trusted
@@ -696,7 +696,7 @@ def tidy_here(home: Path, progress=None) -> list[str]:
     """Clear moved repositories' old served files here; the labels tidied.
     `progress(path)` for each file removed."""
     import json
-    from mmw.resources.apply import _prune_empty_parents
+    from mmw.core.served_tree import _prune_empty_parents
     done = []
     with _session(home) as (db, roots):
         path = Path(roots.primary.path)

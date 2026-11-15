@@ -17,7 +17,7 @@ from pathlib import Path
 from mmw.core import disk_io
 from mmw.core.publisher.manifest import blob_member, iter_manifest_points, iter_manifest_v2
 from mmw.core.snapshots import repo_digests
-from mmw.resources.apply import (
+from mmw.core.served_tree import (
     MANIFEST_MEMBER, ROOT_PLACEHOLDER, TLS_PREFIX, _install_tls, _nginx_root_config,
     _prune_empty_parents, render_derived,
 )
@@ -258,8 +258,8 @@ class RootApply:
         header, rows = iter_manifest_v2(self.manifest_path)
         rows = list(rows)
         if (header.format or 1) < 2:
-            raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
-                                'or set far_side = "mmw" on the connected side and bundle again')
+            raise ApplyError(5, 'this bundle was made for apply.py by an older mmw — bundle again with this one '
+                                '(a tree apply.py already manages converts with `mmw site adopt PATH`)')
         _check_paths(p for p, _c, _r in rows)
         held_by: dict[str, tuple[int, ...]] = {}
         if header.format == 3:
@@ -584,7 +584,7 @@ class ApplyPlan:
 
 def _scan_sizes(src: str, scratch: Path) -> dict[str, int]:
     """Write the bundle's manifest to `scratch`; the sizes of its members (one pass)."""
-    from mmw.resources.apply import is_safe_path
+    from mmw.core.served_tree import is_safe_path
     path = Path(src)
     sizes: dict[str, int] = {}
     if disk_io.ops.is_dir(path):
@@ -659,8 +659,8 @@ def plan_apply(target, src: str) -> ApplyPlan:
     finally:
         tmpdir.cleanup()
     if (header.format or 1) < 2:
-        raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
-                            'or set far_side = "mmw" on the connected side and bundle again')
+        raise ApplyError(5, 'this bundle was made for apply.py by an older mmw — bundle again with this one '
+                            '(a tree apply.py already manages converts with `mmw site adopt PATH`)')
     repos = _repo_meta(header)
     bases = {r: m["bases"] for r, m in repos.items()}
     if header.format == 3:
@@ -1071,7 +1071,7 @@ def _check_paths(paths) -> None:
     """Every path a manifest names stays inside the root — a row the bundle
     carries, or one served from the store (a delta's unchanged file, any
     format-3 row): refused before anything is written."""
-    from mmw.resources.apply import is_safe_path
+    from mmw.core.served_tree import is_safe_path
     for p in paths:
         if not is_safe_path(p):
             raise ApplyError(2, f"bundle is malformed: unsafe path {p!r} — refusing it")
@@ -1147,8 +1147,8 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         rows = list(rows)
         _check_paths(p for p, _c, _r, _s in rows)                 # before anything is written anywhere
         if (header.format or 1) < 2:
-            raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
-                                'or set far_side = "mmw" on the connected side and bundle again')
+            raise ApplyError(5, 'this bundle was made for apply.py by an older mmw — bundle again with this one '
+                                '(a tree apply.py already manages converts with `mmw site adopt PATH`)')
         k_of: dict = {}
         if header.format == 3:
             k_of = {(p, c): k for p, c, _r, _s, k in iter_manifest_points(scratch)[1]}

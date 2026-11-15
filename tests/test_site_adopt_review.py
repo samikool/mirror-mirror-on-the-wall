@@ -81,7 +81,7 @@ def test_a_by_hash_file_that_is_not_its_name_is_not_adopted(tmp_path):
 
 
 def test_another_origin_with_the_same_codename_is_not_matched(site, tmp_path):  # noqa: F811
-    from mmw.commands.site import _matching_repo
+    from mmw.site.adopt import matching_repo as _matching_repo
     home, _root = site
     _adopt(home, make_tree(tmp_path / "debian", origin="Debian"))
     (docker,) = find_trees(make_tree(tmp_path / "docker", origin="Docker"))
@@ -92,7 +92,7 @@ def test_another_origin_with_the_same_codename_is_not_matched(site, tmp_path):  
 
 
 def test_the_match_names_the_base_its_track_is_under(site):  # noqa: F811
-    from mmw.commands.site import _matching_repo
+    from mmw.site.adopt import matching_repo as _matching_repo
     from mmw.site.adopt import FoundTrack, FoundTree
     home, _root = site
     with SiteDB(home) as db:

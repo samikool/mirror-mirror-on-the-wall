@@ -267,6 +267,31 @@ class SiteDB:
     _T = "id, repo, name, suite, codename, pinned, previous, gone, origin, label"
     _P = "id, track, ident, date, stamp, snap_label, held"
 
+    def rename_repo(self, old: str, new: str, label: str, bases: list[str]) -> None:
+        """File repository `old` (its timeline, versions, layer, state) under
+        `new` — a repository adopted before its network named it."""
+        import json
+        c = self._conn
+        try:
+            c.execute("UPDATE repos SET repo = ?, label = ?, bases = ? WHERE repo = ?",
+                      (new, label, json.dumps(bases), old))
+            for table in ("versions", "tracks", "switches", "deleted", "site_layers", "overlays", "exports"):
+                c.execute(f"UPDATE {table} SET repo = ? WHERE repo = ?", (new, old))
+            c.execute("UPDATE versions SET label = ? WHERE repo = ?", (label, new))
+            for prefix in ("hold:", "moving_in:", "moved:", "local-repo:"):
+                if c.execute("SELECT 1 FROM meta WHERE key = ?", (prefix + old,)).fetchone():
+                    c.execute("DELETE FROM meta WHERE key = ?", (prefix + new,))      # a stale one gives way
+                    c.execute("UPDATE meta SET key = ? WHERE key = ?", (prefix + new, prefix + old))
+            foreign = json.loads(self.get_meta("foreign_mirrors") or "{}")
+            if old in foreign:
+                foreign[new] = foreign.pop(old)
+                c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('foreign_mirrors', ?)",
+                          (json.dumps(foreign, sort_keys=True),))
+            c.commit()
+        except BaseException:
+            c.rollback()
+            raise
+
     def ensure_track(self, repo: str, name: str, fields: dict[str, str], *, commit: bool = True) -> int:
         c = self._conn
         c.execute("INSERT INTO tracks (repo, name, origin, label, suite, codename) VALUES (?, ?, ?, ?, ?, ?) "
@@ -586,6 +611,10 @@ class SiteDB:
     def get_meta(self, key: str, default: str | None = None) -> str | None:
         row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row[0] if row else default
+
+    def delete_meta(self, key: str) -> None:
+        self._conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+        self._conn.commit()
 
     def set_meta(self, key: str, value: str) -> None:
         self._conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))

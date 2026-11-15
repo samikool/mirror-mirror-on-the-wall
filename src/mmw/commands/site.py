@@ -623,35 +623,6 @@ def bundle(to: str, out: str, repos: list[str] | None, since: str | None, all_: 
     return 0
 
 
-def _matching_repo(db, tree) -> tuple[str, str] | None:
-    """(repository, base) already holding this tree's suite — the same
-    Origin, Label and codename — where its points go; None: none does."""
-    origin, label, name = tree.identity()
-    if not name:
-        return None
-    for st in db.repo_states():
-        for t in db.tracks(st.repo):
-            if t.name and name in (t.codename, t.suite) and (t.origin or "") == origin \
-                    and (t.label or "") == label:
-                base = t.name.split("/dists/", 1)[0]
-                return st.repo, next((b for b in st.bases if b == base), base)
-    return None
-
-
-def _network_keys(home: Path) -> list[bytes]:
-    """The public keys this root serves (`keys/…`): what upstream signs with."""
-    from mmw.site.db import SiteDB
-    from mmw.site.store import Store
-    from mmw.site.home import load_site
-    out = []
-    store = Store(Path(load_site(home).root))
-    with SiteDB(home) as db:
-        for rel, cs in sorted(db.network_files().items()):
-            if rel.startswith("keys/") and rel.endswith((".gpg", ".asc")) and store.has(cs):
-                out.append(disk_io.ops.read_bytes(store.path(cs)))
-    return out
-
-
 def _hash_progress(where: Path):
     """Every few thousand files hashed, a line on stderr — adopting a big
     tree takes a while."""
@@ -667,20 +638,77 @@ def _hash_progress(where: Path):
     return tick
 
 
+def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_lock: bool,
+                 say=print, err=eprint) -> int:
+    """A tree apply.py manages: converted in place (no --root), or adopted
+    into the mirror --root names."""
+    import sys
+
+    from mmw.site import recents
+    from mmw.site.adopt import apt_bases
+    bases = apt_bases(managed.rows)
+    say(f"An apply.py tree of {managed.network} at {managed.path} (as of {managed.created}): "
+          f"{len(managed.rows):,} files")
+    for b in bases:
+        say(f"  {b}  — an APT repository (named by the network's next bundle)")
+    say("  the rest — the network's own files (keys, nginx, other repositories)")
+    target = None
+    if root is not None:
+        try:
+            target = _set(root, break_lock).roots[0]
+        except _ERRORS as e:
+            return (err(str(e).strip("'\"")) or 1)
+        if not hasattr(target, "adopt_tree"):
+            err(f"{target.info.name} is over ssh — run mmw site adopt on that machine")
+            return 1
+        say(f"→ into {target.info.name}")
+    else:
+        say("→ in place: it becomes a root of an mmw mirror; served files stay as they are")
+    if dry_run:
+        return 0
+    if not yes:
+        if not sys.stdin.isatty():
+            err("pass --yes to adopt it (no terminal to ask on)")
+            return 1
+        if input("Adopt it? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    try:
+        if target is None:
+            from mmw.site.adopt import adopt_apply_tree
+            r = adopt_apply_tree(managed, progress=_hash_progress(managed.path))
+        else:
+            r = target.adopt_apply_tree(managed, progress=_hash_progress(managed.path))
+    except _ERRORS as e:
+        return (err(str(e).strip("'\"")) or 1)
+    if target is None:
+        recents.remember(str(managed.path))
+    for line in r.lines:
+        say(line)
+    for what, why in r.refused.items():
+        say(f"  {what} refused: {why}")
+    for what, n in r.incomplete.items():
+        say(f"  {what} stored incomplete: {n} file(s) missing")
+    say(f"adopted ({r.linked} linked" + (f", {r.copied} copied" if r.copied else "") + ") — the "
+          "network's next mmw bundle names its repositories")
+    return 0
+
+
 def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base: str | None = None,
           key: Path | None = None, unverified: bool = False, dry_run: bool = False, yes: bool = False,
-          break_lock: bool = False) -> int:
+          break_lock: bool = False, say=print, err=eprint) -> int:
     """Take over the APT trees under `path`: report them by suite, check each,
     and adopt them — the trees themselves are never changed."""
     import sys
     import tempfile
 
-    from mmw.site.adopt import adopt_tree, check_tree, find_trees, keyring_from, new_repo_key
-    from mmw.site.db import SiteDB
+    from mmw.site.adopt import check_tree, find_apply_tree, find_trees, keyring_from, new_repo_key
     from mmw.site.versionref import day
+    managed = find_apply_tree(Path(path))
+    if managed is not None:
+        return _adopt_apply(managed, root, dry_run, yes, break_lock, say, err)
     trees = find_trees(Path(path))
     if not trees:
-        eprint(f"no APT trees under {path} (an archive root has dists/*/Release, or a Release beside Packages)")
+        err(f"no APT trees under {path} (an archive root has dists/*/Release, or a Release beside Packages)")
         return 1
     try:
         mset = _set(root, break_lock)
@@ -689,51 +717,46 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
         else:
             target, repo_key = mset.roots[0], None
     except _ERRORS as e:
-        return _fail(e)
-    if not hasattr(target, "home"):
-        eprint(f"{target.info.name} is over ssh — run mmw site adopt on that machine")
+        return (err(str(e).strip("'\"")) or 1)
+    if not hasattr(target, "adopt_tree"):
+        err(f"{target.info.name} is over ssh — run mmw site adopt on that machine")
         return 1
-    home = target.home
 
     groups: dict[tuple, list] = {}
     for t in trees:
         groups.setdefault(t.identity(), []).append(t)
-    dest: dict[tuple, tuple[str | None, str, str, Path]] = {}     # identity → (repo key, label, base, home)
-    homes = [r.home for r in mset.roots if hasattr(r, "home")] if repo is None else [home]
+    dest: dict[tuple, tuple] = {}         # identity → (repo key, label, base, the root it goes to)
+    candidates = [r for r in mset.roots if hasattr(r, "adopt_tree")] if repo is None else [target]
     for ident, members in groups.items():
-        match_home = home
-        match = None
-        for h in homes:                             # a suite already here, in any root of the set
-            with SiteDB(h) as db:
-                match = (repo_key, db.repo_state(repo_key).bases[0]) if repo_key else _matching_repo(db, members[0])
+        match, match_root = None, target
+        for r in candidates:                        # a suite already here, in any root of the set
+            match = r.adoption_match(members[0], repo_key)
             if match is not None:
-                match_home = h
+                match_root = r
                 break
-        with SiteDB(match_home) as db:
-            origin, _label, name = ident
-            print(f"Found {len(members)} tree{'s' if len(members) > 1 else ''} of {origin or '?'} {name or '?'}:")
-            for t in sorted(members, key=lambda t: min(x.date for x in t.tracks)):
-                suites = ", ".join(f"{x.dir.rsplit('/', 1)[-1] or name} {day(x.date)}" for x in t.tracks)
-                print(f"  {t.path}  {suites}")
-            if match is not None:
-                st = db.repo_state(match[0])
-                dest[ident] = (match[0], st.label, match[1], match_home)
-                print(f"→ {st.label} (already here, at {match[1]})")
-            elif as_base:
-                base = as_base.strip("/")
-                dest[ident] = (None, origin or base, base, home)
-                print(f"→ a new repository served at https://{base}/ ({new_repo_key(base)})")
-            else:
-                eprint(f"{origin} {name} is new here — say where it is served: --as HOST/PATH "
-                       "(e.g. --as deb.debian.org/debian)")
-                return 1
+        origin, _label, name = ident
+        say(f"Found {len(members)} tree{'s' if len(members) > 1 else ''} of {origin or '?'} {name or '?'}:")
+        for t in sorted(members, key=lambda t: min(x.date for x in t.tracks)):
+            suites = ", ".join(f"{x.dir.rsplit('/', 1)[-1] or name} {day(x.date)}" for x in t.tracks)
+            say(f"  {t.path}  {suites}")
+        if match is not None:
+            dest[ident] = (*match, match_root)
+            say(f"→ {match[1]} (already here, at {match[2]})")
+        elif as_base:
+            base = as_base.strip("/")
+            dest[ident] = (None, origin or base, base, target)
+            say(f"→ a new repository served at https://{base}/ ({new_repo_key(base)})")
+        else:
+            err(f"{origin} {name} is new here — say where it is served: --as HOST/PATH "
+                   "(e.g. --as deb.debian.org/debian)")
+            return 1
 
     with tempfile.TemporaryDirectory() as tmp:
-        keys = [disk_io.ops.read_bytes(Path(key))] if key is not None else _network_keys(home)
+        keys = [disk_io.ops.read_bytes(Path(key))] if key is not None else target.network_keys()
         keyring = keyring_from(keys, Path(tmp) / "keys.gpg") if keys else None
         if keyring is None and not unverified:
             if not (sys.stdin.isatty() and not yes):
-                eprint("no key to check the signatures with — pass --key FILE (upstream's public key), "
+                err("no key to check the signatures with — pass --key FILE (upstream's public key), "
                        "or --unverified to adopt without checking (marked 'signature not checked')")
                 return 1
             if input("No key to check signatures with. Adopt unverified? [y/N] ").strip().lower() not in ("y", "yes"):
@@ -749,17 +772,17 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
             if check.refused:
                 notes.append("refused: " + "; ".join(f"{d.rsplit('/', 1)[-1] or 'files'}: {why}"
                                                      for d, why in check.refused.items()))
-            print(f"  {t.path}: {' · '.join(notes)}")
+            say(f"  {t.path}: {' · '.join(notes)}")
             stray = check.strays
             if stray:
                 parts = ([f"{len(stray['pool'])} pool file(s) no index names"] if stray.get("pool") else []) + \
                         ([f"{len(stray['other'])} other file(s)"] if stray.get("other") else [])
-                print(f"    not adopted: {', '.join(parts)} (apt can't reach them)")
+                say(f"    not adopted: {', '.join(parts)} (apt can't reach them)")
         if dry_run:
             return 0
         if not yes:
             if not sys.stdin.isatty():
-                eprint("pass --yes to adopt them (no terminal to ask on)")
+                err("pass --yes to adopt them (no terminal to ask on)")
                 return 1
             if input("Adopt them? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
@@ -767,23 +790,94 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
         for t, check in checked:
             key_here, label, base, into = dest[t.identity()]
             try:
-                r = adopt_tree(into, t, check, repo=key_here, label=label, base=base,
-                               progress=_hash_progress(t.path))
+                r = into.adopt_tree(t, check, repo=key_here, label=label, base=base,
+                                    progress=_hash_progress(t.path))
             except _ERRORS as e:
-                eprint(f"{t.path}: {e}")
+                err(f"{t.path}: {e}")
                 continue
             if key_here is None:                       # the next tree of this group joins it
                 dest[t.identity()] = (r.repo, r.label, base, into)
             adopted += 1
             how = f"{r.linked} linked" + (f", {r.copied} copied" if r.copied else "")
-            print(f"adopted {t.path} ({how})")
+            say(f"adopted {t.path} ({how})")
             for line in r.lines:
-                print(line)
+                say(line)
             for suite, why in r.refused.items():
-                print(f"  {r.label}  {suite} refused: {why}")
+                say(f"  {r.label}  {suite} refused: {why}")
             for suite, n in r.incomplete.items():
-                print(f"  {r.label}  {suite} stored incomplete: {n} file(s) missing")
+                say(f"  {r.label}  {suite} stored incomplete: {n} file(s) missing")
             if r.unverified:
-                print(f"  {r.label}  signature not checked: {', '.join(r.unverified)}")
-    print(f"{path} was not changed — remove the adopted trees yourself once you're satisfied")
+                say(f"  {r.label}  signature not checked: {', '.join(r.unverified)}")
+    say(f"{path} was not changed — remove the adopted trees yourself once you're satisfied")
     return 0 if adopted else 1
+
+
+def check_signatures(root: Path | None = None, key: Path | None = None, break_lock: bool = False) -> int:
+    """Check the signatures of points adopted unverified, now that a key is here."""
+    import tempfile
+
+    from mmw.site.adopt import keyring_from
+    try:
+        roots_here = [r for r in _set(root, break_lock).roots if hasattr(r, "recheck_signatures")]
+    except _ERRORS as e:
+        return _fail(e)
+    checked, code = 0, 0
+    for r in roots_here:
+        keys = [disk_io.ops.read_bytes(Path(key))] if key is not None else r.network_keys()
+        if not keys:
+            eprint(f"{r.info.name}: no key to check with — pass --key FILE (upstream's public key)")
+            code = 1
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, what, verdict in r.recheck_signatures(keyring_from(keys, Path(tmp) / "k.gpg")):
+                checked += 1
+                print(f"  {label}  {what}  {verdict}")
+    if not checked and not code:
+        print("nothing to check — every adopted point's signature was checked when it was adopted "
+              "(a tree apply.py managed came from a bundle the connected side checked)")
+    return code
+
+
+def adopted(root: Path | None = None, remove: Path | None = None, yes: bool = False) -> int:
+    """The trees adopted from, with what removing each frees; `remove` one."""
+    import sys
+
+    from mmw.core.format import fmt_size
+    try:
+        roots_here = [r for r in _set(root).roots if hasattr(r, "originals")]
+        every_root = [Path(r.info.path) for r in _set(root).roots if hasattr(r, "originals")]
+    except _ERRORS as e:
+        return _fail(e)
+    if remove is None:
+        listed = 0
+        for r in roots_here:
+            for o in r.originals():
+                listed += 1
+                state = (f"{o.files:,} files, removing it frees {fmt_size(o.frees)}" if o.present
+                         else "gone already")
+                print(f"  {o.path}  adopted {o.stamp[:8]} — {state}")
+        if not listed:
+            print("no adopted trees left")
+        return 0
+    target = Path(remove).resolve()
+    for r in roots_here:
+        found = next((o for o in r.originals() if o.path == target), None)
+        if found is None:
+            continue
+        print(f"Remove {target}? It frees {fmt_size(found.frees)}; what was adopted from it stays served.")
+        if found.refused:
+            print(f"  ! not adopted from it (refused): {', '.join(found.refused)} — removing it loses those files")
+        if not yes:
+            if not sys.stdin.isatty():
+                eprint("pass --yes to remove it (no terminal to ask on)")
+                return 1
+            if input("Remove it? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 1
+        try:
+            freed = r.remove_original(target, every_root)
+        except (ValueError, OSError) as e:
+            return _fail(e)
+        print(f"removed {target} — {fmt_size(freed)} freed")
+        return 0
+    eprint(f"{target} is not an adopted tree — `mmw site adopted` lists them")
+    return 1

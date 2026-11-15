@@ -807,6 +807,27 @@ def cmd_site_adopt(path: Path = typer.Argument(..., help="A folder holding APT t
     raise typer.Exit(adopt(path, root, repo, as_base, key, unverified, dry_run, yes, break_lock))
 
 
+@site_app.command("check-signatures")
+def cmd_site_check_signatures(root: Path = typer.Option(None, "--root", help="A root of the mirror"),
+                              key: Path = typer.Option(None, "--key", help="Upstream's public key "
+                                                       "(default: the keys this mirror serves)"),
+                              break_lock: bool = _BREAK_LOCK):
+    """Check the signatures of points adopted without a key; each that
+    verifies stops saying 'signature not checked'."""
+    from mmw.commands.site import check_signatures
+    raise typer.Exit(check_signatures(root, key, break_lock))
+
+
+@site_app.command("adopted")
+def cmd_site_adopted(root: Path = typer.Option(None, "--root", help="A root of the mirror"),
+                     remove: Path = typer.Option(None, "--remove", help="Delete this adopted tree"),
+                     yes: bool = _YES):
+    """The trees adopted from, each with what removing it frees; --remove one
+    once you're satisfied (what was adopted stays served)."""
+    from mmw.commands.site import adopted
+    raise typer.Exit(adopted(root, remove, yes))
+
+
 @site_app.command("open")
 def cmd_site_open(path: str = typer.Argument(..., help="A root of a mirror: a folder, or [user@]host:/path over ssh"),
                   install: Path = typer.Option(None, "--install", help="Push this mmw installer (mmw-<version>-<arch>.tar) "

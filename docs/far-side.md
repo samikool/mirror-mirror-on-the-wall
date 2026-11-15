@@ -269,10 +269,37 @@ Found 3 trees of Debian bookworm:
   filesystem — adopting terabytes costs hashing time, not disk — and copied
   otherwise, after a space check. Each tree becomes a point of its suite,
   and the newest is served.
-- The trees are never changed. Delete them yourself once you're satisfied;
-  until then, don't edit their files in place (hardlinked, an in-place edit
-  would change what is served — rsync's default of writing a new file is
-  fine).
+- The trees are never changed. Until you remove them, don't edit their
+  files in place (hardlinked, an in-place edit would change what is served
+  — rsync's default of writing a new file is fine), and stop whatever
+  updates them while adopting.
+- `mmw site adopted` lists the trees adopted from and what removing each
+  frees (only files nothing else holds); `mmw site adopted --remove PATH
+  --yes` deletes one — what was adopted from it stays served.
+- Adopted without a key? Once you have it: `mmw site check-signatures
+  --key FILE` — each point that verifies stops saying "signature not
+  checked".
+- In the TUI: `A` on the mirror's page — Look shows what was found and
+  checked, Adopt does it.
+
+### A far side apply.py manages
+
+A tree `apply.py` keeps (it holds `.mmw/manifest.jsonl`, every file it
+serves) converts to mmw where it is, without a full bundle:
+
+```bash
+mmw site adopt /srv/www --dry-run
+mmw site adopt /srv/www --yes        # it becomes a root of an mmw mirror
+```
+
+Every file is checked against that manifest and linked into a store beside
+it; served files stay exactly as they are. Each APT repository is found by
+its `dists/`; everything else (VS Code, PyPI, keys, nginx) is kept as the
+network's files. Then set `far_side = "mmw"` for the network on the
+connected side: its next bundle names the repositories, carries only what
+the far side didn't have, and from then on this is an mmw mirror like any
+other. (`--root` adopts the tree into another mirror instead.)
+
 
 ## More than one root
 

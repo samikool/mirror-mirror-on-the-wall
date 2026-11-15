@@ -79,6 +79,7 @@ class SiteHomePage(Page):
         Binding("h", "hold", "Hold"),
         Binding("d", "delete", "Delete"),
         Binding("a", "apply", "Apply"),
+        Binding("A", "adopt", "Adopt", show=False),
         Binding("r", "add_root", "Add root"),
         Binding("b", "serve_bundle", "As of", show=False),
         Binding("x", "export", "Export"),
@@ -777,6 +778,18 @@ class SiteHomePage(Page):
 
     def action_tidy(self) -> None:
         self.app.push_screen(TidyRunPage([r.info.name for r in self.app.mset.roots]), lambda _: self._load())
+
+    def action_adopt(self) -> None:
+        """Take over APT trees mmw didn't make (or a tree apply.py manages)."""
+        from mmw.tui.site.adopt_flow import AdoptPage, AdoptRunPage
+        roots = [r for r in (self.app.mset.roots if self.app.mset else []) if hasattr(r, "home")]
+        if not roots:
+            self.set_status("Adopt into a mirror on this machine — open or apply one first "
+                            "(or convert an apply.py tree in place: mmw site adopt PATH).", "error")
+            return
+        root = str(roots[0].info.location)
+        self.app.push_screen(AdoptPage(root), lambda c: c and self.app.push_screen(
+            AdoptRunPage(root, c), lambda _: self._load()))
 
     def action_apply(self) -> None:
         from mmw.tui.path_pick import PathPickPage

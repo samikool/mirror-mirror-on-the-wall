@@ -368,6 +368,9 @@ class RootApply:
             result.lines.extend(self._import_keys())
         recorded: dict[str, list] = {}
         arrived = set(sizes)
+        if not self.foreign and (not self.points_bundle or self.selection):
+            for repo, plan in planned.items():       # only this network's own bundle names what was adopted
+                _claim_adopted(db, repo, plan["meta"], result)
         for repo, plan in planned.items():
             meta = plan["meta"]
             rows = dict(plan["rows"])
@@ -507,6 +510,19 @@ class RootApply:
         if "runtime" in self.seen:
             result.actions.append(RUNTIME_NOTE)
         return result
+
+
+def _claim_adopted(db, repo: str, meta: dict, result) -> None:
+    """A repository new here that a tree adopted from apply.py already holds
+    (`adopted:<base>`, the same bases): it is that one, now named."""
+    from mmw.site.adopt import ADOPTED
+    if db.repo_state(repo) is not None or not meta.get("bases"):
+        return
+    for st in db.repo_states():
+        if st.repo.startswith(ADOPTED) and sorted(st.bases) == sorted(meta["bases"]):
+            db.rename_repo(st.repo, repo, meta["label"], list(meta["bases"]))
+            result.lines.append(f"  {meta['label']}  is the repository adopted at {', '.join(st.bases)}")
+            return
 
 
 def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forward_all: bool = False,

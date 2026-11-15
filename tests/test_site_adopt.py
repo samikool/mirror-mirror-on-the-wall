@@ -222,3 +222,25 @@ def test_into_an_existing_repository(two_mirrors, tmp_path):  # noqa: F811
     assert r.repo == a and not r.refused
     with SiteDB(home) as db:
         assert len(db.points(track.id)) == 2 and db.repo_state(a).serving.id == serving
+
+
+# ── checking signatures later ────────────────────────────────────────────────
+
+def test_a_key_added_later_clears_the_mark(site, tmp_path, upstream):
+    from mmw.site.adopt import recheck_signatures
+    from mmw.site.ops import unverified
+    home, _root = site
+    r = _adopt(home, make_tree(tmp_path / "t", sign_with=(upstream, "up")))          # no key yet
+    assert unverified(home, r.repo)
+    verdicts = recheck_signatures(home, _ring(upstream, tmp_path))
+    assert [(v[1].split()[0], v[2]) for v in verdicts] == [("stable", "verified")]
+    assert unverified(home, r.repo) == []
+
+
+def test_a_wrong_key_leaves_it(site, tmp_path, upstream):
+    from mmw.site.adopt import recheck_signatures
+    from mmw.site.ops import unverified
+    home, _root = site
+    r = _adopt(home, make_tree(tmp_path / "t", sign_with=(upstream, "up"), inrelease=False))
+    (v,) = recheck_signatures(home, _ring(upstream, tmp_path, "other"))
+    assert v[2].startswith("bad") and unverified(home, r.repo)

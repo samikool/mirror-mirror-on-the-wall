@@ -10,6 +10,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import hashlib
+import json
 import lzma
 import os
 import posixpath
@@ -363,25 +364,26 @@ def new_repo_key(base: str) -> str:
     return normalize_url(f"https://{base.strip('/')}/")
 
 
-def _ingest(tree: FoundTree, check: TreeCheck, store, root_path: Path, result: AdoptResult) -> None:
+def _ingest(src_root: Path, present: dict[str, str], stats: dict, sizes: dict[str, int], store,
+            root_path: Path, result: AdoptResult) -> None:
     """Every file adopted into the store: hardlinked when the tree is on the
     store's filesystem, else copied — after checking there is room."""
     from mmw.core import disk_io
     from mmw.site.space import real_free
     disk_io.ops.mkdir(store.dir, parents=True, exist_ok=True)
-    same_fs = os.stat(tree.path).st_dev == os.stat(store.dir).st_dev
-    todo = {cs: rel for rel, cs in check.present.items() if not store.has(cs)}
+    same_fs = os.stat(src_root).st_dev == os.stat(store.dir).st_dev
+    todo = {cs: rel for rel, cs in present.items() if not store.has(cs)}
     if not same_fs:
-        need = sum(check.sizes[rel] for rel in todo.values())
+        need = sum(sizes[rel] for rel in todo.values())
         free = real_free(root_path)
         if need > free:
             from mmw.core.format import fmt_size
-            raise ValueError(f"{tree.path} is on another filesystem: adopting it copies {fmt_size(need)}, "
+            raise ValueError(f"{src_root} is on another filesystem: adopting it copies {fmt_size(need)}, "
                              f"and {root_path} has {fmt_size(free)} free")
     disk_io.ops.mkdir(store.tmp, parents=True, exist_ok=True)
     for cs, rel in sorted(todo.items(), key=lambda kv: kv[1]):
-        src = tree.path / rel
-        if same_fs and _linkable(src) and _link_in(src, cs, check.stats.get(rel), store):
+        src = src_root / rel
+        if same_fs and _linkable(src) and _link_in(src, cs, stats.get(rel), store):
             result.linked += 1
             continue
         try:
@@ -452,7 +454,7 @@ def adopt_tree(home: Path, tree: FoundTree, check: TreeCheck, *, repo: str | Non
         root_cfg = roots.of(state)
         roots.check_mounted(root_cfg)
         store = roots.store(root_cfg)
-        _ingest(tree, check, store, Path(root_cfg.path), result)
+        _ingest(tree.path, check.present, check.stats, check.sizes, store, Path(root_cfg.path), result)
         rows = {f"{base}/{rel}": cs for rel, cs in check.present.items()}
         sizes = {cs: check.sizes[rel] for rel, cs in check.present.items()}
         for rel, owners in check.missing.items():
@@ -491,4 +493,302 @@ def adopt_tree(home: Path, tree: FoundTree, check: TreeCheck, *, repo: str | Non
         switched = _reserve(db, roots, repo)
         result.lines.extend(f"  {label}  {w}" for w in switched.warnings)
         _render(roots)
+        db.set_meta(_ORIGINAL + str(tree.path.resolve()),
+                    json.dumps({"stamp": stamp, "refused": sorted(result.refused)}))
     return result
+
+
+def matching_repo(db, tree) -> tuple[str, str] | None:
+    """(repository, base) already holding this tree's suite — the same
+    Origin, Label and codename — where its points go; None: none does."""
+    origin, label, name = tree.identity()
+    if not name:
+        return None
+    for st in db.repo_states():
+        for t in db.tracks(st.repo):
+            if t.name and name in (t.codename, t.suite) and (t.origin or "") == origin \
+                    and (t.label or "") == label:
+                base = t.name.split("/dists/", 1)[0]
+                return st.repo, next((b for b in st.bases if b == base), base)
+    return None
+
+
+def network_keys(home: Path) -> list[bytes]:
+    """The public keys this root serves (`keys/…`): what upstream signs with."""
+    from mmw.site.db import SiteDB
+    from mmw.site.store import Store
+    from mmw.site.home import load_site
+    out = []
+    store = Store(Path(load_site(home).root))
+    with SiteDB(home) as db:
+        for rel, cs in sorted(db.network_files().items()):
+            if rel.startswith("keys/") and rel.endswith((".gpg", ".asc")) and store.has(cs):
+                out.append(store.path(cs).read_bytes())
+    return out
+
+
+# ── a tree apply.py manages ──────────────────────────────────────────────────
+
+ADOPTED = "adopted:"          # a repository key until the network's bundle names it
+
+
+@dataclass
+class ApplyTree:
+    path: Path
+    network: str
+    created: str
+    created_label: str | None
+    rows: dict[str, str]        # every served path → sha256, as its manifest says
+
+
+def find_apply_tree(path: Path) -> ApplyTree | None:
+    """The tree at `path` if apply.py (or a publish) keeps its manifest there."""
+    from mmw.core.publisher.manifest import RECORD_PATH, iter_manifest
+    record = Path(path) / RECORD_PATH
+    if not record.is_file():
+        return None
+    header, rows = iter_manifest(record)
+    return ApplyTree(Path(path), header.network, header.created, header.created_label,
+                     {p: c for p, c in rows if not p.startswith(".mmw/") and _safe(p)})
+
+
+def apt_bases(rows: dict[str, str]) -> list[str]:
+    """Each APT archive root the rows hold: a dir with `dists/*/Release`, or a
+    flat repository's Release beside its Packages. Longest first."""
+    index_dirs = {p.rsplit("/", 1)[0] for p in rows if "/" in p
+                  and p.rsplit("/", 1)[1].startswith(("Packages", "Sources"))}
+    bases: set[str] = set()
+    for p in rows:
+        if "/" not in p or p.rsplit("/", 1)[1] not in ("Release", "InRelease"):
+            continue
+        d = p.rsplit("/", 1)[0]
+        if "/dists/" in f"/{d}/":
+            base = f"/{d}".split("/dists/", 1)[0].lstrip("/")
+            if base:
+                bases.add(base)
+        elif d in index_dirs:
+            bases.add(d)
+    return sorted(bases, key=lambda b: (-len(b), b))
+
+
+def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None) -> AdoptResult:
+    """Adopt a tree apply.py manages: every file its manifest lists, hashed
+    against it and linked into the store; each APT base a repository
+    (`adopted:<base>`, until the network's next bundle names it), the rest the
+    network's files. `home` None: in place — the tree becomes a root, its
+    served files linked, never changed."""
+    from mmw.site import home as H
+    from mmw.site.apply import place_served_file
+    from mmw.site.ops import _render, _reserve, _session
+    from mmw.site.timeline import import_rows
+
+    from mmw.site.db import SiteDB
+    in_place = home is None
+    if in_place:
+        home = H.root_home(tree.path)
+        if (home / H.SETTINGS).exists():
+            with SiteDB(home) as db:
+                if db.applied() or db.repo_states():
+                    raise ValueError(f"{tree.path} is already an mmw mirror — nothing to convert")
+        else:
+            H.init_root(tree.path, name="main", set_id=H.new_set_id(), network=tree.network)
+    result = AdoptResult("", tree.network)
+    files = _files(tree.path)
+    bases = apt_bases(tree.rows)
+
+    def base_of(rel: str) -> str | None:
+        return next((b for b in bases if rel.startswith(b + "/")), None)
+
+    present: dict[str, str] = {}
+    stats: dict = {}
+    sizes: dict[str, int] = {}
+    network: dict[str, str] = {}
+    for rel, want in sorted(tree.rows.items()):
+        st = files.get(rel)
+        base = base_of(rel)
+        if st is None:
+            continue                                   # missing: a repository's point is incomplete
+        key = _stat_key(st)
+        if key not in _HASHED:
+            try:
+                _HASHED[key] = _hash(tree.path / rel)
+            except OSError:
+                continue
+            if progress:
+                progress(rel, st.st_size)
+        got = _HASHED[key]
+        if base is not None and got != want:
+            result.refused.setdefault(base, f"{rel} differs from the tree's manifest")
+            continue
+        present[rel], stats[rel], sizes[rel] = got, key, st.st_size
+        if base is None:
+            network[rel] = got                         # nginx text is rewritten here: what is served counts
+    with _session(home) as (db, roots):
+        root_cfg = roots.primary
+        roots.check_mounted(root_cfg)
+        store = roots.store(root_cfg)
+        _ingest(tree.path, present, stats, sizes, store, Path(root_cfg.path), result)
+        blob_sizes = {present[r]: sizes[r] for r in present}
+        keys = []
+        serving = {b: st for st in db.repo_states() for b in st.bases}
+        for base in bases:
+            if base in result.refused:
+                continue
+            rows = {rel: cs for rel, cs in tree.rows.items() if base_of(rel) == base}
+            known = serving.get(base)
+            # A base this mirror already serves: its points join that repository.
+            key, label = (known.repo, known.label) if known is not None else (ADOPTED + base, base)
+            bases_of = list(known.bases) if known is not None else [base]
+            outcomes = import_rows(db, store, key, label, bases_of, rows,
+                                   {c: blob_sizes.get(c, 0) for c in rows.values()},
+                                   tree.created, tree.created_label, set(), own=known is None)
+            keys.append(key)
+            for o in outcomes:
+                suite = o.suite or "files"
+                if o.status == "conflict":
+                    result.refused[f"{base} {suite}"] = o.note
+                elif o.status == "incomplete":
+                    result.incomplete[f"{base} {suite}"] = o.missing
+            result.lines.append(f"  {base}  {len(outcomes)} suite(s) adopted")
+        mine = H.load_site(home).network
+        if in_place or (mine == tree.network and not db.network_files()):
+            db.set_network_files(network, {network[r]: sizes[r] for r in network})
+            if not in_place:
+                for rel, cs in sorted(network.items()):
+                    place_served_file(store, Path(root_cfg.path), rel, cs, network=True)
+        elif network:
+            result.lines.append(f"  network {tree.network}'s own files ({len(network)}) left out — this mirror "
+                                f"is {mine}'s, with its own")
+        if in_place:
+            db.record_applied(tree.created, None, "adopted")
+        for key in keys:
+            switched = _reserve(db, roots, key)
+            result.lines.extend(f"  {key[len(ADOPTED):]}  {w}" for w in switched.warnings)
+        _render(roots)
+        if not in_place:
+            db.set_meta(_ORIGINAL + str(tree.path.resolve()),
+                        json.dumps({"stamp": tree.created, "refused": sorted(result.refused)}))
+    if in_place:
+        record = tree.path / ".mmw" / "manifest.jsonl"
+        os.replace(record, record.with_name("manifest.apply.jsonl"))   # converted: never again
+    result.repo = ",".join(keys)
+    return result
+
+
+# ── checking signatures later ────────────────────────────────────────────────
+
+def recheck_signatures(home: Path, keyring: Path) -> list[tuple[str, str, str]]:
+    """Check the Release signature of every point adopted unverified, from
+    the store, with `keyring`; a verified one loses its mark. (label,
+    "suite date", verdict) per point checked."""
+    import tempfile
+
+    from mmw.site.ops import _session, suite_of
+    out = []
+    with _session(home) as (db, roots), tempfile.TemporaryDirectory() as tmp:
+        marked = set(db.metas("unverified:"))
+        for st in db.repo_states():
+            store = roots.store(roots.of(st))
+            for t in db.tracks(st.repo):
+                for p in db.points(t.id):
+                    key = unverified_key(p)
+                    if key not in marked:
+                        continue
+                    files = db.point_files(p.id)
+                    d = Path(tmp) / str(p.id)
+                    d.mkdir()
+                    for name in ("InRelease", "Release", "Release.gpg"):
+                        cs = files.get(f"{t.name}/{name}")
+                        if cs is not None and store.has(cs):
+                            shutil.copyfile(store.path(cs), d / name)
+                    verdict = _signature(d, keyring)
+                    if verdict == "verified":
+                        db.delete_meta(key)
+                    out.append((st.label, f"{suite_of(t)} {p.date[:4]}-{p.date[4:6]}-{p.date[6:8]}", verdict))
+    return out
+
+
+# ── adopted originals ────────────────────────────────────────────────────────
+
+_ORIGINAL = "adopted_from:"
+
+
+@dataclass(frozen=True)
+class Original:
+    path: Path
+    stamp: str             # when it was adopted
+    present: bool
+    files: int
+    frees: int             # bytes only it holds: what removing it gives back
+    refused: list = field(default_factory=list)   # what wasn't adopted from it: lost with it
+
+
+def record_original(home: Path, path: Path, stamp: str, refused: list | None = None) -> None:
+    import json
+    from mmw.site.db import SiteDB
+    with SiteDB(home) as db:
+        db.set_meta(_ORIGINAL + str(Path(path).resolve()), json.dumps({"stamp": stamp, "refused": refused or []}))
+
+
+def _recorded(value: str) -> tuple[str, list]:
+    import json
+    try:
+        data = json.loads(value)
+    except ValueError:
+        return value, []
+    return (data.get("stamp", ""), list(data.get("refused", []))) if isinstance(data, dict) else (value, [])
+
+
+def originals(home: Path) -> list[Original]:
+    """Every tree adopted from (not in place), with what removing it frees."""
+    from mmw.site.db import SiteDB
+    with SiteDB(home) as db:
+        recorded = db.metas(_ORIGINAL)
+    out = []
+    for key, value in sorted(recorded.items()):
+        path = Path(key[len(_ORIGINAL):])
+        stamp, refused = _recorded(value)
+        if not path.is_dir():
+            out.append(Original(path, stamp, False, 0, 0, refused))
+            continue
+        files = _files(path)
+        out.append(Original(path, stamp, True, len(files),
+                            sum(st.st_size for st in files.values() if st.st_nlink == 1), refused))
+    return out
+
+
+def _holds_a_mirror(path: Path) -> Path | None:
+    """A mirror's own directory (a root's `.mmw/site` or store) or another
+    filesystem mounted inside `path`, if there is one."""
+    for dirpath, dirnames, _files_here in os.walk(path, followlinks=False):
+        d = Path(dirpath)
+        if d.name == ".mmw" and ({"site", "store"} & set(dirnames)) and d.parent != path:
+            return d.parent
+        if d != path and os.path.ismount(d):
+            return d
+    if (path / ".mmw" / "site").exists() or (path / ".mmw" / "store").exists():
+        return path
+    return None
+
+
+def remove_original(home: Path, path: Path, other_roots: list[Path] = ()) -> int:
+    """Delete an adopted tree — only one adoption recorded, never a root of
+    this mirror (or `other_roots`), inside one or holding one, nor a tree
+    holding any mirror at all. The bytes it freed."""
+    from mmw.site.db import SiteDB
+    from mmw.site.home import load_site
+    path = Path(path).resolve()
+    found = next((o for o in originals(home) if o.path == path), None)
+    if found is None:
+        raise ValueError(f"{path} is not an adopted tree — `mmw site adopted` lists them")
+    for rp in [Path(r.path).resolve() for r in load_site(home).roots] + [Path(p).resolve() for p in other_roots]:
+        if path == rp or rp in path.parents or path in rp.parents:
+            raise ValueError(f"{path} is, is inside or holds {rp}, a root of this mirror — not removing it")
+    if found.present:
+        held = _holds_a_mirror(path)
+        if held is not None:
+            raise ValueError(f"{path} holds a mirror or a mounted filesystem ({held}) — not removing it")
+        shutil.rmtree(path)
+    with SiteDB(home) as db:
+        db.delete_meta(_ORIGINAL + str(path))
+    return found.frees

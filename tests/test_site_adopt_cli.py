@@ -80,3 +80,13 @@ def test_cli_nothing_found(site, tmp_path):
     (tmp_path / "empty").mkdir()
     r = run("adopt", str(tmp_path / "empty"), "--root", str(site))
     assert r.exit_code == 1 and "no APT trees" in r.output
+
+
+def test_cli_check_signatures(site, tmp_path, upstream):  # noqa: F811
+    make_tree(tmp_path / "t", sign_with=(upstream, "up"))
+    run("adopt", str(tmp_path / "t"), "--root", str(site), "--as", "deb.debian.org/debian", "--unverified", "--yes")
+    key = tmp_path / "up.asc"
+    key.write_text(upstream.public_armor("up"))
+    r = run("check-signatures", "--root", str(site), "--key", str(key))
+    assert r.exit_code == 0 and "verified" in r.output, r.output
+    assert "signature not checked" not in run("status", "--root", str(site)).output

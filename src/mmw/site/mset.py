@@ -206,6 +206,40 @@ class LocalRoot:
                      if layer and (overlay or layer.signing != "upstream") else "")
             return {"local": local, "layer_hold": db.get_meta(f"hold:{repo}") or ""}
 
+    # ── adoption: the trees are on this machine, so only a local root adopts ──
+
+    def adopt_tree(self, tree, check, **kw):
+        from mmw.site.adopt import adopt_tree
+        return adopt_tree(self.home, tree, check, **kw)
+
+    def adopt_apply_tree(self, tree, **kw):
+        from mmw.site.adopt import adopt_apply_tree
+        return adopt_apply_tree(tree, home=self.home, **kw)
+
+    def adoption_match(self, tree, repo_key: str | None = None) -> tuple[str, str, str] | None:
+        """(repository, label, base) this tree's suite joins here, if any."""
+        from mmw.site.adopt import matching_repo
+        from mmw.site.db import SiteDB
+        with SiteDB(self.home) as db:
+            match = (repo_key, db.repo_state(repo_key).bases[0]) if repo_key else matching_repo(db, tree)
+            return None if match is None else (match[0], db.repo_state(match[0]).label, match[1])
+
+    def network_keys(self) -> list[bytes]:
+        from mmw.site.adopt import network_keys
+        return network_keys(self.home)
+
+    def recheck_signatures(self, keyring):
+        from mmw.site.adopt import recheck_signatures
+        return recheck_signatures(self.home, keyring)
+
+    def originals(self):
+        from mmw.site.adopt import originals
+        return originals(self.home)
+
+    def remove_original(self, path, other_roots=()):
+        from mmw.site.adopt import remove_original
+        return remove_original(self.home, path, other_roots)
+
     def unverified(self, repo: str) -> list[str]:
         from mmw.site.ops import unverified
         return unverified(self.home, repo)

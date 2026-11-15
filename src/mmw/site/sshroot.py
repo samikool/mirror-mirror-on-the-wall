@@ -137,8 +137,9 @@ class SshRoot:
         self._call("set-identity", input=json.dumps({k: v for k, v in (("members", members), ("hosts", hosts))
                                                       if v is not None}).encode())
 
-    def keep_versions(self) -> int | None:
-        return self._call("keep-versions")["keep"]
+    def keep_setting(self) -> "int | str":
+        keep = self._call("keep-versions")["keep"]
+        return "all" if keep is None else keep           # an older remote: None kept every version
 
     def history(self, key: str):
         from mmw.site.db import PointInfo, TrackInfo
@@ -186,8 +187,16 @@ class SshRoot:
     def verify(self, repair: bool = False):
         return self._call("verify", *(["--repair"] if repair else []))
 
-    def keep(self, keep: int | None) -> None:
-        self._call("keep", "all" if keep is None else str(keep))
+    def keep(self, keep) -> None:
+        """The history setting — a policy Clean up applies. An older remote mmw
+        knew only `keep`, which deleted at once: it is never sent that."""
+        try:
+            self._call("keep-policy", "all" if keep is None else str(keep))
+        except ValueError as e:
+            if "unknown verb" in str(e):
+                raise ValueError(f"{self.info.name}: its mmw is older — update it first (mmw site open "
+                                 f"{self.info.location} --install …), then set its history") from None
+            raise
 
     def break_lock(self) -> bool:
         return self._call("break-lock")["removed"]

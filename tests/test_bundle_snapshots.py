@@ -36,7 +36,7 @@ def _state(mirror_dir: Path, v: int) -> None:
 
 def _tree(root: Path) -> dict[str, bytes]:
     return {p.relative_to(root).as_posix(): p.read_bytes()
-            for p in (root / "archive.ubuntu.com").rglob("*") if p.is_file()}
+            for p in (root / "archive.ubuntu.com").rglob("*") if p.is_file() and "/@" not in p.as_posix()}
 
 
 @pytest.fixture

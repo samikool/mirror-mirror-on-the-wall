@@ -93,9 +93,9 @@ class LocalRoot:
             save_settings(self.home, s.model_copy(update=update))
         self._hostnames = None
 
-    def keep_versions(self) -> int | None:
+    def keep_setting(self) -> "int | str":
         from mmw.site.home import load_site
-        return load_site(self.home).keep_versions
+        return load_site(self.home).keep
 
     def history(self, key: str):
         from mmw.site import ops
@@ -133,9 +133,40 @@ class LocalRoot:
         from mmw.site import ops
         return ops.repair(self.home) if repair else ops.verify(self.home)
 
-    def keep(self, keep: int | None) -> None:
+    def keep(self, keep) -> None:
         from mmw.site import ops
         ops.keep_here(self.home, keep)
+
+    def site_settings(self):
+        from mmw.site.home import load_site
+        return load_site(self.home)
+
+    def set_options(self, *, keep=None, auto_clean: bool | None = None, dated: bool | None = None) -> None:
+        from mmw.site import ops
+        ops.keep_here(self.home, keep, auto_clean, dated)
+
+    def clean_plan(self):
+        from mmw.site import ops
+        return ops.clean_plan_here(self.home)
+
+    def clean(self, points=None) -> int:
+        from mmw.site import ops
+        return ops.clean(self.home, points)
+
+    def keep_costs(self) -> dict:
+        from mmw.site import ops
+        return ops.keep_costs_here(self.home)
+
+    def set_track_keep(self, repo: str, track: str, keep) -> None:
+        from mmw.site import ops
+        ops.set_track_keep(self.home, repo, track, keep)
+
+    def dated_urls(self) -> list[tuple[str, str]]:
+        from mmw.site.dated import urls
+        from mmw.site.db import SiteDB
+        from mmw.site.ops import _roots
+        with SiteDB(self.home) as db:
+            return urls(db, _roots(self.home))
 
     def break_lock(self) -> bool:
         from mmw.site.lock import break_lock

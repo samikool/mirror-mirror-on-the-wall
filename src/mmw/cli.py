@@ -1101,11 +1101,37 @@ def cmd_site_delete(repo: str = _REPO, version: str = typer.Argument(..., help=_
 
 @site_app.command("settings")
 def cmd_site_settings(root: Path = _ROOT,
-                      keep: int = typer.Option(None, "--keep", help="Keep the newest N versions of each repository"),
-                      keep_all: bool = typer.Option(False, "--keep-all", help="Keep every version")):
-    """Show or change what the mirror keeps (in every root here)."""
+                      keep: str = typer.Option(None, "--keep", help="History per suite: N points, all, or an "
+                                                                   "age like 90d (Clean up applies it)"),
+                      keep_all: bool = typer.Option(False, "--keep-all", help="Keep every point"),
+                      auto_clean: bool = typer.Option(None, "--auto-clean/--no-auto-clean",
+                                                      help="Clean up after each apply, by the setting"),
+                      dated: bool = typer.Option(None, "--dated/--no-dated",
+                                                 help="Every held point at HOST/PATH/@YYYY-MM-DD/")):
+    """Show or change what the mirror keeps (in every root here), with what
+    each choice would free."""
     from mmw.commands.site import settings
-    raise typer.Exit(settings(root, keep, keep_all))
+    raise typer.Exit(settings(root, keep, keep_all, auto_clean, dated))
+
+
+@site_app.command("clean")
+def cmd_site_clean(root: Path = _ROOT,
+                   dry_run: bool = typer.Option(False, "--dry-run", help="Say what would go; delete nothing"),
+                   yes: bool = _YES):
+    """Clean up: delete the points past each suite's setting — never one served,
+    pinned or served before — saying what each frees. Their records stay."""
+    from mmw.commands.site import clean
+    raise typer.Exit(clean(root, dry_run, yes))
+
+
+@site_app.command("keep")
+def cmd_site_keep(repo: str = _REPO,
+                  track: str = typer.Option(..., "--track", help="The suite"),
+                  value: str = typer.Argument(..., help="N, all, an age like 90d, or default (the site's)"),
+                  root: Path = _ROOT):
+    """One suite's own history setting."""
+    from mmw.commands.site import keep_suite
+    raise typer.Exit(keep_suite(repo, track, value, root))
 
 
 @site_app.command("status")

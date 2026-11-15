@@ -28,9 +28,13 @@ def env(two_mirrors, tmp_path):  # noqa: F811
 
 
 def _tree(root: Path) -> dict[str, bytes]:
+    """The live tree: what is served now (not `.mmw/`, nginx, or the dated trees)."""
+    import re
+    dated = re.compile(r"(^|/)@\d{4}-\d{2}-\d{2}/")
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*"))
             if p.is_file() and not p.relative_to(root).as_posix().startswith(".mmw/")
-            and not p.relative_to(root).as_posix().startswith("nginx/")}
+            and not p.relative_to(root).as_posix().startswith("nginx/")
+            and not dated.search(p.relative_to(root).as_posix())}
 
 
 def _published(cfg, net, md, tmp_path, name="pub"):

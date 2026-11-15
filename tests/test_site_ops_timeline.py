@@ -79,7 +79,7 @@ def test_retention_keeps_newest_n_plus_protected(env, tmp_path):  # noqa: F811
     from mmw.site.roots import Roots
     from mmw.site.home import load_site
     with SiteDB(home) as db:
-        gone = ops.apply_retention(db, Roots(load_site(home)), 1)
+        gone = ops.apply_retention(db, Roots(load_site(home)), load_site(home).model_copy(update={"keep": 1}))
     assert sorted(d for _r, _s, d in gone) == ["2026-11-01", "2026-11-02"]
     assert _marks(home, a) == {"20261104": "serving", "20261103": "previous", "20261102": "stub",
                                "20261101": "stub"}

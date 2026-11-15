@@ -113,7 +113,7 @@ def test_a_file_that_cannot_be_hardlinked_is_copied(site, tmp_path, monkeypatch)
 
     def refuse(*a, **k):
         raise PermissionError("protected_hardlinks")
-    monkeypatch.setattr(A.os, "link", refuse)
+    monkeypatch.setattr(A, "_link", refuse)
     r = _adopt(home, make_tree(tmp_path / "t"))
     assert r.copied and not r.linked
     assert (root / BASE / "dists/bookworm/Release").exists()

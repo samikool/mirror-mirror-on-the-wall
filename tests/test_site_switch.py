@@ -40,7 +40,7 @@ V2 = {"pool/a.deb": b"a1", "pool/b.deb": b"b2", "dists/noble/main/Packages": b"P
 
 def _tree(root):
     return {p.relative_to(root / BASE).as_posix(): p.read_bytes()
-            for p in (root / BASE).rglob("*") if p.is_file()}
+            for p in (root / BASE).rglob("*") if p.is_file() and not p.relative_to(root / BASE).parts[0].startswith("@")}
 
 
 def test_switch_from_nothing(tmp_path):

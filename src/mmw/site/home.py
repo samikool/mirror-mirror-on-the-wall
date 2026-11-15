@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import tomli_w
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 try:
     import tomllib
@@ -27,9 +27,31 @@ class RootConfig(BaseModel):
     serve_path: Path                    # where the serving host sees it (Compose mounts)
 
 
+def parse_keep(value) -> int | str:
+    """A history setting: a number of points (≥ 1), "all", or an age ("90d")."""
+    import re
+    text = str(value).strip().lower()
+    if text == "all":
+        return "all"
+    if re.fullmatch(r"\d+d", text) and int(text[:-1]) > 0:
+        return text
+    if text.isdigit() and int(text) > 0:
+        return int(text)
+    raise ValueError(f"keep {value!r}: a number of points, all, or an age like 90d")
+
+
 class SiteSettings(BaseModel):
     roots: list[RootConfig]             # the first is the primary
-    keep_versions: int | None = None    # per repository; None keeps every version
+    # History kept per suite: the newest N, "all", or an age ("90d"). Acts
+    # only in Clean up — or after each apply with `auto_clean`.
+    keep: int | str = 3
+    auto_clean: bool = False
+
+    @field_validator("keep", mode="before")
+    @classmethod
+    def _keep_reads(cls, value):
+        return parse_keep(value)
+    dated: bool = True                  # every held point at {base}/@YYYY-MM-DD/
     # The site's CA, by path only: mmw never copies the key, never keeps its passphrase.
     ca_cert: Path | None = None
     ca_key: Path | None = None
@@ -97,8 +119,12 @@ def save_settings(home: Path, settings: SiteSettings) -> None:
         data["hosts"] = dict(sorted(settings.hosts.items()))
     if settings.hosts_at:
         data["hosts_at"] = settings.hosts_at
-    if settings.keep_versions is not None:
-        data["keep_versions"] = settings.keep_versions
+    if settings.keep != 3:
+        data["keep"] = settings.keep
+    if settings.auto_clean:
+        data["auto_clean"] = True
+    if not settings.dated:
+        data["dated"] = False
     if settings.ca_cert is not None:
         data["ca_cert"], data["ca_key"] = str(settings.ca_cert), str(settings.ca_key)
     disk_io.ops.atomic_write(Path(home) / SETTINGS, tomli_w.dumps(data).encode())
@@ -109,6 +135,10 @@ def load_site(home: Path) -> SiteSettings:
     if not disk_io.ops.exists(path):
         raise FileNotFoundError(f"no site at {home} — `mmw site init` first")
     data = tomllib.loads(disk_io.ops.read_text(path))
+    if "keep_versions" in data:                        # before `keep`: a number was an opt-in to clean
+        data.setdefault("keep", data["keep_versions"])
+        data.setdefault("auto_clean", True)
+        data.pop("keep_versions")
     if "root" in data and "roots" not in data:        # a site made before roots had names
         root = data.pop("root")
         data["roots"] = [{"name": "main", "path": root, "serve_path": root}]

@@ -16,7 +16,8 @@ from test_dry_run_totals import two_mirrors  # noqa: F401 — the shared pool fi
 from test_snapshot_repo_versions import _key
 
 DATES = {1: "Fri, 01 Nov 2026 00:00:00 UTC", 2: "Sat, 02 Nov 2026 00:00:00 UTC",
-         3: "Sun, 03 Nov 2026 00:00:00 UTC", 4: "Mon, 04 Nov 2026 00:00:00 UTC"}
+         3: "Sun, 03 Nov 2026 00:00:00 UTC", 4: "Mon, 04 Nov 2026 00:00:00 UTC",
+         5: "Tue, 05 Nov 2026 00:00:00 UTC", 6: "Wed, 06 Nov 2026 00:00:00 UTC"}
 
 
 def set_a(mirror_dir, day: int) -> None:

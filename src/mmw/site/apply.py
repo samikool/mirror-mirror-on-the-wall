@@ -497,9 +497,12 @@ class RootApply:
             render_derived(str(root), say=lambda m: say(f"  {m}"))
         if self.network_files:
             db.record_applied(header.created, header.previous, "full" if header.full else "delta")
-        if self.settings.keep_versions is not None:
+        if self.settings.auto_clean:
             from mmw.site.ops import apply_retention
-            apply_retention(db, roots, self.settings.keep_versions)
+            apply_retention(db, roots, self.settings)
+        else:
+            from mmw.site.dated import refresh
+            refresh(db, roots)
         from mmw.site.certs import tls_notes
         result.actions.extend(tls_notes(self.home))
         if progress:

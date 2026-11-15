@@ -25,6 +25,7 @@ from mmw.site.store import ChecksumMismatch
 from mmw.site.tracks import _fields, release_date, release_ident
 
 _RELEASES = ("InRelease", "Release")
+_link = os.link              # adoption's hardlink (a test stands in a refusing one)
 
 
 @dataclass(frozen=True)
@@ -408,7 +409,7 @@ def _link_in(src: Path, cs: str, seen: tuple[int, int, int, int] | None, store) 
     can't be linked here (copy it). A changed file raises."""
     tmp = store.tmp / f"adopt-{os.getpid()}-{cs[:16]}"
     try:
-        os.link(src, tmp)
+        _link(src, tmp)
     except OSError:
         return False
     try:
@@ -492,7 +493,7 @@ def adopt_tree(home: Path, tree: FoundTree, check: TreeCheck, *, repo: str | Non
                 write_root_nginx(db, roots)
         switched = _reserve(db, roots, repo)
         result.lines.extend(f"  {label}  {w}" for w in switched.warnings)
-        _render(roots)
+        _render(roots, db)
         db.set_meta(_ORIGINAL + str(tree.path.resolve()),
                     json.dumps({"stamp": stamp, "refused": sorted(result.refused)}))
     return result
@@ -664,7 +665,7 @@ def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None
         for key in keys:
             switched = _reserve(db, roots, key)
             result.lines.extend(f"  {key[len(ADOPTED):]}  {w}" for w in switched.warnings)
-        _render(roots)
+        _render(roots, db)
         if not in_place:
             db.set_meta(_ORIGINAL + str(tree.path.resolve()),
                         json.dumps({"stamp": tree.created, "refused": sorted(result.refused)}))

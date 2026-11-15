@@ -332,19 +332,88 @@ def delete(repo: str, version: str, root: Path | None = None, yes: bool = False,
     return 0
 
 
-def settings(root: Path | None = None, keep: int | None = None, keep_all: bool = False) -> int:
+def _keep_words(keep) -> str:
+    if keep == "all":
+        return "every point"
+    if isinstance(keep, str):
+        return f"{keep[:-1]} days of points"
+    return f"the newest {keep}"
+
+
+def settings(root: Path | None = None, keep: str | None = None, keep_all: bool = False,
+             auto_clean: bool | None = None, dated: bool | None = None) -> int:
+    from mmw.core.format import fmt_size
     from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
         mset = _set(root)
-        if keep_all or keep is not None:
-            ops.set_keep(mset, None if keep_all else keep)
+        if keep_all:
+            keep = "all"
+        if keep is not None:
+            ops.set_keep(mset, keep)
         for r in mset.roots:
-            k = r.keep_versions()
-            kept = "every version" if k is None else f"the newest {k} per repository"
-            print(f"root {r.info.name} ({r.info.location}): keeps {kept}")
+            if auto_clean is not None or dated is not None:
+                if hasattr(r, "set_options"):
+                    r.set_options(auto_clean=auto_clean, dated=dated)
+                else:
+                    print(f"root {r.info.name}: over ssh — run mmw site settings there for --auto-clean/--dated")
+            print(f"root {r.info.name} ({r.info.location}): keeps {_keep_words(r.keep_setting())} per suite")
+            if hasattr(r, "site_settings"):
+                s = r.site_settings()
+                print(f"  {'cleans after each apply' if s.auto_clean else 'cleans only when asked: mmw site clean'}"
+                      f" · dated URLs {'on' if s.dated else 'off'}")
+                costs = r.keep_costs()
+                print("  Clean up would free now, keeping — " + ", ".join(
+                    f"{k if k == 'all' else f'newest {k}'}: {fmt_size(v)}" for k, v in costs.items()))
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
+    return 0
+
+
+def clean(root: Path | None = None, dry_run: bool = False, yes: bool = False) -> int:
+    """Clean up: what each root's setting lets go, with what each point frees."""
+    import sys
+
+    from mmw.core.format import fmt_size
+    try:
+        mset = _set(root)
+    except _ERRORS as e:
+        return _fail(e)
+    roots_here = [r for r in mset.roots if hasattr(r, "clean_plan")]
+    for r in mset.roots:
+        if not hasattr(r, "clean_plan"):
+            print(f"root {r.info.name}: over ssh — run mmw site clean there")
+    plans = [(r, r.clean_plan()) for r in roots_here]
+    if not any(plan for _r, plan in plans):
+        print("nothing to clean — every point is kept by the setting, or served, pinned or served before")
+        return 0
+    for r, plan in plans:
+        for i in plan:
+            print(f"  {r.info.name:<10} {i.label}  {i.suite} {i.date}  frees {fmt_size(i.frees)}")
+    if dry_run:
+        return 0
+    if not yes:
+        if not sys.stdin.isatty():
+            eprint("pass --yes to clean up (no terminal to ask on)")
+            return 1
+        if input("Delete these points? Their records stay. [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    freed = sum(r.clean({i.point for i in plan}) for r, plan in plans if plan)
+    print(f"cleaned up — freed {fmt_size(freed)}")
+    return 0
+
+
+def keep_suite(repo: str, track: str, value: str, root: Path | None = None) -> int:
+    """One suite's own history setting ("default": the site's)."""
+    try:
+        r, key = _repo(root, repo)
+        if not hasattr(r, "set_track_keep"):
+            eprint(f"{r.info.name} is over ssh — run it on that machine")
+            return 1
+        r.set_track_keep(key, track, None if value == "default" else value)
+    except _ERRORS as e:
+        return _fail(e)
+    print(f"{repo} {track}: keeps {'the site setting' if value == 'default' else value}")
     return 0
 
 
@@ -380,6 +449,10 @@ def status(root: Path | None = None) -> int:
         print(f"  {where}{s.label:<36} {serving:<36} {state}{local}")
         if extra.get("layer_hold"):
             print(f"  {where}{'':<36} held by its local packages: {extra['layer_hold']}")
+        dated = [u for lab, u in getattr(roots_by[name], "dated_urls", lambda: [])() if lab == s.label]
+        if dated:
+            span = dated[0] if len(dated) == 1 else f"{dated[0]} … {dated[-1]}"
+            print(f"  {where}{'':<36} dated: {span} ({len(dated)})")
         unchecked = getattr(roots_by[name], "unverified", None)
         unchecked = unchecked(s.repo) if unchecked is not None else []
         if unchecked:

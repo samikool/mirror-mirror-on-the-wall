@@ -9,7 +9,7 @@ from mmw.site.lock import LockHeld, SiteLock, break_lock
 
 def test_init_and_load_round_trip(tmp_path):
     s = H.init_site(tmp_path / "h", tmp_path / "root")
-    assert s.root == tmp_path / "root" and s.keep_versions is None
+    assert s.root == tmp_path / "root" and s.keep == 3 and not s.auto_clean
     assert (tmp_path / "root/.mmw/store").is_dir()
     assert H.load_site(tmp_path / "h") == s
 

@@ -445,21 +445,56 @@ not closed cleanly. Unchanged repositories store nothing new. Its hostnames get
 are served at `/mmw-keys/`. A repository the connected side's bundles already
 serve here cannot also come from a local instance (its versions would fork).
 
-## Space
+## Space and history
 
 ```bash
 mmw site space                  # each point's size, and what deleting it frees
 mmw site delete debian 2026-09-01 --track bookworm   # its files go; its record stays
-mmw site settings --keep 5      # keep the newest 5 points of each suite (default: all)
+mmw site settings               # what is kept, and what each choice would free
+mmw site settings --keep 10     # the newest 10 points per suite (or: all, or an age: 90d)
+mmw site keep debian --track bookworm all            # one suite keeps everything
+mmw site clean --dry-run        # what Clean up would delete, and what each frees
+mmw site clean --yes
 ```
+
+History is kept because old builds need old packages. Each suite keeps the
+newest 3 points by default; `--keep` changes it for the whole mirror, and
+`mmw site keep` for one suite (`default` goes back to the mirror's).
+Nothing is deleted on its own: Clean up (`mmw site clean`, or `C` in the
+TUI) does it after saying what goes and what each point frees — or, with
+`mmw site settings --auto-clean`, after each apply.
 
 "Frees" counts only files no other kept point uses: consecutive points share
 most of theirs. A deleted point stays in the history as a record (it can be
-filled back in by a later bundle). Never deleted, by hand or by `--keep`:
+filled back in by a later bundle). Never deleted, by hand or by Clean up:
 a point that is pinned, the one each suite served before its current one
 (kept for rolling back), or one a switch is part-way through. The point
 being served can be deleted by hand — it warns, names what that suite then
 serves, and needs `--yes`.
+
+## Dated URLs
+
+Every point a suite keeps is also served, read-only, at a dated path beside
+the live one, as snapshot.debian.org does:
+
+```
+http://deb.debian.org/debian/                 live: what each suite serves now
+http://deb.debian.org/debian/@2026-06-14/     that day: each suite as it was then
+```
+
+Pin a build's `sources.list` to the dated URL and it gets exactly what
+existed that day, whatever the live tree moves to:
+
+```
+deb http://deb.debian.org/debian/@2026-06-14 bookworm main
+```
+
+The trees are hardlinks into the store — inodes, not bytes — built when a
+point arrives and removed when Clean up deletes it. `mmw site status` lists
+each repository's first and last dated URL. A dated tree's `Release` is
+that day's own, so signatures verify, but an old one's `Valid-Until` may have
+passed: clients pinned to it need `Acquire::Check-Valid-Until "false";`.
+`mmw site settings --no-dated` removes them all; `--dated` builds them again.
 
 ## Checking it
 
@@ -494,7 +529,8 @@ repositories this mirror doesn't hold to deploy), **x** exports to another
 network, **r** adds a root (an empty folder or
 `host:/path` becomes a new root of this mirror), **m** moves a repository to
 another root, **b** serves the whole mirror as of a bundle, **c** manages
-certificates, **t** tidies, **ctrl+r** refreshes.
+certificates, **t** tidies, **A** adopts trees mmw didn't make, **C**
+cleans up (after saying what each point frees), **ctrl+r** refreshes.
 The buttons along the bottom do the same.
 
 Applying from the TUI: pick the bundle (a `.tar` or a stage directory; the

@@ -16,10 +16,13 @@ from test_bundle import seeded, _sign_lab_cert  # noqa: F401
 
 
 def _files(root):
-    """What a tree serves: every file outside `.mmw/` (and an old state file)."""
+    """What a tree serves live: every file outside `.mmw/` (and an old state
+    file), not the far side's dated trees (`@YYYY-MM-DD/`: its history)."""
+    import re
+    dated = re.compile(r"(^|/)@\d{4}-\d{2}-\d{2}/")
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*")
             if p.is_file() and not p.relative_to(root).as_posix().startswith(".mmw/")
-            and p.name != ".mmw-state"}
+            and p.name != ".mmw-state" and not dated.search(p.relative_to(root).as_posix())}
 
 
 def _apply(net, bundle, root):

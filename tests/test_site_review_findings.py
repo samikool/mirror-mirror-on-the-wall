@@ -143,11 +143,11 @@ def test_digests_that_look_like_dates_still_name_their_point():
 def test_relayer_with_nothing_chosen_keeps_what_is_served(env, tmp_path):  # noqa: F811
     cfg, net, md, home, root = env
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
-    before = {p for p in (root / "example.com/a").rglob("*") if p.is_file()}
+    before = {p for p in (root / "example.com/a").rglob("*") if p.is_file() and "/@" not in p.as_posix()}
     with SiteDB(home) as db:
         db.set_meta(f"hold:{_key(cfg, 'a')}", "a layer that could not build")
         for t in db.tracks(_key(cfg, "a")):
             for p in db.points(t.id):
                 db.stub_point(p.id)                  # nothing left to choose
     ops.relayer(home, "a")
-    assert {p for p in (root / "example.com/a").rglob("*") if p.is_file()} == before
+    assert {p for p in (root / "example.com/a").rglob("*") if p.is_file() and "/@" not in p.as_posix()} == before

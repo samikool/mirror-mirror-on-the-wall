@@ -80,6 +80,7 @@ class SiteHomePage(Page):
         Binding("d", "delete", "Delete"),
         Binding("a", "apply", "Apply"),
         Binding("A", "adopt", "Adopt", show=False),
+        Binding("C", "clean_up", "Clean up", show=False),
         Binding("r", "add_root", "Add root"),
         Binding("b", "serve_bundle", "As of", show=False),
         Binding("x", "export", "Export"),
@@ -778,6 +779,43 @@ class SiteHomePage(Page):
 
     def action_tidy(self) -> None:
         self.app.push_screen(TidyRunPage([r.info.name for r in self.app.mset.roots]), lambda _: self._load())
+
+    def action_clean_up(self) -> None:
+        """Clean up: the points past each suite's history setting."""
+        roots = [r for r in (self.app.mset.roots if self.app.mset else []) if hasattr(r, "clean_plan")]
+        if not roots:
+            self.set_status("Nothing to clean up here.", "error")
+            return
+        self._clean_plan(roots)
+
+    @work(thread=True, exclusive=True, group="site-clean", exit_on_error=False)
+    def _clean_plan(self, roots) -> None:
+        try:
+            plans = [(r, r.clean_plan()) for r in roots]
+        except Exception as e:  # noqa: BLE001 — said on the page
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        self.app.call_from_thread(self._confirm_clean, [(r, p) for r, p in plans if p])
+
+    def _confirm_clean(self, plans) -> None:
+        from textual.markup import escape
+
+        from mmw.core.format import fmt_size
+        from mmw.tui.ui.dialog import ConfirmDialog
+        if not plans:
+            self.set_status("Nothing to clean up — every point is kept by the setting, or served, "
+                            "pinned or served before.")
+            return
+        items = [i for _r, plan in plans for i in plan]
+        lines = [f"{escape(i.label)}  {escape(i.suite)} {i.date} — frees {fmt_size(i.frees)}" for i in items[:12]]
+        if len(items) > 12:
+            lines.append(f"… and {len(items) - 12} more")
+        self.app.push_screen(
+            ConfirmDialog(f"Clean up {len(items)} point(s)?",
+                          "\n".join(lines) + "\nTheir records stay in the history; their files go unless "
+                                              "another kept point uses them.",
+                          confirm_label="Clean up"),
+            lambda ok: ok and self._act("cleaned up", lambda: sum(r.clean({i.point for i in p}) for r, p in plans)))
 
     def action_adopt(self) -> None:
         """Take over APT trees mmw didn't make (or a tree apply.py manages)."""

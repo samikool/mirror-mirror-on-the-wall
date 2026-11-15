@@ -132,7 +132,12 @@ def _roots(home: Path) -> Roots:
     return Roots(load_site(home))
 
 
-def _render(roots: Roots) -> None:
+def _render(roots: Roots, db: SiteDB | None = None) -> None:
+    """After what is served changed: dated trees made to match (with the
+    database at hand), then the derived pages."""
+    if db is not None:
+        from mmw.site.dated import refresh
+        refresh(db, roots)
     for root in roots.all:
         if disk_io.ops.is_dir(root.path):
             render_derived(str(root.path))
@@ -169,7 +174,7 @@ def serve(home: Path, ref: str, when: str, track: str | None = None, progress=No
         for t, p in targets:
             db.set_pin(t.id, p.id)
         result = _reserve(db, roots, repo, progress, again=True)
-        _render(roots)
+        _render(roots, db)
         return result
 
 
@@ -194,7 +199,7 @@ def forward(home: Path, ref: str | None) -> list[str]:
                 continue                        # still held: its layer cannot be built yet
             moved.append(repo)
         if moved:
-            _render(roots)
+            _render(roots, db)
     return moved
 
 
@@ -222,7 +227,7 @@ def relayer(home: Path, ref: str, progress=None) -> SwitchResult:
                            progress=(lambda rel, _kind: progress(rel)) if progress else None)
         if not result.held and not layer_held:
             db.set_held(repo, held)              # a re-layer is not a fast-forward
-        _render(roots)
+        _render(roots, db)
         return result
 
 
@@ -336,26 +341,125 @@ def delete_point(home: Path, ref: str, when: str, track: str | None = None, forc
         db.stub_point(p.id)
         if why and why[0] == "served":
             _reserve(db, roots, repo)
-            _render(roots)
+        _render(roots, db)                    # its dated tree goes before its blobs can
         db.drop_unused_states(repo)
         return _gc(db, roots)
 
 
-def apply_retention(db: SiteDB, roots: Roots, keep: int) -> list[tuple[str, str, str]]:
-    """Per suite, delete the points past the newest `keep` — never a
-    protected one (served, served before, pinned, mid-switch). The
-    (repository, suite, date) deleted."""
+@dataclass(frozen=True)
+class CleanItem:
+    repo: str
+    label: str
+    suite: str
+    date: str          # YYYY-MM-DD
+    point: int
+    frees: int         # what it alone frees: bytes no other held point shares
+
+
+def keep_of(settings, track: TrackInfo) -> "int | str":
+    """The history a suite keeps: its own setting, else the site's (a stored
+    value that doesn't read keeps everything — never less)."""
+    from mmw.site.home import parse_keep
+    try:
+        return parse_keep(track.keep) if track.keep else parse_keep(settings.keep)
+    except ValueError:
+        return "all"
+
+
+def _past(points, keep, today: str) -> list:
+    """The points (newest first) past `keep`: the newest N, none for "all",
+    or those dated before the age."""
+    if keep == "all":
+        return []
+    if isinstance(keep, int):
+        return list(points[keep:])
+    from datetime import datetime, timedelta, timezone
+    now = datetime.strptime(today, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    cutoff = (now - timedelta(days=int(keep[:-1]))).strftime("%Y%m%dT%H%M%SZ")
+    return [p for p in points[1:] if p.date < cutoff]         # a suite's newest always stays
+
+
+def clean_plan(db: SiteDB, settings, today: str | None = None) -> list[CleanItem]:
+    """What Clean up would delete: per suite, the points past its setting
+    that nothing protects (served, served before, pinned, mid-switch)."""
+    from mmw.core.publisher.manifest import now_stamp
     from mmw.site.versionref import day
-    gone = []
+    today = today or now_stamp()
+    out = []
     for st in db.repo_states():
         for t in db.tracks(st.repo):
-            for pt in db.points(t.id)[keep:]:
+            for pt in _past(db.points(t.id), keep_of(settings, t), today):
                 if _protected(db, st.repo, t, pt) is None:
-                    db.stub_point(pt.id)
-                    gone.append((st.repo, suite_of(t), day(pt.date)))
-    if gone:
-        _gc(db, roots)
-    return gone
+                    out.append(CleanItem(st.repo, st.label, suite_of(t), day(pt.date), pt.id,
+                                         db.point_sizes(pt.id)[1]))
+    return out
+
+
+def clean_plan_here(home: Path, today: str | None = None) -> list[CleanItem]:
+    _ensure_migrated(home)
+    with SiteDB(home) as db:
+        return clean_plan(db, load_site(home), today)
+
+
+def _clean(db: SiteDB, roots: Roots, settings, only: set[int] | None = None) -> tuple[list[CleanItem], int]:
+    items = clean_plan(db, settings)
+    if only is not None:
+        items = [i for i in items if i.point in only]        # what was confirmed, if it still applies
+    for i in items:
+        db.stub_point(i.point)
+    from mmw.site.dated import refresh
+    refresh(db, roots)                        # a cleaned point's dated tree goes before its blobs can
+    return items, (_gc(db, roots) if items else 0)
+
+
+def clean(home: Path, points: "set[int] | None" = None) -> int:
+    """Clean up: delete what `clean_plan` names — only `points` (what was
+    shown and confirmed) when given, and only those it still names. Bytes
+    freed."""
+    with _session(home) as (db, roots):
+        return _clean(db, roots, load_site(home), points)[1]
+
+
+def apply_retention(db: SiteDB, roots: Roots, settings) -> list[tuple[str, str, str]]:
+    """After an apply, with `auto_clean`: Clean up. The (repository, suite,
+    date) deleted."""
+    items, _freed = _clean(db, roots, settings)
+    return [(i.repo, i.suite, i.date) for i in items]
+
+
+def keep_costs(db: SiteDB, settings, presets=(1, 3, 10, "all")) -> dict:
+    """Per preset of the site's `keep`, the bytes Clean up would free — what
+    choosing it costs or saves against keeping everything."""
+    held: dict[int, set[str]] = {}
+    for st in db.repo_states():
+        for t in db.tracks(st.repo):
+            for p in db.points(t.id):
+                held[p.id] = set(db.point_files(p.id).values())
+    base = set(db.network_files().values())
+    everything = set().union(base, *held.values()) if held else base
+    sizes = db.blob_sizes(everything)
+    out = {}
+    for preset in presets:
+        trial = settings.model_copy(update={"keep": preset})
+        gone = {i.point for i in clean_plan(db, trial)}
+        kept = set().union(base, *(cs for pid, cs in held.items() if pid not in gone))
+        out[preset] = sum(sizes.get(c, 0) for c in everything - kept)
+    return out
+
+
+def keep_costs_here(home: Path) -> dict:
+    _ensure_migrated(home)
+    with SiteDB(home) as db:
+        return keep_costs(db, load_site(home))
+
+
+def set_track_keep(home: Path, ref: str, track: str, keep) -> None:
+    """A suite's own history setting (None: the site's)."""
+    from mmw.site.home import parse_keep
+    value = None if keep is None else str(parse_keep(keep))
+    with _session(home) as (db, _roots):
+        repo = resolve_repo(db, ref)
+        db.set_track_keep(_track_named(db, repo, track).id, value)
 
 
 # ── status, history, verify ──────────────────────────────────────────────────
@@ -535,18 +639,28 @@ def set_verify(mset, repair_too: bool = False) -> dict[str, "list[str] | int"]:
     return {root.info.name: root.verify(repair_too) for root in mset.roots}
 
 
-def set_keep(mset, keep: int | None) -> None:
-    """Keep the newest `keep` versions of each repository (None: all), in every root here."""
+def set_keep(mset, keep) -> None:
+    """The history every root here keeps (N, "all" or an age) — said, not
+    acted on: Clean up applies it."""
     for root in mset.roots:
         root.keep(keep)
 
 
-def keep_here(home: Path, keep: int | None) -> None:
-    from mmw.site.home import save_settings
+def keep_here(home: Path, keep, auto_clean: bool | None = None, dated: bool | None = None) -> None:
+    from mmw.site.home import parse_keep, save_settings
     with _session(home) as (db, roots):
-        save_settings(home, load_site(home).model_copy(update={"keep_versions": keep}))
+        settings = load_site(home)
+        update = {}
         if keep is not None:
-            apply_retention(db, roots, keep)
+            update["keep"] = parse_keep(keep)
+        if auto_clean is not None:
+            update["auto_clean"] = auto_clean
+        if dated is not None:
+            update["dated"] = dated
+        save_settings(home, settings.model_copy(update=update))
+        if dated is not None:
+            from mmw.site.dated import refresh
+            refresh(db, _roots(home))                    # with the settings just saved
 
 
 def _hosts_of(bases: list[str]) -> set[str]:
@@ -654,7 +768,7 @@ def move_in(home: Path, key: str, info: dict) -> bool:
             if not disk_io.ops.exists(path / rel) and store.has(checksum):
                 place_served_file(store, path, rel, checksum, network=True)
         changed = bool(roots.multi and db.get_meta("settings") and write_root_nginx(db, roots))
-        _render(roots)
+        _render(roots, db)
         if info.get("layer"):
             from mmw.site.layers import site_layer_dir
             db.set_layer(key, **info["layer"])
@@ -684,6 +798,8 @@ def move_out_finish(home: Path, key: str, to: str, info: dict) -> bool:
         folder = site_layer_dir(home, key)
         if disk_io.ops.exists(folder):
             disk_io.ops.rmtree(folder)       # the layer lives in the new root now
+        from mmw.site.dated import refresh
+        refresh(db, roots)                   # its dated trees went with it
         return bool(roots.multi and db.get_meta("settings") and write_root_nginx(db, roots))
 
 

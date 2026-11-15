@@ -58,7 +58,7 @@ def test_delete_frees_store_blobs(env, tmp_path):  # noqa: F811
 def test_retention_keeps_newest_and_protected(env, tmp_path):  # noqa: F811
     cfg, home, root, _ = _three(env, tmp_path)
     with SiteDB(home) as db:
-        gone = ops.apply_retention(db, Roots(H.load_site(home)), 1)
+        gone = ops.apply_retention(db, Roots(H.load_site(home)), H.load_site(home).model_copy(update={"keep": 1}))
         assert [(r, s) for r, s, _d in gone] == [(_key(cfg, "a"), "files")]    # the oldest; v2 is previous
         (t,) = db.tracks(_key(cfg, "a"))
         assert len(db.points(t.id)) == 2
@@ -67,7 +67,7 @@ def test_retention_keeps_newest_and_protected(env, tmp_path):  # noqa: F811
 def test_retention_runs_after_apply(env, tmp_path):  # noqa: F811
     cfg, net, md, home, root = env
     s = H.load_site(home)
-    H.save_settings(home, s.model_copy(update={"keep_versions": 1}))
+    H.save_settings(home, s.model_copy(update={"keep": 1, "auto_clean": True}))
     from test_site_apply import _bundle
     from test_site_ops import _bump
     from test_snapshot_repo_versions import _change_a
@@ -96,6 +96,6 @@ def test_cli_space_delete_settings(env, tmp_path):  # noqa: F811
     r = run("delete", "a", p3, "--yes")                   # the served one: warned, then done
     assert r.exit_code == 0 and "being served" in r.output and "freed" in r.output
     r = run("settings", "--keep", "2")
-    assert r.exit_code == 0 and H.load_site(home).keep_versions == 2
+    assert r.exit_code == 0 and H.load_site(home).keep == 2
     r = run("settings", "--keep-all")
-    assert r.exit_code == 0 and H.load_site(home).keep_versions is None
+    assert r.exit_code == 0 and H.load_site(home).keep == "all"

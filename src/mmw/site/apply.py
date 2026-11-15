@@ -553,6 +553,8 @@ class PlanRow:
     unchanged: bool
     root: Path
     points: int | None = None        # format 3: how many points it brings
+    to_date: str | None = None       # the newest date it brings (a stamp)
+    serving_date: str | None = None  # when what it serves now was stored (a stamp)
 
 
 @dataclass(frozen=True)
@@ -678,7 +680,8 @@ def plan_apply(target, src: str) -> ApplyPlan:
                            serving, bool(st and st.held),
                            # By content: version numbers on the two sides are not the same count.
                            bool(st and st.serving and meta["digest"] and st.serving.digest == meta["digest"]),
-                           root, meta.get("points")))
+                           root, meta.get("points"), meta.get("to_date") or header.created,
+                           st.serving.stamp if st and st.serving else None))
     network = sum(1 for _p, _c, r in rows if r is None)
     return ApplyPlan(header.created, header.network, out, network,
                      sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))
@@ -1042,7 +1045,9 @@ def _repo_meta(header) -> dict[str, dict]:
     `repos`, or format 3's `points` with their count as "to")."""
     if header.format == 3:
         return {k: {"label": m["label"], "bases": m["bases"], "from": None, "to": len(m["points"]),
-                    "digest": None, "points": len(m["points"])} for k, m in (header.points or {}).items()}
+                    "digest": None, "points": len(m["points"]),
+                    "to_date": max((p["date"] for p in m["points"]), default=None)}
+                for k, m in (header.points or {}).items()}
     return header.repos or {}
 
 

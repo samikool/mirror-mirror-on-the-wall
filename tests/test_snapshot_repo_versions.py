@@ -97,7 +97,10 @@ def test_snapshot_list_repos_flag(two_mirrors, monkeypatch):  # noqa: F811
     r = CliRunner().invoke(cli.app, ["--config", str(cfg_dir), "snapshot", "list", "-n", "oak", "--repos"])
     assert r.exit_code == 0, r.output
     newest = r.output.split("\n  20")[1]                # the first snapshot block, newest first
-    assert "a v2 (changed)" in newest and "b v1" in newest and "b v1 (changed)" not in newest
+    lines = [x.strip() for x in newest.splitlines()]
+    assert any(x.startswith("a  files ") and x.endswith("(changed)") for x in lines)
+    assert any(x.startswith("b  files ") and not x.endswith("(changed)") for x in lines)
+    assert " v1" not in r.output and " v2" not in r.output
 
 
 def test_take_backfills_older_snapshots_first(two_mirrors):  # noqa: F811

@@ -7,6 +7,7 @@ nothing; files no repository claims are the network's own `network` track.
 """
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -94,6 +95,37 @@ def convert_snapshots(pool: Pool, network: str) -> int:
     return done
 
 
+def seed_recordings(pool: Pool, network: str) -> int:
+    """Once per network: each complete snapshot's points, per repository, as
+    a recording at its stamp, and its settings — so a date before 3c's first
+    recording can still be published. How many snapshots seeded."""
+    if pool.recordings_seeded(network):
+        return 0
+    done = 0
+    for snap in reversed(pool.snapshots(network)):
+        if not snap.complete:
+            continue
+        ids = pool.snapshot_point_ids(snap.id)
+        if not ids:
+            continue
+        by: dict[str, list[int]] = {}
+        for pid in ids:
+            t = pool.track_of_point(pid)
+            if t is not None:
+                by.setdefault(t.repo, []).append(pid)
+        last = pool.points_at(network, snap.stamp)
+        for repo, pids in by.items():
+            if sorted(last.get(repo, [])) != sorted(pids):
+                pool.record_recording(network, repo, snap.stamp, pids)
+        for repo in set(last) - set(by):
+            pool.record_recording(network, repo, snap.stamp, [])
+        if snap.settings:
+            pool.record_settings(network, snap.stamp, snap.settings)
+        done += 1
+    pool.mark_recordings_seeded(network)
+    return done
+
+
 def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, *, stamp: str | None = None,
                           progress=None, stop_event=None) -> PointsReport:
     """Walk `network` and record its points; the ones new to it are said."""
@@ -102,18 +134,28 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
     report = PointsReport(network.name)
     with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
         convert_snapshots(pool, network.name)      # their points first, at their own stamps
+        seed_recordings(pool, network.name)
         rows, settings, warnings = walk_tree(network, cfg, mirror_dir, pool, progress=progress,
                                              stop_event=stop_event)
         report.warnings += warnings
         report.settings = settings
         from mmw.site.tracks import content_ident
-        for repo, mine in sorted(by_repo(rows, settings, network.name).items()):
+        recorded = pool.latest_recordings(network.name)
+        repos_now = by_repo(rows, settings, network.name)
+        for repo in set(pool.recorded_repos(network.name)) - set(repos_now):
+            pool.drop_repo_rows(network.name, repo)             # it left the network
+        for repo, ids in recorded.items():
+            if ids and repo not in repos_now:
+                pool.record_recording(network.name, repo, stamp, [])
+        for repo, mine in sorted(repos_now.items()):
             digest = content_ident(mine)
             last = pool.repo_rows(network.name, repo)
             if last is not None and last[0] == digest:
                 # Unchanged since the last recording: its points are seen again, nothing is split.
                 for pid in last[1]:
                     pool.link_network_point(network.name, pid, stamp)
+                if sorted(recorded.get(repo) or []) != sorted(last[1]):
+                    pool.record_recording(network.name, repo, stamp, last[1])
                 continue
             ids = []
             for draft in split_repo(pool, repo, mine, settings, stamp):
@@ -122,6 +164,9 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
                 if pool.link_network_point(network.name, pid, stamp) and not repo.startswith("network:"):
                     report.new.append(_say(repo, draft, cfg))
             pool.set_repo_rows(network.name, repo, digest, ids)
+            if sorted(recorded.get(repo) or []) != sorted(ids):
+                pool.record_recording(network.name, repo, stamp, ids)
+        pool.record_settings(network.name, stamp, settings)
     return report
 
 
@@ -145,6 +190,71 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
             say(f"{network.name}: new point(s) — {', '.join(report.new)}")
         reports.append(report)
     return reports
+
+
+# ── as of a date ─────────────────────────────────────────────────────────────
+
+AS_OF = "as-of:"          # a published record's target for a date (else 'live' or a snapshot stamp)
+
+
+def resolve_when(text: str) -> str:
+    """A date or stamp (`2026-11-03`, `20261103`, `3nov`, a full stamp) as
+    the stamp it means: a bare day is the whole of it (UTC)."""
+    from datetime import datetime, timezone
+    from mmw.site.versionref import _date_prefix
+    dated = _date_prefix(text.strip(), datetime.now(timezone.utc).date())
+    if dated is None:
+        raise ValueError(f"{text!r} isn't a date or stamp")
+    prefix = dated[0]
+    if len(prefix) == 8:
+        return f"{prefix}T235959Z"
+    day_part, time_part = prefix[:8], prefix[9:].rstrip("Z")
+    return f"{day_part}T{time_part + '235959'[len(time_part):]}Z"     # the end of what it names
+
+
+def prepare_recordings(mirror_dir: Path, network: str) -> None:
+    """Before reading a date: a pool from before recordings gets its tables,
+    and existing snapshots seed them — once, without waiting for a sync."""
+    with Pool(mirror_dir, read_only=True) as pool:
+        try:
+            if pool.recordings_seeded(network):
+                return
+        except sqlite3.OperationalError:
+            pass                                   # no tables yet: the writable open makes them
+    with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
+        convert_snapshots(pool, network)
+        seed_recordings(pool, network)
+
+
+def moment_rows(pool: Pool, network: str, stamp: str):
+    """(rows, settings) of `network` as recorded at `stamp`: rows are
+    (path, checksum, pool path, size) in path order. Refused when nothing was
+    recorded by then, or the moment's points or files are gone."""
+    from mmw.site.versionref import day
+    held = pool.points_at(network, stamp)
+    if not held:
+        first = pool.first_recording(network)
+        if first is not None and first <= stamp:
+            raise ValueError(f"no repository was in {network} on {day(stamp)}")
+        raise ValueError(f"nothing recorded for {network} at or before {day(stamp)}"
+                         + (f" — the first recording is {day(first)}" if first else
+                            " — nothing is recorded until it syncs"))
+    ids = [pid for pids in held.values() for pid in pids]
+    stubs = [p for p in pool.points_of(ids).values() if not p.held]
+    if stubs:
+        raise ValueError(f"{len(stubs)} point(s) {network} had on {day(stamp)} are no longer kept "
+                         f"(retention dropped their files) — raise keep_points on {network} to keep "
+                         "older dates, or publish a later one")
+    files: dict[str, str] = {}
+    for pid in ids:
+        files.update(pool.point_files(pid))
+    info = pool.blob_info(files.values())
+    missing = sorted({c for c in files.values() if c not in info})
+    if missing:
+        raise ValueError(f"{len(missing)} file(s) of {network} on {day(stamp)} are no longer in the pool "
+                         "— `mmw verify --repair`, or publish another date")
+    rows = [(rel, cs, info[cs][0], info[cs][1]) for rel, cs in sorted(files.items())]
+    return rows, pool.settings_at(network, stamp) or "{}"
 
 
 # ── retention ────────────────────────────────────────────────────────────────
@@ -175,6 +285,8 @@ def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
     # Only a complete snapshot holds: a history-only one stopped holding its files.
     held_by_snapshots = {pid for s in pool.snapshots(network.name) if s.complete
                          for pid in pool.snapshot_point_ids(s.id)}
+    published = {pid for p in pool.published(network.name) if p.target.startswith(AS_OF)
+                 for ids in pool.points_at(network.name, p.target[len(AS_OF):]).values() for pid in ids}
     cutoff = _cutoff(now, int(keep[:-1])) if isinstance(keep, str) and keep != "all" else None
     kept: set[int] = set()
     for t in pool.network_tracks(network.name):
@@ -185,7 +297,7 @@ def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
             seen = pool.network_point_last_seen(network.name, p.id) or first
             if (i == 0 or p.id in current or keep == "all" or (isinstance(keep, int) and i < keep)
                     or (cutoff is not None and seen >= cutoff)
-                    or p.id in held_by_snapshots or (last_sent is not None and first > last_sent)):
+                    or p.id in held_by_snapshots or p.id in published or (last_sent is not None and first > last_sent)):
                 kept.add(p.id)
     return kept
 

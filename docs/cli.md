@@ -120,6 +120,8 @@ bundle went, to a new snapshot of now.
 | `--repo` |  | Only this repository (URL or name; repeatable). Needs -n and far_side = "mmw". |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
+| `--history`, `--newest` |  | mmw far side: every point since the last bundle, or each suite's newest (default: the network's `history`). |
+| `--full` |  | Carry every file again, sent before or not (the same as --from none). |
 
 ### `mmw certs`
 
@@ -199,7 +201,7 @@ Remove orphaned pool packages not referenced by any mirror.
 ### `mmw publish`
 
 Publish mirrors to network targets. Without --quiet opens the TUI
-(--snapshot / --root / --recheck / --take-snapshot always run headless).
+(--snapshot / --as-of / --root / --recheck / --take-snapshot always run headless).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -211,6 +213,7 @@ Publish mirrors to network targets. Without --quiet opens the TUI
 | `--root` |  | Publish into this directory instead of the network's root. Its nginx config points there with the same hostnames, so serve it on its own address. Needs -n. |
 | `--recheck` |  | Ignore the record of the last publish and recheck every published file. |
 | `--take-snapshot` |  | Take a snapshot of the network first. |
+| `--as-of` |  | Publish the network as it was recorded on this date (2026-11-03, 3nov, or a stamp): each repository as its last sync then had it. Needs -n. |
 
 ### `mmw retry-failed`
 
@@ -269,6 +272,8 @@ mmw. For networks whose far side runs mmw (far_side = "mmw").
 | `--repo` |  | Only this repository (URL or name; repeatable). |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
+| `--history`, `--newest` |  | mmw far side: every point since the last bundle, or each suite's newest (default: the network's `history`). |
+| `--full` |  | Carry every file again, sent before or not (the same as --from none). |
 
 ### `mmw sync`
 

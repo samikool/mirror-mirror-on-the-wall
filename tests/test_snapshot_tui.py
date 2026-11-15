@@ -405,6 +405,6 @@ def test_snapshots_page_shows_changed_repos(two_mirrors):  # noqa: F811
         await until(pilot, lambda: type(app.screen).__name__ == "SnapshotsPage" and len(_rows(app)) == 3)
         notes = [r[5] for r in _rows(app)]
         assert "no repository changed" in notes[0]
-        assert "changed: a v2" in notes[1]
-        assert "changed: a v1, b v1" in notes[2]
+        assert "changed: a files 20" in notes[1] and "b files" not in notes[1]
+        assert "changed: a files 20" in notes[2] and "b files 20" in notes[2]
     _run(cfg, mirror_dir.parent, check)

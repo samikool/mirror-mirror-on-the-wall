@@ -52,6 +52,11 @@ class ApplyChoice:
     deploy: frozenset[str] = frozenset()    # another network's repositories to deploy here
 
 
+def _on(stamp: str | None, none: str) -> str:
+    from mmw.site.versionref import day
+    return day(stamp) if stamp else none
+
+
 def _row_text(r, location: str) -> str:
     """A repository the bundle changes, and the root it lands in — on which
     machine, for one over ssh."""
@@ -59,8 +64,7 @@ def _row_text(r, location: str) -> str:
     if getattr(r, "points", None) is not None:          # another far side's points (format 3)
         return (f"{r.label}  +{r.points} point(s)  ·  {r.files_sent:,} files  "
                 f"{fmt_size(r.bytes_sent)}  ·  {where(location)}")
-    start = f"v{r.from_number}" if r.from_number else "full"
-    return (f"{r.label}  {start} → v{r.to_number}  ·  {r.files_sent:,} files  "
+    return (f"{r.label}  {_on(r.serving_date, 'new')} → {_on(r.to_date, '?')}  ·  {r.files_sent:,} files  "
             f"{fmt_size(r.bytes_sent)}  ·  {where(location)}")
 
 
@@ -87,7 +91,7 @@ class ApplyReviewPage(Page):
                                 id="review-repos", compact=True)
         for r in self._plan.rows:
             if r.unchanged:
-                yield Label(f"[dim]  {r.label}  already at v{r.serving_number}[/]")
+                yield Label(f"[dim]  {r.label}  already at {_on(r.serving_date, 'it')}[/]")
         picked = {r.repo for r in self._changed if not r.held}
         yield Static(self._notes(picked), id="review-notes")
         yield Static(self._totals(), id="review-totals")
@@ -107,10 +111,10 @@ class ApplyReviewPage(Page):
     def _notes(self, picked: set[str]) -> Text:
         notes = []
         for r in self._changed:
-            serving = f"v{r.serving_number}" if r.serving_number else "nothing"
+            serving = _on(r.serving_date, "nothing")
             if r.held and r.repo not in picked:
-                notes.append(f"◐ {r.label}: held at {serving}. v{r.to_number} is stored either way; "
-                             f"it keeps serving {serving}.")
+                notes.append(f"◐ {r.label}: held at {serving}. {_on(r.to_date, 'What it brings')} is stored "
+                             f"either way; it keeps serving {serving}.")
             elif r.repo not in picked:
                 notes.append(f"◐ {r.label}: stored and held — keeps serving {serving}.")
         return Text("\n".join(notes), style="yellow")

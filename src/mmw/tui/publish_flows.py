@@ -63,6 +63,7 @@ class PublishChoice:
     allow_incomplete: bool = False
     recheck: bool = False           # ignore the tree's record; recheck every file
     take_snapshot: bool = False     # snapshot the network first (live publishes only)
+    as_of: str | None = None        # a date: the network as recorded then
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,10 @@ class PublishFlows:
         choice = choice or PublishChoice()
         if choice.root is not None:
             net = net.model_copy(update={"root": choice.root})
+        if choice.as_of is not None:
+            await self._guarded(view, "Publish", lambda: self._execute_as_of_publish(
+                net, choice.as_of, view, recheck=choice.recheck))
+            return
         if choice.snapshot is not None:
             # A snapshot's files are checked by publish_snapshot itself: the
             # verify below is about the live state's refs.
@@ -382,6 +387,34 @@ class PublishFlows:
         view.write(f"  [dim]# certs for {escape(', '.join(hostnames))}[/]")
         for path in paths:
             view.write(f"  [dim]#   {escape(str(path))}[/]")
+
+    async def _execute_as_of_publish(self, net: "config.NetworkConfig", when: str,
+                                     view, *, recheck: bool = False) -> None:
+        from mmw.core.pool import Pool
+        from mmw.core.points import moment_rows, prepare_recordings, resolve_when
+        from mmw.core.publisher import publish_as_of
+
+        mirror_dir = self.cfg().settings.mirror_dir
+
+        def read():
+            prepare_recordings(mirror_dir, net.name)
+            with Pool(mirror_dir, read_only=True) as pool:
+                return moment_rows(pool, net.name, resolve_when(when))
+        try:
+            moment = await asyncio.to_thread(read)
+            view.begin(len(moment[0]))
+            result = await asyncio.to_thread(
+                lambda: publish_as_of(
+                    net, self.cfg(), mirror_dir, when,
+                    progress=view.record, stop_event=view.stop_event,
+                    mirror_start_callback=view.notify_mirror_start, recheck=recheck, moment=moment))
+        except Exception as exc:  # noqa: BLE001 — shown on the panel
+            view.mark_error(str(exc) or type(exc).__name__)
+            return
+        stopped = view.stop_event.is_set()
+        if net.certs and not stopped and not result.errors:
+            await self._certs_after_publish(net, view)
+        view.mark_done(result, stopped=stopped)
 
     async def _execute_snapshot_publish(self, net: "config.NetworkConfig", stamp: str,
                                         view, *, recheck: bool = False) -> None:

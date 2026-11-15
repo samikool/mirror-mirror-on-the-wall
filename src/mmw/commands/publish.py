@@ -18,7 +18,7 @@ from mmw.commands.common import eprint, interruptible, load_config_or_none, pref
 # the function body would bind a fresh reference to the real one every call,
 # silently defeating the patch.
 from mmw.core.format import fmt_size
-from mmw.core.publisher import dry_run_network, publish_network, publish_snapshot
+from mmw.core.publisher import dry_run_network, publish_as_of, publish_network, publish_snapshot
 from mmw.core.snapshots import take_snapshot as make_snapshot
 from mmw.commands.certs import generate_for
 from mmw.core.certs import collect_hostnames
@@ -27,7 +27,8 @@ from mmw.core.certs import collect_hostnames
 @interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = False,
         allow_incomplete: bool = False, snapshot: str | None = None,
-        root: Path | None = None, recheck: bool = False, take_snapshot: bool = False) -> int:
+        root: Path | None = None, recheck: bool = False, take_snapshot: bool = False,
+        as_of: str | None = None) -> int:
     """Publish one or all configured networks. Returns a process exit code.
 
     `snapshot`: publish that snapshot (stamp, label or id) instead of the
@@ -35,14 +36,22 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
     instead of the network's root — its nginx config points there, with the
     same hostnames, so it needs its own address. `recheck`: ignore the tree's
     record and recheck every file. `take_snapshot`: snapshot the network
-    first — publish never does on its own."""
+    first — publish never does on its own. `as_of`: publish the network as
+    it was recorded at or before that date instead."""
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
     if snapshot == "live":
         snapshot = None
-    if (snapshot or root) and not network:
-        eprint("--snapshot and --root publish one network — name it with -n.")
+    if as_of is not None and not as_of.strip():
+        eprint("--as-of needs a date (2026-11-03, 3nov or a stamp).")
+        return 1
+    if (snapshot or root or as_of) and not network:
+        eprint("--snapshot, --as-of and --root publish one network — name it with -n.")
+        return 1
+    if as_of and (snapshot or dry_run or take_snapshot):
+        eprint("--as-of publishes the network as recorded on that date — drop --snapshot, "
+               "--dry-run and --take-snapshot.")
         return 1
     if snapshot and dry_run:
         eprint("--dry-run estimates the live state only — drop --snapshot.")
@@ -95,15 +104,20 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, dry_run: bool = F
         # and deletes correct files out of a live tree.
         # A snapshot's files are checked by publish_snapshot itself: the gate
         # below is about the live state's refs.
-        if not snapshot and not preflight_ok("publish", net, cfg, cfg.settings.mirror_dir,
+        if not snapshot and not as_of and not preflight_ok("publish", net, cfg, cfg.settings.mirror_dir,
                                              allow_incomplete, warn_only=dry_run):
             ok = False
             continue
 
         what = f"snapshot {snapshot} of " if snapshot else ""
         print(f"\n{label}Publishing {what}network: {net.name}  →  {net.root}")
+        if as_of:
+            print(f"  as of {as_of}")
         try:
-            if snapshot:
+            if as_of:
+                result = publish_as_of(net, cfg, cfg.settings.mirror_dir, as_of, root=net.root,
+                                       recheck=recheck)
+            elif snapshot:
                 result = publish_snapshot(net, cfg, cfg.settings.mirror_dir, snapshot,
                                           root=net.root, recheck=recheck)
             elif dry_run:

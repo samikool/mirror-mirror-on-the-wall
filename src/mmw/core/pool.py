@@ -328,9 +328,27 @@ CREATE TABLE IF NOT EXISTS sent_blobs (
     PRIMARY KEY (network, checksum)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS sent_migrated (network TEXT PRIMARY KEY);
+-- Each network's recordings over time: a repository's points whenever they
+-- changed ('[]': it left the network), and the walk's settings whenever
+-- they changed — what publishing as of a date reads.
+CREATE TABLE IF NOT EXISTS network_recordings (
+    network TEXT NOT NULL, repo TEXT NOT NULL, stamp TEXT NOT NULL, points TEXT NOT NULL,
+    PRIMARY KEY (network, repo, stamp)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS network_settings (
+    network TEXT NOT NULL, stamp TEXT NOT NULL, settings TEXT NOT NULL,
+    PRIMARY KEY (network, stamp)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS recordings_seeded (network TEXT PRIMARY KEY);
 """
 
 _CHUNK = 900
+
+# A network's points, what it was sent and its recordings: renamed and
+# forgotten with it (the points themselves are shared and stay).
+_POINT_NETWORK_TABLES = ("network_points", "network_repo_rows", "points_converted", "sent_points",
+                         "sent_blobs", "sent_migrated", "network_recordings", "network_settings",
+                         "recordings_seeded")
 
 # Reader tuning. This workload is **disk-bound**, not lock-bound: measured 1.4x
 # from these two pragmas alone, while *adding read connections made it worse*
@@ -1774,6 +1792,73 @@ class Pool:
                                (network, repo, digest, json.dumps(sorted(point_ids))))
             self._conn.commit()
 
+    def drop_repo_rows(self, network: str, repo: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM network_repo_rows WHERE network = ? AND repo = ?", (network, repo))
+            self._conn.commit()
+
+    def record_recording(self, network: str, repo: str, stamp: str, point_ids) -> None:
+        """`repo`'s points in `network` from `stamp` on ([]: it left)."""
+        import json
+        with self._lock:
+            self._conn.execute("INSERT OR REPLACE INTO network_recordings VALUES (?, ?, ?, ?)",
+                               (network, repo, stamp, json.dumps(sorted(point_ids))))
+            self._conn.commit()
+
+    def latest_recordings(self, network: str) -> dict[str, list[int]]:
+        """Repository → its points at its latest recording (left ones too, as [])."""
+        return self._recordings(network, None, keep_empty=True)
+
+    def points_at(self, network: str, stamp: str) -> dict[str, list[int]]:
+        """Repository → the points `network` had at `stamp`: each one's
+        latest recording at or before it; repositories it didn't have, absent."""
+        return self._recordings(network, stamp, keep_empty=False)
+
+    def _recordings(self, network: str, stamp: str | None, keep_empty: bool) -> dict[str, list[int]]:
+        import json
+        bound = " AND stamp <= ?" if stamp is not None else ""
+        args = (network, stamp) if stamp is not None else (network,)
+        with self._read() as c:
+            rows = c.execute(
+                "SELECT r.repo, r.points FROM network_recordings r JOIN ("
+                "SELECT repo, MAX(stamp) AS s FROM network_recordings WHERE network = ?" + bound
+                + " GROUP BY repo) m ON m.repo = r.repo AND m.s = r.stamp WHERE r.network = ?",
+                (*args, network)).fetchall()
+        out = {repo: json.loads(ids) for repo, ids in rows}
+        return out if keep_empty else {r: ids for r, ids in out.items() if ids}
+
+    def first_recording(self, network: str) -> str | None:
+        with self._read() as c:
+            return c.execute("SELECT MIN(stamp) FROM network_recordings WHERE network = ?",
+                             (network,)).fetchone()[0]
+
+    def record_settings(self, network: str, stamp: str, settings: str) -> None:
+        """The walk's settings (JSON, as snapshots keep them) from `stamp`
+        on — only when they changed."""
+        text = settings
+        with self._lock:
+            last = self._conn.execute("SELECT settings FROM network_settings WHERE network = ? AND stamp <= ? "
+                                      "ORDER BY stamp DESC LIMIT 1", (network, stamp)).fetchone()
+            if last is None or last[0] != text:
+                self._conn.execute("INSERT OR REPLACE INTO network_settings VALUES (?, ?, ?)",
+                                   (network, stamp, text))
+                self._conn.commit()
+
+    def settings_at(self, network: str, stamp: str) -> str | None:
+        with self._read() as c:
+            row = c.execute("SELECT settings FROM network_settings WHERE network = ? AND stamp <= ? "
+                            "ORDER BY stamp DESC LIMIT 1", (network, stamp)).fetchone()
+        return row[0] if row else None
+
+    def recordings_seeded(self, network: str) -> bool:
+        with self._read() as c:
+            return c.execute("SELECT 1 FROM recordings_seeded WHERE network = ?", (network,)).fetchone() is not None
+
+    def mark_recordings_seeded(self, network: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO recordings_seeded (network) VALUES (?)", (network,))
+            self._conn.commit()
+
     def linked_held_points(self) -> list[int]:
         """Every held point some network (configured or not) saw."""
         with self._read() as c:
@@ -1995,12 +2080,18 @@ class Pool:
         with self._lock:
             clash = self._conn.execute(
                 "SELECT 1 FROM snapshots WHERE network = ? UNION ALL "
-                "SELECT 1 FROM bundles WHERE network = ? LIMIT 1", (new, new)).fetchone()
+                "SELECT 1 FROM bundles WHERE network = ? UNION ALL "
+                "SELECT 1 FROM network_points WHERE network = ? UNION ALL "
+                "SELECT 1 FROM sent_points WHERE network = ? LIMIT 1", (new, new, new, new)).fetchone()
             if clash:
-                return (f"snapshots or bundles of a network called '{new}' are already in "
+                return (f"snapshots, bundles or points of a network called '{new}' are already in "
                         f"the pool — '{old}''s were left under the old name")
+            # A name with no history may still carry markers ("converted", …) or
+            # rows of a walk nothing linked: they mean nothing without it.
+            for table in _POINT_NETWORK_TABLES:
+                self._conn.execute(f"DELETE FROM {table} WHERE network = ?", (new,))
             for table in ("snapshots", "bundles", "published", "repo_versions", "full_next",
-                          "layer_rows", "layer_digests"):
+                          "layer_rows", "layer_digests", *_POINT_NETWORK_TABLES):
                 self._conn.execute(f"UPDATE {table} SET network = ? WHERE network = ?",
                                    (new, old))
             self._conn.commit()
@@ -2025,6 +2116,8 @@ class Pool:
             self._conn.execute("DELETE FROM full_next WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM layer_rows WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM layer_digests WHERE network = ?", (network,))
+            for table in _POINT_NETWORK_TABLES:
+                self._conn.execute(f"DELETE FROM {table} WHERE network = ?", (network,))
             self._conn.commit()
         return len(ids)
 

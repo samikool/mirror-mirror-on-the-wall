@@ -72,20 +72,24 @@ def list_(cfg_dir: Path, network: str, repos: bool = False) -> int:
         return 1
     with Pool(cfg.settings.mirror_dir) as pool:
         snapshots.import_ledger(pool, cfg.settings.mirror_dir, net.name)
-        snapshots.ensure_repo_versions(pool, net.name)
+        if repos:
+            from mmw.core.points import convert_snapshots
+            convert_snapshots(pool, net.name)           # dates come from their points
         snaps = pool.snapshots(net.name)
         if not snaps:
             print(f"No snapshots of {net.name} yet — `mmw snapshot take -n {net.name}`.")
             return 0
         print(f"Snapshots of {net.name} (newest first):")
+        complete = [x for x in snaps if x.complete]
         for s in snaps:
             print(_row(s, pool.snapshot_exclusive_bytes(s.id), snapshots.served_by(pool, s)))
             if repos:
-                versions = sorted(pool.snapshot_repo_versions(s.id).values(),
-                                  key=lambda v: repository_label(v.repo, cfg).lower())
-                for v in versions:
-                    changed = " (changed)" if v.stamp == s.stamp else ""
-                    print(f"      {repository_label(v.repo, cfg)} v{v.number}{changed}")
+                older = next((x for x in complete if x.stamp < s.stamp), None)
+                changed = set(snapshots.changed_suites(pool, s, older))
+                for repo, suite, when in sorted(snapshots.suite_dates(pool, s),
+                                                key=lambda x: (repository_label(x[0], cfg).lower(), x[1])):
+                    mark = " (changed)" if (repo, suite, when) in changed and older is not None else ""
+                    print(f"      {repository_label(repo, cfg)}  {suite} {when}{mark}")
     return 0
 
 

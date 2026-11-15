@@ -332,6 +332,10 @@ class SnapshotStatus:
         """A stamp with its label, if it has one."""
         if stamp is None:
             return "nothing (full)"
+        from mmw.core.points import AS_OF
+        if stamp.startswith(AS_OF):
+            from mmw.site.versionref import day
+            return f"the network as of {day(stamp[len(AS_OF):])}"
         label = next((s.label for s in self.snapshots if s.stamp == stamp and s.label), None)
         return f"{stamp} ({label})" if label else stamp
 
@@ -379,6 +383,36 @@ def default_start(pool: Pool, network: str) -> SnapshotInfo | None:
         return find_snapshot(pool, network, log[0].to_stamp)
     imported = [s for s in pool.snapshots(network) if s.kind == "imported"]
     return imported[0] if imported else None
+
+
+def _suite_points(pool: Pool, snap: SnapshotInfo) -> dict[tuple[str, str], tuple[int, str]]:
+    """(repository, track) → (point id, date, suite name) of each suite a
+    snapshot holds; the network's own files are left out."""
+    from mmw.site.versionref import day
+    ids = pool.snapshot_point_ids(snap.id)
+    tracks: dict[int, object] = {}
+    out = {}
+    for p in pool.points_of(ids).values():
+        t = tracks[p.track] if p.track in tracks else tracks.setdefault(p.track, pool.track_of_point(p.id))
+        if t is None or t.repo.startswith("network:"):
+            continue
+        suite = t.suite or t.codename or (t.name.rsplit("/", 1)[-1] if t.name else "files")
+        out[(t.repo, t.name)] = (p.id, day(p.date), suite)
+    return out
+
+
+def suite_dates(pool: Pool, snap: SnapshotInfo) -> list[tuple[str, str, str]]:
+    """(repository, suite, date) of each suite a snapshot holds — the date
+    upstream signed it (a suite without a Release: when it was recorded)."""
+    return sorted((repo, suite, when) for (repo, _t), (_p, when, suite) in _suite_points(pool, snap).items())
+
+
+def changed_suites(pool: Pool, snap: SnapshotInfo, older: SnapshotInfo | None) -> list[tuple[str, str, str]]:
+    """The suites `snap` holds as another point than `older` did (all, with
+    no older one) — by content, so two changes on one day still show."""
+    before = _suite_points(pool, older) if older is not None else {}
+    return sorted((repo, suite, when) for (repo, t), (pid, when, suite) in _suite_points(pool, snap).items()
+                  if before.get((repo, t), (None,))[0] != pid)
 
 
 def forget_warnings(pool: Pool, snap: SnapshotInfo, far_side: str = "apply") -> list[str]:

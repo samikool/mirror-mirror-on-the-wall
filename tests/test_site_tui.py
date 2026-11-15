@@ -186,7 +186,7 @@ def test_review_ticks_all_but_held(env, tmp_path):  # noqa: F811
         sl = app.screen.query_one("#review-repos", SelectionList)
         assert set(sl.selected) == {_key(cfg, "b")}
         notes = str(app.screen.query_one("#review-notes").render())
-        assert "held at v1" in notes and "stored either way" in notes
+        assert "held at 20" in notes and "held at v" not in notes and "stored either way" in notes
         assert "always applied" in str(app.screen.query_one("#review-totals").render())
     _run(home, check)
 

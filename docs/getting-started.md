@@ -348,11 +348,25 @@ stderr tells you what broke.
 more. Published trees keep their own hardlinks, so pruning does not pull the
 rug out from under a served tree.
 
-### Snapshots: roll a network back
+### Roll a network back: by date, or to a snapshot
 
-A snapshot is a network's exact published state, kept in the pool: every
-package, index, key and mirrored file it served. Take one before anything you
-might want to undo:
+Every sync records what each network had, suite by suite. Publish a network
+as it was on any recorded date — each repository as its last sync by then had
+it:
+
+```bash
+mmw publish -n lab --as-of 2026-11-03             # or 3nov, or a full stamp
+mmw publish -n lab                                # back to now
+```
+
+How far back you can go is the network's `keep_points` (newest 3 per suite
+by default; `all`, or an age like `90d`): `mmw prune` drops older points'
+files, and a date that needs them is refused, naming the setting. A tree
+published as of a date keeps its points through prunes.
+
+A snapshot is a label on a moment, taken by hand — nothing takes one for
+you. It keeps every package, index, key and mirrored file the network had,
+whatever `keep_points` says. Take one before anything you might want to undo:
 
 ```bash
 mmw snapshot take -n lab --label pre-upgrade
@@ -363,8 +377,10 @@ mmw publish -n lab --snapshot pre-upgrade --root /srv/www-old   # beside the liv
 ```
 
 Publishing into another directory writes an nginx config for that directory
-with the same hostnames, so serve it on its own address. Every bundle also
-takes one (see [airgap](airgap.md#between-any-two-snapshots)).
+with the same hostnames, so serve it on its own address. A bundle for an
+apply.py far side still records the state it sent as a snapshot (see
+[airgap](airgap.md#between-any-two-snapshots)); `mmw snapshot list --repos`
+says each suite's date and which changed since the snapshot before.
 
 `mmw prune` never deletes a file a snapshot lists; `mmw snapshot delete` /
 `clean --keep N` let it go (the next prune frees it). One a transfer went to
@@ -375,7 +391,7 @@ A snapshot some directory serves cannot be deleted. Renaming a network carries i
 removing it in the TUI removes them; a network deleted from `mmw.toml` by hand
 leaves them behind — `mmw prune` names it, and
 `mmw snapshot clean -n OLD --keep 0 --yes` clears them. In the TUI: `n` on a network opens its snapshots, and
-`p` asks what to publish and where.
+`p` asks what to publish — now, a date, or a snapshot — and where.
 
 ### Your own packages
 

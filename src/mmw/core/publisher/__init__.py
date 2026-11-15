@@ -3,6 +3,7 @@
 Public API:
     publish_network / publish_group   — do the work
     publish_snapshot                  — lay a snapshot out again, exactly
+    publish_as_of                     — lay the network out as recorded on a date
     dry_run_network / dry_run_mirror  — read-only estimates
     publish_base                      — destination path derivation
     NetworkPublishResult / MirrorPublishResult
@@ -66,6 +67,7 @@ __all__ = [
     "publish_keys",
     "publish_network",
     "publish_snapshot",
+    "publish_as_of",
     "write_upgrade_md",
 ]
 
@@ -276,8 +278,7 @@ def publish_snapshot(
     setup are regenerated from the snapshot's recorded mirrors. Each mirror_base is finalized the way
     `publish_group` does it, so by-hash retention is the same.
     """
-    from mmw.core.certs import CHANGELOGS_HOST as CHANGELOGS_DIR
-    from mmw.core.snapshots import find_snapshot, recorded_bases
+    from mmw.core.snapshots import find_snapshot
 
     result = NetworkPublishResult(network_name=network.name, dry_run=False)
     root = root if root is not None else network.root
@@ -296,119 +297,172 @@ def publish_snapshot(
         if missing:
             raise ValueError(f"{missing} file(s) of snapshot {snap.stamp} are no longer in "
                              "the pool — it cannot be published")
-        bases = recorded_bases(snap.settings)
-        per_base = {b: MirrorPublishResult(mirror_name=b) for b in sorted(bases)}
-        other = MirrorPublishResult(mirror_name="keys and extra files")
-        keep: dict[str | None, set[str]] = {b: set() for b in bases}
-        keep[None] = set()
-        live: dict[str, set[str]] = {b: set() for b in bases}
-        deferred: dict[str, list] = {KIND_META: [], KIND_RELEASE: []}
+        _lay_out(network, cfg, root, pool.snapshot_blob_rows(snap.id), snap.settings, result,
+                 progress=progress, stop_event=stop_event,
+                 mirror_start_callback=mirror_start_callback, recheck=recheck,
+                 record_target=(mirror_dir, snap.stamp))
+    return result
 
-        sink = TreeSink(root, progress=progress, stop_event=stop_event,
-                        prev=_open_record(root, network.name), recheck=recheck)
-        try:
-            def settle(row, base, status, added):
-                rel, _checksum, _pool_path, size = row
-                r = per_base[base] if base else other
-                if status == "linked":
-                    r.linked += 1
-                    r.linked_bytes += size
-                elif status == "skipped":
-                    r.skipped += 1
-                    r.skipped_bytes += size
-                else:
-                    r.errors.extend(added or [f"{rel}: link error"])
-                if progress:
-                    progress(rel, status)
 
-            def place(batch):
-                """One trust run through the publish link loop: on the
-                sink's write lane, settled here in row order."""
-                items = [(Path(pool_path), rel, size, checksum, KIND_PKG)
-                         for (rel, checksum, pool_path, size), _base in batch]
-                for (row, base), (status, added) in zip(batch, _place_run(sink, items)):
-                    settle(row, base, status, added)
-                batch.clear()
+def publish_as_of(
+    network: NetworkConfig,
+    cfg: Config,
+    mirror_dir: Path,
+    when: str,
+    *,
+    root: Path | None = None,
+    progress=None,
+    stop_event=None,
+    mirror_start_callback=None,
+    recheck: bool = False,
+    moment=None,
+) -> NetworkPublishResult:
+    """Lay `network` out at `root` as it was recorded at or before `when` (a
+    date or stamp): each repository's points then, that day's settings.
+    `moment`: `moment_rows`' answer, if already read. **Blocking.**"""
+    from mmw.core.points import AS_OF, moment_rows, prepare_recordings, resolve_when
 
-            def stopped():
-                return stop_event is not None and stop_event.is_set()
+    stamp = resolve_when(when)
+    result = NetworkPublishResult(network_name=network.name, dry_run=False)
+    root = root if root is not None else network.root
+    if root is None:
+        raise ValueError(f"network '{network.name}' has no publish root — pass a directory")
+    _check_destination(root, mirror_dir)
+    if moment is None:
+        prepare_recordings(mirror_dir, network.name)
+        with Pool(mirror_dir, read_only=True) as pool:
+            moment = moment_rows(pool, network.name, stamp)
+    rows, settings = moment
+    warm_for_publish(mirror_dir, progress, stop_event)
+    if stop_event and stop_event.is_set():
+        return result
+    _lay_out(network, cfg, root, rows, settings, result, progress=progress, stop_event=stop_event,
+             mirror_start_callback=mirror_start_callback, recheck=recheck,
+             record_target=(mirror_dir, AS_OF + stamp))
+    return result
 
-            # Packages as the rows stream past; indexes and release files after.
-            current = None
-            pkgs: list = []
-            for i, row in enumerate(pool.snapshot_blob_rows(snap.id)):
-                if i % 1000 == 0 and stopped():
+
+def _lay_out(network: NetworkConfig, cfg: Config, root: Path, rows, settings: str,
+             result: NetworkPublishResult, *, progress=None, stop_event=None,
+             mirror_start_callback=None, recheck: bool = False, record_target=None) -> None:
+    """Lay recorded rows — (path, checksum, pool path, size), in path order —
+    out at `root` with `settings`' nginx: what publishing a snapshot or a
+    date does. `record_target`: (mirror_dir, what `root` now serves)."""
+    from mmw.core.certs import CHANGELOGS_HOST as CHANGELOGS_DIR
+    from mmw.core.snapshots import recorded_bases
+    bases = recorded_bases(settings)
+    per_base = {b: MirrorPublishResult(mirror_name=b) for b in sorted(bases)}
+    other = MirrorPublishResult(mirror_name="keys and extra files")
+    keep: dict[str | None, set[str]] = {b: set() for b in bases}
+    keep[None] = set()
+    live: dict[str, set[str]] = {b: set() for b in bases}
+    deferred: dict[str, list] = {KIND_META: [], KIND_RELEASE: []}
+
+    sink = TreeSink(root, progress=progress, stop_event=stop_event,
+                    prev=_open_record(root, network.name), recheck=recheck)
+    try:
+        def settle(row, base, status, added):
+            rel, _checksum, _pool_path, size = row
+            r = per_base[base] if base else other
+            if status == "linked":
+                r.linked += 1
+                r.linked_bytes += size
+            elif status == "skipped":
+                r.skipped += 1
+                r.skipped_bytes += size
+            else:
+                r.errors.extend(added or [f"{rel}: link error"])
+            if progress:
+                progress(rel, status)
+
+        def place(batch):
+            """One trust run through the publish link loop: on the
+            sink's write lane, settled here in row order."""
+            items = [(Path(pool_path), rel, size, checksum, KIND_PKG)
+                     for (rel, checksum, pool_path, size), _base in batch]
+            for (row, base), (status, added) in zip(batch, _place_run(sink, items)):
+                settle(row, base, status, added)
+            batch.clear()
+
+        def stopped():
+            return stop_event is not None and stop_event.is_set()
+
+        # Packages as the rows stream past; indexes and release files after.
+        current = None
+        pkgs: list = []
+        for i, row in enumerate(rows):
+            if i % 1000 == 0 and stopped():
+                break
+            rel = row[0]
+            base = next((b for b in bases if rel.startswith(b + "/")), None)
+            keep[base].add(rel)
+            if base is not None and base != current and mirror_start_callback:
+                current = base
+                mirror_start_callback(base, sorted(bases).index(base) + 1, len(bases))
+            kind = replay_kind(rel, base)
+            if kind == KIND_PKG:
+                pkgs.append((row, base))
+                if len(pkgs) >= _LINK_CHUNK:
+                    place(pkgs)
+            else:
+                if base is not None:
+                    live[base].add(row[1])
+                deferred[kind].append((row, base))
+        if not stopped():
+            place(pkgs)
+        for kind in (KIND_META, KIND_RELEASE):
+            rows = deferred[kind]
+            for i in range(0, len(rows), _LINK_CHUNK):
+                if stopped():
                     break
-                rel = row[0]
-                base = next((b for b in bases if rel.startswith(b + "/")), None)
-                keep[base].add(rel)
-                if base is not None and base != current and mirror_start_callback:
-                    current = base
-                    mirror_start_callback(base, sorted(bases).index(base) + 1, len(bases))
-                kind = replay_kind(rel, base)
-                if kind == KIND_PKG:
-                    pkgs.append((row, base))
-                    if len(pkgs) >= _LINK_CHUNK:
-                        place(pkgs)
-                else:
-                    if base is not None:
-                        live[base].add(row[1])
-                    deferred[kind].append((row, base))
-            if not stopped():
-                place(pkgs)
-            for kind in (KIND_META, KIND_RELEASE):
-                rows = deferred[kind]
-                for i in range(0, len(rows), _LINK_CHUNK):
-                    if stopped():
-                        break
-                    place(rows[i:i + _LINK_CHUNK])
+                place(rows[i:i + _LINK_CHUNK])
 
-            if not (stop_event and stop_event.is_set()):
-                nginx_rels = {rel for rel in keep[None] if rel.startswith("nginx/")}
-                from mmw.core.publisher.deployment import prepare_tree, write_scripts
-                write_scripts(sink, network.certs, existing=keep[None])
-                prepare_tree(root, network, cfg)
-                # Regenerate nginx from the recorded snapshot settings.
-                from mmw.core.publisher.nginx import recorded_nginx_files
-                from mmw.core.publisher.nginx_container import TLS_INCLUDE
-                for rel, data in recorded_nginx_files(snap.settings, str(root),
-                                                      tls_include=TLS_INCLUDE if network.certs else None).items():
-                    sink.write(rel, data)
-                    nginx_rels.add(rel)
-                if network.prune:
-                    for b in bases:
-                        nested = {x for x in bases if x != b and x.startswith(b + "/")}
-                        r = per_base[b]
-                        r.pruned, r.pruned_bytes = sink.finalize_group(
-                            b, keep[b], live[b], nested)
-                    extra = keep[None]
-                    for prefix in ("keys", CHANGELOGS_DIR, "vscode-gallery", "pypi-data"):
-                        reconcile_extra_prefix(
-                            sink, prefix, {p for p in extra if p.startswith(prefix + "/")})
-                    sink.drop_if_empty("vscode-gallery")
-                    sink.drop_if_empty("pypi-data")
-                    reconcile_extra_prefix(sink, "nginx", nginx_rels)
-                    for generated in ("UPGRADE.md", "PYPI.md"):
-                        if generated not in extra:
-                            disk_io.ops.unlink(Path(root) / generated, missing_ok=True)
-                    upstream = {p: None for p in extra
-                                if not p.startswith(("keys/", CHANGELOGS_DIR + "/",
-                                                     "vscode-gallery/", "pypi-data/"))}
-                    sink.prune_stale_bases(set(bases) | upstream_file_live_dirs(
-                        upstream, set(bases)))
-            if not (stop_event and stop_event.is_set()):
-                _render_derived(root, progress, stop_event)
-        finally:
-            sink.close()
-            result.timings.update(sink.job.stats.timings())
+        if not (stop_event and stop_event.is_set()):
+            nginx_rels = {rel for rel in keep[None] if rel.startswith("nginx/")}
+            from mmw.core.publisher.deployment import prepare_tree, write_scripts
+            write_scripts(sink, network.certs, existing=keep[None])
+            prepare_tree(root, network, cfg)
+            # Regenerate nginx from the recorded snapshot settings.
+            from mmw.core.publisher.nginx import recorded_nginx_files
+            from mmw.core.publisher.nginx_container import TLS_INCLUDE
+            for rel, data in recorded_nginx_files(settings, str(root),
+                                                  tls_include=TLS_INCLUDE if network.certs else None).items():
+                sink.write(rel, data)
+                nginx_rels.add(rel)
+            if network.prune:
+                for b in bases:
+                    nested = {x for x in bases if x != b and x.startswith(b + "/")}
+                    r = per_base[b]
+                    r.pruned, r.pruned_bytes = sink.finalize_group(
+                        b, keep[b], live[b], nested)
+                extra = keep[None]
+                for prefix in ("keys", CHANGELOGS_DIR, "vscode-gallery", "pypi-data"):
+                    reconcile_extra_prefix(
+                        sink, prefix, {p for p in extra if p.startswith(prefix + "/")})
+                sink.drop_if_empty("vscode-gallery")
+                sink.drop_if_empty("pypi-data")
+                reconcile_extra_prefix(sink, "nginx", nginx_rels)
+                for generated in ("UPGRADE.md", "PYPI.md"):
+                    if generated not in extra:
+                        disk_io.ops.unlink(Path(root) / generated, missing_ok=True)
+                upstream = {p: None for p in extra
+                            if not p.startswith(("keys/", CHANGELOGS_DIR + "/",
+                                                 "vscode-gallery/", "pypi-data/"))}
+                sink.prune_stale_bases(set(bases) | upstream_file_live_dirs(
+                    upstream, set(bases)))
+        if not (stop_event and stop_event.is_set()):
+            _render_derived(root, progress, stop_event)
+    finally:
+        sink.close()
+        result.timings.update(sink.job.stats.timings())
 
     result.mirrors.extend(per_base.values())
     if other.total_files or other.errors:
         result.mirrors.append(other)
     if not (stop_event and stop_event.is_set()):
         _write_record(root, network.name, sink, result, recheck, network.prune, progress)
-        _record_published(mirror_dir, root, network.name, snap.stamp)
-    return result
+        if record_target is not None:
+            _record_published(record_target[0], root, network.name, record_target[1])
 
 
 def walk_network(

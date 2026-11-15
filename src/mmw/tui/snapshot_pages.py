@@ -54,7 +54,8 @@ class PublishPickPage(Page):
         self._status = status
 
     def compose_body(self) -> ComposeResult:
-        targets = [("Live — the current state", "live")] + [
+        targets = [("Live — the current state", "live"),
+                   ("A date — as the network was recorded then", "date")] + [
             (_describe(s), s.stamp) for s in self._status.snapshots if s.complete]
         dirs = ([(escape(f"The network's root — {self._net.root}"), "root")]
                 if self._net.root is not None else []) + [("Another directory", "other")]
@@ -62,6 +63,9 @@ class PublishPickPage(Page):
             ChoiceField("Publish", targets, "live", id="pick-target",
                         hint="A snapshot is laid out exactly as it was — older packages "
                              "come back, newer ones go."),
+            TextField("Date", "", id="pick-when",
+                      hint="2026-11-03, 3nov or a stamp — each repository as its last sync "
+                           "by then had it (--as-of)."),
             ChoiceField("Into", dirs, dirs[0][1], id="pick-dir",
                         hint="Another directory gets its own nginx config, same hostnames — "
                              "serve it on its own address."),
@@ -85,7 +89,13 @@ class PublishPickPage(Page):
 
     def on_mount(self) -> None:
         self._show_root()
+        self._show_when()
         self.query_one("#btn-pick-go").focus()
+
+    @on(Select.Changed, "#pick-target")
+    def _show_when(self) -> None:
+        self.query_one("#field-pick-when").display = (
+            self.query_one("#pick-target", Select).value == "date")
 
     @on(Select.Changed, "#pick-dir")
     def _show_root(self) -> None:
@@ -107,13 +117,27 @@ class PublishPickPage(Page):
                 return
             root = Path(values["pick-root"]).expanduser()
         target = values["pick-target"]
+        as_of = None
+        if target == "date":
+            from mmw.core.points import resolve_when
+            try:
+                resolve_when(values["pick-when"] or "")
+            except ValueError as e:
+                self.set_status(f"Date: {e}", "error")
+                self.query_one("#pick-when").focus()
+                return
+            as_of, target = values["pick-when"].strip(), "live"
+            if values["publish-take-snapshot"]:
+                self.set_status("Snapshot first: nothing to snapshot — you are publishing a "
+                                "recorded date.", "error")
+                return
         if values["publish-take-snapshot"] and target != "live":
             self.set_status("Snapshot first: nothing to snapshot — you are publishing an "
                             "existing snapshot.", "error")
             return
         self.dismiss(PublishChoice(snapshot=None if target == "live" else target, root=root,
                                    recheck=values["publish-recheck"],
-                                   take_snapshot=values["publish-take-snapshot"]))
+                                   take_snapshot=values["publish-take-snapshot"], as_of=as_of))
 
 
 class BundlePickPage(Page):
@@ -447,15 +471,17 @@ class SnapshotsPage(Page):
             return
         # Which repositories each snapshot changed, for its note.
         from mmw.core.repos import repository_label
+        from mmw.core.snapshots import changed_suites
         changed = {}
+        complete = [s for s in status.snapshots if s.complete]
         with Pool(self._mirror_dir, read_only=True) as pool:
-            for snap in status.snapshots:
-                versions = pool.snapshot_repo_versions(snap.id).values()
-                if versions:
-                    new = sorted((repository_label(v.repo, self.app.cfg), v.number)
-                                 for v in versions if v.stamp == snap.stamp)
-                    changed[snap.stamp] = ("changed: " + ", ".join(f"{name} v{n}" for name, n in new)
-                                           if new else "no repository changed")
+            for snap in complete:
+                older = next((x for x in complete if x.stamp < snap.stamp), None)
+                new = changed_suites(pool, snap, older)
+                if new or older is not None:
+                    changed[snap.stamp] = ("changed: " + ", ".join(
+                        f"{repository_label(r, self.app.cfg)} {suite} {when}" for r, suite, when in new)
+                        if new else "no repository changed")
         self._changed = changed
         self.app.call_from_thread(self._loaded, status)
         # What each alone holds: a query per snapshot — filled in after.

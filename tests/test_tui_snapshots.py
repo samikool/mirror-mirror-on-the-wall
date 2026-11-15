@@ -482,13 +482,15 @@ def test_snapshot_site_apply_review(snap_compare):
     from mmw.tui.site.apply_flow import ApplyReviewPage
     rows = [
         PlanRow("https://archive.ubuntu.com/ubuntu", "archive.ubuntu.com/ubuntu", 14, 15, 1804, 21_000_000_000,
-                14, False, False, P("/mnt/oak")),
+                14, False, False, P("/mnt/oak"), to_date="20261024T020000Z", serving_date="20261017T020000Z"),
         PlanRow("https://deb.debian.org/debian", "deb.debian.org/debian", 9, 10, 388, 3_300_000_000,
-                6, True, False, P("/mnt/oak")),
-        PlanRow("vscode", "VS Code", 11, 12, 940, 3_900_000_000, 11, False, False, P("/mnt/oak")),
-        PlanRow("pypi", "PyPI", 8, 9, 2310, 600_000_000, 8, False, False, P("/mnt/pypi")),
+                6, True, False, P("/mnt/oak"), to_date="20261024T020000Z", serving_date="20261003T020000Z"),
+        PlanRow("vscode", "VS Code", 11, 12, 940, 3_900_000_000, 11, False, False, P("/mnt/oak"),
+                to_date="20261024T020000Z", serving_date="20261017T020000Z"),
+        PlanRow("pypi", "PyPI", 8, 9, 2310, 600_000_000, 8, False, False, P("/mnt/pypi"),
+                to_date="20261024T020000Z", serving_date="20261017T020000Z"),
         PlanRow("https://developer.download.nvidia.com/x", "nvidia cuda ubuntu2404", 3, 3, 0, 0, 3, False, True,
-                P("/mnt/oak")),
+                P("/mnt/oak"), to_date="20261010T020000Z", serving_date="20261010T020000Z"),
     ]
     plan = ApplyPlan("20261024T101500Z", "oak", rows, 41, 28_900_000_000)
     assert snap_compare(_app(lambda: ApplyReviewPage(plan, "/media/usb/oak-20261024T101500Z.tar")),
@@ -508,9 +510,10 @@ def test_snapshot_site_apply_done(snap_compare):
                          network_changed=True,
                          actions=["nginx config changed — recreate nginx on the serving host "
                                   "(docker compose … up -d --force-recreate)"],
-                         lines=["  archive.ubuntu.com/ubuntu  v14 → v15",
-                                "  deb.debian.org/debian  stored v10, still serving v6 (held)",
-                                "  VS Code  v11 → v12"])
+                         lines=["  archive.ubuntu.com/ubuntu  noble 2026-10-17 → 2026-10-24",
+                                "  deb.debian.org/debian  bookworm stored 2026-10-24, still serving "
+                                "2026-10-03 (held)",
+                                "  VS Code  2026-10-17 → 2026-10-24"])
 
     async def done(pilot):
         await until(pilot, lambda: type(pilot.app.screen).__name__ == "Shown")

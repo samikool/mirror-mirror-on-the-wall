@@ -328,18 +328,22 @@ def cmd_publish(
         help="Ignore the record of the last publish and recheck every published file."),
     take_snapshot: bool = typer.Option(
         False, "--take-snapshot", help="Take a snapshot of the network first."),
+    as_of: str = typer.Option(
+        None, "--as-of",
+        help="Publish the network as it was recorded on this date (2026-11-03, 3nov, or a "
+             "stamp): each repository as its last sync then had it. Needs -n."),
 ):
     """Publish mirrors to network targets. Without --quiet opens the TUI
-    (--snapshot / --root / --recheck / --take-snapshot always run headless)."""
+    (--snapshot / --as-of / --root / --recheck / --take-snapshot always run headless)."""
     cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
-    if quiet or dry_run or snapshot or root or recheck or take_snapshot:
+    if quiet or dry_run or snapshot or root or recheck or take_snapshot or as_of is not None:
         from mmw.commands.publish import run
         raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run,
                              allow_incomplete=allow_incomplete,
                              snapshot=snapshot, root=root, recheck=recheck,
-                             take_snapshot=take_snapshot))
+                             take_snapshot=take_snapshot, as_of=as_of))
 
     _run_tui(_open_app(cfg, cfg_dir, "networks"))
 

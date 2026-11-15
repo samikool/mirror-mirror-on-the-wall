@@ -57,12 +57,12 @@ def test_importing_a_stub_refills_it(db):
     assert db.point(pid).held
 
 
-def test_points_order_by_date_then_ident(db):
+def test_points_order_by_date_then_arrival(db):
     t = _track(db)
     for ident, date in (("release:b", "20261102T000000Z"), ("release:c", "20261103T000000Z"),
                         ("release:a", "20261102T000000Z")):
         db.import_point(t, _draft(ident, date), SIZES, "s", None)
-    assert [p.ident for p in db.points(t)] == ["release:c", "release:b", "release:a"]
+    assert [p.ident for p in db.points(t)] == ["release:c", "release:a", "release:b"]   # a came later
 
 
 def test_state_lookup_by_points(db):

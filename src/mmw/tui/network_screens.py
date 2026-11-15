@@ -210,6 +210,9 @@ class NetworkForm(Vertical):
                             hint="Remove destination files no longer in the mirror on publish."),
                 ToggleField("dist-upgrade", net.dist_upgrade if net else False, id="du-switch",
                             hint="Serve changelogs.ubuntu.com meta-release files + UPGRADE.md."),
+                ToggleField("History", net.history if net else False, id="history-switch",
+                            hint="mmw far side: each transfer carries every point since the last one "
+                                 "(each sync's state), not only each suite's newest."),
                 ToggleField("TLS certs", net.certs if net else True, id="certs-switch",
                             hint="HTTPS for every mirror hostname. Bundles carry the cert and its "
                                  "private key, and wait for the cert to be signed."),
@@ -361,6 +364,7 @@ class NetworkForm(Vertical):
             "select": selects,
             "prune": self._flag("prune-switch"),
             "dist_upgrade": self._flag("du-switch"),
+            "history": self._flag("history-switch"),
             "certs": self._flag("certs-switch"),
             "nginx": self._flag("nginx-switch"),
             "retention": retention,

@@ -27,7 +27,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         out: Path | None = None,
         allow_incomplete: bool = False, from_ref: str | None = None,
         to_ref: str | None = None, repos: list[str] | None = None, stage: bool = False,
-        installer: bool = False, runtime_wheel: Path | None = None) -> int:
+        installer: bool = False, runtime_wheel: Path | None = None, history: bool | None = None,
+        full: bool = False) -> int:
     """Bundle one or all configured networks. Returns a process exit code.
 
     `from_ref` / `to_ref` name snapshots (stamp, label or id) of the one
@@ -66,7 +67,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         eprint("--from / --to name a snapshot of one network — pass -n too.")
         return 1
     from mmw.core.publisher.bundle import _LAST
-    start = None if from_ref == "none" else (from_ref or _LAST)
+    start = None if from_ref == "none" or full else (from_ref or _LAST)
     mirror_dir = cfg.settings.mirror_dir
     ok = True
     installers_written: set[tuple] = set()      # (directory, arches, python): one installer each
@@ -122,6 +123,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                     installers_written.add(where)
             if runtime_wheel is not None:
                 picked["runtime_wheel"] = runtime_wheel
+            if history is not None and net.far_side == "mmw":
+                picked["history"] = history
             # A warning the run raises before its long part (a stage that will
             # copy, not hardlink) is said then, while there is time to stop it.
             told: list[str] = []
@@ -155,8 +158,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                 else f"full → {result.created}")
         say(f"{net.name}  {span}  →  {'stdout' if streaming else result.out_path}")
         say(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
-        for d in result.repos:
-            say(f"  {d.label}  {f'v{d.start.number}' if d.start else 'full'} → v{d.dest.number}")
+        for r in result.repos:
+            say(f"  {r.label}  " + ", ".join(f"{suite} {before or 'new'} → {to}" for suite, before, to in r.suites))
         for path in result.installers:
             say(f"  mmw installer: {path}")
         if result.timings:

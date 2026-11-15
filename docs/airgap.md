@@ -57,7 +57,7 @@ It writes three files next to each other in the network's `bundle_dir`:
 Useful flags:
 
 ```bash
-mmw bundle -n lab --from none         # send everything, not just the delta
+mmw bundle -n lab --from none         # send everything, not just the delta (or --full)
 mmw bundle -n lab --out /media/usb    # write here instead of bundle_dir
 mmw bundle -n lab --allow-incomplete  # ship anyway, having been told what is missing
 mmw bundle -n lab --out -             # stream the tar to stdout (see below)
@@ -107,9 +107,41 @@ the stage directory on the pool's filesystem: elsewhere mmw warns and copies
 the files instead. It counts as sent once the directory is complete; delete
 it yourself when it has gone across.
 
+### What an mmw network's bundle carries
+
+A network whose far side runs mmw (`far_side = "mmw"`) gets a bundle of
+**points**, not a jump from one snapshot to another. Every sync records a
+point per suite that changed; a bundle lists each chosen repository's
+points, and carries only the files the network was never sent — each file
+once, however many points hold it. The far side adds the points to its
+timeline and serves each suite's newest.
+
+```bash
+mmw bundle -n lab              # each suite's newest point (the default)
+mmw bundle -n lab --history    # every point synced since the last bundle too
+mmw bundle -n lab --newest     # just the newest, whatever the network's setting
+mmw bundle -n lab --full       # carry every file again, sent or not
+```
+
+`--history` lets the far side serve an older point (`mmw site serve`)
+without asking for it; set `history = true` on the network to make it the
+default. The summary names each suite's dates:
+
+```
+  Debian  bookworm 2026-11-01 → 2026-11-15
+  VS Code  stable new → 2026-11-15
+```
+
+No snapshot is taken: a snapshot is a label you add by hand
+(`mmw snapshot take`), and `--to <snapshot>` sends the points it holds.
+`--from <snapshot>` only bounds `--history`; what was sent decides which
+files travel. Force-deleting a snapshot never makes the next bundle full
+for these networks. In the TUI, the transfer page's **Points** choice is
+the same switch.
+
 ### Between any two snapshots
 
-Every bundle goes from one [snapshot](getting-started.md#snapshots-roll-a-network-back)
+For a network whose far side runs `apply.py`, every bundle goes from one [snapshot](getting-started.md#snapshots-roll-a-network-back)
 of the network to another. By default that is from where the last bundle went
 to a new snapshot of now, but any two work — forwards, backwards, or skipping
 some:

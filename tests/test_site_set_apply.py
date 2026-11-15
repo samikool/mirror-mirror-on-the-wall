@@ -207,12 +207,15 @@ def _serving(root, label):
 def _damage(bundle, host, out):
     """The same bundle with one of `host`'s files' bytes changed."""
     import io
+    from site_format3 import member_paths
+    held = member_paths(bundle)
     with tarfile.open(bundle) as t:
         members = [(m, t.extractfile(m).read() if m.isreg() else None) for m in t.getmembers()]
     done = False
     with tarfile.open(out, "w") as t:
         for m, data in members:
-            if not done and m.isreg() and m.name.startswith(host + "/") and m.name.endswith(".deb"):
+            path = held.get(m.name, m.name)
+            if not done and m.isreg() and path.startswith(host + "/") and path.endswith(".deb"):
                 data, done = bytes(x ^ 1 for x in data), True
             t.addfile(m, io.BytesIO(data) if data is not None else None)
     assert done
@@ -358,12 +361,14 @@ def test_cli_prints_nginx_steps(hosts, tmp_path):
 
 def _damage_network(bundle, out):
     import io
+    from site_format3 import member_paths
+    held = member_paths(bundle)
     with tarfile.open(bundle) as t:
         members = [(m, t.extractfile(m).read() if m.isreg() else None) for m in t.getmembers()]
     done = False
     with tarfile.open(out, "w") as t:
         for m, data in members:
-            if not done and m.isreg() and m.name.startswith("nginx/") and data:
+            if not done and m.isreg() and held.get(m.name, m.name).startswith("nginx/") and data:
                 data, done = bytes(x ^ 1 for x in data), True
             t.addfile(m, io.BytesIO(data) if data is not None else None)
     assert done

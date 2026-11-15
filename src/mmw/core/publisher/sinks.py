@@ -975,3 +975,114 @@ class BundleSink:
         self._archive_last_report = now
         self._progress(rel, f"archive-progress:{files_written}:{raw_written}")
 
+
+
+class PointsSink(BundleSink):
+    """A bundle of timeline points (manifest format 3): rows are (path,
+    checksum) with the points holding them; each file goes once, named by
+    its checksum, and only if `sent` (what this network was sent before)
+    lacks it. No `apply.py`, no delete list — the far side runs mmw.
+
+    `link_point` is a repository's file of point `k`; `link`/`write` are
+    network-level (no repository). `sent_checksums`, once closed: what the
+    tar carried — the caller records it only after this returns."""
+
+    def __init__(self, out_path: Path, header: ManifestHeader, *, sent: set[str], progress=None,
+                 stop_event=None, writer=None, scratch_dir: Path | None = None,
+                 signing_files: dict[str, bytes] | None = None):
+        super().__init__(out_path, header, {}, b"", prune=False, full=False, progress=progress,
+                         stop_event=stop_event, writer=writer, scratch_dir=scratch_dir,
+                         signing_files=signing_files)
+        self._sent_before = set(sent)
+        self._rows: dict[tuple[str, str], list] = {}          # (rel, checksum) → [repo, size, {k}]
+        self._carry: dict[str, tuple[Path | None, int, bytes | None]] = {}   # checksum → (src, size, data)
+        self.sent_checksums: set[str] = set()
+
+    def link_point(self, src: Path, rel: str, size: int, checksum: str, kind: str, repo: str | None,
+                   k: int | None) -> str:
+        row = self._rows.setdefault((rel, checksum), [repo, size, set()])
+        if k is not None:
+            row[2].add(k)
+        if checksum not in self._sent_before and checksum not in self._carry:
+            self._carry[checksum] = (Path(src), size, None)
+        return "linked"
+
+    def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
+        return self.link_point(src, rel, size, checksum, kind, None, None)
+
+    def write(self, rel: str, data: bytes) -> None:
+        checksum = hashlib.sha256(data).hexdigest()
+        self._rows.setdefault((rel, checksum), [None, len(data), set()])
+        if checksum not in self._sent_before and checksum not in self._carry:
+            self._carry[checksum] = (None, len(data), data)
+
+    @property
+    def sent(self) -> int:
+        return len(self._carry)
+
+    @property
+    def sent_bytes(self) -> int:
+        return sum(size for _src, size, _data in self._carry.values())
+
+    def tagged_rows(self):
+        return [(rel, cs, repo, size, tuple(sorted(k)))
+                for (rel, cs), (repo, size, k) in sorted(self._rows.items())]
+
+    def _close(self) -> None:
+        from mmw.core.publisher.manifest import blob_member
+        from mmw.core.verify import blob_stats
+        if self._writer is None:
+            disk_io.ops.mkdir(self.out_path.parent, parents=True, exist_ok=True)
+        # Every pool blob must be what was recorded, or nothing is written.
+        pooled = [(cs, src, size) for cs, (src, size, data) in sorted(self._carry.items()) if data is None]
+        bad: list[str] = []
+        for (cs, _src, size), st in blob_stats(pooled, self.job, path_of=lambda r: r[1]):
+            if isinstance(st, OSError):
+                bad.append(f"{cs}: {st}")
+            elif st.st_size != size:
+                bad.append(f"{cs}: pool blob is {st.st_size} bytes, expected {size}")
+        stop = self.job.stop_event
+        if stop is not None and stop.is_set():
+            raise InterruptedError("bundle stopped — nothing was written")
+        if bad:
+            self.errors.extend(bad)
+            raise ValueError(f"{len(bad)} file(s) are damaged in the pool, so nothing was bundled "
+                             f"(first: {bad[0]}). `mmw verify --repair` drops them and the next "
+                             "`mmw sync` downloads them again.")
+        header = replace(self.header, file_count=len(self._carry))
+        self.written_header = header
+        scratch = self._scratch_dir or self.out_path.parent
+        disk_io.ops.mkdir(scratch, parents=True, exist_ok=True)
+        tmp_manifest = scratch / (self.out_path.name + ".manifest.tmp")
+        write_manifest(tmp_manifest, header, self.tagged_rows())
+        if self._progress:
+            self._progress("", f"archive-start:{self.sent}:{self.sent_bytes}")
+        writer = self._writer() if self._writer is not None else self._tar_writer()
+        committed = False
+        files_written, raw_written = 0, 0
+        self._archive_last_report = time.monotonic()
+        try:
+            writer.add_bytes(".mmw/manifest.jsonl", disk_io.ops.read_bytes(tmp_manifest))
+            for name, data in sorted(self._signing_files.items()):
+                writer.add_bytes(f".mmw/signing/{name}.asc", data, mode=0o600)
+            for cs, (src, size, data) in sorted(self._carry.items()):
+                if stop is not None and stop.is_set():
+                    raise InterruptedError("bundle stopped — nothing was written")
+                if data is not None:
+                    writer.add_bytes(blob_member(cs), data)
+                else:
+                    with disk_io.ops.open_rb(src) as fh:
+                        writer.add_blob(blob_member(cs), fh, size, src=src)
+                files_written += 1
+                raw_written += size
+                self._maybe_report_archive_progress(blob_member(cs), files_written, raw_written)
+            if self._progress:
+                self._progress("", f"archive-done:{files_written}:{raw_written}")
+            writer.commit()
+            committed = True
+            self.archive_sha256 = getattr(writer, "sha256", None)
+            self.sent_checksums = set(self._carry)
+        finally:
+            disk_io.ops.unlink(tmp_manifest, missing_ok=True)
+            if not committed:
+                writer.abort()

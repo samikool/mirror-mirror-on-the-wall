@@ -53,6 +53,7 @@ EDITORS = {
     ("NetworkConfig", "nginx"): ("network_screens.py", "nginx-switch"),
     ("NetworkConfig", "retention"): ("network_screens.py", "inp-retention"),
     ("NetworkConfig", "keep_points"): ("network_screens.py", "inp-keep-points"),
+    ("NetworkConfig", "history"): ("network_screens.py", "history-switch"),
     ("NetworkConfig", "far_side"): ("network_screens.py", "far-side-pick"),
     ("NetworkConfig", "layers"): ("packages.py", "pkg-signing"),
     ("NetworkConfig", "carry_keys"): ("network_screens.py", "inp-carry-keys"),

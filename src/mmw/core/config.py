@@ -1061,6 +1061,9 @@ class NetworkConfig(_StrictModel):
     # age ("90d"). Never dropped: one a snapshot holds, or one the network
     # first saw after its last bundle.
     keep_points: int | str = 3
+    # What a bundle carries for an mmw network: every point since the last
+    # bundle (true), or each suite's newest (false). `--history`/`--newest`.
+    history: bool = False
 
     @field_validator("runtime_python")
     @classmethod
@@ -1601,6 +1604,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"certs": False} if not n.certs else {}),
             **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
             **({"keep_points": n.keep_points} if n.keep_points != 3 else {}),
+            **({"history": True} if n.history else {}),
             **({"far_side": "mmw"} if n.far_side == "mmw" else {}),
             **({"runtime_arches": n.runtime_arches} if n.runtime_arches != ["x86_64"] else {}),
             **({"runtime_python": n.runtime_python} if n.runtime_python != DEFAULT_RUNTIME_PYTHON else {}),

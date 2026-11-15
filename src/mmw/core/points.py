@@ -21,6 +21,7 @@ class PointsReport:
     network: str
     new: list[str] = field(default_factory=list)        # "a stable 2026-11-01"
     warnings: list[str] = field(default_factory=list)
+    settings: str = "{}"                                # the walk's (what nginx is generated from)
 
 
 def _reader(pool: Pool, rows: dict[str, str]):
@@ -104,6 +105,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
         rows, settings, warnings = walk_tree(network, cfg, mirror_dir, pool, progress=progress,
                                              stop_event=stop_event)
         report.warnings += warnings
+        report.settings = settings
         from mmw.site.tracks import content_ident
         for repo, mine in sorted(by_repo(rows, settings, network.name).items()):
             digest = content_ident(mine)
@@ -153,24 +155,35 @@ def _cutoff(now: str, days: int) -> str:
     return t.strftime("%Y%m%dT%H%M%SZ")
 
 
+def history_since(pool: Pool, network: str) -> tuple[dict[str, str], str | None]:
+    """Where a bundle's history starts, per repository: the last bundle that
+    listed it — a partial bundle moves only its own repositories on. A
+    repository no bundle listed yet starts at the network's last bundle
+    (None: never bundled). Returns (per repository, that fallback)."""
+    bundles = pool.bundles(network)
+    return pool.last_sent_by_repo(network), (bundles[0].to_stamp if bundles else None)
+
+
 def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
     """The points `network` keeps: per track the newest `keep_points` (or
-    those it saw within the age), every point a snapshot holds, and — once
-    it has been bundled — every point it first saw after its last bundle."""
+    those it saw within the age), what it is on now, every point a snapshot
+    holds, and — once it has been bundled — every point it first saw after
+    its repository was last bundled."""
     keep = network.keep_points
-    bundles = pool.bundles(network.name)
-    last_sent = bundles[0].to_stamp if bundles else None
+    by_repo, fallback = history_since(pool, network.name)
+    current = {pid for ids in current_points(pool, network.name).values() for pid in ids}
     # Only a complete snapshot holds: a history-only one stopped holding its files.
     held_by_snapshots = {pid for s in pool.snapshots(network.name) if s.complete
                          for pid in pool.snapshot_point_ids(s.id)}
     cutoff = _cutoff(now, int(keep[:-1])) if isinstance(keep, str) and keep != "all" else None
     kept: set[int] = set()
     for t in pool.network_tracks(network.name):
+        last_sent = by_repo.get(t.repo, fallback)
         for i, p in enumerate(pool.network_points(network.name, t.id)):
             first = pool.network_point_stamp(network.name, p.id) or p.stamp
             # An age counts from when the network last had it; what it's on now always stays.
             seen = pool.network_point_last_seen(network.name, p.id) or first
-            if (i == 0 or keep == "all" or (isinstance(keep, int) and i < keep)
+            if (i == 0 or p.id in current or keep == "all" or (isinstance(keep, int) and i < keep)
                     or (cutoff is not None and seen >= cutoff)
                     or p.id in held_by_snapshots or (last_sent is not None and first > last_sent)):
                 kept.add(p.id)
@@ -194,3 +207,29 @@ def apply_retention(pool: Pool, networks: list[NetworkConfig], *, now: str | Non
     for pid in gone:
         pool.stub_point(pid)
     return len(gone)
+
+
+# ── what each network was sent ───────────────────────────────────────────────
+
+def current_points(pool: Pool, network: str) -> dict[str, list[int]]:
+    """Repository → the points `network` had at its last recording."""
+    return pool.recorded_repos(network)
+
+
+def migrate_sent(pool: Pool, network: str) -> bool:
+    """Once per network: what its format-2 bundles sent (each repository's
+    last-sent version) as sent points and files — so the first bundle of
+    points is still a delta. Whether it ran."""
+    if pool.sent_migrated(network):
+        return False
+    convert_snapshots(pool, network)
+    for repo, version_id in pool.last_sent_versions(network).items():
+        holders = pool.repo_version_snapshots(version_id)
+        if not holders:
+            continue                    # its snapshot is gone: those files go again (the far side dedupes)
+        ids = [pid for pid in pool.snapshot_point_ids(holders[0])
+               if (t := pool.track_of_point(pid)) is not None and t.repo == repo]
+        files = {c for pid in ids for c in pool.point_files(pid).values()}
+        pool.record_sent(network, ids, files, "migrated")
+    pool.mark_sent_migrated(network)
+    return True

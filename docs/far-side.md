@@ -112,6 +112,9 @@ applied 20261031T101500Z
   the rest of the bundle applies. A later bundle completes it.
 - An older bundle, or one already applied, never moves what a repository
   serves: its points join the timeline, and `mmw site serve` can use them.
+- A bundle made with history (`mmw bundle --history`, or the network's
+  `history = true`) brings every point synced since the last one, not
+  just each suite's newest: they join the timeline, ready to serve.
 - A file that differs inside one `Release` from what this mirror holds is
   refused for that point alone: the bundle or the mirror is damaged
   (`mmw site verify`).

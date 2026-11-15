@@ -361,7 +361,7 @@ class SiteDB:
         the same Date) in the order they arrived, then by ident."""
         return [self._point(r) for r in self._conn.execute(
             f"SELECT {self._P} FROM points WHERE track = ? {'' if stubs else 'AND held = 1'} "
-            "ORDER BY date DESC, stamp DESC, ident DESC", (track_id,)).fetchall()]
+            "ORDER BY date DESC, stamp DESC, id DESC", (track_id,)).fetchall()]   # then the later arrival
 
     def point(self, point_id: int) -> PointInfo | None:
         row = self._conn.execute(f"SELECT {self._P} FROM points WHERE id = ?", (point_id,)).fetchone()

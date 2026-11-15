@@ -316,6 +316,18 @@ CREATE TABLE IF NOT EXISTS snapshot_points (
 ) WITHOUT ROWID;
 -- Networks whose snapshots from before points have been split into points.
 CREATE TABLE IF NOT EXISTS points_converted (network TEXT PRIMARY KEY);
+-- What each network was sent (written once a bundle is complete): the
+-- points listed as its own, and every file carried — what a bundle need not
+-- list as new, and need not carry again.
+CREATE TABLE IF NOT EXISTS sent_points (
+    network TEXT NOT NULL, point INTEGER NOT NULL, stamp TEXT NOT NULL,
+    PRIMARY KEY (network, point)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS sent_blobs (
+    network TEXT NOT NULL, checksum TEXT NOT NULL,
+    PRIMARY KEY (network, checksum)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS sent_migrated (network TEXT PRIMARY KEY);
 """
 
 _CHUNK = 900
@@ -1354,6 +1366,19 @@ class Pool:
             ).fetchone()
         return row is not None
 
+    def blob_info(self, checksums) -> dict[str, tuple[Path, int]]:
+        """checksum → (where the pooled blob is, its size), for those in the pool."""
+        wanted = sorted(set(checksums))
+        out: dict[str, tuple[Path, int]] = {}
+        with self._read() as c:
+            for i in range(0, len(wanted), 500):
+                chunk = wanted[i:i + 500]
+                for cs, fn, size in c.execute(
+                        f"SELECT checksum, filename, size FROM packages WHERE checksum IN "
+                        f"({','.join('?' * len(chunk))})", chunk):
+                    out[cs] = (self.blob_path(cs, fn), size)
+        return out
+
     def blob_file(self, checksum: str) -> Path | None:
         """Where a pooled blob is (None: not in the pool)."""
         with self._read() as c:
@@ -1735,6 +1760,13 @@ class Pool:
                             (network, repo)).fetchone()
         return (row[0], json.loads(row[1])) if row else None
 
+    def recorded_repos(self, network: str) -> dict[str, list[int]]:
+        """Repository → the point ids at `network`'s last recording."""
+        import json
+        with self._read() as c:
+            return {r: json.loads(ids) for r, ids in c.execute(
+                "SELECT repo, points FROM network_repo_rows WHERE network = ?", (network,))}
+
     def set_repo_rows(self, network: str, repo: str, digest: str, point_ids: list[int]) -> None:
         import json
         with self._lock:
@@ -1794,6 +1826,77 @@ class Pool:
                                    [(snapshot_id, p) for p in point_ids])
             self._conn.commit()
 
+    def record_sent(self, network: str, point_ids, checksums, stamp: str) -> None:
+        with self._lock:
+            self._conn.executemany("INSERT OR IGNORE INTO sent_points (network, point, stamp) VALUES (?, ?, ?)",
+                                   [(network, p, stamp) for p in point_ids])
+            self._conn.executemany("INSERT OR IGNORE INTO sent_blobs (network, checksum) VALUES (?, ?)",
+                                   [(network, c) for c in checksums])
+            self._conn.commit()
+
+    def sent_point_ids(self, network: str) -> set[int]:
+        with self._read() as c:
+            return {r[0] for r in c.execute("SELECT point FROM sent_points WHERE network = ?", (network,))}
+
+    def sent_checksums(self, network: str, checksums) -> set[str]:
+        """Which of `checksums` were sent to `network`."""
+        wanted = sorted(set(checksums))
+        out: set[str] = set()
+        with self._read() as c:
+            for i in range(0, len(wanted), 500):
+                chunk = wanted[i:i + 500]
+                out |= {r[0] for r in c.execute(
+                    f"SELECT checksum FROM sent_blobs WHERE network = ? AND checksum IN "
+                    f"({','.join('?' * len(chunk))})", (network, *chunk))}
+        return out
+
+    def sent_migrated(self, network: str) -> bool:
+        with self._read() as c:
+            return c.execute("SELECT 1 FROM sent_migrated WHERE network = ?", (network,)).fetchone() is not None
+
+    def mark_sent_migrated(self, network: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO sent_migrated (network) VALUES (?)", (network,))
+            self._conn.commit()
+
+    def points_of(self, point_ids) -> dict[int, PoolPoint]:
+        """These points (stubs too), by id."""
+        wanted = sorted(set(point_ids))
+        out: dict[int, PoolPoint] = {}
+        with self._read() as c:
+            for i in range(0, len(wanted), 500):
+                chunk = wanted[i:i + 500]
+                for r in c.execute("SELECT id, track, ident, files, date, stamp, held FROM points "
+                                   f"WHERE id IN ({','.join('?' * len(chunk))})", chunk):
+                    out[r[0]] = PoolPoint(*r[:6], bool(r[6]))
+        return out
+
+    def last_sent_by_repo(self, network: str) -> dict[str, str]:
+        """Per repository, the stamp of the last bundle that listed it
+        (records migrated from format-2 history carry no stamp)."""
+        with self._read() as c:
+            return dict(c.execute(
+                "SELECT t.repo, MAX(s.stamp) FROM sent_points s JOIN points p ON p.id = s.point "
+                "JOIN tracks t ON t.id = p.track WHERE s.network = ? AND s.stamp != 'migrated' "
+                "GROUP BY t.repo", (network,)).fetchall())
+
+    def sent_dates_by_track(self, network: str) -> dict[int, str]:
+        """Per track, the newest date among the points `network` was sent."""
+        with self._read() as c:
+            return dict(c.execute(
+                "SELECT p.track, MAX(p.date) FROM sent_points s JOIN points p ON p.id = s.point "
+                "WHERE s.network = ? GROUP BY p.track", (network,)).fetchall())
+
+    def point_date(self, point_id: int) -> str:
+        with self._read() as c:
+            return c.execute("SELECT date FROM points WHERE id = ?", (point_id,)).fetchone()[0]
+
+    def track_of_point(self, point_id: int) -> PoolTrack | None:
+        with self._read() as c:
+            row = c.execute("SELECT t.id, t.repo, t.name, t.suite, t.codename FROM tracks t "
+                            "JOIN points p ON p.track = t.id WHERE p.id = ?", (point_id,)).fetchone()
+        return PoolTrack(*row) if row else None
+
     def points_converted(self, network: str) -> bool:
         with self._read() as c:
             return c.execute("SELECT 1 FROM points_converted WHERE network = ?", (network,)).fetchone() is not None
@@ -1835,21 +1938,22 @@ class Pool:
     _LAST_SENT = ("SELECT r.repo, r.to_version FROM bundle_repos r JOIN bundles b ON b.id = r.bundle "
                   "WHERE b.network = ? ORDER BY b.id")
 
-    def forget_snapshot(self, snap: SnapshotInfo, far_side_at_it: bool) -> bool:
+    def forget_snapshot(self, snap: SnapshotInfo, far_side_at_it: bool, mark_full: bool = True) -> bool:
         """Force delete: the snapshot's rows and every transfer that went to
         it, in one transaction. Version rows stay — a far side may hold one,
         and a number must never be handed out again. When the far side may be
         at it (`far_side_at_it`: where the next transfer would start), or a
         repository's last-sent version came from one of those transfers, the
-        network's next default transfer is full. Returns whether it now is."""
+        network's next default transfer is full — unless not `mark_full`
+        (an mmw network, whose sent records stand). Returns whether it now is."""
         network, stamp = snap.network, snap.stamp
         with self._lock:
             before = dict(self._conn.execute(self._LAST_SENT, (network,)).fetchall())
             went = "SELECT id FROM bundles WHERE network = ? AND to_stamp = ?"
             self._conn.execute(f"DELETE FROM bundle_repos WHERE bundle IN ({went})", (network, stamp))
             self._conn.execute("DELETE FROM bundles WHERE network = ? AND to_stamp = ?", (network, stamp))
-            full = far_side_at_it or dict(
-                self._conn.execute(self._LAST_SENT, (network,)).fetchall()) != before
+            full = mark_full and (far_side_at_it or dict(
+                self._conn.execute(self._LAST_SENT, (network,)).fetchall()) != before)
             if full:
                 self._conn.execute("INSERT OR REPLACE INTO full_next (network, stamp) VALUES (?, ?)",
                                    (network, stamp))

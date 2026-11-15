@@ -76,6 +76,7 @@ class BundleChoice:
     repos: tuple[str, ...] | None = None    # mmw far side: only these (None: all)
     stage: bool = False                     # mmw far side: a directory of hardlinks, not a tar
     installer: bool = False                 # mmw far side: mmw's installer written beside it
+    history: bool | None = None             # mmw far side: every point since the last bundle (None: the network's)
 
 
 class PublishFlows:
@@ -417,6 +418,8 @@ class PublishFlows:
             ends["repos"] = list(choice.repos)
         if choice.installer:
             ends["installer"] = True
+        if choice.history is not None:
+            ends["history"] = choice.history
         verb = stage_network if choice.stage else bundle_network
         view.begin()
 

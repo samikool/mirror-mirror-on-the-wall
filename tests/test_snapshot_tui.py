@@ -375,7 +375,9 @@ def test_bundle_pick_mmw_has_repos_and_stage(two_mirrors, tmp_path):  # noqa: F8
     _run(cfg, mirror_dir.parent, check)
     (staged,) = (tmp_path / "usb").iterdir()
     assert staged.is_dir()
-    assert (staged / "example.com/a").is_dir() and not (staged / "example.com/b").exists()
+    import json
+    header = json.loads((staged / ".mmw/manifest.jsonl").read_text().splitlines()[0])
+    assert {m["label"] for m in header["points"].values()} == {"a"}       # b left out
 
 
 def test_bundle_pick_apply_unchanged(two_mirrors, tmp_path):  # noqa: F811

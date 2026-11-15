@@ -27,17 +27,21 @@ def _members(bundle: Path) -> dict[str, bytes]:
 
 
 def test_stage_equals_bundle_unpacked(two_mirrors, tmp_path):  # noqa: F811
+    from mmw.core.snapshots import take_snapshot
     cfg, net, md = _mmw(two_mirrors)
-    snap = bundle_network(net, cfg, md, out_path=tmp_path / "b", from_ref=None)
-    s = stage_network(net, cfg, md, out_dir=tmp_path / "s", from_ref=None, to_ref=snap.created)
+    taken = take_snapshot(net, cfg, md)
+    snap = bundle_network(net, cfg, md, out_path=tmp_path / "b", from_ref=None, to_ref=taken.stamp)
+    s = stage_network(net, cfg, md, out_dir=tmp_path / "s", from_ref=None, to_ref=taken.stamp)
     assert s.out_path.is_dir() and s.out_path.parent == tmp_path / "s"
     staged = _tree(s.out_path)
     bundled = _members(snap.out_path)
     assert staged.keys() == bundled.keys()
     assert {k: v for k, v in staged.items() if k != ".mmw/manifest.jsonl"} == \
            {k: v for k, v in bundled.items() if k != ".mmw/manifest.jsonl"}
-    payload = [p for p in s.out_path.rglob("*.deb")]
-    assert payload and all(os.stat(p).st_nlink > 1 for p in payload)            # hardlinked from the pool
+    with Pool(md, read_only=True) as p:
+        pooled = set(p.blob_info(f.name for f in (s.out_path / "blobs").rglob("*") if f.is_file()))
+    payload = [f for f in (s.out_path / "blobs").rglob("*") if f.is_file() and f.name in pooled]
+    assert payload and all(os.stat(f).st_nlink > 1 for f in payload)            # hardlinked from the pool
     with Pool(md) as p:
         last = p.bundles(net.name)[0]
     assert (last.kind, last.out_path) == ("stage", str(s.out_path))
@@ -56,14 +60,11 @@ def test_stage_cross_filesystem_warns_and_copies(two_mirrors, tmp_path, monkeypa
     monkeypatch.setattr(bundle_mod, "_same_filesystem", lambda a, b: False)
     s = stage_network(net, cfg, md, out_dir=tmp_path / "s", from_ref=None, to_ref=snap.stamp)
     assert any("another filesystem" in w and "copied, not hardlinked" in w for w in s.warnings)
-    payload = list(s.out_path.rglob("*.deb"))
+    payload = [p for p in (s.out_path / "blobs").rglob("*") if p.is_file()]
     assert payload and all(os.stat(p).st_nlink == 1 for p in payload)           # copies
-    with Pool(md) as p:
-        files = dict(p.snapshot_files(snap.id))
     import hashlib
-    for path in payload:
-        rel = path.relative_to(s.out_path).as_posix()
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == files[rel]
+    for path in payload:                                                         # named by their checksum
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == path.name
 
 
 def test_stage_refused_on_apply_network(two_mirrors, tmp_path):  # noqa: F811
@@ -117,7 +118,7 @@ def test_cli_stage(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
     r = run("-n", net.name, "--out", str(tmp_path / "s"), "--allow-incomplete")
     assert r.exit_code == 0, r.output
     (staged,) = (tmp_path / "s").iterdir()
-    assert staged.is_dir() and str(staged) in r.output and "  a  full → v1" in r.output
+    assert staged.is_dir() and str(staged) in r.output and "  a  files new → " in r.output
     assert run("--out", str(tmp_path / "s")).exit_code != 0                     # -n is required
 
 

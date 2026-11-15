@@ -1,6 +1,7 @@
 """Force delete: forgetting a snapshot outright — its rows, the transfers
 that went to it and its ledger manifest. Like a force push, the far side may
-be left where nothing here records, so its next default transfer is full."""
+be left where nothing here records, so its next default transfer is full —
+unless it runs mmw, whose bundles remember what was sent."""
 import pytest
 
 from mmw.core import snapshots as S
@@ -10,7 +11,7 @@ from mmw.core.publisher.manifest import ledger_dir
 
 from test_bundle_mmw import _mmw
 from test_dry_run_totals import SHARED, _index, _sha, two_mirrors  # noqa: F401 — the shared pool fixture
-from test_snapshot_repo_versions import _change_a, _key
+from test_snapshot_repo_versions import _change_a
 
 
 def _change_a_again(mirror_dir):
@@ -73,24 +74,40 @@ def test_forgetting_an_older_transfer_leaves_the_next_one_a_delta(two_mirrors, t
     assert bundle_network(net, cfg, md, out_path=tmp_path / "3").previous == second.created
 
 
-def test_forgetting_the_last_sent_version_of_an_mmw_repository(two_mirrors, tmp_path):  # noqa: F811
-    # A partial bundle to it: not where the network's last bundle went, but
-    # the only record of what the far side has of `a`.
+def test_forgetting_a_snapshot_needs_no_full_bundle(two_mirrors, tmp_path):  # noqa: F811
+    # An mmw network's bundles carry points and remember what was sent:
+    # forgetting a snapshot rewrites no record of what the far side has.
     cfg, net, md = _mmw(two_mirrors)
-    bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None)
-    _change_a(md)
-    partial = bundle_network(net, cfg, md, out_path=tmp_path / "2", repos=[_key(cfg, "a")])
+    snap = S.take_snapshot(net, cfg, md, kind="manual")
+    bundle_network(net, cfg, md, out_path=tmp_path / "1", to_ref=snap.stamp)
     with Pool(md) as p:
-        later = p.create_snapshot(net.name, "29991231T000000Z", kind="manual", rows=[])
-        p.record_bundle(net.name, None, "29991231T000000Z", "/o", 0, 0, 0)
-        snap = S.find_snapshot(p, net.name, partial.created)
-        assert "sends everything" in " ".join(S.forget_warnings(p, snap, "mmw"))
-        assert S.forget_snapshot(p, md, snap)
-        versions = {v.number for v in p.repo_versions(net.name, _key(cfg, "a"))}
-        assert versions == {1, 2}                    # numbers are never handed out again
-        p.delete_snapshot(later)
-    r = bundle_network(net, cfg, md, out_path=tmp_path / "3")
-    assert all(d.start is None for d in r.repos)
+        snap = S.find_snapshot(p, net.name, snap.stamp)
+        warned = " ".join(S.forget_warnings(p, snap, "mmw"))
+        assert "sends everything" not in warned and "never deleted" not in warned
+        assert not S.forget_snapshot(p, md, snap, "mmw")
+        assert p.full_next(net.name) is None
+    _change_a(md)
+    r = bundle_network(net, cfg, md, out_path=tmp_path / "2")
+    assert not r.full
+
+
+def test_forgetting_a_format2_snapshot_keeps_what_it_sent(two_mirrors, tmp_path):  # noqa: F811
+    # A format-2 bundle went to it before bundles carried points: what it
+    # sent is recorded before the snapshot goes, so the next bundle is a delta.
+    from mmw.core.publisher.manifest import blob_member
+    from test_bundle_format3 import _open
+    cfg, net, md = _mmw(two_mirrors)
+    snap = S.take_snapshot(net, cfg, md, kind="bundle")
+    with Pool(md) as p:
+        versions = p.snapshot_repo_versions(snap.id)
+        p.record_bundle(net.name, None, snap.stamp, "old.tar", 0, 0, 0,
+                        repos={repo: (None, v.id) for repo, v in versions.items()})
+        assert not S.forget_snapshot(p, md, S.find_snapshot(p, net.name, snap.stamp), "mmw")
+        assert p.full_next(net.name) is None
+    _change_a(md)
+    names, _h, rows = _open(bundle_network(net, cfg, md, out_path=tmp_path / "2.tar").out_path)
+    shared = next(r["c"] for r in rows if r["p"].endswith("/shared.deb"))
+    assert blob_member(shared) not in names
 
 
 def test_a_served_snapshot_is_never_forgotten_and_names_follow_the_network(two_mirrors, tmp_path):  # noqa: F811

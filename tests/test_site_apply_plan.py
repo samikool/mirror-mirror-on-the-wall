@@ -26,8 +26,10 @@ def test_plan_rows_and_sizes(env, tmp_path):  # noqa: F811
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
     _change_a(md)
     plan = plan_apply(home, str(_bundle(cfg, net, md, tmp_path / "2")))
-    (row,) = plan.rows
-    assert (row.repo, row.label, row.from_number, row.to_number, row.serving_number) == (_key(cfg, "a"), "a", 1, 2, 1)
+    rows = {r.repo: r for r in plan.rows}                  # the whole selection is listed …
+    row = rows[_key(cfg, "a")]
+    assert rows[_key(cfg, "b")].unchanged and not row.unchanged      # … b as it is here already
+    assert (row.label, row.points) == ("a", 1)
     assert row.files_sent >= 2 and row.bytes_sent > 0 and not row.held and row.root == root
     assert plan.bytes >= row.bytes_sent and plan.network == net.name
 

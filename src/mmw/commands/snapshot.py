@@ -150,7 +150,8 @@ def _forget_one(cfg, net, pool: Pool, s: SnapshotInfo, yes: bool) -> int:
         if input("Force delete it? [y/N] ").strip().lower() not in ("y", "yes"):
             return 1
     try:
-        full = snapshots.forget_snapshot(pool, cfg.settings.mirror_dir, s)
+        full = snapshots.forget_snapshot(pool, cfg.settings.mirror_dir, s,
+                                             getattr(net, "far_side", "apply"))
     except ValueError as e:
         eprint(str(e))
         return 1

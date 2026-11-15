@@ -676,6 +676,11 @@ def cmd_bundle(
     runtime_wheel: Path = typer.Option(
         None, "--runtime-wheel", help="The mmw wheel the installer ships (default: this checkout's own "
                                       "build, or PyPI's for a release)."),
+    history: bool = typer.Option(
+        None, "--history/--newest", help="mmw far side: every point since the last bundle, or each suite's "
+                                         "newest (default: the network's `history`)."),
+    full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not "
+                                                    "(the same as --from none)."),
 ):
     """Write a network's mirrors to a transferable bundle — between any two
     snapshots (see `mmw snapshot list`). By default: from where the last
@@ -684,7 +689,7 @@ def cmd_bundle(
     raise typer.Exit(run(_cfg_dir(), network=network, out=out,
                          allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
-                         installer=installer, runtime_wheel=runtime_wheel))
+                         installer=installer, runtime_wheel=runtime_wheel, history=history, full=full))
 
 
 @app.command("stage")
@@ -708,6 +713,11 @@ def cmd_stage(
     runtime_wheel: Path = typer.Option(
         None, "--runtime-wheel", help="The mmw wheel the installer ships (default: this checkout's own "
                                       "build, or PyPI's for a release)."),
+    history: bool = typer.Option(
+        None, "--history/--newest", help="mmw far side: every point since the last bundle, or each suite's "
+                                         "newest (default: the network's `history`)."),
+    full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not "
+                                                    "(the same as --from none)."),
 ):
     """Lay a bundle out as a directory of hardlinks to the pool — the same
     members as `mmw bundle`, almost no disk — to tar, rsync or inspect without
@@ -715,7 +725,7 @@ def cmd_stage(
     from mmw.commands.stage import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
-                         installer=installer, runtime_wheel=runtime_wheel))
+                         installer=installer, runtime_wheel=runtime_wheel, history=history, full=full))
 
 
 @app.command("installer")

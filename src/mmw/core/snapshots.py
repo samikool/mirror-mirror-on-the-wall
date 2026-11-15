@@ -388,9 +388,11 @@ def forget_warnings(pool: Pool, snap: SnapshotInfo, far_side: str = "apply") -> 
     lines = [("It, the record of the " + (f"{went} transfer(s) that went to it" if went else
               "transfers") + " and its ledger manifest go for good. The far side is not touched.")]
     start = default_start(pool, snap.network)
-    if (start is not None and start.id == snap.id) or (
+    # An mmw network's bundles remember the points and files sent, not
+    # snapshots: forgetting one never loses what the far side has.
+    if far_side != "mmw" and ((start is not None and start.id == snap.id) or (
             went and pool.last_sent_versions(snap.network, without=snap.stamp)
-            != pool.last_sent_versions(snap.network)):
+            != pool.last_sent_versions(snap.network))):
         lines.append("The far side may be at it, and nothing here would record what it has: "
                      "the next transfer sends everything.")
     if went and far_side == "apply":
@@ -398,12 +400,13 @@ def forget_warnings(pool: Pool, snap: SnapshotInfo, far_side: str = "apply") -> 
     return lines
 
 
-def forget_snapshot(pool: Pool, mirror_dir: Path, snap: SnapshotInfo) -> bool:
+def forget_snapshot(pool: Pool, mirror_dir: Path, snap: SnapshotInfo, far_side: str = "apply") -> bool:
     """Force delete — rewrite history, like a force push: the snapshot, the
     transfers that went to it and its ledger manifest all go. The far side
     is untouched and may sit at it; then the next default transfer is full
     (`Pool.full_next`). Refused while a directory serves it. Returns whether
-    the next transfer is full now."""
+    the next transfer is full now. An mmw network's next bundle stays a
+    delta: what its format-2 bundles sent is recorded as sent points first."""
     roots = served_by(pool, snap)
     if roots:
         raise ValueError(f"snapshot {snap.stamp} is published at {', '.join(roots)} — "
@@ -416,6 +419,10 @@ def forget_snapshot(pool: Pool, mirror_dir: Path, snap: SnapshotInfo) -> bool:
         for path in disk_io.ops.iterdir(d):
             if is_manifest(path.name) and path.name.split(".", 1)[0] == snap.stamp:
                 disk_io.ops.remove(path)
+    if far_side == "mmw":
+        from mmw.core.points import migrate_sent
+        migrate_sent(pool, snap.network)
+        return pool.forget_snapshot(snap, False, mark_full=False)
     return pool.forget_snapshot(snap, start is not None and start.id == snap.id)
 
 

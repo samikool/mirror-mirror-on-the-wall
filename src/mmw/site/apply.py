@@ -125,7 +125,8 @@ class RootApply:
         # Another network's repositories deployed here: their nginx entries.
         self.foreign_mirrors = dict(foreign_mirrors or {})
         self.foreign = foreign                   # another network's bundle: never retires a suite
-        self.points_bundle = False               # format 3: points, never network files
+        self.points_bundle = False               # format 3: points
+        self.selection = False                   # format 3 from this network's own connected side
         self.got: dict[str, tuple[str, int]] = {}
         self.links: dict[str, str] = {}
         self.tls: dict[str, bytes] = {}
@@ -262,9 +263,14 @@ class RootApply:
         _check_paths(p for p, _c, _r in rows)
         held_by: dict[str, tuple[int, ...]] = {}
         if header.format == 3:
-            # Points, not a selection: its network files, settings, TLS and
-            # keys never apply, and it retires no suite.
-            self.points_bundle, self.network_files = True, False
+            # Points. From this network's own connected side (`selection`)
+            # it is that network's bundle: its files, settings and keys apply
+            # and a suite it no longer has retires. Otherwise (an export) none
+            # of that: history only.
+            self.points_bundle = True
+            self.selection = bool(header.selection) and header.network == self.settings.network
+            if not self.selection:
+                self.network_files = False
             _h, rows5 = iter_manifest_points(self.manifest_path)
             held_by = {(p, c): k for p, c, _r, _s, k in rows5}
         result.created = header.created
@@ -313,7 +319,8 @@ class RootApply:
             # Out of order or missing its start: never refused — its points
             # join the timeline, and any whose files are not all here wait.
             planned[repo] = {"meta": meta, "rows": mine}
-        network = {p: c for p, c, r in rows if r is None} if header.format != 3 else {}
+        network = ({p: c for p, c, r in rows if r is None}
+                   if header.format != 3 or self.selection else {})
         missing = [p for p, c in network.items() if not have(c)]
         if missing:
             raise ApplyError(3, f"{len(missing)} network file(s) are not here (first: {missing[0]}) — "
@@ -357,7 +364,7 @@ class RootApply:
         # Nothing applied here before: nginx was never started for this root.
         self.first_time = not db.applied()
         # Carried signing keys first: a site layer re-signs as its repository switches.
-        if not self.points_bundle:
+        if not self.points_bundle or self.selection:
             result.lines.extend(self._import_keys())
         recorded: dict[str, list] = {}
         arrived = set(sizes)
@@ -368,6 +375,9 @@ class RootApply:
             if "points" in plan:
                 outcomes = import_points(db, store, repo, meta["label"], meta["bases"], plan["points"], known,
                                          arrived)
+                if self.selection:
+                    # The network's whole selection of this repository: a suite it lacks is gone.
+                    db.set_present(repo, {d.track for d, _st, _lb in plan["points"]})
             else:
                 outcomes = import_rows(db, store, repo, meta["label"], meta["bases"], rows, known,
                                        header.created, header.created_label, arrived, own=not self.foreign)
@@ -382,7 +392,8 @@ class RootApply:
                                         "the bundle or this mirror is damaged; run mmw site verify")
                 elif o.status == "incomplete":
                     result.incomplete.setdefault(repo, []).append(o)
-                    fix = (f"on {header.network}'s far side: mmw site bundle --to {self.settings.network} "
+                    fix = (f"mmw bundle -n {header.network} --repo '{label}' --full" if self.selection else
+                           f"on {header.network}'s far side: mmw site bundle --to {self.settings.network} "
                            f"--repo '{label}' --all" if self.points_bundle else
                            f"mmw bundle -n {header.network} --repo '{label}' --from none")
                     result.lines.append(f"  {label}  {what} stored, incomplete: {o.missing} file(s) missing — "
@@ -410,7 +421,7 @@ class RootApply:
         # repository is deployed here: then nginx is generated, as for several.
         if (roots.multi or db.get_meta("foreign_mirrors")) and db.get_meta("settings"):
             result.network_changed = write_root_nginx(db, roots) or result.network_changed
-        for name, data in sorted(self.tls.items() if not self.points_bundle else ()):
+        for name, data in sorted(self.tls.items() if not self.points_bundle or self.selection else ()):
             _install_tls(str(root), name, io.BytesIO(data))
 
         forward, stopped = self.forward, False
@@ -420,7 +431,7 @@ class RootApply:
             for repo in group:
                 label, state = planned[repo]["meta"]["label"], db.repo_state(repo)
                 served = _served_by_track(db, state)
-                was = ", ".join(_day(d) for d in served.values()) if served else None
+                was = ", ".join(_day(d) for _t, d, _p in served.values()) if served else None
                 chosen, warnings = choose(db, store, repo)
                 result.lines.extend(f"  {label}  {w}" for w in warnings)
                 if not chosen:
@@ -471,9 +482,9 @@ class RootApply:
                     continue
                 result.updated.append(repo)
                 now = _served_by_track(db, db.repo_state(repo))
-                for track, date in sorted(now.items(), key=lambda kv: kv[0].name):
-                    if served.get(track) != date:
-                        old = served.get(track)
+                for tid, (track, date, pid) in sorted(now.items(), key=lambda kv: kv[1][0].name):
+                    _t, old, was_pid = served.get(tid, (None, None, None))
+                    if was_pid != pid:
                         result.lines.append(f"  {label}  {_suite_of(track)} {_day(old) if old else 'full'} → "
                                             f"{_day(date)}")
                 result.lines.extend(f"  {w}" for w in switched.warnings)
@@ -634,6 +645,9 @@ def plan_apply(target, src: str) -> ApplyPlan:
                             'or set far_side = "mmw" on the connected side and bundle again')
     repos = _repo_meta(header)
     bases = {r: m["bases"] for r, m in repos.items()}
+    if header.format == 3:
+        digests = repo_digests([(p, c) for p, c, r in rows if r in repos], bases)
+        repos = {r: {**m, "digest": digests.get(r)} for r, m in repos.items()}
     sent: dict[str, list[int]] = {r: [0, 0] for r in repos}
     owner = ({blob_member(c): r for _p, c, r in rows if r is not None} if header.format == 3 else {})
     for name, size in sizes.items():
@@ -682,14 +696,15 @@ def _suite_of(track) -> str:
 
 
 def _served_by_track(db, state) -> dict:
-    """{TrackInfo: date} of what `state` serves (nothing: {})."""
+    """{track id: (TrackInfo, date, point id)} of what `state` serves (nothing: {}).
+    Keyed by id: a track's record changes as it switches (`previous`)."""
     if state is None or state.serving is None:
         return {}
     out = {}
     for pid in db.state_points(state.serving.id):
         point = db.point(pid)
         if point is not None:
-            out[db.track(point.track)] = point.date
+            out[point.track] = (db.track(point.track), point.date, pid)
     return out
 
 
@@ -857,7 +872,9 @@ def _plan(mset, header, rows, src: str, scratch_dir: Path) -> tuple["SetApplyPla
             sized = False
         else:
             known = _manifest_and_sizes(src, scratch_dir / "sizes-manifest.jsonl")
-            rows = [(p, c, r, known.get(p, 0)) for p, c, r, _s in rows]
+            # Format 3's members are named by checksum, not by path.
+            rows = [(p, c, r, known.get(blob_member(c) if header.format == 3 else p, 0))
+                    for p, c, r, _s in rows]
     repo_sizes = {r: 0 for r in repos}
     host_checksums: dict = {}
     for _p, c, r, s in rows:
@@ -1059,7 +1076,7 @@ def _filtered_manifest(header, rows, repos: set[str], k_of: dict | None = None) 
         head = replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in repos},
                        file_count=None)
     fields = asdict(head)
-    for optional in ("format", "repos", "settings", "points"):
+    for optional in ("format", "repos", "settings", "points", "selection"):
         if fields[optional] is None:
             del fields[optional]
     out = [json.dumps(fields, sort_keys=True)]

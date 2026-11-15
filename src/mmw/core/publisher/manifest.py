@@ -100,6 +100,10 @@ class ManifestHeader:
     # "stamp", "snap_label", "fields"}]}; rows say which points hold each
     # file ("k", their indices). Written only when set.
     points: dict | None = None
+    # Format 3 from the connected side: the network's own complete selection
+    # for the repositories it names (its far side applies the network's
+    # files and retires a suite it no longer has). Absent on an export.
+    selection: bool | None = None
 
 
 def write_manifest(path: Path, header: ManifestHeader,
@@ -116,7 +120,7 @@ def write_manifest(path: Path, header: ManifestHeader,
     try:
         with disk_io.ops.open_file(tmp, "w", encoding="utf-8") as out:
             fields = asdict(header)
-            for optional in ("format", "repos", "settings", "points"):
+            for optional in ("format", "repos", "settings", "points", "selection"):
                 if fields[optional] is None:
                     del fields[optional]
             out.write(json.dumps(fields, sort_keys=True) + "\n")

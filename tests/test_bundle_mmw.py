@@ -1,5 +1,6 @@
-"""Bundles for a far side running mmw: each repository's delta runs from
-the version last sent to it, and a bundle may carry only some of them."""
+"""Bundles for a far side running mmw: timeline points (format 3), each
+file carried only once to a network, and a bundle may name only some
+repositories."""
 import hashlib
 import json
 import tarfile
@@ -49,6 +50,16 @@ def _read(bundle):
     return header, per_repo, network, carried, names
 
 
+def _current_files(md, net):
+    from mmw.core import points
+    with Pool(md, read_only=True) as p:
+        out = {}
+        for repo, ids in points.current_points(p, net.name).items():
+            for pid in ids:
+                out.setdefault(repo, {}).update(p.point_files(pid))
+        return out
+
+
 def test_partial_then_full_chain(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
     ka, kb = _key(cfg, "a"), _key(cfg, "b")
@@ -58,25 +69,21 @@ def test_partial_then_full_chain(two_mirrors, tmp_path):  # noqa: F811
     part = bundle_network(net, cfg, md, out_path=tmp_path / "2", repos=[kb])
     assert [d.repo for d in part.repos] == [kb]
     nxt = bundle_network(net, cfg, md, out_path=tmp_path / "3")
-    by = {d.repo: d for d in nxt.repos}
-    assert kb not in by                                                # already sent
-    assert (by[ka].start.number, by[ka].dest.number) == (1, 2)          # a from what was last sent to it
+    assert {d.repo for d in nxt.repos} == {ka, kb}                     # the whole selection, listed
 
     # Play the three bundles onto a far side that keeps every blob it was sent.
     far: dict[str, dict[str, str]] = {}
     have: set[str] = set()
     for r in (full, part, nxt):
         header, per_repo, _, carried, names = _read(r.out_path)
-        assert header["format"] == 2 and ".mmw/delete.list" not in names
-        assert set(per_repo) == set(header["repos"])
+        assert header["format"] == 3 and ".mmw/delete.list" not in names
+        assert set(per_repo) == set(header["points"])
         have |= carried
         far.update(per_repo)
-    with Pool(md) as p:
-        final = dict(p.snapshot_files(p.snapshots(net.name)[0].id))
-    for repo, base in ((ka, "example.com/a/"), (kb, "example.com/b/")):
-        want = {k: c for k, c in final.items() if k.startswith(base)}
-        assert far[repo] == want
-        assert set(want.values()) <= have                              # every file arrived at some point
+    final = _current_files(md, net)
+    for repo in (ka, kb):
+        assert far[repo] == final[repo]
+        assert set(final[repo].values()) <= have                       # every file arrived at some point
 
 
 def test_partial_refused_on_apply_network(two_mirrors, tmp_path):  # noqa: F811
@@ -91,44 +98,18 @@ def test_unknown_repo_lists_valid(two_mirrors, tmp_path):  # noqa: F811
         bundle_network(net, cfg, md, out_path=tmp_path, repos=["nope"])
 
 
-def test_mmw_bundle_from_imported_falls_back_to_full_with_warning(two_mirrors, tmp_path):  # noqa: F811
+def test_deleting_snapshots_never_makes_a_bundle_full(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
-    with Pool(md) as p:
-        p.create_snapshot(net.name, "20200101T000000Z", kind="imported", complete=False,
-                          rows=[("example.com/a/a.deb", "x")])
-    r = bundle_network(net, cfg, md, out_path=tmp_path, from_ref="20200101T000000Z")
-    assert all(d.start is None for d in r.repos)
-    assert any("history only" in w and "in full" in w for w in r.warnings)
-
-
-
-def test_a_deleted_transferred_snapshot_is_still_a_delta_start(two_mirrors, tmp_path):  # noqa: F811
-    cfg, net, md = _mmw(two_mirrors)
-    first = bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None)
-    _change_a(md)
-    from mmw.core.snapshots import delete_snapshot, find_snapshot, take_snapshot
-    take_snapshot(net, cfg, md)
-    with Pool(md) as p:
-        assert delete_snapshot(p, find_snapshot(p, net.name, first.created))   # history only
-    for i, from_ref in enumerate((None, first.created)):                    # the last, and chosen
-        kw = {"from_ref": from_ref} if from_ref else {}
-        r = bundle_network(net, cfg, md, out_path=tmp_path / f"{i + 2}", **kw)
-        assert [d.repo for d in r.repos] == [_key(cfg, "a")]                 # b is already there
-        assert r.repos[0].start is not None
-        assert not any("in full" in w for w in r.warnings), r.warnings
-
-def test_deleted_start_version_falls_back_to_full(two_mirrors, tmp_path):  # noqa: F811
-    cfg, net, md = _mmw(two_mirrors)
-    first = bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None)
-    _change_a(md)
+    bundle_network(net, cfg, md, out_path=tmp_path / "1", from_ref=None)
     from mmw.core.snapshots import take_snapshot
-    take_snapshot(net, cfg, md)
+    snap = take_snapshot(net, cfg, md)
     with Pool(md) as p:
-        p.delete_snapshot(next(s.id for s in p.snapshots(net.name) if s.stamp == first.created))
+        p.delete_snapshot(snap.id)
+    _change_a(md)
     r = bundle_network(net, cfg, md, out_path=tmp_path / "2")
-    by = {d.repo: d for d in r.repos}
-    assert by[_key(cfg, "a")].start is None
-    assert any("no longer kept" in w for w in r.warnings)
+    _h, per_repo, _n, carried, _names = _read(r.out_path)
+    assert not set(per_repo[_key(cfg, "b")].values()) & carried        # b is already there
+    assert not any("in full" in w for w in r.warnings), r.warnings
 
 
 def test_nothing_to_send_raises(two_mirrors, tmp_path):  # noqa: F811
@@ -138,17 +119,16 @@ def test_nothing_to_send_raises(two_mirrors, tmp_path):  # noqa: F811
         bundle_network(net, cfg, md, out_path=tmp_path / "2", repos=[_key(cfg, "a")])
 
 
-def test_mmw_manifest_has_repo_tags_and_ledger_rows(two_mirrors, tmp_path):  # noqa: F811
+def test_mmw_manifest_has_repo_tags_and_records(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
     r = bundle_network(net, cfg, md, out_path=tmp_path, from_ref=None)
     header, per_repo, network, _, names = _read(r.out_path)
     assert set(per_repo) == {_key(cfg, "a"), _key(cfg, "b")}
-    assert header["repos"][_key(cfg, "a")]["from"] is None and header["repos"][_key(cfg, "a")]["to"] == 1
-    assert header["repos"][_key(cfg, "a")]["label"] == "a"
-    assert "apply.py" in network                                      # network-level rows stay untagged
+    assert header["points"][_key(cfg, "a")]["label"] == "a" and header["selection"] is True
+    assert any(p.startswith("nginx/") for p in network)               # network-level rows stay untagged
     assert names[0] == ".mmw/manifest.jsonl"
     with Pool(md) as p:
-        assert set(p.last_sent_versions(net.name)) == {_key(cfg, "a"), _key(cfg, "b")}
+        assert p.sent_point_ids(net.name) and p.bundles(net.name)
 
 
 def test_command_prints_each_repository(two_mirrors, tmp_path, capsys):  # noqa: F811
@@ -160,7 +140,7 @@ def test_command_prints_each_repository(two_mirrors, tmp_path, capsys):  # noqa:
     config.save(cfg, cfg_dir)
     assert cmd.run(cfg_dir, network=net.name, out=tmp_path / "o", allow_incomplete=True, from_ref="none") == 0
     out = capsys.readouterr().out
-    assert "  a  full → v1" in out and "  b  full → v1" in out
+    assert "  a  files new → " in out and "  b  files new → " in out
 
 
 def test_second_partial_to_the_same_snapshot(two_mirrors, tmp_path):  # noqa: F811
@@ -172,13 +152,14 @@ def test_second_partial_to_the_same_snapshot(two_mirrors, tmp_path):  # noqa: F8
     s2 = take_snapshot(net, cfg, md)
     bundle_network(net, cfg, md, out_path=tmp_path / "2", repos=[_key(cfg, "a")], to_ref=s2.stamp)
     r = bundle_network(net, cfg, md, out_path=tmp_path / "3", repos=[_key(cfg, "b")], to_ref=s2.stamp)
-    assert [(d.repo, d.start.number, d.dest.number) for d in r.repos] == [(_key(cfg, "b"), 1, 2)]
+    assert [d.repo for d in r.repos] == [_key(cfg, "b")]
+    _h, per_repo, _n, carried, _names = _read(r.out_path)
+    assert set(per_repo) == {_key(cfg, "b")} and carried
 
 
 def test_mmw_manifest_carries_settings(two_mirrors, tmp_path):  # noqa: F811
+    from mmw.core.snapshots import take_snapshot
     cfg, net, md = _mmw(two_mirrors)
     r = bundle_network(net, cfg, md, out_path=tmp_path, from_ref=None)
     header, *_ = _read(r.out_path)
-    with Pool(md) as p:
-        dest = p.snapshots(net.name)[0]
-    assert header["settings"] == dest.settings
+    assert header["settings"] == take_snapshot(net, cfg, md).settings          # the same walk

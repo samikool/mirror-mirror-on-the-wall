@@ -43,3 +43,20 @@ def write_format3(out, network: str, repos: dict, blobs: dict[str, bytes], *, ne
             ti.size = len(data)
             tar.addfile(ti, io.BytesIO(data))
     return str(out)
+
+
+def member_paths(bundle) -> dict[str, str]:
+    """A bundle's members → the path each one holds: itself, or (format 3,
+    named by checksum) the first path the manifest gives that checksum."""
+    from mmw.core.publisher.manifest import blob_member
+    with tarfile.open(bundle) as tar:
+        lines = tar.extractfile(".mmw/manifest.jsonl").read().decode().splitlines()
+        names = tar.getnames()
+    header = json.loads(lines[0])
+    if header.get("format") != 3:
+        return {n: n for n in names}
+    first: dict[str, str] = {}
+    for line in sorted(lines[1:]):
+        row = json.loads(line)
+        first.setdefault(blob_member(row["c"]), row["p"])
+    return {n: first.get(n, n) for n in names}

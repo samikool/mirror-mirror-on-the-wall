@@ -205,8 +205,8 @@ def test_cli_repo_by_label(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
     run = _repo_cli(two_mirrors, tmp_path, monkeypatch, "mmw")
     r = run("bundle", "-n", "oak", "--out", str(tmp_path / "o"), "--allow-incomplete", "--repo", "A")
     assert r.exit_code == 0, r.output
-    assert "  a  full → v1" in r.output and "  b " not in r.output
+    assert "  a  files new → " in r.output and "  b " not in r.output
     r = run("stage", "-n", "oak", "--out", str(tmp_path / "s"), "--allow-incomplete", "--repo", "b",
             "--from", "none")
     assert r.exit_code == 0, r.output
-    assert "  b  full → v1" in r.output
+    assert "  b  files new → " in r.output

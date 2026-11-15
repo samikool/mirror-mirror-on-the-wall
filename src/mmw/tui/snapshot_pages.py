@@ -155,6 +155,12 @@ class BundlePickPage(Page):
                            "bundle", id="pick-as",
                            hint="A folder costs almost no disk; tar, rsync or copy it across yourself.")]
               if self._repos else []),
+            *([ChoiceField("Points", [("Each suite's newest", "newest"),
+                                      ("Every point since the last transfer", "history")],
+                           "history" if self._net.history else "newest", id="pick-points",
+                           hint="Every point gives the far side each sync's state, for old builds; "
+                                "the newest is smaller.")]
+              if self._net.far_side == "mmw" else []),
             *([ChoiceField("mmw installer", [("Include mmw installer", "yes"), ("Not this time", "no")],
                            "yes" if self._installer_due() else "no", id="pick-installer",
                            hint="Written beside it: the far side installs mmw from it, offline.")]
@@ -257,15 +263,21 @@ class BundlePickPage(Page):
         if same and not (self._repos and start == "last"):
             self.set_status("From and To are the same snapshot — nothing to send.", "error")
             return
-        picked = self._picked_repos()
-        if picked == ():
+        if self._picked_repos() == ():
             self.set_status("Tick at least one repository.", "error")
             return
-        self.dismiss(BundleChoice(from_last=start == "last",
-                                  from_ref=None if start in ("last", "none") else start,
-                                  to_ref=dest, repos=picked,
-                                  stage=bool(self._repos) and self.query_one(Form).values()["pick-as"] == "stage",
-                                  installer=self._installer()))
+        self.dismiss(self.choice())
+
+    def choice(self) -> BundleChoice:
+        """What is chosen now."""
+        start, dest = self._ends()
+        values = self.query_one(Form).values()
+        return BundleChoice(from_last=start == "last",
+                            from_ref=None if start in ("last", "none") else start,
+                            to_ref=dest, repos=self._picked_repos(),
+                            stage=bool(self._repos) and values["pick-as"] == "stage",
+                            installer=self._installer(),
+                            history=(values["pick-points"] == "history") if "pick-points" in values else None)
 
 
 # ── the Snapshots page ───────────────────────────────────────────────────────
@@ -619,7 +631,7 @@ class SnapshotsPage(Page):
 
         def forget() -> bool:
             with Pool(self._mirror_dir) as pool:
-                return forget_snapshot(pool, self._mirror_dir, snap)
+                return forget_snapshot(pool, self._mirror_dir, snap, self._net.far_side)
         try:
             full = await asyncio.to_thread(forget)
         except ValueError as e:                     # published meanwhile

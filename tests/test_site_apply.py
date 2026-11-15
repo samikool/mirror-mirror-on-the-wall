@@ -84,10 +84,15 @@ def test_apply_refuses_format_1(two_mirrors, tmp_path):  # noqa: F811
 def _rewrite(src: Path, dst: Path, change):
     """Copy a bundle member by member, letting `change(member, data)` return
     new bytes, or None to drop the member."""
+    from types import SimpleNamespace
+
+    from site_format3 import member_paths
+    held = member_paths(src)                  # format 3 names members by checksum: say the path
     with tarfile.open(src) as a, tarfile.open(dst, "w") as b:
         for m in a:
             data = a.extractfile(m).read() if m.isfile() else None
-            new = change(m, data) if data is not None else data
+            view = SimpleNamespace(name=held.get(m.name, m.name), isfile=m.isfile, isreg=m.isreg)
+            new = change(view, data) if data is not None else data
             if m.isfile() and new is None:
                 continue
             if data is not None:

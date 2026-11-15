@@ -164,6 +164,15 @@ class NetworkPublishResult:
         return [e for r in self.mirrors for e in r.errors]
 
 
+@dataclass(frozen=True)
+class RepoSummary:
+    """One repository of a bundle of points: per suite, the date the network
+    was last sent (None: new to it) and the date it goes to."""
+    label: str
+    suites: list = field(default_factory=list)          # [(suite, from date or None, to date)]
+    repo: str = ""                                      # its key
+
+
 @dataclass
 class BundleResult:
     """Mirrors `NetworkPublishResult`'s shape, but for one bundle `.tar`.
@@ -188,7 +197,7 @@ class BundleResult:
     # A bundle streamed to stdout (`--out -`): the sha256 of every byte
     # written, since there is no file beside it to hold a `.sha256`.
     stream_sha256: str | None = None
-    # mmw far side: each repository this bundle carries (`repo_delta.RepoDelta`).
+    # mmw far side: each repository this bundle carries (`RepoSummary`).
     repos: list = field(default_factory=list)
     # mmw far side: the mmw installers written beside it (`--installer`).
     installers: list[Path] = field(default_factory=list)

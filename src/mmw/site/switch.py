@@ -31,7 +31,7 @@ def _base(rel: str, bases: list[str]) -> str | None:
 
 
 def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, progress,
-         overlay: str | None = None) -> SwitchResult:
+         overlay: str | None = None, held: bool | None = None) -> SwitchResult:
     if db.version_by_id(to_id) is None:
         # Never diff against nothing: that would remove the repository's
         # whole served tree.
@@ -67,24 +67,38 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
         if disk_io.ops.remove(root / rel) is not None:
             removed += 1
             _prune_empty_parents(str(root), str((root / rel).parent))
-    newest = db.versions(repo)[0].id
+    if held is None:
+        held = to_id != db.versions(repo)[0].id
+    _set_previous(db, from_id, to_id)
     db.set_overlay(repo, overlay, commit=False)
-    db.set_serving(repo, to_id, held=to_id != newest)
+    db.set_serving(repo, to_id, held=held)
     db.set_meta(f"hold:{repo}", "")
     db.retire_overlays(repo, to_id, overlay)
     db.end_switch(repo)
     return SwitchResult(placed, removed)
 
 
-def switch_in(db, roots, repo: str, to_id: int, *, progress=None) -> SwitchResult:
+def _set_previous(db, from_id: int | None, to_id: int) -> None:
+    """Each track whose point changes remembers the one it served before."""
+    if from_id is None:
+        return
+    before = {db.point(p).track: p for p in db.state_points(from_id) if db.point(p)}
+    after = {db.point(p).track: p for p in db.state_points(to_id) if db.point(p)}
+    for track, point in before.items():
+        if after.get(track) != point:
+            db.set_previous(track, point, commit=False)
+
+
+def switch_in(db, roots, repo: str, to_id: int, *, progress=None, held: bool | None = None) -> SwitchResult:
     """`switch_repo` in the repository's own root."""
     root = roots.of(db.repo_state(repo))
-    return switch_repo(db, roots.store(root), Path(root.path), repo, to_id, progress=progress)
+    return switch_repo(db, roots.store(root), Path(root.path), repo, to_id, progress=progress, held=held)
 
 
-def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None) -> SwitchResult:
-    """Serve version `to_id` of `repo` at `root`. Held afterwards when it is
-    not the newest version here."""
+def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None,
+                held: bool | None = None) -> SwitchResult:
+    """Serve version `to_id` of `repo` at `root`. Held afterwards as `held`
+    says; None: when it is not the newest version here."""
     if db.version_by_id(to_id) is None:
         raise ValueError(f"version {to_id} of {repo} is not here")
     state = db.repo_state(repo)
@@ -98,7 +112,7 @@ def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None) 
         db.set_meta(f"hold:{repo}", layered.hold_reason)
         return SwitchResult(0, 0, held=layered.hold_reason, warnings=tuple(layered.warnings))
     db.begin_switch(repo, from_id, to_id, layered.digest)
-    result = _run(db, store, Path(root), repo, from_id, to_id, progress, layered.digest)
+    result = _run(db, store, Path(root), repo, from_id, to_id, progress, layered.digest, held)
     return SwitchResult(result.placed, result.removed, warnings=tuple(layered.warnings))
 
 

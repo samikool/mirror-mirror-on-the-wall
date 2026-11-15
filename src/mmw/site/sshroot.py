@@ -141,7 +141,10 @@ class SshRoot:
         return self._call("keep-versions")["keep"]
 
     def history(self, key: str):
-        return [(_version(r["version"]), r["total"], r["frees"], r["serving"]) for r in self._call("history", key)]
+        from mmw.site.db import PointInfo, TrackInfo
+        return [(TrackInfo(**t["track"]), [(PointInfo(**p["point"]), p["total"], p["frees"], p["mark"])
+                                           for p in t["points"]])
+                for t in self._call("history", key)]
 
     def deleted(self, key: str) -> list[str]:
         try:
@@ -151,12 +154,12 @@ class SshRoot:
                 return []
             raise
 
-    def serve_preview(self, key: str, number: int):
-        return _ns(self._call("serve-preview", key, str(number)))
+    def serve_preview(self, key: str, when: str, track: str | None = None):
+        return _ns(self._call("serve-preview", key, when, *([track] if track else [])))
 
-    def serve(self, key: str, number: int, progress=None):
+    def serve(self, key: str, when: str, track: str | None = None, progress=None):
         # The remote answers once it's done: no file-by-file progress over ssh.
-        return _ns(self._call("serve", key, str(number)))
+        return _ns(self._call("serve", key, when, *([track] if track else [])))
 
     def forward(self, key: str | None) -> list[str]:
         return self._call("forward", *([key] if key else []))
@@ -164,8 +167,8 @@ class SshRoot:
     def hold(self, key: str) -> str:
         return self._call("hold", key)["label"]
 
-    def delete(self, key: str, number: int) -> int:
-        return self._call("delete", key, str(number))["freed"]
+    def delete(self, key: str, when: str, track: str | None = None, force: bool = False) -> int:
+        return self._call("delete", key, when, track or "", *(["--force"] if force else []))["freed"]
 
     def space(self):
         return _ns(self._call("space"))
@@ -264,10 +267,13 @@ class RemoteApply:
     remote checks, then commits (or aborts) when the set says so."""
 
     def __init__(self, root: SshRoot, *, forward=None, forward_all=False, only=None, progress=None,
-                 stop_event=None, say=print, dry_run=False):
+                 stop_event=None, say=print, dry_run=False, network_files=True, foreign_mirrors=None,
+                 foreign=False):
         self.root, self.progress, self.stop_event = root, progress, stop_event
         self.opts = {"forward": sorted(forward or ()), "forward_all": forward_all,
-                     "only": sorted(only) if only is not None else None}
+                     "only": sorted(only) if only is not None else None,
+                     "network_files": network_files, "foreign_mirrors": dict(foreign_mirrors or {}),
+                     "foreign": foreign}
         self.got: dict[str, tuple[str, int]] = {}
         self.links: dict[str, str] = {}
         self.tls: dict[str, bytes] = {}
@@ -288,6 +294,12 @@ class RemoteApply:
             args.append("--forward-all")
         for k in self.opts["only"] or []:
             args += ["--only", k]
+        if not self.opts["network_files"]:
+            args.append("--repos-only")
+        if self.opts["foreign"]:
+            args.append("--foreign")
+        if self.opts["foreign_mirrors"]:
+            args += ["--foreign-mirrors", json.dumps(self.opts["foreign_mirrors"], sort_keys=True)]
         self._proc = ssh.popen(self.root.host, args)
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()

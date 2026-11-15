@@ -80,13 +80,13 @@ def test_an_unchanged_instance_stores_nothing_new(site, instance):  # noqa: F811
     [again] = local.update(site.home)
     assert again.error is None and again.updated == []
     with SiteDB(site.home) as db:
-        assert len(db.versions(KEY)) == 1
+        assert sum(len(db.points(t.id)) for t in db.tracks(KEY)) == 1
     make_deb(instance / "debs", "more", "1.0")
     _sync_instance(instance)
     [changed] = local.update(site.home)
     assert changed.updated == [KEY]
     with SiteDB(site.home) as db:
-        assert [v.number for v in db.versions(KEY)] == [2, 1]
+        assert sum(len(db.points(t.id)) for t in db.tracks(KEY)) == 2
 
 
 def test_a_busy_instance_is_skipped(site, instance):  # noqa: F811

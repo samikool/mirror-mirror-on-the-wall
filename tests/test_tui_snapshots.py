@@ -455,7 +455,7 @@ def _site_demo(tmp_path, monkeypatch):
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
     _bump(md)
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "3")), say=quiet)
-    ops.serve(home, "a", 2)
+    ops.serve(home, "a", "2026-10-02")
     return home
 
 
@@ -466,7 +466,7 @@ def test_snapshot_site_home(snap_compare, tmp_path, monkeypatch):
     async def ready(pilot):
         from textual.widgets import DataTable
         await until(pilot, lambda: pilot.app.screen.query("#site-history")
-                    and pilot.app.screen.query_one("#site-history", DataTable).row_count == 3)
+                    and pilot.app.screen.query_one("#site-history", DataTable).row_count == 4)
     from dataclasses import replace
     from mmw.site.mset import open_set
     mset = open_set()

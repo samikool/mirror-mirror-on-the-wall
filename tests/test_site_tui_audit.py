@@ -4,6 +4,7 @@ import threading
 
 from textual.widgets import DataTable, Static
 
+from site_points import nth
 from mmw.site import ops
 from test_site_tui import _rows, _run, _three, env  # noqa: F401
 from test_dry_run_totals import two_mirrors  # noqa: F401
@@ -21,13 +22,14 @@ def _on(app, page, wid):
     return str(app.screen.query_one(wid).render())
 
 
-async def _pick_version(app, pilot, label, number):
+async def _pick_version(app, pilot, label, point):
+    """Select repository `label` and its point `point` (its digest)."""
     home = app.screen
     t = home.query_one("#site-repos", DataTable)
     t.move_cursor(row=[r[0] for r in _rows(app, "site-repos")].index(label))
-    await until(pilot, lambda: any(r[0].strip().lstrip("▶ ") == f"v{number}" for r in _rows(app, "site-history")))
+    await until(pilot, lambda: any(r[0].strip().lstrip("▶ ") == point for r in _rows(app, "site-history")))
     h = home.query_one("#site-history", DataTable)
-    h.move_cursor(row=[r[0].strip().lstrip("▶ ") for r in _rows(app, "site-history")].index(f"v{number}"))
+    h.move_cursor(row=[r[0].strip().lstrip("▶ ") for r in _rows(app, "site-history")].index(point))
     return home
 
 
@@ -39,24 +41,24 @@ def test_serve_works_out_its_preview_off_the_screen_and_shows_the_switch(env, tm
     gate = threading.Event()
     real = LocalRoot.serve_preview
 
-    def slow(self, key, number):
+    def slow(self, key, when, track=None):
         gate.wait(20)
-        return real(self, key, number)
+        return real(self, key, when, track)
     monkeypatch.setattr(LocalRoot, "serve_preview", slow)
 
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
-        home = await _pick_version(app, pilot, "a", 1)
+        home = await _pick_version(app, pilot, "a", nth(home_dir, "a", 1))
         home.action_serve()                                      # returns at once: the screen stays live
         await until(pilot, lambda: "working out" in str(home.query_one("#page-status").render()))
         gate.set()
         await until(pilot, lambda: _name(app) == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
-        await until(pilot, lambda: "serves v1" in _on(app, "SwitchRunPage", "#run-done"))
+        await until(pilot, lambda: "serves files" in _on(app, "SwitchRunPage", "#run-done"))
         assert "file" in str(app.screen.query_one("#run-rate").render())     # files placed, counted
         app.screen.query_one("#btn-run-close").press()
         await until(pilot, lambda: _name(app) == "SiteHomePage")
-        await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
+        await until(pilot, lambda: any(r[0] == "a" and "pinned" in r[1] for r in _rows(app, "site-repos")))
     _run(home_dir, check)
 
 
@@ -65,22 +67,23 @@ def test_forward_says_when_there_is_nothing_to_do(env, tmp_path):  # noqa: F811
 
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
-        home = await _pick_version(app, pilot, "a", 3)
+        home = await _pick_version(app, pilot, "a", nth(home_dir, "a", 3))
         home.action_forward()
-        await until(pilot, lambda: "already at its newest" in str(home.query_one("#page-status").render()))
+        await until(pilot, lambda: "already serves each suite's newest" in str(home.query_one("#page-status").render()))
         assert _name(app) == "SiteHomePage"
     _run(home_dir, check)
 
 
 def test_forward_shows_the_switch(env, tmp_path):  # noqa: F811
     cfg, home_dir, root, _ = _three(env, tmp_path)
-    ops.serve(home_dir, "a", 1)
+    first = nth(home_dir, "a", 1)
+    ops.serve(home_dir, "a", first)
 
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
-        home = await _pick_version(app, pilot, "a", 1)
+        home = await _pick_version(app, pilot, "a", first)
         home.action_forward()
-        await until(pilot, lambda: "serves v3" in _on(app, "SwitchRunPage", "#run-done"))
+        await until(pilot, lambda: "serves each suite's newest" in _on(app, "SwitchRunPage", "#run-done"))
     _run(home_dir, check)
 
 
@@ -126,14 +129,14 @@ def test_move_works_out_its_preview_off_the_screen(two_mirrors, tmp_path, monkey
 
 def test_cards_keep_their_state_at_80_columns(env, tmp_path):  # noqa: F811
     cfg, home_dir, root, _ = _three(env, tmp_path)
-    ops.serve(home_dir, "a", 2)
+    ops.serve(home_dir, "a", nth(home_dir, "a", 2))
 
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         a = next(r for r in _rows(app, "site-repos") if r[0] == "a")
-        assert a[1].startswith("▶ v2 · ") and a[1].endswith("held · newest v3")
+        assert a[1].startswith("▶ ") and a[1].endswith("pinned · newer stored")
         key = next(st.repo for st in app.screen._states if st.label == "a")
-        assert a[2].startswith(f"{app.screen._root_of[key]} · 3 versions · ")
+        assert a[2].startswith(f"{app.screen._root_of[key]} · 3 points · ")
         b = next(r for r in _rows(app, "site-repos") if r[0] == "b")
         assert b[1].endswith("current")
         width = app.screen.query_one("#site-repos").region.width

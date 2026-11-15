@@ -96,3 +96,51 @@ def test_a_label_that_looks_like_a_date():
     labelled = [_v(2, "20261002T120000Z", "1jan"), _v(1, "20261001T120000Z")]
     assert resolve(labelled, "1jan").number == 2
     assert bundle_stamp(labelled, "1jan") == "20261002T120000Z"
+
+
+# ── timeline points: named by date, stamp, label or digest ───────────────────
+
+from mmw.site.db import PointInfo  # noqa: E402
+from mmw.site.versionref import as_of_points, resolve_point  # noqa: E402
+
+
+def _pt(pid, date, ident, stamp="20261120T000000Z", label=None):
+    return PointInfo(pid, 1, ident, date, stamp, label, True)
+
+
+PTS = [_pt(3, "20261110T100000Z", "release:a1b2c3d4e5", label="before-upgrade"),
+       _pt(2, "20261103T090000Z", "release:9f8e7d6c5b", stamp="20261105T000000Z"),
+       _pt(1, "20261103T180000Z", "release:77aa0011bb")]
+TODAY = date(2026, 11, 14)
+
+
+def test_point_by_date_label_digest_and_stamp():
+    assert resolve_point(PTS, "2026-11-10", TODAY).id == 3
+    assert resolve_point(PTS, "before-upgrade", TODAY).id == 3
+    assert resolve_point(PTS, "9f8e7d", TODAY).id == 2
+    assert resolve_point(PTS, "20261103T09", TODAY).id == 2
+    assert resolve_point(PTS, "20261105", TODAY).id == 2          # no point dated then: the arrival stamp
+
+
+def test_point_ambiguous_date_lists_both():
+    with pytest.raises(ValueError, match="matches") as e:
+        resolve_point(PTS, "3 Nov", TODAY)
+    assert "9f8e7d" in str(e.value) and "77aa00" in str(e.value)
+
+
+def test_point_v_number_says_dates_now():
+    with pytest.raises(ValueError, match="named by date now") as e:
+        resolve_point(PTS, "v3", TODAY)
+    assert "10 Nov 2026" in str(e.value)
+
+
+def test_point_unknown():
+    with pytest.raises(ValueError, match="no point"):
+        resolve_point(PTS, "2026-10-01", TODAY)
+
+
+def test_as_of_points_counts_that_whole_day():
+    assert as_of_points(PTS, "2026-11-03").id == 1               # 18:00 that day counts
+    assert as_of_points(PTS, "2026-11-09").id == 1
+    assert as_of_points(PTS, "2026-11-10").id == 3
+    assert as_of_points(PTS, "2026-11-01") is None

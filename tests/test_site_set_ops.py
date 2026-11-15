@@ -1,6 +1,7 @@
 """Operations on a set of roots: each repository's own root does the work."""
 import pytest
 
+from site_points import nth, pinned
 from mmw.site import ops
 from mmw.site import recents
 from mmw.site.apply import apply_to_set
@@ -36,10 +37,9 @@ def test_serve_routes_to_the_owning_root(hosts, tmp_path):  # noqa: F811
     apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
     root, key = ops.on_repo(open_set(), "a")
     assert root.info.name == "r1"
-    root.serve(key, 1)
-    with SiteDB(read_root(str(r1)).home) as db:
-        st = db.repo_state(key)
-        assert st.serving.number == 1 and st.held
+    home = read_root(str(r1)).home
+    root.serve(key, nth(home, key, 1))
+    assert pinned(home, key)
 
 
 def test_move_repo_between_roots(hosts, tmp_path):  # noqa: F811
@@ -227,8 +227,8 @@ def test_serve_and_tidy_say_each_file(hosts, tmp_path):  # noqa: F811
     m = open_set()
     root, key = m.root_for_repo("b")
     placed = []
-    root.serve(key, 1, progress=placed.append)
-    assert placed == []                                         # already serving v1: nothing to place
+    root.serve(key, nth(read_root(str(r2)).home, key, 1), progress=placed.append)
+    assert placed == []                                         # already serving it: nothing to place
     ops.move_repo(open_set(), "b", "r1")
     removed = []
     assert ops.tidy_set(open_set(), progress=removed.append) == ["b"]

@@ -147,3 +147,75 @@ def as_of(versions: list[VersionInfo], stamp: str) -> VersionInfo | None:
     """The version a repository had once the bundle `stamp` was applied: its
     newest at or before it (None when it arrived later)."""
     return next((v for v in sorted(versions, key=lambda v: v.stamp, reverse=True) if v.stamp <= stamp), None)
+
+
+# ── timeline points ──────────────────────────────────────────────────────────
+
+_HEX = re.compile(r"[0-9a-f]{6,64}", re.I)
+
+
+def short(ident: str) -> str:
+    """A point's ident as people see it: six hex characters."""
+    return ident.split(":", 1)[-1][:6]
+
+
+def _points_kept(points) -> str:
+    return ", ".join(f"{_when(p.date)} · {short(p.ident)}" for p in points) or "none"
+
+
+def resolve_point(points, text: str, today: date | None = None):
+    """The one point `text` names, among a track's (newest first): a label,
+    a date or stamp (of the Release, else of the bundle it came in), or six
+    or more hex characters of its digest."""
+    text = text.strip()
+    if _NUMBER.fullmatch(text) and text.lower().startswith("v"):
+        raise ValueError(f"versions are named by date now — e.g. 2026-11-03, or a label; kept: "
+                         f"{_points_kept(points)}")
+    found = [p for p in points if p.snap_label and p.snap_label.lower() == text.lower()]
+    hint = ""
+    if not found:
+        dated = _date_prefix(text, today or datetime.now(timezone.utc).date())
+        if dated is not None:
+            prefix, assumed = dated
+            found = [p for p in points if p.date.upper().startswith(prefix)]
+            if not found:
+                found = [p for p in points if p.stamp.upper().startswith(prefix)]
+            if not found and assumed:
+                hint = _other_years([VersionInfo(0, "", 0, "", "", p.date, None) for p in points], prefix)
+        elif _HEX.fullmatch(text):
+            found = [p for p in points if p.ident.split(":", 1)[-1].lower().startswith(text.lower())]
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise ValueError(f"no point {text!r} kept here{hint} — kept: {_points_kept(points)}")
+    named = ", ".join(f"{_when(p.date, True)} · {short(p.ident)}" for p in found)
+    raise ValueError(f"{text!r} matches {named} — say which: its digest or its time")
+
+
+def as_of_points(points, when: str, today: date | None = None):
+    """The newest point dated on or before `when` (the whole of that day, or
+    up to that stamp); None when every point is later."""
+    dated = _date_prefix(when.strip(), today or datetime.now(timezone.utc).date())
+    if dated is None:
+        raise ValueError(f"{when!r} isn't a date or stamp")
+    prefix = dated[0]
+    within = [p for p in points if p.date.upper()[:len(prefix)] <= prefix]
+    return max(within, key=lambda p: (p.date, p.stamp, p.ident), default=None)
+
+
+def is_when(text: str, today: date | None = None) -> bool:
+    """Whether `text` reads as a date or stamp (else a label or a digest)."""
+    try:
+        return _date_prefix(text.strip(), today or datetime.now(timezone.utc).date()) is not None
+    except ValueError:
+        return False
+
+
+def day(stamp: str) -> str:
+    return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}" if len(stamp) >= 8 else stamp
+
+
+def name_of(point) -> str:
+    """A point's full digest: what a program passes to name it — six hex
+    characters can read as a date (123dec), the whole digest never can."""
+    return point.ident.split(":", 1)[-1]

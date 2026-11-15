@@ -28,27 +28,32 @@ def test_serve_by_date(env, tmp_path, monkeypatch):  # noqa: F811
     _cfg, home, root, trees = _dated(env, tmp_path, monkeypatch)
     r = run("serve", "a", "2oct", "--yes")
     assert r.exit_code == 0, r.output
-    assert "serve v2" in r.output and _tree(root) == trees[1]
+    assert "would serve files 2026-10-02" in r.output and _tree(root) == trees[1]
 
 
 def test_delete_by_date(env, tmp_path, monkeypatch):  # noqa: F811
     cfg, home, root, trees = _dated(env, tmp_path, monkeypatch)
     r = run("delete", "a", "2026-10-01", "--yes")
     assert r.exit_code == 0, r.output
-    assert [v.number for v, *_ in ops.history(home, "a")] == [3, 2]
+    ((_t, rows),) = ops.history(home, "a")
+    assert [(p.date[:8], mark) for p, *_x, mark in rows] == [("20261003", "serving"), ("20261002", "previous"),
+                                                              ("20261001", "stub")]
 
 
-def test_a_day_with_no_bundle_says_what_is_kept(env, tmp_path, monkeypatch):  # noqa: F811
-    _dated(env, tmp_path, monkeypatch)
-    r = run("serve", "a", "9oct", "--yes")
-    assert r.exit_code == 1 and "v3 · 03 Oct 2026" in r.output
+def test_serving_as_of_a_day_takes_the_newest_then(env, tmp_path, monkeypatch):  # noqa: F811
+    _cfg, home, root, trees = _dated(env, tmp_path, monkeypatch)
+    r = run("serve", "a", "9oct", "--yes")                 # after every point: the newest
+    assert r.exit_code == 0 and _tree(root) == trees[2]
+    r = run("serve", "a", "2026-09-30", "--yes")           # before every point: nothing to serve
+    assert r.exit_code == 1 and "nothing that old" in r.output
 
 
 def test_serve_bundle_rolls_every_repo_back(env, tmp_path, monkeypatch):  # noqa: F811
     _cfg, home, root, trees = _dated(env, tmp_path, monkeypatch)
     r = run("serve-bundle", "2oct", "--yes")
     assert r.exit_code == 0, r.output
-    assert "v3 → v2" in r.output and "already v1" in r.output     # b: the bundle didn't change it
+    assert "files 2026-10-03 → 2026-10-02" in r.output
+    assert "already as it was then" in r.output                     # b: the bundle didn't change it
     assert _tree(root) == trees[1]
 
 
@@ -70,25 +75,25 @@ def test_bundle_plan_leaves_a_repo_that_came_later(env, tmp_path, monkeypatch): 
     root = mset.roots[0]
     real = root.history
     # b as though it had first arrived with the 3 Oct bundle
-    monkeypatch.setattr(root, "history", lambda key: [h for h in real(key)
-                                                      if not key.endswith("b") or h[0].stamp >= "20261003"])
+    monkeypatch.setattr(root, "history", lambda key: [
+        (t, [r for r in rows if not key.endswith("b") or r[0].stamp >= "20261003"]) for t, rows in real(key)])
     steps = {s.label: s for s in ops.bundle_plan(mset, "2oct")}
     later = next(s for label, s in steps.items() if label != "a")
-    assert later.target is None and "not here yet" in later.line()
+    assert later.target == {} and "not here yet" in later.line()
 
 
 def test_delete_names_the_version_it_means(env, tmp_path, monkeypatch):  # noqa: F811
     _dated(env, tmp_path, monkeypatch)
     r = run("delete", "a", "2026-10-01", "--yes")
-    assert r.exit_code == 0 and "deleted a v1 (01 Oct 2026)" in r.output, r.output
+    assert r.exit_code == 0 and "deleted a 2026-10-01" in r.output, r.output
 
 
 def test_serve_bundle_says_when_its_version_from_then_was_deleted(env, tmp_path, monkeypatch):  # noqa: F811
     _dated(env, tmp_path, monkeypatch)
-    assert run("delete", "a", "v2", "--yes").exit_code == 0
-    steps = {s.label: s for s in ops.bundle_plan(open_set(), "2026-10-02")}
+    assert run("delete", "a", "2026-10-01", "--yes").exit_code == 0
+    steps = {s.label: s for s in ops.bundle_plan(open_set(), "2026-10-01")}
     a = steps["a"]
-    assert a.target is None and not a.changes and "02 Oct 2026" in a.line() and "deleted" in a.line()
+    assert a.target == {} and not a.changes and "01 Oct 2026" in a.line() and "deleted" in a.line()
 
 
 def test_serve_bundle_names_a_missing_root(env, tmp_path, monkeypatch):  # noqa: F811
@@ -104,17 +109,17 @@ def test_serve_bundle_failing_part_way_says_what_was_and_wasnt(env, tmp_path, mo
     import pytest
     from mmw.site.ops import BundleStep
     _dated(env, tmp_path, monkeypatch)
-    v = ops.history(open_set().roots[0].home, "a")[0][0]
+    then = {"files": ("20261001T120000Z", "content:abcdef0123")}
 
     class Root:
         def __init__(self, fails):
             self.fails = fails
 
-        def serve(self, key, number, progress=None):
+        def serve(self, key, when, track=None, progress=None):
             if self.fails:
                 raise OSError("lock held")
-    steps = [BundleStep(Root(False), "x", "x", None, v), BundleStep(Root(True), "y", "y", None, v),
-             BundleStep(Root(False), "z", "z", None, v)]
+    steps = [BundleStep(Root(False), "x", "x", {}, then), BundleStep(Root(True), "y", "y", {}, then),
+             BundleStep(Root(False), "z", "z", {}, then)]
     with pytest.raises(ValueError, match="served: x; not served: y, z"):
         ops.serve_bundle(steps)
 

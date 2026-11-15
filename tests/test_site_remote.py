@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 import json
 
+from site_points import nth
 from mmw.site import remote
 from mmw.site.apply import apply_to_set
 from mmw.site.db import SiteDB
@@ -37,7 +38,7 @@ def test_info_round_trip(hosts, tmp_path):  # noqa: F811
     cfg, net, md, r1 = _root(hosts, tmp_path)
     code, out = _call(["info", str(r1)])
     (info,) = _lines(out)
-    assert code == 0 and info["name"] == "r1" and info["network"] == net.name and info["protocol"] == 1
+    assert code == 0 and info["name"] == "r1" and info["network"] == net.name and info["protocol"] == 2
     assert set(info["hostnames"]) == {"example.com", "example.org"} and info["free"] > 0
 
 
@@ -131,10 +132,14 @@ def test_deleted_says_when_deleted_versions_came(hosts, tmp_path):  # noqa: F811
     from mmw.site import ops
     from test_snapshot_repo_versions import _change_a
     cfg, net, md, r1 = _root(hosts, tmp_path)
+    from test_site_ops import _bump
     _change_a(md)
     apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "2")), place={"*": str(r1)}, say=quiet)
+    _bump(md)                                    # a third: the oldest is no longer what served before
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "3")), place={"*": str(r1)}, say=quiet)
     home = r1 / ".mmw" / "site"
-    v1 = ops.history(home, "a")[-1][0]
-    ops.delete_version(home, "a", 1)
+    ((_t, rows),) = ops.history(home, "a")
+    oldest = rows[-1][0]
+    ops.delete_point(home, "a", nth(home, "a", 1))
     code, out = _call(["deleted", str(r1), "a"])
-    assert code == 0 and _lines(out)[-1] == {"stamps": [v1.stamp]}
+    assert code == 0 and _lines(out)[-1] == {"stamps": [oldest.stamp]}

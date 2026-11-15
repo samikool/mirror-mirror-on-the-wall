@@ -55,6 +55,8 @@ def test_plan_apply_rejects_non_bundles(env, tmp_path):  # noqa: F811
 def test_untick_stores_and_holds(env, tmp_path):  # noqa: F811
     cfg, net, md, home, root = env
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
+    with SiteDB(home) as db:
+        served = db.repo_state(_key(cfg, "a")).serving.id
     _change_a(md)
     _change_b(md)
     before = _tree(root)
@@ -62,7 +64,8 @@ def test_untick_stores_and_holds(env, tmp_path):  # noqa: F811
     assert r.updated == [_key(cfg, "b")] and r.stored_held == [_key(cfg, "a")]
     with SiteDB(home) as db:
         st = db.repo_state(_key(cfg, "a"))
-        assert st.serving.number == 1 and st.held and db.versions(_key(cfg, "a"))[0].number == 2
+        assert st.serving.id == served and st.held
+        assert sum(len(db.points(t.id)) for t in db.tracks(_key(cfg, "a"))) == 2
     assert {k: v for k, v in _tree(root).items() if k.startswith("example.com/a/")} == \
            {k: v for k, v in before.items() if k.startswith("example.com/a/")}
 

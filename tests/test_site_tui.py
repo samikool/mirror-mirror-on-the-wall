@@ -7,6 +7,7 @@ from textual.widgets import DataTable
 from mmw.site import ops
 from mmw.tui.site.app import SiteApp
 
+from site_points import nth
 from test_site_apply import env  # noqa: F401
 from test_site_ops import _three
 from test_dry_run_totals import two_mirrors  # noqa: F401
@@ -38,18 +39,20 @@ def _run(home, check, size=(120, 40)):
 
 def test_lists_repos_and_history(env, tmp_path):  # noqa: F811
     cfg, home, root, _ = _three(env, tmp_path)
-    ops.serve(home, "a", 2)
+    second = nth(home, "a", 2)
+    ops.serve(home, "a", second)
 
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         rows = _rows(app, "site-repos")
         a = next(r for r in rows if r[0] == "a")
-        assert "v2" in a[1] and a[1].endswith("held · newest v3")
+        assert a[1].startswith("▶ ") and a[1].endswith("pinned · newer stored")
         app.screen.query_one("#site-repos", DataTable).move_cursor(row=[r[0] for r in rows].index("a"))
-        await until(pilot, lambda: len(_rows(app, "site-history")) == 3)
+        await until(pilot, lambda: len(_rows(app, "site-history")) == 4)       # its suite, then 3 points
         hist = _rows(app, "site-history")
-        assert hist[1][0].startswith("▶ v2") and "serving" in hist[1][3]
-        assert "held at v2 — Forward serves v3" in str(app.screen.query_one("#site-detail").render())
+        assert hist[0][0] == "files"
+        assert hist[2][0] == f"▶ {second}" and "serving" in hist[2][3] and "previous" in hist[1][3]
+        assert "pinned — Forward serves each suite's newest" in str(app.screen.query_one("#site-detail").render())
     _run(home, check)
 
 
@@ -61,14 +64,15 @@ def test_empty_site_says_apply(env):  # noqa: F811
     _run(home, check)
 
 
-async def _pick(app, pilot, repo_label, version=None):
+async def _pick(app, pilot, repo_label, point=None):
+    """Select a repository, and (`point`: its digest) one of its points."""
     t = app.screen.query_one("#site-repos", DataTable)
     await until(pilot, lambda: t.row_count > 0)
     t.move_cursor(row=[r[0] for r in _rows(app, "site-repos")].index(repo_label))
-    if version is not None:
+    if point is not None:
         h = app.screen.query_one("#site-history", DataTable)
-        await until(pilot, lambda: any(r[0].strip().lstrip("▶ ") == f"v{version}" for r in _rows(app, "site-history")))
-        h.move_cursor(row=[r[0].strip().lstrip("▶ ") for r in _rows(app, "site-history")].index(f"v{version}"))
+        await until(pilot, lambda: any(r[0].strip().lstrip("▶ ") == point for r in _rows(app, "site-history")))
+        h.move_cursor(row=[r[0].strip().lstrip("▶ ") for r in _rows(app, "site-history")].index(point))
         h.focus()
 
 
@@ -77,14 +81,15 @@ def test_serve_from_history_confirms_then_switches(env, tmp_path):  # noqa: F811
     from test_site_apply import _tree
 
     async def check(app, pilot):
-        await _pick(app, pilot, "a", 1)
+        await _pick(app, pilot, "a", nth(home, "a", 1))
         await pilot.press("enter")
         await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         details = str(app.screen.query_one("#confirm-details Label").render())
-        assert "now serving v3" in details and "nothing to copy" in details and "indexes switch last" in details
+        assert "now serving files" in details and "nothing to copy" in details and "indexes switch last" in details
+        assert "stays pinned" in details
         app.screen.query_one("#confirm").press()
         await _ran(app, pilot, "SwitchRunPage")
-        await until(pilot, lambda: any(r[0] == "a" and "held" in r[1] for r in _rows(app, "site-repos")))
+        await until(pilot, lambda: any(r[0] == "a" and "pinned" in r[1] for r in _rows(app, "site-repos")))
     _run(home, check)
     assert _tree(root) == trees[0]
 
@@ -99,15 +104,14 @@ async def _ran(app, pilot, page):
 
 def test_forward_and_hold_keys(env, tmp_path):  # noqa: F811
     cfg, home, root, trees = _three(env, tmp_path)
-    ops.serve(home, "a", 1)
+    ops.serve(home, "a", nth(home, "a", 1))
 
     async def check(app, pilot):
         await _pick(app, pilot, "a")
         app.screen.query_one("#site-repos", DataTable).focus()
         await pilot.press("f")
         await _ran(app, pilot, "SwitchRunPage")
-        await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("current") and "v3" in r[1]
-                                       for r in _rows(app, "site-repos")))
+        await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("current") for r in _rows(app, "site-repos")))
         app.screen.query_one("#site-repos", DataTable).focus()
         await pilot.press("h")
         await until(pilot, lambda: any(r[0] == "a" and r[1].endswith("held") for r in _rows(app, "site-repos")))
@@ -117,19 +121,21 @@ def test_forward_and_hold_keys(env, tmp_path):  # noqa: F811
 def test_delete_refusal_is_a_status(env, tmp_path):  # noqa: F811
     cfg, home, root, trees = _three(env, tmp_path)
 
+    p1, p2 = nth(home, "a", 1), nth(home, "a", 2)
+
     async def check(app, pilot):
-        await _pick(app, pilot, "a", 3)
+        await _pick(app, pilot, "a", p2)                   # served before the newest: kept for rolling back
         await pilot.press("d")
         await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
-                    and "being served" in str(app.screen.query_one("#page-status").render()))
-        await _pick(app, pilot, "a", 1)
+                    and "served before" in str(app.screen.query_one("#page-status").render()))
+        await _pick(app, pilot, "a", p1)
         await pilot.press("d")
         await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
-                    and len(_rows(app, "site-history")) == 2)
+                    and any("stub" in r[3] for r in _rows(app, "site-history")))
     _run(home, check)
 
 
@@ -227,10 +233,10 @@ def test_apply_flow_end_to_end(env, tmp_path):  # noqa: F811
         await _review_and_go(app, pilot, bundle)
         await until(pilot, lambda: app.screen.finished)
         done = str(app.screen.query_one("#run-done").render())
-        assert "a  v1 → v2" in done and "b  v1 → v2" in done
+        assert "a  files " in done and "b  files " in done and " → " in done
         app.screen.query_one("#btn-run-close").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
-                    and all("v2" in r[1] for r in _rows(app, "site-repos")))
+                    and all(r[1].endswith("current") for r in _rows(app, "site-repos")))
     _run(home, check)
 
 
@@ -305,7 +311,7 @@ def test_cards_show_root_versions_and_size(env, tmp_path):  # noqa: F811
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         card = next(c for c in _cards(app) if c.startswith("a\n"))
-        assert "versions" in card and ("B" in card)                # its hostname is in the detail
+        assert "3 points" in card and ("B" in card)                # its hostname is in the detail
     _run(home, check)
 
 
@@ -316,7 +322,7 @@ def test_detail_says_where_what_and_how_much(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         detail = lambda: str(app.screen.query_one("#site-detail").render())  # noqa: E731
         await until(pilot, lambda: "root" in detail() and "kept" in detail())
-        for word in ("hostname", "serving", "newest", "https", "last apply"):
+        for word in ("hostname", "serving", "state", "https", "last apply"):
             assert word in detail()
     _run(home, check)
 
@@ -355,7 +361,7 @@ def test_version_buttons_are_on_screen_at_80x24(env, tmp_path):  # noqa: F811
 
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
-        await until(pilot, lambda: len(_rows(app, "site-history")) == 3)
+        await until(pilot, lambda: len(_rows(app, "site-history")) == 4)
         await until(pilot, lambda: "last apply" in str(app.screen.query_one("#site-detail").render()))
 
         def fits():                     # once the filled-in detail has been laid out
@@ -453,12 +459,12 @@ def test_serve_bundle_from_the_home(env, tmp_path, monkeypatch):  # noqa: F811
         app.screen.query_one("#btn-bundle-go").press()
         await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         details = str(app.screen.query_one("#confirm-details Label").render())
-        assert "v3 → v1" in details and "already v1" in details
+        assert "files 2026-10-03 → 2026-10-01" in details and "already as it was then" in details
         app.screen.query_one("#confirm").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SwitchRunPage")
         assert "As of the 01 Oct" in app.screen.TITLE
         await _ran(app, pilot, "SwitchRunPage")
-        await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
+        await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ 01 Oct") for r in _rows(app, "site-repos")))
     _run(home, check)
 
 
@@ -495,12 +501,14 @@ def test_a_failed_action_reloads_what_did_happen(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
         page = app.screen
 
+        first = nth(home, "a", 1)
+
         def half(repo):
-            ops.serve(home, repo, 1)                 # one change lands…
+            ops.serve(home, repo, first)             # one change lands…
             raise OSError("then the lock was held")  # …and the next is refused
         page._act("never said", half, "a")
         await until(pilot, lambda: "lock was held" in str(page.query_one("#page-status").render()))
-        await until(pilot, lambda: any(r[0] == "a" and r[1].startswith("▶ v1") for r in _rows(app, "site-repos")))
+        await until(pilot, lambda: any(r[0] == "a" and "pinned" in r[1] for r in _rows(app, "site-repos")))
     _run(home, check)
 
 

@@ -49,6 +49,7 @@ class ApplyChoice:
     forward: frozenset[str] = frozenset()   # held repositories ticked: serve their new version
     place: dict | None = None               # new hostname → root location (None: the first root here)
     sizes: tuple = ()                       # (repo, bytes) from the manifest, for each row's progress
+    deploy: frozenset[str] = frozenset()    # another network's repositories to deploy here
 
 
 def _row_text(r, location: str) -> str:
@@ -129,6 +130,42 @@ class ApplyReviewPage(Page):
                                  sizes=tuple((r.repo, r.bytes_sent) for r in self._changed)))
 
 
+class DeployPage(Page):
+    """Another network's bundle: its repositories this mirror doesn't hold.
+    Unticked, they are skipped; ticked, they are placed and deployed here."""
+
+    TITLE = "Another network's bundle"
+    HELP = ("This bundle was made for another network. The repositories this mirror\n"
+            "holds take its history; its nginx, settings and TLS stay out.\n"
+            "Tick a repository below to deploy it here as well.")
+
+    def __init__(self, network: str, not_here: dict[str, str]):
+        super().__init__()
+        self._not_here = not_here
+        self.subtitle = f"from network {network}"
+
+    def compose_body(self) -> ComposeResult:
+        yield Label(f"Not mirrored here ({len(self._not_here)}): tick to deploy")
+        yield JumpSelectionList(*[Selection(Text(label), key, False)
+                                  for key, label in sorted(self._not_here.items(), key=lambda kv: kv[1])],
+                                id="deploy-repos", compact=True)
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Cancel", id="btn-deploy-cancel", compact=True)
+        yield Button("Continue", id="btn-deploy-go", variant="primary", compact=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#deploy-repos").focus()
+
+    @on(Button.Pressed, "#btn-deploy-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-deploy-go")
+    def _go(self) -> None:
+        self.dismiss(frozenset(self.query_one("#deploy-repos", SelectionList).selected))
+
+
 class ApplyRunPage(RunPage):
     """Steps 2 and 3: the bundle arriving, each repository switching, and
     then what was done and what needs a person."""
@@ -151,6 +188,7 @@ class ApplyRunPage(RunPage):
             place = {"*": mset.roots[0].info.location} if mset is not None else {}
         result = apply_to_set(mset, self._choice.src, place=place, apply_anyway=self._anyway,
                               only=set(self._choice.only), forward=set(self._choice.forward),
+                              deploy=set(self._choice.deploy),
                               progress=progress, stop_event=stop, say=lambda *a: None)
         return result.merged(), nginx_steps(result)
 
@@ -182,6 +220,9 @@ class ApplyRunPage(RunPage):
             self._state[repo] = "updated"
         for repo in result.stored_held:
             self._state[repo] = "stored · held"
+        for repo in getattr(result, "incomplete", {}):
+            if repo not in result.updated:
+                self._state[repo] = "stored · incomplete"
         for repo in result.refused:
             self._state[repo] = "refused"
         for repo in result.stopped:

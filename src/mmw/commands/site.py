@@ -56,7 +56,8 @@ def _place(specs: list[str]) -> dict[str, str]:
 
 
 def apply(src: str, root: list[str] | None = None, forward: list[str] | None = None,
-          forward_all: bool = False, dry_run: bool = False, break_lock: bool = False, yes: bool = False) -> int:
+          forward_all: bool = False, dry_run: bool = False, break_lock: bool = False, yes: bool = False,
+          deploy: list[str] | None = None) -> int:
     import sys
     from mmw.site.apply import ApplyError, MaybeUnmounted, apply_to_set
     from mmw.site.lock import LockHeld
@@ -76,6 +77,7 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
             keys = {ops.on_repo(mset, ref)[1] for ref in forward}
         try:
             r = apply_to_set(mset, src, place=place, forward=keys, forward_all=forward_all, dry_run=dry_run,
+                             deploy=set(deploy or ()),
                              apply_anyway=set(place.values()) if yes else None)
         except MaybeUnmounted as e:
             eprint(str(e))
@@ -85,6 +87,7 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
             if input("Apply anyway? [y/N] ").strip().lower() not in ("y", "yes"):
                 return e.code
             r = apply_to_set(mset, src, place=place, forward=keys, forward_all=forward_all, dry_run=dry_run,
+                             deploy=set(deploy or ()),
                              apply_anyway=set(e.locations))
     except ApplyError as e:
         eprint(str(e))
@@ -186,10 +189,6 @@ def roots(root: Path | None = None) -> int:
     return 0
 
 
-def _version(r_, key: str, text: str):
-    """The version `text` names — v3, 3, or its bundle's date, stamp or label."""
-    from mmw.site.versionref import resolve
-    return resolve([v for v, *_ in r_.history(key)], text)
 
 
 def _when(stamp: str) -> str:
@@ -198,24 +197,22 @@ def _when(stamp: str) -> str:
 
 
 def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
-          break_lock: bool = False) -> int:
+          break_lock: bool = False, track: str | None = None) -> int:
     import sys
     from mmw.site.lock import LockHeld
     try:
         r_, key = _repo(root, repo, break_lock)
-        number = _version(r_, key, version).number
-        p = r_.serve_preview(key, number)
-        now = f"v{p.current.number}" if p.current else "nothing"
-        print(f"{p.label}: now serving {now} · serve v{p.target.number} ({p.target.stamp}"
-              f"{' ' + p.target.snap_label if p.target.snap_label else ''}) · relinks {p.relinks} file(s) · "
-              "nothing to copy · indexes switch last")
+        p = r_.serve_preview(key, version, track)
+        print(f"{p.label}: now serving {', '.join(p.current) or 'nothing'}")
+        print(f"  would serve {', '.join(p.target)} · relinks {p.relinks} file(s) · nothing to copy · "
+              "indexes switch last · pinned until mmw site forward")
         if not yes:
             if not sys.stdin.isatty():
                 eprint("pass --yes to serve it (no terminal to ask on)")
                 return 1
             if input("Serve it? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
-        r = r_.serve(key, number)
+        r = r_.serve(key, version, track)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     if getattr(r, "held", None):
@@ -223,7 +220,7 @@ def serve(repo: str, version: str, root: Path | None = None, yes: bool = False,
         return 1
     for w in getattr(r, "warnings", ()):
         eprint(w)
-    print(f"{p.label} serves v{p.target.number} ({r.placed} placed, {r.removed} removed)")
+    print(f"{p.label} serves {', '.join(p.target)} ({r.placed} placed, {r.removed} removed)")
     return 0
 
 
@@ -295,33 +292,42 @@ def space(root: Path | None = None) -> int:
             for v in rows:
                 tag = "serving" if v.serving else f"frees {fmt_size(v.frees)}"
                 label = f" {v.snap_label}" if v.snap_label else ""
-                print(f"  v{v.number:<4} {v.stamp}{label}  {fmt_size(v.total):>10}  {tag}")
+                print(f"  {v.suite:<20} {_day_time(v.date)}  {v.ident.split(':', 1)[-1][:6]}{label}  "
+                      f"{fmt_size(v.total):>10}  {tag}")
         for _n, (used, free) in rep.roots.items():
             print(f"root {name}: {fmt_size(used)} used, {fmt_size(free)} free")
         history += rep.history_bytes
-    print(f"old versions hold {fmt_size(history)}")
+    print(f"older points hold {fmt_size(history)}")
     return 0
 
 
 def delete(repo: str, version: str, root: Path | None = None, yes: bool = False,
-           break_lock: bool = False) -> int:
+           break_lock: bool = False, track: str | None = None) -> int:
     import sys
     from mmw.core.format import fmt_size
     from mmw.site.lock import LockHeld
+    named = f"{repo} {version}" + (f" ({track})" if track else "")
     try:
         r_, key = _repo(root, repo, break_lock)
-        v = _version(r_, key, version)
-        named = f"{repo} v{v.number} ({_when(v.stamp)}{' ' + v.snap_label if v.snap_label else ''})"
         if not yes:
             if not sys.stdin.isatty():
                 eprint("pass --yes to delete it (no terminal to ask on)")
                 return 1
             if input(f"Delete {named}? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
-        freed = r_.delete(key, v.number)
+        try:
+            freed = r_.delete(key, version, track)
+        except ValueError as e:
+            if "pass --yes" not in str(e):
+                raise
+            # The point being served: said, then done only when asked for.
+            eprint(str(e).split(" — pass --yes", 1)[0] + " — " + str(e).split("; ", 1)[-1])
+            if not yes and input("Delete it anyway? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 1
+            freed = r_.delete(key, version, track, force=True)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
-    print(f"deleted {named}; freed {fmt_size(freed)}")
+    print(f"deleted {named}; freed {fmt_size(freed)} (its record stays in history)")
     return 0
 
 
@@ -353,16 +359,24 @@ def status(root: Path | None = None) -> int:
         return 0
     several = len(mset.roots) > 1 or mset.missing
     roots_by = {r.info.name: r for r in mset.roots}
+    from mmw.site.ops import suite_of
+    from mmw.site.versionref import day
     for name, s in rows:
-        newest = roots_by[name].newest(s.repo)
-        serving = (f"v{s.serving.number} · {s.serving.stamp}"
-                   f"{' ' + s.serving.snap_label if s.serving.snap_label else ''}") if s.serving else "nothing"
-        state = "held" if s.held else "current"
+        hist = roots_by[name].history(s.repo)
+        served, newer, pinned = [], False, False
+        for t, points in hist:
+            pinned = pinned or t.pinned is not None
+            for i, (p, _total, _frees, mark) in enumerate(points):
+                if mark == "serving":
+                    served.append(f"{suite_of(t)} {day(p.date)}")
+                    newer = newer or any(m in ("", "previous") for _p, _t, _f, m in points[:i])
+        serving = ", ".join(served) or "nothing"
+        state = ("held" if s.held else "pinned" if pinned else "newer stored" if newer else "current")
         where = f"{name:<10} " if several else ""
         layer = getattr(roots_by[name], "layer_details", None)        # a local root's only
         extra = layer(s.repo) if layer is not None else {}
         local = f" + local packages ({extra['local']})" if extra.get("local") else ""
-        print(f"  {where}{s.label:<36} {serving:<36} newest v{newest:<4} {state}{local}")
+        print(f"  {where}{s.label:<36} {serving:<36} {state}{local}")
         if extra.get("layer_hold"):
             print(f"  {where}{'':<36} held by its local packages: {extra['layer_hold']}")
     for name in mset.missing:
@@ -370,18 +384,26 @@ def status(root: Path | None = None) -> int:
     return 0
 
 
+def _day_time(stamp: str) -> str:
+    return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}" if len(stamp) >= 13 else stamp
+
+
 def history(repo: str, root: Path | None = None) -> int:
     from mmw.core.format import fmt_size
     try:
         r_, key = _repo(root, repo)
-        rows = r_.history(key)
+        tracks = r_.history(key)
     except _ERRORS as e:
         return _fail(e)
-    for v, total, frees, serving in rows:
-        mark = "▶" if serving else " "
-        label = f" {v.snap_label}" if v.snap_label else ""
-        tail = "serving" if serving else f"frees {fmt_size(frees)}"
-        print(f"{mark} v{v.number:<4} {v.stamp}{label}  {fmt_size(total):>10}  {tail}")
+    from mmw.site.ops import suite_of
+    for t, rows in tracks:
+        print(suite_of(t))
+        for p, total, frees, mark in rows:
+            arrow = "▶" if mark == "serving" else " "
+            label = f" {p.snap_label}" if p.snap_label else ""
+            tail = mark if mark else f"frees {fmt_size(frees)}"
+            print(f"{arrow} {_day_time(p.date)}  {p.ident.split(':', 1)[-1][:6]}{label}  "
+                  f"{fmt_size(total):>10}  {tail}")
     return 0
 
 

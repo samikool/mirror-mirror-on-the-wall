@@ -1,6 +1,7 @@
 """Spec phase 2's acceptance: ten deltas in, take one repository back to v3,
 the eleventh bundle leaves it held there, forward it — the served tree right
 at every step, and in the end exactly what the connected side publishes."""
+from site_points import nth, pinned
 from mmw.core.pool import KIND_META, KIND_PKG, Pool
 from mmw.site import ops
 from mmw.site.apply import apply_bundle
@@ -34,19 +35,18 @@ def test_ten_deltas_revert_held_apply_forward(env, tmp_path):  # noqa: F811
         apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / f"b{i}")), say=quiet)
         assert ops.verify(home) == []
         trees[i] = _tree(root)
-    with SiteDB(home) as db:
-        assert db.repo_state(ka).serving.number == 11 and db.repo_state(kb).serving.number == 1
-
-    ops.serve(home, "a", 3)
+    ops.serve(home, "a", nth(home, "a", 3))
     assert _tree(root) == trees[3] and ops.verify(home) == []
 
     _set_a(md, 12)
     _change_b(md)
     r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "b12")), say=quiet)
     assert r.stored_held == [ka] and r.updated == [kb]
+    assert _tree(root) != _published(cfg, net, md, tmp_path, "now")   # a stays where it was put
+    assert pinned(home, ka)
     with SiteDB(home) as db:
-        assert db.repo_state(ka).serving.number == 3 and db.repo_state(ka).held
-        assert db.versions(ka)[0].number == 12 and db.repo_state(kb).serving.number == 2
+        (t,) = db.tracks(ka)
+        assert len(db.points(t.id)) == 12
     assert ops.verify(home) == []
 
     ops.forward(home, "a")

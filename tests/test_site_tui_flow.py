@@ -569,3 +569,28 @@ def test_installing_mmw_over_ssh_shows_it_going(tmp_path, monkeypatch):
         await until(pilot, lambda: _name(app) == "StartPage"
                     and "holds no mirror yet" in str(app.screen.query_one("#start-note").render()))
     _run(None, check)
+
+
+def test_another_networks_new_repository_is_offered_unticked(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
+    """A bundle from another network: what this mirror doesn't hold is
+    listed unticked; ticking it leads to placing its hostname."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from test_bundle_mmw import _mmw
+    from test_site_apply_timeline import _add_c
+    cfg, net, md = _mmw(two_mirrors)
+    r1 = tmp_path / "r1"
+    apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), place={"*": str(r1)}, say=quiet)
+    elm = net.model_copy(update={"name": "elm", "root": tmp_path / "pub-elm"})
+    cfg2 = _add_c(cfg, md).model_copy(update={"networks": [net, elm]})
+    b = str(_bundle(cfg2, elm, md, tmp_path / "y", from_ref=None))
+
+    async def check(app, pilot):
+        await until(pilot, lambda: _name(app) == "SiteHomePage")
+        app.screen.resume_bundle(b)
+        await until(pilot, lambda: _name(app) == "DeployPage" and app.screen.query("#deploy-repos"))
+        sel = app.screen.query_one("#deploy-repos")
+        assert sel.selected == [] and "c" in str(sel.get_option_at_index(0).prompt)
+        sel.select_all()
+        app.screen.query_one("#btn-deploy-go").press()
+        await until(pilot, lambda: _name(app) == "PlacePage")
+    _run(open_set([str(r1)]), check)

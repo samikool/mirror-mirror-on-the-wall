@@ -106,16 +106,18 @@ def test_space_checked_per_root_before_writing(hosts, tmp_path, monkeypatch):
     assert set((r1 / ".mmw" / "store").rglob("*")) == blobs
 
 
-def test_bundle_from_another_network_is_refused(hosts, tmp_path):
+def test_bundle_from_another_network_imports_history_only(hosts, tmp_path):
+    """Not refused (warn, don't refuse): its repositories' history comes in;
+    the mirror stays this network's."""
     cfg, net, md = hosts
     r1 = tmp_path / "r1"
     apply_to_set(None, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)),
                  place={"*": str(r1)}, say=quiet)
     other = net.model_copy(update={"name": "elm"})
     cfg2 = cfg.model_copy(update={"networks": [other]})
-    with pytest.raises(ApplyError, match="elm.*oak|oak.*elm") as e:
-        apply_to_set(open_set(), str(_bundle(cfg2, other, md, tmp_path / "x", from_ref=None)), say=quiet)
-    assert e.value.code == 5
+    r = apply_to_set(open_set(), str(_bundle(cfg2, other, md, tmp_path / "x", from_ref=None)), say=quiet)
+    assert r.foreign and "network 'elm'" in r.lines[0] and "'oak'" in r.lines[0]
+    assert read_root(str(r1)).network == "oak"
 
 
 def test_stop_never_half_switches_a_hostname(hosts, tmp_path):

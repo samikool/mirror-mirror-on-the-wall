@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from site_points import nth, pinned
 from mmw.site import ops, recents
 from mmw.site.apply import apply_to_set
 from mmw.site.db import SiteDB
@@ -56,10 +57,11 @@ def test_status_and_serve_through_ssh(hosts, tmp_path):  # noqa: F811
     apply_to_set(open_set(), str(_bundle(cfg, net, md, tmp_path / "2")), say=quiet)
     root, key = ops.on_repo(open_set(), "b")
     assert root.info.location == f"farhost:{r2}"
-    root.serve(key, 1)
-    with SiteDB(read_root(str(r2)).home) as db:
-        st = db.repo_state(key)
-        assert st.serving.number == 1 and st.held
+    home = read_root(str(r2)).home
+    root.serve(key, nth(home, key, 1))
+    assert pinned(home, key)
+    ((_t, rows),) = root.history(key)                           # history over ssh, by suite
+    assert [mark for *_x, mark in rows] == ["previous", "serving"]
 
 
 def test_unreachable_ssh_root_is_missing(hosts, tmp_path, monkeypatch):  # noqa: F811

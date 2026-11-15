@@ -744,7 +744,9 @@ _ROOT = typer.Option(None, "--root", help="Any root of the mirror — a folder o
 _BREAK_LOCK = typer.Option(False, "--break-lock", help="Clear a lock a dead run left behind")
 _REPO = typer.Argument(..., help="Repository (URL or name)")
 _YES = typer.Option(False, "--yes", help="Don't ask")
-_VERSION_HELP = "Version: v3, 3, or the bundle that brought it — its date (28oct, 2026-10-28), stamp or label"
+_VERSION_HELP = ("A date (2026-11-03, 3nov), a label, or a point's digest (6+ hex) — "
+                 "see mmw site history")
+_TRACK = typer.Option(None, "--track", help="Only this suite (bookworm, bookworm-updates, …)")
 
 
 @site_app.command("apply")
@@ -760,12 +762,16 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
                    yes: bool = typer.Option(False, "--yes", help="Apply even into a root that held a mirror and "
                                                                  "is empty now (else it asks: it may be an "
                                                                  "unmounted share)"),
+                   deploy: list[str] = typer.Option(
+                       None, "--deploy", help="Another network's bundle: also deploy this repository (its "
+                                              "label), which this mirror doesn't hold yet"),
                    break_lock: bool = _BREAK_LOCK):
     """Apply a bundle: each hostname goes to its root, everything is checked
     before anything served changes, and held repositories keep serving what
-    they serve. The first apply makes the roots it names."""
+    they serve. The first apply makes the roots it names. Another network's
+    bundle merges its repositories' history; its network files stay out."""
     from mmw.commands.site import apply
-    raise typer.Exit(apply(src, root, forward, forward_all, dry_run, break_lock, yes))
+    raise typer.Exit(apply(src, root, forward, forward_all, dry_run, break_lock, yes, deploy=deploy))
 
 
 @site_app.command("open")
@@ -973,11 +979,12 @@ def cmd_site_local_update(root: Path = _ROOT):
 
 @site_app.command("serve")
 def cmd_site_serve(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
-                   root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
-    """Serve any kept version of a repository — relinking, never copying.
-    Anything but the newest holds it there."""
+                   track: str = _TRACK, root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
+    """Serve a repository as it was on a date (each suite's newest then), or
+    one point — relinking, never copying. It stays pinned there until
+    `mmw site forward`."""
     from mmw.commands.site import serve
-    raise typer.Exit(serve(repo, version, root, yes, break_lock))
+    raise typer.Exit(serve(repo, version, root, yes, break_lock, track=track))
 
 
 @site_app.command("serve-bundle")
@@ -1015,10 +1022,11 @@ def cmd_site_space(root: Path = _ROOT):
 
 @site_app.command("delete")
 def cmd_site_delete(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
-                    root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
-    """Delete a kept version — never the one served, nor a held repository's newest."""
+                    track: str = _TRACK, root: Path = _ROOT, yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
+    """Delete a kept point (its record stays). The one served only with
+    --yes, after a warning; never one pinned or served just before."""
     from mmw.commands.site import delete
-    raise typer.Exit(delete(repo, version, root, yes, break_lock))
+    raise typer.Exit(delete(repo, version, root, yes, break_lock, track=track))
 
 
 @site_app.command("settings")

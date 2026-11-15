@@ -53,19 +53,22 @@ def _bundle_when(stamp: str, stamps: list[str]) -> str:
 
 
 def _date(stamp: str) -> str:
-    """20261024T101500Z → 24 Oct"""
+    """20261024T101500Z → 24 Oct (with its year when not this one: an
+    upstream Release can be years old)"""
     try:
-        return time.strftime("%d %b", time.strptime(stamp, "%Y%m%dT%H%M%SZ"))
+        t = time.strptime(stamp, "%Y%m%dT%H%M%SZ")
     except ValueError:
         return stamp
+    return time.strftime("%d %b" + ("" if t.tm_year == time.gmtime().tm_year else " %Y"), t)
 
 
 class SiteHomePage(Page):
     TITLE = "Repositories"
     SCROLLS = False
-    HELP = ("Every repository this site serves. Its history is on the right: every version kept\n"
-            "here, the one being served marked ▶. Serving anything but the newest holds the\n"
-            "repository there — bundles then store its new versions without serving them.\n"
+    HELP = ("Every repository this site serves. Its history is on the right, by suite: every\n"
+            "point kept here (one upstream Release, by its date), the one served marked ▶.\n"
+            "Serving a point pins its suite there — bundles then store newer ones without\n"
+            "serving them, until you forward it.\n"
             "k: local .debs this site adds to the repository, and how it is then signed;\n"
             "K: this site's signing keys (carried ones from the connected side included);\n"
             "u: bring in the mmw instances this site serves locally (mmw site local).")
@@ -190,7 +193,7 @@ class SiteHomePage(Page):
         t = self.query_one("#site-repos", DataTable)
         t.show_header = False
         t.add_column("Repository")
-        self.query_one("#site-history", DataTable).add_columns("Version", "Date", "Size", "")
+        self.query_one("#site-history", DataTable).add_columns("Point", "Date", "Size", "")
         t.focus()
         self.action_refresh()
 
@@ -227,13 +230,13 @@ class SiteHomePage(Page):
                 states.append(st)
                 root_of[st.repo] = name
                 history = roots_by[name].history(st.repo)
-                if history:
-                    newest[st.repo] = history[0][0].number
-                # For the card: how many versions are kept here, and their size.
-                kept[st.repo] = (len(history), max((total for _v, total, _f, _s in history), default=0))
-                for v, *_ in history:            # every bundle still kept here, for Serve bundle…
-                    _stamp, label, count = bundles.get(v.stamp, (v.stamp, v.snap_label, 0))
-                    bundles[v.stamp] = (v.stamp, label, count + 1)
+                newest[st.repo] = _summary(history)
+                points = [(p, total) for _t, rows in history for p, total, _f, mark in rows if mark != "stub"]
+                # For the card: how many points are kept here, and the biggest.
+                kept[st.repo] = (len(points), max((total for _p, total in points), default=0))
+                for p, _total in points:         # every bundle still kept here, for Serve bundle…
+                    _stamp, label, count = bundles.get(p.stamp, (p.stamp, p.snap_label, 0))
+                    bundles[p.stamp] = (p.stamp, label, count + 1)
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
@@ -255,16 +258,19 @@ class SiteHomePage(Page):
             # A card, short enough for a 35-column list: what it serves and
             # whether that's its newest; then where it lives and what's kept.
             # (Its hostnames are in the detail beside it.)
-            serving = f"▶ v{s.serving.number} · {_date(s.serving.stamp)}" if s.serving else "nothing served"
-            top = newest.get(s.repo)
-            behind = top is not None and (s.serving is None or s.serving.number != top)
+            info = newest.get(s.repo) or {}
+            served = info.get("served") or []
+            serving = f"▶ {_date(max(served))}" if served else "nothing served"
             kept, size = self._kept.get(s.repo, (0, 0))
             card = Text(s.label, style="bold")
             card.append(f"\n{serving} · ")
-            card.append("held" if s.held else "current", style=colour["mmw-warn" if s.held else "mmw-ok"])
-            if behind:
-                card.append(f" · newest v{top}")
-            card.append(f"\n{self._root_of.get(s.repo, '')} · {kept} version{'s' if kept != 1 else ''} · "
+            state = "held" if s.held else "pinned" if info.get("pinned") else "current"
+            card.append(state, style=colour["mmw-ok" if state == "current" else "mmw-warn"])
+            if info.get("newer"):
+                card.append(" · newer stored")
+            if info.get("incomplete"):
+                card.append(" · incomplete")
+            card.append(f"\n{self._root_of.get(s.repo, '')} · {kept} point{'s' if kept != 1 else ''} · "
                         f"{fmt_size(size)}", style="dim")
             t.add_row(card, key=s.repo, height=3)
         if keep is not None and keep in {s.repo for s in states}:
@@ -317,19 +323,28 @@ class SiteHomePage(Page):
         state = next((s for s in self._states if s.repo == repo), None)
         if state is None:
             return ""
-        newest = rows[0][0] if rows else None
-        serving = (f"v{state.serving.number} · {_date(state.serving.stamp)} · from bundle {state.serving.stamp}"
-                   if state.serving else "nothing")
-        held = "   [$mmw-warn]held[/]" if state.held and not newest else ""
-        if state.held and newest:
-            if not state.serving:
-                held = f"   [$mmw-warn]held · nothing served — Forward serves v{newest.number}[/]"
-            elif newest.number != state.serving.number:
-                held = f"   [$mmw-warn]held at v{state.serving.number} — Forward serves v{newest.number}[/]"
-            else:
-                held = f"   [$mmw-warn]held at v{state.serving.number}[/]"
-        total = max((t for _v, t, _f, _s in rows), default=0)
-        frees = sum(f for _v, _t, f, on in rows if not on)
+        info = _summary(rows)
+        served = []
+        for t, points in rows:
+            for p, _total, _frees, mark in points:
+                if mark == "serving":
+                    served.append(f"{ops.suite_of(t)} {_date(p.date)}" + (" (pinned)" if t.pinned is not None else ""))
+        serving = ", ".join(served) or "nothing"
+        flags = []
+        if state.held:
+            flags.append("[$mmw-warn]held — bundles are stored, not served; Forward moves it on[/]")
+        elif info["pinned"]:
+            flags.append("[$mmw-warn]pinned — Forward serves each suite's newest[/]")
+        elif info["newer"]:
+            flags.append("[$mmw-warn]a newer point is stored but not served[/]")
+        else:
+            flags.append("[$mmw-ok]current[/]")
+        if info["incomplete"]:
+            flags.append("[$mmw-warn]a point is incomplete: bring its files with a full bundle[/]")
+        held = " · ".join(flags)
+        kept = [(p, t_, f) for _t, points in rows for p, t_, f, mark in points if mark != "stub"]
+        total = max((t_ for _p, t_, _f in kept), default=0)
+        frees = sum(f for _t, points in rows for _p, _t2, f, mark in points if mark not in ("serving", "stub"))
         hosts = ", ".join(sorted({b.split("/", 1)[0] for b in state.bases}))
         lines = [
             f"[b]{_esc(state.label)}[/]",
@@ -339,9 +354,8 @@ class SiteHomePage(Page):
             + (f"  [$mmw-ok]+ local packages ({_esc(details['local'])})[/]" if details.get("local") else ""),
             *([f"[$mmw-warn]held by its local packages: {_esc(details['layer_hold'])}[/]"]
               if details.get("layer_hold") else []),
-            "[dim]newest[/]     " + (f"v{newest.number} · {_date(newest.stamp)}" if newest else "—")
-            + ("  [$mmw-ok]current[/]" if not state.held else "") + held,
-            f"[dim]kept[/]       {len(rows)} version{'s' if len(rows) != 1 else ''} · {fmt_size(total)}"
+            "[dim]state[/]      " + held,
+            f"[dim]kept[/]       {len(kept)} point{'s' if len(kept) != 1 else ''} · {fmt_size(total)}"
             + (f" · old ones free {fmt_size(frees)}" if frees else ""),
             f"[dim]https[/]      {_esc(details.get('https', '—'))}",
             # The mirror's, not this root's: a root a repository moved into
@@ -355,28 +369,39 @@ class SiteHomePage(Page):
         if not self.is_attached or repo != self.selected_repo():
             return
         self.query_one("#site-detail", Static).update(self._detail_text(repo, rows, details or {}))
-        self._history = rows
+        # One row per suite heading, then its points: (track, point or None, total, frees, mark).
+        flat = []
+        for t, points in rows:
+            flat.append((t, None, 0, 0, ""))
+            flat += [(t, p, total, frees, mark) for p, total, frees, mark in points]
+        self._history = flat
         t = self.query_one("#site-history", DataTable)
         # The same repository again (a reload): keep the row the user is on.
         same = repo == self._history_repo
         keep = t.cursor_row if same else None
         self._history_repo = repo
         t.clear()
-        for v, total, frees, serving in rows:
-            date = _date(v.stamp) + (f" {v.snap_label}" if v.snap_label else "")
-            t.add_row(f"{'▶ ' if serving else '  '}v{v.number}", Text(date), fmt_size(total),
-                      "serving" if serving else f"frees {fmt_size(frees)}", key=str(v.number))
-            if serving and keep is None:
+        for track, p, total, frees, mark in flat:
+            if p is None:
+                t.add_row(Text(ops.suite_of(track), style="bold"), "", "", "", key=f"t{track.id}")
+                continue
+            from mmw.site.versionref import short
+            date = _date(p.date) + (f" {p.snap_label}" if p.snap_label else "")
+            tail = mark or f"frees {fmt_size(frees)}"
+            t.add_row(f"{'▶ ' if mark == 'serving' else '  '}{short(p.ident)}", Text(date),
+                      fmt_size(total) if mark != "stub" else "—", tail, key=f"p{p.id}")
+            if mark == "serving" and keep is None:
                 t.move_cursor(row=t.row_count - 1)
         if keep is not None and t.row_count:
             t.move_cursor(row=min(keep, t.row_count - 1))
 
-    def selected_version(self) -> int | None:
+    def selected_point(self):
+        """(track, point, mark) at the history's cursor; None on a suite heading."""
         t = self.query_one("#site-history", DataTable)
         if not self._history or t.row_count == 0:
             return None
-        return self._history[min(t.cursor_row, len(self._history) - 1)][0].number
-
+        track, p, _total, _frees, mark = self._history[min(t.cursor_row, len(self._history) - 1)]
+        return (track, p, mark) if p is not None else None
 
     # ── acting on versions ───────────────────────────────────────────────────
 
@@ -385,40 +410,50 @@ class SiteHomePage(Page):
         self.action_serve()
 
     def action_serve(self) -> None:
-        repo, number = self.selected_repo(), self.selected_version()
-        if repo is None or number is None:
-            self.set_status("Pick a version in the history first.", "error")
+        repo, picked = self.selected_repo(), self.selected_point()
+        if repo is None or picked is None:
+            self.set_status("Pick a point in the history first.", "error")
             return
-        self.set_status(f"working out what serving v{number} changes…")
-        self._serve_preview(repo, number)
+        track, point, mark = picked
+        if mark == "stub":
+            self.set_status("That point was deleted here — only its record is kept.", "error")
+            return
+        self.set_status(f"working out what serving {ops.suite_of(track)} {_date(point.date)} changes…")
+        self._serve_preview(repo, track, point)
 
     @work(thread=True, exclusive=True, group="site-preview", exit_on_error=False)
-    def _serve_preview(self, repo: str, number: int) -> None:
+    def _serve_preview(self, repo: str, track, point) -> None:
+        from mmw.site.versionref import name_of
         try:                                     # over ssh, a round trip: never on the screen's thread
-            p = self.app.root_of(repo).serve_preview(repo, number)
+            p = self.app.root_of(repo).serve_preview(repo, name_of(point), ops.suite_of(track))
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._confirm_serve, repo, number, p)
+        self.app.call_from_thread(self._confirm_serve, repo, track, point, p)
 
-    def _confirm_serve(self, repo: str, number: int, p) -> None:
+    def _confirm_serve(self, repo: str, track, point, p) -> None:
         from mmw.tui.ui.dialog import ConfirmDialog
         self.set_status("")
-        now = f"v{p.current.number} · {_date(p.current.stamp)}" if p.current else "nothing"
-        details = (f"now serving {now}\n"
+        suite, when = ops.suite_of(track), _date(point.date)
+        details = (f"now serving {', '.join(p.current) or 'nothing'}\n"
                    f"relinks {p.relinks:,} file(s) · nothing to copy · indexes switch last\n"
-                   + ("" if p.target.number == ops_newest(self._history) else
-                      f"{p.label} stays held at v{number} until you forward it"))
+                   f"{p.label} {suite} stays pinned at {when} until you forward it")
+        current = {}
+        for t, rows in _rows_of(self._history):
+            for q, _total, _frees, mark in rows:
+                if mark == "serving":
+                    current[ops.suite_of(t)] = (q.date, q.ident)
+        step = self._step(repo, current, {suite: (point.date, point.ident)})
         self.app.push_screen(
-            ConfirmDialog(f"Serve {p.label} v{number} ({_date(p.target.stamp)})?", "",
-                          confirm_label=f"Serve v{number}", confirm_variant="primary",
+            ConfirmDialog(f"Serve {p.label} {suite} as of {when}?", "",
+                          confirm_label="Serve", confirm_variant="primary",
                           cancel_variant="default", details=details),
-            lambda ok: ok and self._switch([self._step(repo, p.target)], "Serving", p.relinks))
+            lambda ok: ok and self._switch([step], "Serving", p.relinks))
 
-    def _step(self, repo: str, target):
-        """One repository to serve at `target`, for the progress page."""
+    def _step(self, repo: str, current: dict, target: dict, *, forward: bool = False):
+        """One repository to switch, for the progress page."""
         state = next(s for s in self._states if s.repo == repo)
-        return ops.BundleStep(self.app.root_of(repo), repo, state.label, state.serving, target)
+        return ops.BundleStep(self.app.root_of(repo), repo, state.label, current, target, forward=forward)
 
     def _switch(self, steps, title: str, total: int | None = None) -> None:
         self.app.push_screen(SwitchRunPage(steps, title, total), lambda _: self._load())
@@ -430,45 +465,61 @@ class SiteHomePage(Page):
 
     @work(thread=True, exclusive=True, group="site-preview", exit_on_error=False)
     def _forward_plan(self, repo: str) -> None:
-        try:                                     # its newest, from the root itself (ssh: off the screen)
-            newest = self.app.root_of(repo).history(repo)[0][0]
+        try:                                     # from the root itself (ssh: off the screen)
+            rows = self.app.root_of(repo).history(repo)
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._forward, repo, newest)
+        self.app.call_from_thread(self._forward, repo, rows)
 
-    def _forward(self, repo: str, newest) -> None:
+    def _forward(self, repo: str, rows) -> None:
         state = next((s for s in self._states if s.repo == repo), None)
         if state is None:
             return
-        if state.serving is not None and state.serving.number == newest.number:
-            if state.held:                       # nothing to switch: only the hold to clear
-                self._act(f"{state.label}: hold cleared — already at its newest, v{newest.number}",
-                          self.app.root_of(repo).forward, repo)
-            else:
-                self.set_status(f"{state.label} is already at its newest, v{newest.number}")
+        info = _summary(rows)
+        if not (state.held or info["pinned"] or info["newer"]):
+            self.set_status(f"{state.label} already serves each suite's newest")
             return
-        self._switch([self._step(repo, newest)], "Forwarding")
+        if not info["newer"]:                    # nothing to switch: only the hold or pins to clear
+            self._act(f"{state.label}: {'hold' if state.held else 'pins'} cleared — already at its newest",
+                      self.app.root_of(repo).forward, repo)
+            return
+        self._switch([self._step(repo, {}, {}, forward=True)], "Forwarding")
 
     def action_hold(self) -> None:
         repo = self.selected_repo()
         if repo is not None:
-            self._act("held — bundles store its new versions without serving them",
+            self._act("held — bundles store its new points without serving them",
                       self.app.root_of(repo).hold, repo)
 
     def action_delete(self) -> None:
-        repo, number = self.selected_repo(), self.selected_version()
-        if repo is None or number is None:
-            self.set_status("Pick a version in the history first.", "error")
+        repo, picked = self.selected_repo(), self.selected_point()
+        if repo is None or picked is None:
+            self.set_status("Pick a point in the history first.", "error")
             return
+        track, point, mark = picked
+        if mark == "stub":
+            self.set_status("That point is already deleted here — only its record is kept.", "error")
+            return
+        from mmw.site.versionref import name_of
         from mmw.tui.ui.dialog import ConfirmDialog
         label = next(s.label for s in self._states if s.repo == repo)
+        suite, when = ops.suite_of(track), _date(point.date)
+        root = self.app.root_of(repo)
+        args = (repo, name_of(point), suite)
+        if mark == "serving":
+            warn = (f"It is being served: {suite} then serves the next newest point kept here. "
+                    "Its record stays in the history.")
+            self.app.push_screen(
+                ConfirmDialog(f"Delete {label} {suite} {when}, which is being served?", warn,
+                              confirm_label="Delete anyway", confirm_variant="warning"),
+                lambda ok: ok and self._act(f"deleted {label} {suite} {when}", root.delete, *args, True))
+            return
         self.app.push_screen(
-            ConfirmDialog(f"Delete {label} v{number} from this site?",
-                          "Its files go too, unless another kept version uses them.",
+            ConfirmDialog(f"Delete {label} {suite} {when} from this site?",
+                          "Its files go too, unless another kept point uses them. Its record stays.",
                           confirm_label="Delete"),
-            lambda ok: ok and self._act(f"deleted {label} v{number}", self.app.root_of(repo).delete,
-                                        repo, number))
+            lambda ok: ok and self._act(f"deleted {label} {suite} {when}", root.delete, *args))
 
     @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
     def _act(self, done: str, fn, *args) -> None:
@@ -494,7 +545,7 @@ class SiteHomePage(Page):
 
     @work(thread=True, exclusive=True, group="site-bundle-plan", exit_on_error=False)
     def _bundle_plan(self, stamp: str) -> None:
-        self.app.call_from_thread(self.set_status, "reading every repository's versions…")
+        self.app.call_from_thread(self.set_status, "reading every repository's points…")
         try:
             steps = ops.bundle_plan(self.app.mset, stamp)
         except Exception as e:  # noqa: BLE001 — an ssh root down: said on the page
@@ -511,8 +562,8 @@ class SiteHomePage(Page):
         self.set_status("")
         self.app.push_screen(
             ConfirmDialog(f"Serve the mirror as of the {when} bundle?",
-                          "Each repository serves its newest version from then; those that came later stay "
-                          "as they are. Any not on its newest is held until you forward it.",
+                          "Each suite serves its newest point from then; repositories that came later stay "
+                          "as they are. Each stays pinned there until you forward it.",
                           confirm_label="Serve", confirm_variant="primary", cancel_variant="default",
                           details="\n".join(s.line() for s in steps)),
             lambda ok: ok and self._switch(steps, f"As of the {when} bundle"))
@@ -720,20 +771,35 @@ class SiteHomePage(Page):
         self._plan(path)                           # just updated: carry on with the same bundle
 
     @work(thread=True, exclusive=True, group="site-plan", exit_on_error=False)
-    def _plan(self, path: str) -> None:
+    def _plan(self, path: str, deploy: frozenset | None = None) -> None:
+        from dataclasses import replace
+
         from mmw.site.apply import plan_apply, plan_set_apply
         self.app.call_from_thread(self.set_status, f"reading {path}…")
         try:
             plan = plan_apply(self.app.mset, path)
-            placing = plan_set_apply(self.app.mset, path)
+            placing = plan_set_apply(self.app.mset, path, deploy=set(deploy or ()))
         except Exception as e:  # noqa: BLE001 — not a bundle, and the like
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
-        self.app.call_from_thread(self._review, plan, path, placing)
+        if placing.foreign:
+            if deploy is None and placing.not_here:
+                self.app.call_from_thread(self._ask_deploy, path, placing)
+                return
+            kept = {r for repos in placing.hosts.values() for r in repos}
+            plan = replace(plan, rows=[r for r in plan.rows if r.repo in kept])
+        self.app.call_from_thread(self._review, plan, path, placing, deploy or frozenset())
 
-    def _review(self, plan, path: str, placing=None) -> None:
+    def _ask_deploy(self, path: str, placing) -> None:
+        from mmw.tui.site.apply_flow import DeployPage
+        self.set_status("")
+        self.app.push_screen(DeployPage(placing.network, placing.not_here),
+                             lambda chosen: chosen is not None and self._plan(path, chosen))
+
+    def _review(self, plan, path: str, placing=None, deploy: frozenset = frozenset()) -> None:
         from mmw.tui.site.apply_flow import ApplyReviewPage, remember
         remember(path)
+        self._deploy = deploy
         here = placing.locations if placing is not None else {}
         if placing is not None and any(o not in here for o in placing.owner.values()):
             # A new hostname needs a root, or a root is missing: place first.
@@ -753,9 +819,11 @@ class SiteHomePage(Page):
     def _chosen(self, choice, place=None) -> None:
         if choice is None:
             return
+        from dataclasses import replace
         if place is not None:
-            from dataclasses import replace
             choice = replace(choice, place=place)
+        if getattr(self, "_deploy", None):
+            choice = replace(choice, deploy=self._deploy)
         self.app.push_screen(_run_page(choice), lambda _r: self._load())
 
 
@@ -764,8 +832,29 @@ def _run_page(choice):
     return ApplyRunPage(choice)
 
 
-def ops_newest(history) -> int | None:
-    return history[0][0].number if history else None
+def _summary(history) -> dict:
+    """From a repository's history (track, rows): the dates it serves,
+    whether a suite is pinned, a newer point is stored but not served, or a
+    point is incomplete."""
+    served, pinned, newer, incomplete = [], False, False, False
+    for t, rows in history:
+        pinned = pinned or t.pinned is not None
+        for i, (p, _total, _frees, mark) in enumerate(rows):
+            incomplete = incomplete or mark == "incomplete"
+            if mark == "serving":
+                served.append(p.date)
+                newer = newer or any(m in ("", "previous") for *_x, m in rows[:i])
+    return {"served": served, "pinned": pinned, "newer": newer, "incomplete": incomplete}
+
+
+def _rows_of(flat) -> list:
+    """The history pane's flat rows back into (track, rows)."""
+    out: dict = {}
+    for track, p, total, frees, mark in flat:
+        rows = out.setdefault(track.id, (track, []))[1]
+        if p is not None:
+            rows.append((p, total, frees, mark))
+    return list(out.values())
 
 
 class PassphrasePage(Page):
@@ -849,7 +938,7 @@ class SwitchRunPage(RunPage):
         super().__init__(total, [(s.key, s.label) for s in steps])
         self.TITLE = title
         self._steps = steps
-        self.subtitle = and_list([f"{s.label} → v{s.target.number}" for s in steps])
+        self.subtitle = and_list([s.label for s in steps])
 
     def updated_note(self) -> str:
         return "serving"
@@ -863,21 +952,20 @@ class SwitchRunPage(RunPage):
         return ops.serve_bundle(self._steps, progress=progress, stop_event=stop)
 
     def _done(self, served) -> None:
-        targets = {s.label: s for s in self._steps}
-        lines = [f"[b $success]✓ {_esc(label)} serves v{targets[label].target.number}[/]" for label in served]
-        newest = [label for label in served if targets[label].target.number < self._newest(targets[label])]
-        if newest:
-            lines.append(f"{_esc(and_list(newest))}: held there — Forward (f) moves "
-                         f"{'it' if len(newest) == 1 else 'them'} on")
+        steps = {s.label: s for s in self._steps}
+        lines = []
+        for label in served:
+            s = steps[label]
+            what = ("each suite's newest" if s.forward else
+                    ", ".join(f"{suite} {_date(date)}" for suite, (date, _i) in sorted(s.target.items())))
+            lines.append(f"[b $success]✓ {_esc(label)} serves {_esc(what)}[/]")
+        pinned = [label for label in served if not steps[label].forward]
+        if pinned:
+            lines.append(f"{_esc(and_list(pinned))}: pinned there — Forward (f) moves "
+                         f"{'it' if len(pinned) == 1 else 'them'} on")
         self.query_one("#run-done", Static).update("\n".join(lines))
         self.set_status("")
         self._finish()
-
-    def _newest(self, step) -> int:
-        try:
-            return step.root.history(step.key)[0][0].number
-        except Exception:  # noqa: BLE001 — only for the note
-            return step.target.number
 
 
 class TidyRunPage(RunPage):

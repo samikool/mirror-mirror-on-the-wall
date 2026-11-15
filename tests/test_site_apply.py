@@ -54,7 +54,7 @@ def test_apply_full_then_delta(env, tmp_path):
     assert r.updated == [_key(cfg, "a")]
     assert _tree(root) == _published(cfg, net, md, tmp_path, "p2")
     with SiteDB(home) as db:
-        assert [v.number for v in db.versions(_key(cfg, "a"))] == [2, 1]
+        assert sum(len(db.points(t.id)) for t in db.tracks(_key(cfg, "a"))) == 2       # both kept
 
 
 def test_apply_from_stage_and_stdin(env, tmp_path, monkeypatch):
@@ -131,7 +131,9 @@ def test_apply_missing_base_refuses_only_that_repo(env, tmp_path):
     _change_a(md)
     _change_b(md)
     r = apply_bundle(other, str(_bundle(cfg, net, md, tmp_path / "2")), say=lambda *a: None)
-    assert r.updated == [ka] and kb in r.refused and "--repo" in r.refused[kb]
+    # Not refused: b's new point is stored, incomplete, and says how to complete it.
+    assert r.updated == [ka] and not r.refused and kb in r.incomplete
+    assert any("--repo 'b'" in ln for ln in r.lines)
 
 
 def test_apply_held_repo_is_stored_not_switched(env, tmp_path):
@@ -140,6 +142,7 @@ def test_apply_held_repo_is_stored_not_switched(env, tmp_path):
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=lambda *a: None)
     with SiteDB(home) as db:
         db.set_held(ka, True)
+        served = db.repo_state(ka).serving.id
     before = _tree(root)
     _change_a(md)
     r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2")), say=lambda *a: None)
@@ -147,7 +150,8 @@ def test_apply_held_repo_is_stored_not_switched(env, tmp_path):
     assert _tree(root) == before
     with SiteDB(home) as db:
         st = db.repo_state(ka)
-        assert st.serving.number == 1 and st.held and db.versions(ka)[0].number == 2
+        assert st.serving.id == served and st.held
+        assert sum(len(db.points(t.id)) for t in db.tracks(ka)) == 2
 
 
 def test_apply_forward_switches_held(env, tmp_path):
@@ -193,7 +197,7 @@ def test_cli_apply(env, tmp_path):
     assert r.exit_code == 1 and "--root" in r.output                # a new hostname needs a root
     r = CliRunner().invoke(cli.app, ["site", "apply", str(b), "--root", f"*={root}"])
     assert r.exit_code == 0, r.output
-    assert "a  full → v1" in r.output and "start nginx in main" in r.output
+    assert "a  files full → " in r.output and "start nginx in main" in r.output
 
 
 def test_root_apply_takes_members_pushed_to_it(env, tmp_path):

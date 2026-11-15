@@ -1,10 +1,18 @@
 # mmw on the far side
 
 For a network whose far side runs mmw (`far_side = "mmw"` on the connected
-side), `mmw site` keeps **every version of every repository** it is sent,
-and serves any of them again by relinking files it already has. Take Debian
-back to last month's version without a new bundle, leave everything else
+side), `mmw site` keeps a **timeline** of every repository it is sent, and
+serves any point on it again by relinking files it already has. Take Debian
+back to how it was last month without a new bundle, leave everything else
 where it is, and move it forward when you are ready.
+
+A point is one upstream `Release` — a suite such as `bookworm`, as upstream
+published it — named by its date. A repository has a timeline per suite
+(`bookworm`, `bookworm-updates`, …); files no `Release` claims (a PyPI or
+VS Code tree) are one timeline, `files`, dated by the bundle that brought
+them. Points are identified by their contents, so the same `Release` from
+anywhere is the same point: bundles that arrive out of order, or from
+another network, are **merged into the timeline** — never refused for it.
 
 A network whose far side runs only `apply.py` keeps working exactly as
 [airgap.md](airgap.md) describes; `mmw site` refuses its bundles, and
@@ -19,7 +27,7 @@ A network whose far side runs only `apply.py` keeps working exactly as
   (an NFS export is fine). Keep each root on one filesystem.
 - Each root **describes itself**: its `.mmw/` holds its store (one file
   per distinct content; every served file is a hardlink into it), a small
-  database of every version it was sent, what it serves, its nginx setup
+  database of every point it was sent, what it serves, its nginx setup
   and a lock. Point any mmw on any machine at it and it knows what it is.
 - Every root of one connected-side network's mirror forms a **set**. Each
   hostname lives in exactly one root; the files that belong to no
@@ -98,12 +106,33 @@ applied 20261031T101500Z
   next. Stop takes effect before the next hostname.
 - A root that isn't mounted holds back only its own hostnames, by name;
   the rest apply.
-- A repository whose new version needs files a root never received (it
-  missed an earlier bundle) is refused on its own, with the
-  connected-side command that fixes it; the rest still apply.
-- A bundle from another network is refused.
+- A point whose files aren't all here (the root missed an earlier bundle)
+  is stored as **incomplete** and said, with the connected-side command that
+  brings the rest; each suite keeps serving its newest complete point, and
+  the rest of the bundle applies. A later bundle completes it.
 - An older bundle, or one already applied, never moves what a repository
-  serves: its versions are stored, and `mmw site serve` can use them.
+  serves: its points join the timeline, and `mmw site serve` can use them.
+- A file that differs inside one `Release` from what this mirror holds is
+  refused for that point alone: the bundle or the mirror is damaged
+  (`mmw site verify`).
+
+### A bundle from another network
+
+Networks that pass data one way (A sometimes sends to B) can merge their
+history. Applying A's bundle on B:
+
+- B's repositories that A's bundle also carries take its points into their
+  timelines. If A had bookworm at 1 → 2 → 4 and B at 1 → 3, B now has
+  1 → 2 → 3 → 4 and serves the newest.
+- A's network files — nginx setup, settings, TLS, signing keys, mmw itself —
+  are never applied; the mirror stays B's.
+- A's repositories B doesn't mirror are skipped, by name. To deploy one here
+  as well: `mmw site apply BUNDLE --deploy LABEL` (or tick it in the TUI). It
+  is placed like any new hostname, served, and given its own nginx server
+  block and its `keys/LABEL/` files.
+
+A repository is matched by its upstream URL: two networks mirroring Debian
+from different hosts don't merge yet.
 
 ### Updates to mmw itself
 
@@ -129,48 +158,47 @@ them: it is ignored, with the note "this bundle carries an mmw runtime —
 ignored; install mmw from its installer file", and the content applies as
 usual.
 
-## Serve another version
+## Serve another point
 
 ```bash
-mmw site history debian         # every version kept here
-mmw site serve debian v6        # relinks; asks first (--yes to skip)
-mmw site serve debian 28oct     # the same, by the bundle that brought it
-mmw site status                 # what each repository serves, held or current
+mmw site history debian                    # each suite's points; ▶ is served
+mmw site serve debian 2026-10-28           # each suite as it was that day (asks; --yes to skip)
+mmw site serve debian 3f9a1c --track bookworm   # one point, by its digest
+mmw site status                            # what each repository serves: current, pinned or held
 ```
 
-A version is `v6` (or `6`), or the bundle that brought it: its label (any
-case), its date (`28oct`, `oct 28`, `28 October`, `28/10` — day first —
-or `2026-10-28`), or the start of its stamp (`20261028T09`). A day and
-month alone means the most recent one, up to today; an older year has to
-be said (`2024-10-28`), and the error says when one exists. Dates are the
-bundle's stamp, in UTC. Two bundles on one day are not guessed between —
-the error names both, and the stamp picks one.
+A point is named by its date (`28oct`, `oct 28`, `28 October`, `28/10` — day
+first — or `2026-10-28`), the start of a stamp (`20261028T09`), its bundle's
+label, or six or more characters of its digest (`mmw site history` shows
+them). A date means **as of** that day: each suite's newest point dated on
+or before it. A day and month alone means the most recent one, up to today.
+Dates are the upstream `Release`'s own, in UTC (a point without one is
+dated by the bundle that brought it). `--track SUITE` limits it to one
+suite.
+
+Serving a point **pins** its suite there: later bundles store newer points
+without serving them. Other suites of the same repository keep moving.
+`mmw site forward debian` (or `--all`) clears the pins and serves each
+suite's newest; `mmw site apply … --forward debian` (or `--forward-all`) does
+it as a bundle lands. `mmw site hold debian` holds a whole repository: bundles
+store its points but switch nothing.
 
 To put the whole mirror back to how it was after one bundle:
 
 ```bash
-mmw site serve-bundle 28oct     # every repository at its newest version from then
+mmw site serve-bundle 28oct     # every suite at its newest point that had arrived by then
 ```
 
-- A repository that bundle didn't change serves its version from before it.
-- One that first arrived later, or whose version from then has since been
+- A repository that bundle didn't change keeps what it had from before it.
+- One that first arrived later, or whose point from then has since been
   deleted, is left as it is, and the list says which.
 - A root that isn't here is named, and its repositories are left as they are.
 - It lists each change and asks first (`--yes` to skip). The TUI's **As of…**
   (**b**) does the same.
 
-Every repository it moves off its newest version is held there; those
-already at their newest are not, so the next bundle moves them on.
-`mmw site forward --all` moves the held ones on too. If one switch fails
+What it moves is pinned there until you forward it. If one switch fails
 part-way (a lock, an ssh root dropping), the ones before it stay switched,
 and the error says which were served and which were not.
-
-Anything but the newest version **holds** the repository there: later
-bundles store its new versions without serving them. `mmw site apply …
---forward debian` (or `--forward-all`) moves it on as the bundle lands;
-`mmw site forward debian` (or `--all`) moves it to the newest version kept
-here at any time. `mmw site hold debian` holds a repository without
-changing what it serves.
 
 Switching only touches the files that differ, packages first, indexes
 next, release files last, removals after — a client mid-`apt update` never
@@ -272,10 +300,10 @@ machine yet it offers to load the mirror's existing one (its `.crt` and
 ## Your own packages here
 
 A site can add `.deb`s to a repository it serves — say, a build made on this
-side into the Ubuntu mirror. The stored versions stay exactly what bundles
-brought (every later delta still applies); what is served is the version
-**plus** the site's local packages, rebuilt for whichever version is served:
-applying a bundle, serving an old version and forwarding all keep them.
+side into the Ubuntu mirror. The stored points stay exactly what bundles
+brought (every later delta still applies); what is served is the point
+**plus** the site's local packages, rebuilt for whichever point is served:
+applying a bundle, serving an old point and forwarding all keep them.
 
 ```bash
 mmw site signing-key generate site                    # or import one, or use a carried key
@@ -326,13 +354,18 @@ serve here cannot also come from a local instance (its versions would fork).
 ## Space
 
 ```bash
-mmw site space                  # each version's size, and what deleting it frees
-mmw site delete debian v3       # never the one served, nor a held repository's newest
-mmw site settings --keep 5      # keep the newest 5 of each repository (default: all)
+mmw site space                  # each point's size, and what deleting it frees
+mmw site delete debian 2026-09-01 --track bookworm   # its files go; its record stays
+mmw site settings --keep 5      # keep the newest 5 points of each suite (default: all)
 ```
 
-"Frees" counts only files no other kept version uses: consecutive versions
-share most of theirs.
+"Frees" counts only files no other kept point uses: consecutive points share
+most of theirs. A deleted point stays in the history as a record (it can be
+filled back in by a later bundle). Never deleted, by hand or by `--keep`:
+a point that is pinned, the one each suite served before its current one
+(kept for rolling back), or one a switch is part-way through. The point
+being served can be deleted by hand — it warns, names what that suite then
+serves, and needs `--yes`.
 
 ## Checking it
 
@@ -353,14 +386,17 @@ your own deployment copy outside the root, as [airgap.md](airgap.md) says.
 mmw site manage
 ```
 
-Opens on a card for every repository the site serves — what it serves
-against the newest version here, held or current, its hostnames, root, size
-and versions kept. Beside it, the selected repository in full (its root,
-the bundle it serves from, what old versions would free, https, the last
-apply) and its versions, the served one marked ▶, with Serve, Forward, Hold
-and Delete under them. Keys: **Enter** on a version serves it (after a
-confirmation saying what changes), **f** forwards, **h** holds, **d** deletes
-a version, **a** applies a bundle, **r** adds a root (an empty folder or
+Opens on a card for every repository the site serves — the date it
+serves, current, pinned or held (and "newer stored" when it is behind), its
+root, size and points kept. Beside it, the selected repository in full (its
+root, what each suite serves, what old points would free, https, the last
+apply) and its history: each suite's heading, then its points newest first,
+the served one marked ▶ (also *previous*, *pinned*, *incomplete*, or *stub*
+for a deleted one), with Serve, Forward, Hold and Delete under them. Keys:
+**Enter** on a point serves it (pinning its suite, after a confirmation
+saying what changes), **f** forwards, **h** holds, **d** deletes a point,
+**a** applies a bundle (one from another network asks first which of its
+repositories this mirror doesn't hold to deploy), **r** adds a root (an empty folder or
 `host:/path` becomes a new root of this mirror), **m** moves a repository to
 another root, **b** serves the whole mirror as of a bundle, **c** manages
 certificates, **t** tidies, **ctrl+r** refreshes.

@@ -17,7 +17,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-PROTOCOL = 1
+PROTOCOL = 2          # 2: timelines — versions named by date, per suite
 
 
 # ── framing (the local side writes, the remote side reads) ────────────────────
@@ -104,8 +104,8 @@ def _jsonable(o):
 
 
 def _state(st, newest) -> dict:
-    serving = ({"number": st.serving.number, "stamp": st.serving.stamp, "snap_label": st.serving.snap_label}
-               if st.serving else None)
+    serving = ({"number": st.serving.number, "stamp": st.serving.stamp, "snap_label": st.serving.snap_label,
+                "digest": st.serving.digest} if st.serving else None)
     return {"repo": st.repo, "label": st.label, "bases": st.bases, "serving": serving, "held": st.held,
             "newest": newest}
 
@@ -199,6 +199,9 @@ def _apply(root, args, stdin, stdout) -> int:
     p.add_argument("--forward", action="append", default=[])
     p.add_argument("--forward-all", action="store_true")
     p.add_argument("--only", action="append", default=None)
+    p.add_argument("--repos-only", action="store_true")
+    p.add_argument("--foreign", action="store_true")
+    p.add_argument("--foreign-mirrors", default=None)
     o = p.parse_args(args)
     from mmw.resources.apply import MANIFEST_MEMBER
 
@@ -207,7 +210,9 @@ def _apply(root, args, stdin, stdout) -> int:
             _emit(stdout, {"event": event, **data})
     with root.applier(forward=set(o.forward), forward_all=o.forward_all,
                       only=set(o.only) if o.only is not None else None, progress=progress,
-                      say=lambda *a: None) as ra:
+                      say=lambda *a: None, network_files=not o.repos_only,
+                      foreign_mirrors=json.loads(o.foreign_mirrors) if o.foreign_mirrors else None,
+                      foreign=o.foreign) as ra:
         for m in read_members(stdin):
             if m.name == MANIFEST_MEMBER:
                 ra.begin(m.fh.read())
@@ -255,8 +260,9 @@ def _json_in(stdin) -> dict:
 
 
 def _history(root, args, stdin):
-    return [{"version": v, "total": total, "frees": frees, "serving": serving}
-            for v, total, frees, serving in root.history(args[0])]
+    return [{"track": t, "points": [{"point": p, "total": total, "frees": frees, "mark": mark}
+                                    for p, total, frees, mark in rows]}
+            for t, rows in root.history(args[0])]
 
 
 def _break_lock(root, args, stdin):
@@ -291,11 +297,12 @@ _VERBS = {
     "set-identity": _simple(lambda r, a, i: r.set_identity(**_json_in(i)) or {"ok": True}),
     "keep-versions": _simple(lambda r, a, i: {"keep": r.keep_versions()}),
     "history": _simple(_history),
-    "serve-preview": _simple(lambda r, a, i: r.serve_preview(a[0], int(a[1]))),
-    "serve": _simple(lambda r, a, i: r.serve(a[0], int(a[1]))),
+    "serve-preview": _simple(lambda r, a, i: r.serve_preview(a[0], a[1], a[2] if len(a) > 2 else None)),
+    "serve": _simple(lambda r, a, i: r.serve(a[0], a[1], a[2] if len(a) > 2 else None)),
     "forward": _simple(lambda r, a, i: r.forward(a[0] if a else None)),
     "hold": _simple(lambda r, a, i: {"label": r.hold(a[0])}),
-    "delete": _simple(lambda r, a, i: {"freed": r.delete(a[0], int(a[1]))}),
+    "delete": _simple(lambda r, a, i: {"freed": r.delete(a[0], a[1], a[2] or None if len(a) > 2 else None,
+                                                         "--force" in a[3:])}),
     "space": _simple(lambda r, a, i: r.space()),
     "verify": _simple(lambda r, a, i: r.verify(bool(a and a[0] == "--repair"))),
     "keep": _simple(lambda r, a, i: r.keep(None if a[0] == "all" else int(a[0])) or {"ok": True}),

@@ -28,6 +28,7 @@ from mmw.site.reader import SourceError, open_source
 from mmw.site.store import ChecksumMismatch, Store
 from mmw.site.roots import Roots
 from mmw.site.switch import resume_switches, switch_in
+from mmw.site.timeline import choose, ensure_state, import_rows, migrate
 
 
 # v1 bundles carried mmw's runtime; mmw comes from its installer now, and
@@ -65,6 +66,7 @@ class ApplyResult:
     actions: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
     stopped: list[str] = field(default_factory=list)    # stored and held: a stop came before their switch
+    incomplete: dict[str, list] = field(default_factory=dict)   # repo -> TrackOutcomes stored, files missing
 
 
 def members_of(src: str):
@@ -110,7 +112,8 @@ class RootApply:
 
     def __init__(self, home: Path, *, dry_run: bool = False, forward: set[str] | None = None,
                  forward_all: bool = False, only: set[str] | None = None, progress=None, stop_event=None,
-                 say=print, network_files: bool = True):
+                 say=print, network_files: bool = True, foreign_mirrors: dict | None = None,
+                 foreign: bool = False):
         """`network_files=False`: repositories only — a local instance's
         update (`site.local`) leaves the network files, settings and applied
         log exactly as the connected side's bundles made them."""
@@ -118,6 +121,9 @@ class RootApply:
         self.dry_run, self.forward, self.forward_all, self.only = dry_run, set(forward or ()), forward_all, only
         self.progress, self.stop_event, self.say = progress, stop_event, say
         self.network_files = network_files
+        # Another network's repositories deployed here: their nginx entries.
+        self.foreign_mirrors = dict(foreign_mirrors or {})
+        self.foreign = foreign                   # another network's bundle: never retires a suite
         self.got: dict[str, tuple[str, int]] = {}
         self.links: dict[str, str] = {}
         self.tls: dict[str, bytes] = {}
@@ -140,6 +146,7 @@ class RootApply:
             raise
         if not self.dry_run:
             self.store.sweep_tmp()
+            migrate(self.db, self.roots)
             resume_switches(self.db, self.roots)
         return self
 
@@ -277,17 +284,8 @@ class RootApply:
             label = meta["label"]
             if repo_digests(mine, {repo: meta["bases"]})[repo] != meta["digest"]:
                 raise ApplyError(2, f"{label}: its files do not match the version the bundle names")
-            here = db.version(repo, meta["to"])
-            if here is not None and here.digest != meta["digest"]:
-                result.refused[repo] = (
-                    f"v{meta['to']} here is not the connected side's v{meta['to']} — its history no "
-                    f"longer matches this mirror. To follow it: mmw site delete '{label}' v{meta['to']} "
-                    "(and any later), then apply again")
-                continue
-            if not all(have(c) for _p, c in mine):
-                result.refused[repo] = (f"needs v{meta['from']} here first — on the connected side: "
-                                        f"mmw bundle -n {header.network} --repo '{label}' --from none")
-                continue
+            # Out of order or missing its start: never refused — its points
+            # join the timeline, and any whose files are not all here wait.
             planned[repo] = {"meta": meta, "rows": mine}
         network = {p: c for p, c, r in rows if r is None}
         missing = [p for p, c in network.items() if not have(c)]
@@ -306,6 +304,18 @@ class RootApply:
         self._checked = (header, rows, result, planned, network, sizes)
         return result
 
+    @staticmethod
+    def _older_lines(db, repo: str, label: str, outcomes, chosen: dict[int, int], result) -> None:
+        """A point this bundle brought that is older than what its track serves."""
+        for o in outcomes:
+            if o.point is None or o.status not in ("new", "widened", "refilled"):
+                continue
+            track = db.point(o.point).track
+            serving = chosen.get(track)
+            if serving is not None and serving != o.point and db.point(serving).date > o.date:
+                result.lines.append(f"  {label}  {o.suite or 'files'} {_day(o.date)} stored (older than the "
+                                    f"{_day(db.point(serving).date)} being served)")
+
     def commit(self, *, others_changed: bool = False) -> "ApplyResult":
         """Record the checked versions, place the network files, switch each
         hostname whole. A stop before anything changed anywhere raises; once
@@ -321,17 +331,27 @@ class RootApply:
         self.first_time = not db.applied()
         # Carried signing keys first: a site layer re-signs as its repository switches.
         result.lines.extend(self._import_keys())
-        recorded: dict[str, int] = {}
-        try:
-            for repo, plan in planned.items():
-                meta = plan["meta"]
-                recorded[repo] = db.add_version(
-                    repo, meta["label"], meta["to"], meta["digest"], header.created, header.created_label,
-                    meta["bases"], [(p, c, _size(store, c, sizes)) for p, c in plan["rows"]], commit=False)
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
+        recorded: dict[str, list] = {}
+        arrived = set(sizes)
+        for repo, plan in planned.items():
+            meta = plan["meta"]
+            rows = dict(plan["rows"])
+            outcomes = import_rows(db, store, repo, meta["label"], meta["bases"], rows,
+                                   {c: _size(store, c, sizes) for c in set(rows.values())
+                                    if c in sizes or store.has(c)},
+                                   header.created, header.created_label, arrived, own=not self.foreign)
+            recorded[repo] = outcomes
+            label = meta["label"]
+            for o in outcomes:
+                what = f"{o.suite or 'files'} {_day(o.date)}"
+                if o.status == "conflict":
+                    result.refused[repo] = f"{o.note} differs inside one Release"
+                    result.lines.append(f"  {label}  {what} refused: {o.note} differs inside one Release — "
+                                        "the bundle or this mirror is damaged; run mmw site verify")
+                elif o.status == "incomplete":
+                    result.incomplete.setdefault(repo, []).append(o)
+                    result.lines.append(f"  {label}  {what} stored, incomplete: {o.missing} file(s) missing — "
+                                        f"bring them: mmw bundle -n {header.network} --repo '{label}' --from none")
 
         if not self.network_files:
             result.network_changed = False     # nothing of the network's was touched
@@ -347,7 +367,13 @@ class RootApply:
                     _prune_empty_parents(str(root), str((root / rel).parent))
         if header.settings and self.network_files:
             db.set_meta("settings", header.settings)
-        if roots.multi and db.get_meta("settings"):
+        if self.foreign_mirrors:
+            known = json.loads(db.get_meta("foreign_mirrors") or "{}")
+            known.update(self.foreign_mirrors)
+            db.set_meta("foreign_mirrors", json.dumps(known, sort_keys=True))
+        # One root, the bundle's own nginx — until another network's
+        # repository is deployed here: then nginx is generated, as for several.
+        if (roots.multi or db.get_meta("foreign_mirrors")) and db.get_meta("settings"):
             result.network_changed = write_root_nginx(db, roots) or result.network_changed
         for name, data in sorted(self.tls.items()):
             _install_tls(str(root), name, io.BytesIO(data))
@@ -357,47 +383,66 @@ class RootApply:
             # A hostname switches whole: Stop is looked at before each one.
             stopped = stopped or (stop_event is not None and stop_event.is_set())
             for repo in group:
-                vid = recorded[repo]
-                meta, state = header.repos[repo], db.repo_state(repo)
-                was = state.serving.number if state and state.serving else None
-                if was is not None and meta["to"] <= was:
-                    # An older or already-applied bundle never moves what is served.
-                    result.lines.append(f"  {meta['label']}  already at v{was}" if meta["to"] == was else
-                                        f"  {meta['label']}  keeps serving v{was} (this bundle brings "
-                                        f"v{meta['to']}, older — stored)")
+                label, state = header.repos[repo]["label"], db.repo_state(repo)
+                served = _served_by_track(db, state)
+                was = ", ".join(_day(d) for d in served.values()) if served else None
+                chosen, warnings = choose(db, store, repo)
+                result.lines.extend(f"  {label}  {w}" for w in warnings)
+                if not chosen:
+                    continue                                   # nothing complete to serve yet
+                vid, state_warnings = ensure_state(db, store, repo, chosen)
+                result.lines.extend(f"  {label}  {w}" for w in state_warnings)
+                self._older_lines(db, repo, label, recorded[repo], chosen, result)
+                if state and state.serving is not None and state.serving.id == vid:
+                    pinned = {t.id for t in db.tracks(repo) if t.pinned is not None}
+                    if any(o.status in ("new", "refilled") and o.point is not None
+                           and db.point(o.point).track in pinned for o in recorded[repo]):
+                        result.stored_held.append(repo)
+                        result.lines.append(f"  {label}  stored, still serving {was} (pinned — mmw site "
+                                            f"forward '{label}' to move on)")
+                    elif not any(o.status in ("new", "widened", "refilled", "incomplete", "conflict")
+                                 for o in recorded[repo]):
+                        result.lines.append(f"  {label}  already serving this")
+                    db.drop_unused_states(repo)
                     continue
                 if stopped:
                     db.set_held(repo, True)
                     result.stopped.append(repo)
-                    result.lines.append(f"  {meta['label']}  not switched (stopped) — stored v{meta['to']}, held")
+                    result.lines.append(f"  {label}  not switched (stopped) — stored, held")
+                    db.drop_unused_states(repo)
                     continue
                 if self.only is not None and repo not in self.only:
                     db.set_held(repo, True)
                     result.stored_held.append(repo)
-                    result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
-                                        f"{f'still serving v{was}' if was else 'not served'} (held)")
+                    result.lines.append(f"  {label}  stored, {f'still serving {was}' if was else 'not served'} (held)")
+                    db.drop_unused_states(repo)
                     continue
                 # A repository held only by its site layer (no key then, say)
                 # tries again: a key this bundle carried may be the fix.
                 layer_held = bool(db.get_meta(f"hold:{repo}"))
                 if state and state.held and not layer_held and not self.forward_all and repo not in forward:
                     result.stored_held.append(repo)
-                    result.lines.append(f"  {meta['label']}  stored v{meta['to']}, still serving v{was} (held)")
+                    result.lines.append(f"  {label}  stored, still serving {was} (held)")
+                    db.drop_unused_states(repo)
                     continue
                 if progress:
-                    progress("switch", repo=repo, label=meta["label"])
-                switched = switch_in(db, roots, repo, vid)
+                    progress("switch", repo=repo, label=label)
+                switched = switch_in(db, roots, repo, vid, held=False)
                 if switched.held:
                     result.stored_held.append(repo)
-                    result.lines.append(f"  {meta['label']}  stored v{meta['to']}, "
-                                        f"{f'still serving v{was}' if was else 'not served'} (held: "
-                                        f"{switched.held})")
+                    result.lines.append(f"  {label}  stored, {f'still serving {was}' if was else 'not served'} "
+                                        f"(held: {switched.held})")
+                    db.drop_unused_states(repo)
                     continue
                 result.updated.append(repo)
-                result.lines.append(f"  {meta['label']}  {f'v{was}' if was else 'full'} → v{meta['to']}")
+                now = _served_by_track(db, db.repo_state(repo))
+                for track, date in sorted(now.items(), key=lambda kv: kv[0].name):
+                    if served.get(track) != date:
+                        old = served.get(track)
+                        result.lines.append(f"  {label}  {_suite_of(track)} {_day(old) if old else 'full'} → "
+                                            f"{_day(date)}")
                 result.lines.extend(f"  {w}" for w in switched.warnings)
-        for repo, why in result.refused.items():
-            result.lines.append(f"  {header.repos[repo]['label']}  refused: {why}")
+                db.drop_unused_states(repo)
 
         if disk_io.ops.is_dir(root):
             render_derived(str(root), say=lambda m: say(f"  {m}"))
@@ -579,13 +624,35 @@ def plan_apply(target, src: str) -> ApplyPlan:
         st, root = found.get(repo, (None, first_root))
         serving = st.serving.number if st and st.serving else None
         out.append(PlanRow(repo, meta["label"], meta["from"], meta["to"], sent[repo][0], sent[repo][1],
-                           serving, bool(st and st.held), serving is not None and meta["to"] <= serving, root))
+                           serving, bool(st and st.held),
+                           # By content: version numbers on the two sides are not the same count.
+                           bool(st and st.serving and st.serving.digest == meta["digest"]), root))
     network = sum(1 for _p, _c, r in rows if r is None)
     return ApplyPlan(header.created, header.network, out, network,
                      sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))
 
 
 # ── several roots ────────────────────────────────────────────────────────────
+
+
+def _day(stamp: str) -> str:
+    return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}" if len(stamp) >= 8 else stamp
+
+
+def _suite_of(track) -> str:
+    return track.suite or track.codename or (track.name.rsplit("/", 1)[-1] if track.name else "files")
+
+
+def _served_by_track(db, state) -> dict:
+    """{TrackInfo: date} of what `state` serves (nothing: {})."""
+    if state is None or state.serving is None:
+        return {}
+    out = {}
+    for pid in db.state_points(state.serving.id):
+        point = db.point(pid)
+        if point is not None:
+            out[db.track(point.track)] = point.date
+    return out
 
 
 def write_root_nginx(db, roots: Roots) -> bool:
@@ -600,7 +667,9 @@ def write_root_nginx(db, roots: Roots) -> bool:
         rroot = Path(r.path)
         if not disk_io.ops.is_dir(rroot / ".mmw" / "store"):
             continue
-        files = site_nginx_files(settings_json, roots.placed_in(db, r), r, primary=roots.serves_extras(r))
+        foreign = [m for ms in json.loads(db.get_meta("foreign_mirrors") or "{}").values() for m in ms]
+        files = site_nginx_files(settings_json, roots.placed_in(db, r), r, primary=roots.serves_extras(r),
+                                 extra_mirrors=foreign)
         before = roots.generated(db, r)
         after = {rel: hashlib.sha256(data).hexdigest() for rel, data in files.items()}
         for rel, data in files.items():
@@ -641,6 +710,8 @@ class SetApplyPlan:
     # placement needs is worked out from this, never by reading the bundle again.
     host_checksums: dict = field(default_factory=dict)
     locations: dict[str, str] = field(default_factory=dict)     # root name → location, for the roots here
+    foreign: bool = False                       # another network's bundle
+    not_here: dict[str, str] = field(default_factory=dict)      # its repositories this mirror lacks: key → label
 
 
 @dataclass
@@ -652,6 +723,8 @@ class SetApplyResult:
     created: str = ""
     made: list[str] = field(default_factory=list)                # roots this apply created
     paths: dict[str, str] = field(default_factory=dict)          # root name → its path here
+    foreign: bool = False                                        # another network's bundle: history only
+    skipped: list[str] = field(default_factory=list)             # its repositories not mirrored here (labels)
 
     def merged(self) -> "ApplyResult":
         """One `ApplyResult` for the whole set (what the TUI shows)."""
@@ -660,6 +733,7 @@ class SetApplyResult:
             out.updated += r.updated
             out.stored_held += r.stored_held
             out.refused.update(r.refused)
+            out.incomplete.update(r.incomplete)
             out.stopped += r.stopped
             out.network_changed = out.network_changed or r.network_changed
         return out
@@ -840,9 +914,10 @@ def shared_filesystem_short(needs: dict[str, tuple[int, int]], locations: dict[s
     return []
 
 
-def plan_set_apply(mset, src: str) -> SetApplyPlan:
+def plan_set_apply(mset, src: str, deploy: set[str] | None = None) -> SetApplyPlan:
     """What applying `src` to `mset` (None: a first apply) would do — read
-    from the bundle's manifest alone (its first member)."""
+    from the bundle's manifest alone (its first member). Another network's
+    bundle plans only what this mirror holds plus `deploy`."""
     import tempfile
     from mmw.core.publisher.manifest import iter_manifest_sized
     with tempfile.TemporaryDirectory() as tmp:
@@ -853,8 +928,56 @@ def plan_set_apply(mset, src: str) -> SetApplyPlan:
         finally:
             gen.close()
         header, rows = iter_manifest_sized(scratch)
-        plan, _ = _plan(mset, header, list(rows), src, Path(tmp))
-    return plan
+        rows = list(rows)
+        foreign = mset is not None and header.network != mset.network
+        not_here: dict[str, str] = {}
+        if foreign:
+            from mmw.site import ops
+            held = {st.repo for _n, st in ops.set_status(mset)}
+            not_here = {k: m["label"] for k, m in (header.repos or {}).items() if k not in held}
+            header, rows, _dropped, _fm = _foreign(mset, header, rows, set(deploy or ()), SetApplyResult())
+        plan, _ = _plan(mset, header, rows, src, Path(tmp))
+    from dataclasses import replace
+    return replace(plan, foreign=foreign, not_here=not_here)
+
+
+def _foreign(mset, header, rows, deploy: set[str], result) -> tuple:
+    """Another network's bundle: only its repositories — the ones this
+    mirror holds, plus those `deploy` names (label or key) — and, for each
+    deployed one, its keys/{label}/ files. Its network files, settings, TLS
+    and runtime stay out. (header, rows, paths dropped, foreign mirrors)."""
+    from dataclasses import replace
+
+    from mmw.core.config import MirrorConfig
+    from mmw.core.repos import repository_key
+    from mmw.site import ops
+    held = {st.repo for _name, st in ops.set_status(mset)}
+    labels = {k: m["label"] for k, m in (header.repos or {}).items()}
+    wanted = {k for k in labels if k in held or k in deploy or labels[k] in deploy}
+    deployed = {k for k in wanted if k not in held}
+    key_dirs = {f"keys/{labels[k]}/": k for k in deployed}
+    kept, dropped = [], set()
+    for p, c, r, size in rows:
+        if r in wanted:
+            kept.append((p, c, r, size))
+        elif r is None and (owner := next((k for d, k in key_dirs.items() if p.startswith(d)), None)):
+            kept.append((p, c, owner, size))           # served with the repository it verifies
+        else:
+            dropped.add(p)
+    result.foreign = True
+    result.skipped = sorted(labels[k] for k in labels if k not in wanted)
+    result.lines.append(f"this bundle is for network {header.network!r} — this mirror holds {mset.network!r}: "
+                        "importing repository history; its network files (nginx, settings, TLS) are not applied")
+    result.lines += [f"  {lab}  not mirrored here — skipped (deploy it: mmw site apply BUNDLE --deploy '{lab}')"
+                     for lab in result.skipped]
+    recorded = json.loads(header.settings or "{}")
+    foreign_mirrors: dict = {}
+    for d in recorded.get("mirrors", []):
+        key = repository_key(MirrorConfig.model_validate(d))
+        if key in deployed:
+            foreign_mirrors.setdefault(key, []).append(d)
+    header = replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in wanted})
+    return header, kept, dropped, foreign_mirrors
 
 
 def _filtered_manifest(header, rows, repos: set[str]) -> bytes:
@@ -884,7 +1007,8 @@ def _root_name(location: str, taken: set[str]) -> str:
 
 def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run: bool = False,
                  forward: set[str] | None = None, forward_all: bool = False, only: set[str] | None = None,
-                 progress=None, stop_event=None, say=print, apply_anyway: set[str] | None = None) -> SetApplyResult:
+                 progress=None, stop_event=None, say=print, apply_anyway: set[str] | None = None,
+                 deploy: set[str] | None = None) -> SetApplyResult:
     """Apply the bundle at `src` to a set of roots (`mset`; None for a first
     apply) in one pass. Each hostname goes to the root that holds it; a new
     one to `place[host]` or `place["*"]` (a root location). A hostname whose
@@ -912,9 +1036,12 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         if (header.format or 1) < 2:
             raise ApplyError(5, 'this is an apply.py bundle (far_side = "apply") — apply it with apply.py, '
                                 'or set far_side = "mmw" on the connected side and bundle again')
-        if mset is not None and header.network != mset.network:
-            raise ApplyError(5, f"this bundle is for network {header.network!r} — this mirror holds "
-                                f"{mset.network!r}; nothing was applied")
+        foreign = mset is not None and header.network != mset.network
+        network = mset.network if foreign else header.network
+        dropped: set[str] = set()
+        foreign_mirrors: dict = {}
+        if foreign:
+            header, rows, dropped, foreign_mirrors = _foreign(mset, header, rows, set(deploy or ()), result)
         plan, extra = _plan(mset, header, rows, src, Path(tmp))
         result.created = header.created
         rows, host_of = extra["rows"], extra["host_of"]
@@ -945,9 +1072,9 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
             if r is not None and r.info.set_id is None:
                 raise ApplyError(5, f"{loc} was made before mirrors described themselves (a v1 site) — "
                                     "apply to a new folder instead")
-            if r is not None and r.info.network != header.network:
+            if r is not None and r.info.network != network:
                 raise ApplyError(5, f"{loc} holds the mirror of network {r.info.network!r}, not "
-                                    f"{header.network!r} — pick another root")
+                                    f"{network!r} — pick another root")
             if r is not None and r.info.set_id != set_id:
                 raise ApplyError(5, f"{loc} already holds the mirror of network {r.info.network!r} — pick another root")
             if r is not None and r.info.name in present:
@@ -1021,9 +1148,9 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                 taken.add(name)
                 if ssh.parse_location(loc)[0] == "ssh":
                     from mmw.site.sshroot import init_remote
-                    init_remote(loc, name=name, set_id=set_id, network=header.network)
+                    init_remote(loc, name=name, set_id=set_id, network=network)
                 else:
-                    init_root(Path(loc).expanduser(), name=name, set_id=set_id, network=header.network)
+                    init_root(Path(loc).expanduser(), name=name, set_id=set_id, network=network)
                 r = root_at(loc)
             made[loc] = r
         for h, t in list(targets.items()):
@@ -1052,9 +1179,11 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         appliers = {}
         for name in order:
             repos = {r for h, t in targets.items() if t.info.name == name for r in plan.hosts[h]}
+            extra_opts = ({"network_files": False, "foreign_mirrors": foreign_mirrors, "foreign": True}
+                          if foreign else {})
             ra = stack.enter_context(roots[name].applier(forward=forward, forward_all=forward_all,
                                                          only=only, progress=progress, stop_event=stop_event,
-                                                         say=say))
+                                                         say=say, **extra_opts))
             ra.via = roots[name]          # the root this applier writes into (its interface)
             ra.begin(_filtered_manifest(header, rows, repos))
             appliers[name] = ra
@@ -1097,6 +1226,12 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     progress("repo", repo=repo, label=plan.labels.get(repo, repo), host=h)
                 if progress:
                     progress("receive", name=m.name, bytes=m.size)
+                if foreign and m.name.startswith((TLS_PREFIX, SIGNING_PREFIX, RUNTIME_PREFIX)):
+                    continue                               # another network's: never applied here
+                if m.name in dropped:
+                    if not m.name.startswith(".mmw/"):
+                        received += 1                      # counted, not kept: not mirrored here
+                    continue
                 if m.name.startswith(TLS_PREFIX):
                     data = m.fh.read()
                     for ra in appliers.values():

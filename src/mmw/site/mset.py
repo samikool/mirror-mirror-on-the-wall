@@ -105,13 +105,13 @@ class LocalRoot:
         from mmw.site import ops
         return ops.deleted_stamps(self.home, key)
 
-    def serve_preview(self, key: str, number: int):
+    def serve_preview(self, key: str, when: str, track: str | None = None):
         from mmw.site import ops
-        return ops.serve_preview(self.home, key, number)
+        return ops.serve_preview(self.home, key, when, track)
 
-    def serve(self, key: str, number: int, progress=None):
+    def serve(self, key: str, when: str, track: str | None = None, progress=None):
         from mmw.site import ops
-        return ops.serve(self.home, key, number, progress=progress)
+        return ops.serve(self.home, key, when, track, progress=progress)
 
     def forward(self, key: str | None) -> list[str]:
         from mmw.site import ops
@@ -121,9 +121,9 @@ class LocalRoot:
         from mmw.site import ops
         return ops.hold(self.home, key)
 
-    def delete(self, key: str, number: int) -> int:
+    def delete(self, key: str, when: str, track: str | None = None, force: bool = False) -> int:
         from mmw.site import ops
-        return ops.delete_version(self.home, key, number)
+        return ops.delete_point(self.home, key, when, track, force)
 
     def space(self):
         from mmw.site import ops

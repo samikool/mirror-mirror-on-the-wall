@@ -2,6 +2,7 @@
 
 import pytest
 
+from site_points import nth
 from mmw.site import ops
 from mmw.site.apply import ApplyError, apply_bundle
 from mmw.site.db import SiteDB
@@ -37,11 +38,11 @@ def _pending_switch(env, tmp_path, monkeypatch):  # noqa: F811
 
 def test_delete_refuses_a_pending_switch_target(env, tmp_path, monkeypatch):  # noqa: F811
     cfg, home, root = _pending_switch(env, tmp_path, monkeypatch)
-    with pytest.raises(ValueError):
-        ops.delete_version(home, "a", 2)
+    with pytest.raises(ValueError, match="being served"):
+        ops.delete_point(home, "a", nth(home, "a", 2))                # resumed first: then it is served
     assert any(p.startswith("example.com/a/") for p in _tree(root))
     with SiteDB(home) as db:
-        assert db.repo_state(_key(cfg, "a")).serving.number == 2          # delete resumed the switch first
+        assert db.pending_switches() == []
 
 
 def test_hold_resumes_switches(env, tmp_path, monkeypatch):  # noqa: F811
@@ -114,24 +115,30 @@ def test_verify_repair_puts_it_right(env, tmp_path):  # noqa: F811
     assert ops.verify(home) == []
 
 
-def test_a_renumbered_repository_is_refused_alone(env, tmp_path):  # noqa: F811
+def test_a_renumbered_repository_is_not_refused(env, tmp_path):  # noqa: F811
+    """Version numbers no longer identify anything: the same files are the
+    same points, whatever the connected side numbers them."""
     cfg, net, md, home, root = env
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
     with SiteDB(home) as db:                         # this site's a v1 is not the pool's any more
         db._conn.execute("UPDATE versions SET digest = 'elsewhere' WHERE repo = ?", (_key(cfg, "a"),))
         db._conn.commit()
     r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2", from_ref=None)), say=quiet)
-    assert _key(cfg, "a") in r.refused and "mmw site delete" in r.refused[_key(cfg, "a")]
+    assert not r.refused
+    assert any("a  already serving this" in ln for ln in r.lines)
 
 
-def test_the_last_version_of_a_repository_cannot_go(env, tmp_path):  # noqa: F811
+def test_the_last_point_can_go_and_its_record_stays(env, tmp_path):  # noqa: F811
+    """Warn, don't refuse: nothing serves it, so it may go — as a stub."""
     cfg, net, md, home, root = env
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
+    only = nth(home, "a", 1)
     with SiteDB(home) as db:
         db._conn.execute("UPDATE repos SET serving = NULL")
         db._conn.commit()
-    with pytest.raises(ValueError, match="only version"):
-        ops.delete_version(home, "a", 1)
+    ops.delete_point(home, "a", only)
+    ((_t, rows),) = ops.history(home, "a")
+    assert [mark for *_x, mark in rows] == ["stub"]
 
 
 def test_nginx_text_files_are_not_store_hardlinks(env, tmp_path):  # noqa: F811

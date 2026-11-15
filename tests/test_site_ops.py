@@ -7,6 +7,7 @@ from mmw.site import ops
 from mmw.site.apply import apply_bundle
 from mmw.site.db import SiteDB
 
+from site_points import nth, pinned
 from test_site_apply import _bundle, _tree, env  # noqa: F401 — the site fixture
 from test_snapshot_repo_versions import _change_a, _key
 from test_dry_run_totals import two_mirrors  # noqa: F401
@@ -37,32 +38,29 @@ def _bump(md):
         pool.reconcile_refs("a", refs)
 
 
-def test_serve_older_marks_held_and_matches_version(env, tmp_path):  # noqa: F811
+def test_serve_older_pins_and_matches_it(env, tmp_path):  # noqa: F811
     cfg, home, root, trees = _three(env, tmp_path)
-    ops.serve(home, "a", 1)
-    assert _tree(root) == trees[0]
-    with SiteDB(home) as db:
-        st = db.repo_state(_key(cfg, "a"))
-        assert st.serving.number == 1 and st.held
-    ops.serve(home, "A", 3)                              # the newest: no longer held
+    ops.serve(home, "a", nth(home, "a", 1))
+    assert _tree(root) == trees[0] and pinned(home, _key(cfg, "a"))
+    ops.serve(home, "A", nth(home, "a", 3))
     assert _tree(root) == trees[2]
-    with SiteDB(home) as db:
-        assert not db.repo_state(_key(cfg, "a")).held
+    ops.forward(home, "a")                               # forward lets it move on again
+    assert not pinned(home, _key(cfg, "a"))
 
 
 def test_serve_unknown_version_lists_available(env, tmp_path):  # noqa: F811
     _cfg, home, _root, _ = _three(env, tmp_path)
-    with pytest.raises(LookupError, match="v3, v2, v1"):
-        ops.serve(home, "a", 7)
+    with pytest.raises(ValueError, match="kept: .*·.*·"):
+        ops.serve(home, "a", "abcdef")
     with pytest.raises(LookupError, match="this network has"):
-        ops.serve(home, "nope", 1)
+        ops.serve(home, "nope", "abcdef")
 
 
 def test_forward_all_clears_holds(env, tmp_path):  # noqa: F811
     cfg, home, root, trees = _three(env, tmp_path)
-    ops.serve(home, "a", 2)
+    ops.serve(home, "a", nth(home, "a", 2))
     assert ops.forward(home, None) == [_key(cfg, "a")]
-    assert _tree(root) == trees[2]
+    assert _tree(root) == trees[2] and not pinned(home, _key(cfg, "a"))
     with SiteDB(home) as db:
         assert not any(s.held for s in db.repo_states())
 
@@ -80,11 +78,13 @@ def test_hold_then_apply_keeps_serving(env, tmp_path):  # noqa: F811
 def test_cli_serve_needs_yes_without_tty(env, tmp_path):  # noqa: F811
     _cfg, home, root, trees = _three(env, tmp_path)
     run = lambda *a: CliRunner().invoke(cli.app, ["site", *a])  # noqa: E731
-    r = run("serve", "a", "v1")
+    first, newest = nth(home, "a", 1), nth(home, "a", 3)
+    r = run("serve", "a", first)
     assert r.exit_code == 1 and "--yes" in r.output and _tree(root) == trees[2]
-    r = run("serve", "a", "v1", "--yes")
+    r = run("serve", "a", first, "--yes")
     assert r.exit_code == 0, r.output
-    assert "now serving v3" in r.output and "nothing to copy" in r.output and _tree(root) == trees[0]
+    assert "now serving files" in r.output and newest in r.output and "nothing to copy" in r.output
+    assert _tree(root) == trees[0]
     r = run("forward", "--all")
     assert r.exit_code == 0 and _tree(root) == trees[2]
     r = run("hold", "a")
@@ -94,5 +94,5 @@ def test_cli_serve_needs_yes_without_tty(env, tmp_path):  # noqa: F811
 def test_serve_says_each_file_it_places(env, tmp_path):  # noqa: F811
     _cfg, home, _root, _ = _three(env, tmp_path)
     placed = []
-    ops.serve(home, "a", 1, progress=placed.append)
+    ops.serve(home, "a", nth(home, "a", 1), progress=placed.append)
     assert placed and all(isinstance(p, str) for p in placed)

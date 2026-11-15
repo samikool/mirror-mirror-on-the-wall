@@ -1,6 +1,7 @@
 """Far-side layers: custom debs a site adds to a repository it serves."""
 import sqlite3
 
+from site_points import nth
 from mmw.site.db import DB_FILE, SiteDB
 from mmw.site.layers import site_layer_dir
 
@@ -208,7 +209,7 @@ def test_rolling_back_rebuilds_the_layer_for_that_version(site):
         db.set_layer(site.repo, signing="unsigned")
     relayer(site.home, site.repo)
     _delta(site)
-    serve(site.home, site.repo, 1)
+    serve(site.home, site.repo, nth(site.home, site.repo, 1))
     packages = _served(site, "dists/jammy/main/binary-amd64/Packages").read_text()
     assert "Version: 2.10-2" in packages and "Package: site-tool" in packages
     assert not _served(site, "dists/jammy/InRelease").exists()
@@ -376,7 +377,7 @@ def test_serve_preview_counts_the_layer(site):
     with SiteDB(site.home) as db:
         db.set_layer(site.repo, signing="unsigned")
     relayer(site.home, site.repo)
-    assert serve_preview(site.home, site.repo, 1).relinks > 0          # same version, minus the layer
+    assert serve_preview(site.home, site.repo, nth(site.home, site.repo, 1)).relinks > 0          # same version, minus the layer
 
 
 @needs_gpg
@@ -385,7 +386,7 @@ def test_serve_says_when_a_layer_holds_it(site):
     _delta(site)
     with SiteDB(site.home) as db:
         db.set_layer(site.repo, signing="resign", key="gone")
-    out = _site_cli(site, "serve", site.repo, "1", "--yes")
+    out = _site_cli(site, "serve", site.repo, nth(site.home, site.repo, 1), "--yes")
     assert out.exit_code == 1 and "signing key" in out.output
 
 

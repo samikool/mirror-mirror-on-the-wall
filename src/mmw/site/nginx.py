@@ -10,7 +10,7 @@ from mmw.site.home import RootConfig
 
 
 def site_nginx_files(settings_json: str, placed: set[str], root: RootConfig, *,
-                     primary: bool) -> dict[str, bytes]:
+                     primary: bool, extra_mirrors: list[dict] = ()) -> dict[str, bytes]:
     """`nginx/…` path → bytes for `root`. `placed`: the repository keys it
     serves. Hosts that belong to no repository (upstream files, extra hosts)
     are the primary root's."""
@@ -18,7 +18,8 @@ def site_nginx_files(settings_json: str, placed: set[str], root: RootConfig, *,
     net = recorded.get("network", {})
     if not net.get("nginx", True):
         return {}
-    mirrors = [m for m in (MirrorConfig.model_validate(d) for d in recorded.get("mirrors", []))
+    mirrors = [m for m in (MirrorConfig.model_validate(d)
+                           for d in [*recorded.get("mirrors", []), *extra_mirrors])
                if repository_key(m) in placed]
     extra = []
     if primary:

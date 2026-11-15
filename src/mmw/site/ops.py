@@ -8,7 +8,7 @@ from pathlib import Path
 from mmw.core import disk_io
 from mmw.core.repos import resolve_repo_refs
 from mmw.resources.apply import render_derived
-from mmw.site.db import SiteDB, VersionInfo
+from mmw.site.db import PointInfo, SiteDB, TrackInfo, VersionInfo
 
 if TYPE_CHECKING:
     from mmw.site.db import RepoState
@@ -17,6 +17,7 @@ from mmw.site.lock import SiteLock
 from mmw.site.store import Store
 from mmw.site.roots import Roots
 from mmw.site.switch import SwitchResult, resume_switches, switch_in
+from mmw.site.timeline import migrate
 
 
 def resolve_repo(db: SiteDB, ref: str) -> str:
@@ -24,31 +25,107 @@ def resolve_repo(db: SiteDB, ref: str) -> str:
     return resolve_repo_refs([ref], {s.repo: s.label for s in db.repo_states()})[0]
 
 
-def _version(db: SiteDB, repo: str, number: int) -> VersionInfo:
-    found = db.version(repo, number)
-    if found is None:
-        have = ", ".join(f"v{v.number}" for v in db.versions(repo))
-        raise LookupError(f"{db.repo_state(repo).label} has no v{number} here — it has {have}")
-    return found
+# ── timelines: naming points, choosing, serving ──────────────────────────────
+
+def suite_of(track: TrackInfo) -> str:
+    return track.suite or track.codename or (track.name.rsplit("/", 1)[-1] if track.name else "files")
+
+
+def _track_named(db: SiteDB, repo: str, name: str) -> TrackInfo:
+    tracks = db.tracks(repo)
+    want = name.strip().lower()
+    for t in tracks:
+        if want in {x.lower() for x in (t.suite, t.codename, t.name, suite_of(t)) if x}:
+            return t
+    raise LookupError(f"{db.repo_state(repo).label} has no suite {name!r} — it has "
+                      f"{', '.join(suite_of(t) for t in tracks) or 'none'}")
+
+
+def _targets(db: SiteDB, repo: str, when: str, track: str | None, *,
+             as_of: bool) -> list[tuple[TrackInfo, PointInfo]]:
+    """The point(s) `when` names: in one suite (`track`), else in every suite
+    that has one. A date with `as_of`: each suite's newest on or before it."""
+    from mmw.site.versionref import as_of_points, is_when, resolve_point
+    label = db.repo_state(repo).label
+    tracks = [_track_named(db, repo, track)] if track else [t for t in db.tracks(repo) if db.points(t.id)]
+    dated = as_of and is_when(when)
+    if len(tracks) == 1 and not dated:
+        return [(tracks[0], resolve_point(db.points(tracks[0].id), when))]
+    out = []
+    for t in tracks:
+        points = db.points(t.id)
+        if dated:
+            p = as_of_points(points, when)
+        else:
+            try:
+                p = resolve_point(points, when)
+            except ValueError:
+                p = None
+        if p is not None:
+            out.append((t, p))
+    if not out:
+        raise LookupError(f"{label}: no point {when!r} here"
+                          + (" — nothing that old" if dated else ""))
+    return out
+
+
+def _served_points(db: SiteDB, repo: str) -> dict[int, int]:
+    """{track id: point id} of what is served."""
+    state = db.repo_state(repo)
+    if state is None or state.serving is None:
+        return {}
+    return {db.point(p).track: p for p in db.state_points(state.serving.id) if db.point(p)}
+
+
+def _reserve(db: SiteDB, roots: Roots, repo: str, progress=None, *, again: bool = False) -> SwitchResult:
+    """Serve what the timeline chooses now (pins, else newest complete).
+    `again`: switch even to what is served — its site layer is rebuilt."""
+    from mmw.site.timeline import choose, ensure_state
+    state = db.repo_state(repo)
+    store = roots.store(roots.of(state))
+    chosen, warnings = choose(db, store, repo)
+    if not chosen:
+        return SwitchResult(0, 0, warnings=tuple(warnings))
+    vid, more = ensure_state(db, store, repo, chosen)
+    if state.serving is not None and state.serving.id == vid and not again:
+        result = SwitchResult(0, 0)
+    else:
+        result = switch_in(db, roots, repo, vid, held=state.held,
+                           progress=(lambda rel, _kind: progress(rel)) if progress else None)
+    db.drop_unused_states(repo)
+    return SwitchResult(result.placed, result.removed, result.held,
+                        (*warnings, *more, *result.warnings))
 
 
 @dataclass(frozen=True)
 class ServePreview:
     label: str
-    current: VersionInfo | None
-    target: VersionInfo
+    current: list[str]          # "suite date · digest" of what each suite serves
+    target: list[str]           # the same, for what it would serve
     relinks: int
 
 
-def serve_preview(home: Path, ref: str, number: int) -> ServePreview:
+def _point_line(db: SiteDB, track_id: int, point_id: int) -> str:
+    from mmw.site.versionref import day, short
+    p = db.point(point_id)
+    return f"{suite_of(db.track(track_id))} {day(p.date)} · {short(p.ident)}"
+
+
+def serve_preview(home: Path, ref: str, when: str, track: str | None = None) -> ServePreview:
     """What `serve` would do, for its confirmation."""
+    from mmw.site.timeline import state_files
     with SiteDB(home) as db:
         repo = resolve_repo(db, ref)
-        state, target = db.repo_state(repo), _version(db, repo, number)
+        state = db.repo_state(repo)
+        now = _served_points(db, repo)
+        then = dict(now)
+        for t, p in _targets(db, repo, when, track, as_of=True):
+            then[t.id] = p.id
         before = db.served_files(state.serving.id, db.repo_overlay(repo)) if state.serving else {}
-        after = db.version_files(target.id)
+        after, _w = state_files(db, then.values())
         changed = sum(1 for p, c in after.items() if before.get(p) != c) + len(set(before) - set(after))
-        return ServePreview(state.label, state.serving, target, changed)
+        return ServePreview(state.label, [_point_line(db, t, p) for t, p in sorted(now.items())],
+                            [_point_line(db, t, p) for t, p in sorted(then.items())], changed)
 
 
 def _roots(home: Path) -> Roots:
@@ -67,37 +144,54 @@ def _session(home: Path):
     left halfway — before anything else looks at what is served."""
     roots = _roots(home)
     with SiteLock(home), SiteDB(home) as db:
+        migrate(db, roots)
         resume_switches(db, roots)
         yield db, roots
 
 
-def serve(home: Path, ref: str, number: int, progress=None) -> SwitchResult:
-    """Serve version `number` of a repository; held unless it is the newest.
+def serve(home: Path, ref: str, when: str, track: str | None = None, progress=None) -> SwitchResult:
+    """Pin a repository's suite (`track`; None: every suite) to the point
+    `when` names — a date serves each suite as it was then — and serve it.
+    A pinned suite stays there through later bundles until `forward`.
     `progress(path)` for each file placed or removed."""
+    from mmw.site.timeline import is_complete
     with _session(home) as (db, roots):
         repo = resolve_repo(db, ref)
-        roots.check_mounted(roots.of(db.repo_state(repo)))
-        result = switch_in(db, roots, repo, _version(db, repo, number).id,
-                           progress=(lambda rel, _kind: progress(rel)) if progress else None)
+        state = db.repo_state(repo)
+        roots.check_mounted(roots.of(state))
+        store = roots.store(roots.of(state))
+        targets = _targets(db, repo, when, track, as_of=True)
+        for t, p in targets:
+            missing = is_complete(db, store, p.id)
+            if missing:
+                raise ValueError(f"{_point_line(db, t.id, p.id)} isn't complete here ({missing} file(s) "
+                                 "missing) — bring them with a full bundle first")
+        for t, p in targets:
+            db.set_pin(t.id, p.id)
+        result = _reserve(db, roots, repo, progress, again=True)
         _render(roots)
         return result
 
 
+def _pinned(db: SiteDB, repo: str) -> bool:
+    return any(t.pinned is not None for t in db.tracks(repo))
+
+
 def forward(home: Path, ref: str | None) -> list[str]:
-    """Serve the newest version of one repository, or (None) of every held
-    one, and clear the hold. The repositories moved."""
+    """Clear a repository's hold and pins — one, or (None) every held or
+    pinned one — and serve each suite's newest. The repositories moved."""
     moved = []
     with _session(home) as (db, roots):
-        repos = [resolve_repo(db, ref)] if ref is not None else [s.repo for s in db.repo_states() if s.held]
+        repos = ([resolve_repo(db, ref)] if ref is not None
+                 else [s.repo for s in db.repo_states() if s.held or _pinned(db, s.repo)])
         for repo in repos:
-            newest = db.versions(repo)[0]
-            state = db.repo_state(repo)
-            roots.check_mounted(roots.of(state))
-            if state.serving is None or state.serving.id != newest.id:
-                if switch_in(db, roots, repo, newest.id).held:
-                    continue                    # still held: its layer cannot be built yet
-            else:
-                db.set_held(repo, False)
+            roots.check_mounted(roots.of(db.repo_state(repo)))
+            for t in db.tracks(repo):
+                if t.pinned is not None:
+                    db.set_pin(t.id, None)
+            db.set_held(repo, False)
+            if _reserve(db, roots, repo).held:
+                continue                        # still held: its layer cannot be built yet
             moved.append(repo)
         if moved:
             _render(roots)
@@ -117,7 +211,13 @@ def relayer(home: Path, ref: str, progress=None) -> SwitchResult:
         # Held by its layer (not by a person): once the layer builds, go on to
         # the newest version, like any fast-forward.
         layer_held = bool(db.get_meta(f"hold:{repo}"))
-        target = db.versions(repo)[0].id if layer_held else state.serving.id
+        target = state.serving.id
+        if layer_held:
+            from mmw.site.timeline import choose, ensure_state
+            store = roots.store(roots.of(state))
+            chosen = choose(db, store, repo)[0]
+            if chosen:                       # nothing to choose: keep what is served
+                target = ensure_state(db, store, repo, chosen)[0]
         result = switch_in(db, roots, repo, target,
                            progress=(lambda rel, _kind: progress(rel)) if progress else None)
         if not result.held and not layer_held:
@@ -144,39 +244,43 @@ def hold(home: Path, ref: str) -> str:
 # ── space ────────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
-class VersionSpace:
-    number: int
-    stamp: str
+class PointSpace:
+    suite: str
+    date: str
+    ident: str
     snap_label: str | None
     total: int              # bytes its files take
-    frees: int              # bytes deleting it would free (used by no other version)
+    frees: int              # bytes deleting it would free (held by nothing else)
     serving: bool
 
 
 @dataclass
 class SpaceReport:
-    repos: dict[str, list[VersionSpace]] = field(default_factory=dict)   # newest first
+    repos: dict[str, list[PointSpace]] = field(default_factory=dict)     # by suite, newest first
     labels: dict[str, str] = field(default_factory=dict)
     used: int = 0               # the primary root's
     free: int = 0
-    history_bytes: int = 0      # what deleting every unserved version would free
+    history_bytes: int = 0      # what deleting every unserved point would free
     roots: dict[str, tuple[int, int]] = field(default_factory=dict)   # name → (used, free)
     placed: dict[str, str] = field(default_factory=dict)              # repository → root name
 
 
 def space(home: Path) -> SpaceReport:
+    _ensure_migrated(home)
     roots = _roots(home)
     rep = SpaceReport()
     with SiteDB(home) as db:
         for st in db.repo_states():
             rep.placed[st.repo] = roots.of(st).name
             rows = []
-            for v in db.versions(st.repo):
-                total, frees = db.version_sizes(v.id)
-                serving = st.serving is not None and st.serving.id == v.id
-                rows.append(VersionSpace(v.number, v.stamp, v.snap_label, total, frees, serving))
-                if not serving:
-                    rep.history_bytes += frees
+            served = set(_served_points(db, st.repo).values())
+            for t in db.tracks(st.repo):
+                for pt in db.points(t.id):
+                    total, frees = db.point_sizes(pt.id)
+                    serving = pt.id in served
+                    rows.append(PointSpace(suite_of(t), pt.date, pt.ident, pt.snap_label, total, frees, serving))
+                    if not serving:
+                        rep.history_bytes += frees
             rep.repos[st.repo], rep.labels[st.repo] = rows, st.label
     for r in roots.all:
         if disk_io.ops.is_dir(r.path):
@@ -188,6 +292,7 @@ def space(home: Path) -> SpaceReport:
 
 
 def _gc(db: SiteDB, roots: Roots) -> int:
+    db.set_complete(None, None)              # the store changes: completeness is checked afresh
     freed = 0
     for r in roots.all:
         if disk_io.ops.is_dir(Path(r.path) / ".mmw" / "store"):
@@ -195,41 +300,59 @@ def _gc(db: SiteDB, roots: Roots) -> int:
     return freed
 
 
-def _protected(db: SiteDB, repo: str, version: VersionInfo) -> str | None:
-    """Why a version cannot be deleted, or None."""
-    state = db.repo_state(repo)
-    if state.serving is not None and state.serving.id == version.id:
-        return f"v{version.number} is being served — serve another version first"
-    if state.held and db.versions(repo)[0].id == version.id:
-        return f"v{version.number} is the newest of a held repository — forward it, or delete it after"
-    if any(to_id == version.id for _r, _f, to_id, _p in db.pending_switches()):
-        return f"v{version.number} is what an unfinished switch is going to"
-    if len(db.versions(repo)) == 1:
-        return f"v{version.number} is the only version of {state.label} here"
+def _protected(db: SiteDB, repo: str, track: TrackInfo, point: PointInfo) -> tuple[str, str] | None:
+    """Why a point can't be deleted — (kind, reason) — or None. Kind
+    "served" may be overridden (`force`); the others are what a pin, a
+    rollback or a running switch depends on."""
+    from mmw.site.versionref import day
+    what, label = f"{suite_of(track)} {day(point.date)}", db.repo_state(repo).label
+    for _r, f, t, _p in db.pending_switches():
+        if any(point.id in db.state_points(v) for v in (f, t) if v is not None):
+            return "pending", f"{what} is what an unfinished switch is going to or from"
+    if track.pinned == point.id:
+        return "pinned", f"{what} is pinned — mmw site forward '{label}' first"
+    if track.previous == point.id:
+        return "previous", f"{what} is what {suite_of(track)} served before — kept for rolling back"
+    if point.id in _served_points(db, repo).values():
+        nxt = next((p for p in db.points(track.id) if p.id != point.id), None)
+        return "served", (f"{what} is being served — pass --yes to delete it anyway; {suite_of(track)} then "
+                          f"serves {day(nxt.date) if nxt else 'nothing'}")
     return None
 
 
-def delete_version(home: Path, ref: str, number: int) -> int:
-    """Drop a kept version and the files nothing else uses; bytes freed."""
+def delete_point(home: Path, ref: str, when: str, track: str | None = None, force: bool = False) -> int:
+    """Delete a kept point: its file list stays (a stub), its files go
+    unless something else holds them. Bytes freed."""
     with _session(home) as (db, roots):
         repo = resolve_repo(db, ref)
-        version = _version(db, repo, number)
-        why = _protected(db, repo, version)
-        if why:
-            raise ValueError(why)
-        db.delete_version(version.id)
+        found = _targets(db, repo, when, track, as_of=False)
+        if len(found) > 1:
+            raise ValueError(f"{when!r} names a point in {len(found)} suites "
+                             f"({', '.join(suite_of(t) for t, _p in found)}) — say which: --track SUITE")
+        t, p = found[0]
+        why = _protected(db, repo, t, p)
+        if why and not (why[0] == "served" and force):
+            raise ValueError(why[1])
+        db.stub_point(p.id)
+        if why and why[0] == "served":
+            _reserve(db, roots, repo)
+            _render(roots)
+        db.drop_unused_states(repo)
         return _gc(db, roots)
 
 
-def apply_retention(db: SiteDB, roots: Roots, keep: int) -> list[tuple[str, int]]:
-    """Per repository, delete the versions past the newest `keep` — never a
-    protected one. The (repository, number) pairs deleted."""
+def apply_retention(db: SiteDB, roots: Roots, keep: int) -> list[tuple[str, str, str]]:
+    """Per suite, delete the points past the newest `keep` — never a
+    protected one (served, served before, pinned, mid-switch). The
+    (repository, suite, date) deleted."""
+    from mmw.site.versionref import day
     gone = []
     for st in db.repo_states():
-        for v in db.versions(st.repo)[keep:]:
-            if _protected(db, st.repo, v) is None:
-                db.delete_version(v.id)
-                gone.append((st.repo, v.number))
+        for t in db.tracks(st.repo):
+            for pt in db.points(t.id)[keep:]:
+                if _protected(db, st.repo, t, pt) is None:
+                    db.stub_point(pt.id)
+                    gone.append((st.repo, suite_of(t), day(pt.date)))
     if gone:
         _gc(db, roots)
     return gone
@@ -237,8 +360,23 @@ def apply_retention(db: SiteDB, roots: Roots, keep: int) -> list[tuple[str, int]
 
 # ── status, history, verify ──────────────────────────────────────────────────
 
+def _ensure_migrated(home: Path) -> None:
+    """A site from before timelines gets them on its first look, not only
+    on its first change — unless another run holds the lock (it migrates)."""
+    with SiteDB(home) as db:
+        if db.get_meta("timeline"):
+            return
+    from mmw.site.lock import LockHeld
+    try:
+        with _session(home):
+            pass
+    except LockHeld:
+        pass
+
+
 def status(home: Path):
     """Every repository's state, by label."""
+    _ensure_migrated(home)
     with SiteDB(home) as db:
         return db.repo_states()
 
@@ -249,16 +387,28 @@ def deleted_stamps(home: Path, ref: str) -> list[str]:
         return db.deleted_stamps(resolve_repo(db, ref))
 
 
-def history(home: Path, ref: str) -> list[tuple[VersionInfo, int, int, bool]]:
-    """A repository's kept versions, newest first: (version, total bytes,
-    bytes deleting it frees, serving)."""
+def history(home: Path, ref: str) -> list[tuple[TrackInfo, list[tuple[PointInfo, int, int, str]]]]:
+    """A repository's suites, each with its points newest first: (point,
+    total bytes, bytes deleting it frees, mark) — mark is serving, pinned,
+    previous, incomplete, stub, or ""."""
+    from mmw.site.timeline import is_complete
+    _ensure_migrated(home)
+    roots = _roots(home)
     with SiteDB(home) as db:
         repo = resolve_repo(db, ref)
-        state = db.repo_state(repo)
+        store = roots.store(roots.of(db.repo_state(repo)))
+        served = set(_served_points(db, repo).values())
         out = []
-        for v in db.versions(repo):
-            total, frees = db.version_sizes(v.id)
-            out.append((v, total, frees, state.serving is not None and state.serving.id == v.id))
+        for t in db.tracks(repo):
+            rows = []
+            for pt in db.points(t.id, stubs=True):
+                total, frees = db.point_sizes(pt.id)
+                mark = ("serving" if pt.id in served else "pinned" if t.pinned == pt.id
+                        else "previous" if t.previous == pt.id else "stub" if not pt.held
+                        else "incomplete" if is_complete(db, store, pt.id) else "")
+                rows.append((pt, total, 0 if not pt.held else frees, mark))
+            if rows:
+                out.append((t, rows))
         return out
 
 
@@ -413,7 +563,21 @@ def move_out_info(home: Path, key: str) -> dict:
                 if not store.has(d.sha256):
                     with disk_io.ops.open_rb(d.path) as fh:
                         store.add_stream(fh, expect=d.sha256)
-        return {"label": state.label, "bases": state.bases, "held": state.held,
+        served = set(_served_points(db, key).values())
+        tracks = []
+        for t in db.tracks(key):
+            pts = db.points(t.id, stubs=True)
+            byid = {p.id: p.ident for p in pts}
+            rows = []
+            for pt in pts:
+                files = db.point_files(pt.id)
+                sizes = db.blob_sizes(files.values())
+                rows.append({"ident": pt.ident, "date": pt.date, "stamp": pt.stamp, "snap_label": pt.snap_label,
+                             "held": pt.held, "serving": pt.id in served,
+                             "files": [(rel, c, sizes.get(c, 0)) for rel, c in files.items()]})
+            tracks.append({"name": t.name, "suite": t.suite, "codename": t.codename, "points": rows,
+                           "pinned": byid.get(t.pinned), "previous": byid.get(t.previous)})
+        return {"label": state.label, "bases": state.bases, "held": state.held, "tracks": tracks,
                 "layer": ({"signing": layer.signing, "key": layer.key, "contents": layer.contents,
                            "drop_valid_until": layer.drop_valid_until} if layer else None),
                 "layer_files": [(f"{s}/{c}/{d.path.name}", d.sha256, d.size)
@@ -434,8 +598,9 @@ def move_in(home: Path, key: str, info: dict) -> bool:
     from mmw.site.apply import place_served_file, write_root_nginx
     from mmw.site.switch import PHASES, _base
     from mmw.resources.apply import is_safe_path
-    for v in info["versions"]:                       # another root's word: checked, never trusted
-        for rel, c, _size in v["files"]:
+    for files in [*(v["files"] for v in info["versions"]),
+                  *(pt["files"] for t in info.get("tracks", []) for pt in t["points"])]:
+        for rel, c, _size in files:                  # another root's word: checked, never trusted
             if not is_safe_path(rel):
                 raise ValueError(f"{rel!r} is outside the root — refusing the move")
     with _session(home) as (db, roots):
@@ -446,6 +611,25 @@ def move_in(home: Path, key: str, info: dict) -> bool:
                                  info["bases"], [tuple(f) for f in v["files"]])
             if v["number"] == info["serving"]:
                 served_id, served = vid, {rel: c for rel, c, _s in v["files"]}
+        serving_points = []
+        for t in info.get("tracks", []):
+            from mmw.site.tracks import PointDraft
+            tid = db.ensure_track(key, t["name"], {k: v for k, v in (("Suite", t.get("suite")),
+                                                                   ("Codename", t.get("codename"))) if v})
+            ids = {}
+            for pt in t["points"]:
+                files = {rel: c for rel, c, _s in pt["files"]}
+                pid, _st = db.import_point(tid, PointDraft(t["name"], pt["ident"], pt["date"], {}, files),
+                                           {c: size for _r, c, size in pt["files"]}, pt["stamp"], pt["snap_label"])
+                if not pt["held"]:
+                    db.stub_point(pid)
+                ids[pt["ident"]] = pid
+                if pt.get("serving"):
+                    serving_points.append(pid)
+            db.set_pin(tid, ids.get(t.get("pinned")))
+            db.set_previous(tid, ids.get(t.get("previous")))
+        if served_id is not None and serving_points:
+            db.set_state_points(served_id, serving_points)
         if served_id is not None:                     # placed, in package → index → release order
             for kind in PHASES:
                 for rel in sorted(served):
@@ -541,6 +725,8 @@ def _move_plan(mset, ref: str, to_root: str):
         todo += info.get("sharing_keys", [])
     group = sorted(infos, key=lambda k: infos[k]["label"].lower())
     sizes = {c: size for info in infos.values() for v in info["versions"] for _rel, c, size in v["files"]}
+    sizes.update({c: size for info in infos.values() for t in info.get("tracks", []) for pt in t["points"]
+                  if pt["held"] for _rel, c, size in pt["files"]})
     sizes.update({c: size for info in infos.values() for _rel, c, size in info.get("layer_files", [])})
     lacking = set(sizes) - dst.has(set(sizes))
     return src, dst, group, infos, sizes, lacking
@@ -587,6 +773,8 @@ def move_repo(mset, ref: str, to_root: str, progress=None, stop_event=None) -> M
         dst.set_moving_in(k, src.info.name)
         say("repo", repo=k, label=infos[k]["label"])
         wanted = {c for v in infos[k]["versions"] for _rel, c, _size in v["files"]}
+        wanted |= {c for t in infos[k].get("tracks", []) for pt in t["points"] if pt["held"]
+                   for _rel, c, _size in pt["files"]}
         wanted |= {c for _rel, c, _size in infos[k].get("layer_files", [])}
         for c in sorted(wanted & left):
             if stop_event is not None and stop_event.is_set():
@@ -690,53 +878,75 @@ def root_details(home: Path) -> dict:
 
 
 @dataclass(frozen=True)
+class _Ident:
+    ident: str
+
+
+@dataclass(frozen=True)
 class BundleStep:
-    """One repository's part in serving the mirror as it was after a bundle."""
+    """One repository's part in serving the mirror as it was after a bundle:
+    per suite, what it serves now and the point it had then."""
     root: object
     key: str
     label: str
-    current: "VersionInfo | None"
-    target: "VersionInfo | None"          # None: left as it is (note says why)
+    current: dict = field(default_factory=dict)     # suite → (date, ident) served now
+    target: dict = field(default_factory=dict)      # suite → (date, ident) then; empty: left as it is
     note: str | None = None
+    forward: bool = False                           # clear its pins and hold: each suite's newest
 
     @property
     def changes(self) -> bool:
-        return self.target is not None and (self.current is None or self.current.number != self.target.number)
+        return self.forward or any(self.current.get(s) != t for s, t in self.target.items())
 
     def line(self) -> str:
+        from mmw.site.versionref import day
         if self.note:
             return f"{self.label}: {self.note}"
-        if self.target is None:
+        if not self.target:
             return f"{self.label}: not here yet then — left as it is"
         if not self.changes:
-            return f"{self.label}: already v{self.target.number}"
-        now = f"v{self.current.number}" if self.current else "nothing"
-        return f"{self.label}: {now} → v{self.target.number}"
+            return f"{self.label}: already as it was then"
+        parts = [f"{s} {day(self.current[s][0]) if s in self.current else 'nothing'} → {day(t[0])}"
+                 for s, t in sorted(self.target.items()) if self.current.get(s) != t]
+        return f"{self.label}: {', '.join(parts)}"
 
 
 def bundle_plan(mset, when: str) -> list[BundleStep]:
     """Every repository here, as it was once the bundle `when` names (its date,
     stamp or label) was applied: its newest version at or before that bundle."""
-    from mmw.site.versionref import as_of, bundle_stamp, when_list
-    repos = [(root, st, [v for v, *_ in root.history(st.repo)], root.deleted(st.repo))
+    from mmw.site.versionref import bundle_stamp, when_list
+    repos = [(root, st, root.history(st.repo), root.deleted(st.repo))
              for root in mset.roots for st in root.status()]
-    # A bundle whose versions were all deleted since is still a moment to name.
-    gone = [VersionInfo(0, st.repo, 0, st.label, "", d, None) for _r, st, _v, deleted in repos for d in deleted]
-    stamp = bundle_stamp([*(v for *_, versions, _d in repos for v in versions), *gone], when)
+    # Every point names the bundle it came in; a deleted one still does.
+    moments = [VersionInfo(0, st.repo, 0, st.label, "", p.stamp, p.snap_label)
+               for _r, st, hist, _d in repos for _t, rows in hist for p, *_ in rows]
+    moments += [VersionInfo(0, st.repo, 0, st.label, "", d, None) for _r, st, _h, deleted in repos for d in deleted]
+    stamp = bundle_stamp(moments, when)
     steps = []
-    for root, st, versions, deleted in repos:
-        target = as_of(versions, stamp)
-        # A version from between `target` and that bundle was deleted here:
-        # what it served then is gone, and an older one would be a guess.
-        lost = [d for d in deleted if d <= stamp and (target is None or d > target.stamp)]
+    for root, st, hist, _deleted in repos:
+        current, target, lost = {}, {}, []
+        for t, rows in hist:
+            suite = suite_of(t)
+            for p, _total, _frees, mark in rows:
+                if mark == "serving":
+                    current[suite] = (p.date, p.ident)
+            then = max(((p, mark) for p, *_x, mark in rows if p.stamp <= stamp),
+                       key=lambda pm: (pm[0].date, pm[0].stamp, pm[0].ident), default=None)
+            if then is None:
+                continue
+            if then[1] == "stub":
+                # What it served then was deleted here; an older one would be a guess.
+                lost.append(then[0].stamp)
+                continue
+            target[suite] = (then[0].date, then[0].ident)
         note = None
-        if lost:
-            target, note = None, f"its version from then ({when_list([max(lost)])[0]}) was deleted — left as it is"
-        steps.append(BundleStep(root, st.repo, st.label, st.serving, target, note))
+        if lost and not target:
+            note = f"its point from then ({when_list([max(lost)])[0]}) was deleted — left as it is"
+        steps.append(BundleStep(root, st.repo, st.label, current, target, note))
     steps.sort(key=lambda s: s.label.lower())
     for name in mset.missing:
         why = mset.missing_reason.get(name) or "not here"
-        steps.append(BundleStep(None, "", f"root {name}", None, None,
+        steps.append(BundleStep(None, "", f"root {name}", {}, {},
                                 f"{why} — its repositories are left as they are"))
     return steps
 
@@ -757,9 +967,18 @@ def serve_bundle(steps: list[BundleStep], progress=None, stop_event=None) -> lis
             raise ValueError(f"stopped — served: {', '.join(done) or 'none'}; not served: {', '.join(rest)}")
         say("repo", repo=s.key)
         try:
-            r = s.root.serve(s.key, s.target.number,
-                             progress=lambda rel: say("receive", bytes=1, name=rel))
-            if getattr(r, "held", None):              # its site layer could not be built
+            from mmw.site.versionref import name_of
+            r = None
+            if s.forward:
+                s.root.forward(s.key)
+            for suite, (_date, ident) in ([] if s.forward else sorted(s.target.items())):
+                if s.current.get(suite) == (_date, ident):
+                    continue
+                r = s.root.serve(s.key, name_of(_Ident(ident)), suite,
+                                 progress=lambda rel: say("receive", bytes=1, name=rel))
+                if getattr(r, "held", None):          # its site layer could not be built
+                    break
+            if getattr(r, "held", None):
                 held.append(f"{s.label} ({r.held})")
                 continue
         except Exception as e:

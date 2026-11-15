@@ -381,6 +381,20 @@ def status(home: Path):
         return db.repo_states()
 
 
+def unverified(home: Path, repo: str) -> list[str]:
+    """"suite date" of each of the repository's points adopted without a
+    signature check — said until they are checked."""
+    from mmw.site.adopt import unverified_key
+    with SiteDB(home) as db:
+        marked = set(db.metas("unverified:"))
+        out = []
+        for t in db.tracks(repo):
+            for p in db.points(t.id):
+                if unverified_key(p) in marked:
+                    out.append(f"{suite_of(t)} {p.date[:4]}-{p.date[4:6]}-{p.date[6:8]}")
+        return out
+
+
 def deleted_stamps(home: Path, ref: str) -> list[str]:
     """When the bundles that brought a repository's deleted versions were made."""
     with SiteDB(home) as db:

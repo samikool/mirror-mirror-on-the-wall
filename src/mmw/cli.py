@@ -788,6 +788,25 @@ def cmd_site_apply(src: str = typer.Argument(..., help="A bundle .tar, a stage d
     raise typer.Exit(apply(src, root, forward, forward_all, dry_run, break_lock, yes, deploy=deploy))
 
 
+@site_app.command("adopt")
+def cmd_site_adopt(path: Path = typer.Argument(..., help="A folder holding APT trees mmw didn't make"),
+                   root: Path = typer.Option(None, "--root", help="A root of the mirror to adopt into"),
+                   repo: str = typer.Option(None, "--repo", help="Adopt into this repository (label or key)"),
+                   as_base: str = typer.Option(None, "--as", help="HOST/PATH a new repository is served at "
+                                                                 "(deb.debian.org/debian)"),
+                   key: Path = typer.Option(None, "--key", help="Upstream's public key, to check signatures with "
+                                                               "(default: the keys this mirror serves)"),
+                   unverified: bool = typer.Option(False, "--unverified",
+                                                   help="Adopt without a key: marked 'signature not checked'"),
+                   dry_run: bool = typer.Option(False, "--dry-run", help="Find and check; adopt nothing"),
+                   yes: bool = _YES, break_lock: bool = _BREAK_LOCK):
+    """Take over APT trees mmw didn't make: each found, checked against its
+    Release and indexes, and linked into the store as a point of its suite —
+    the newest served. The trees themselves are never changed."""
+    from mmw.commands.site import adopt
+    raise typer.Exit(adopt(path, root, repo, as_base, key, unverified, dry_run, yes, break_lock))
+
+
 @site_app.command("open")
 def cmd_site_open(path: str = typer.Argument(..., help="A root of a mirror: a folder, or [user@]host:/path over ssh"),
                   install: Path = typer.Option(None, "--install", help="Push this mmw installer (mmw-<version>-<arch>.tar) "

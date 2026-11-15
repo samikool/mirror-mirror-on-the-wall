@@ -235,6 +235,45 @@ next, release files last, removals after — a client mid-`apt update` never
 sees an index naming a file that is not there. A switch cut short (power,
 Ctrl-C) is finished by the next `mmw site` command.
 
+## Adopting existing trees
+
+APT mirrors made before mmw — rsync'd, debmirror'd, copied off a drive —
+can be taken over without downloading anything again:
+
+```bash
+mmw site adopt /srv/www --as deb.debian.org/debian --dry-run   # what's there, checked
+mmw site adopt /srv/www --as deb.debian.org/debian --yes
+```
+
+```
+Found 3 trees of Debian bookworm:
+  /srv/www/debian            bookworm 2025-06-14
+  /srv/www/debian-new        bookworm 2025-12-02
+  /data/bookworm-mirror      bookworm 2026-03-30
+→ a new repository served at https://deb.debian.org/debian/
+```
+
+- Every archive root under the path is found (a `dists/*/Release`, or a
+  flat repository's `Release` beside its `Packages`) and grouped by suite.
+  A suite this mirror already has goes to that repository (`--repo LABEL`
+  picks one); a new one needs `--as HOST/PATH`, where it is served.
+- Each Release's signature is checked with the keys this mirror serves, or
+  `--key FILE`. With neither, `--unverified` adopts anyway: those points say
+  "signature not checked" in `mmw site status`.
+- Every file is checked against its Release and indexes. A file that
+  differs refuses that suite alone; a missing one leaves it stored
+  incomplete. Files no index names (old pool files, traces) are listed and
+  not adopted — apt can't reach them. `by-hash/`, installer files and the
+  archive root's own keys and README are kept.
+- Files are hardlinked into the root's store when the tree is on the same
+  filesystem — adopting terabytes costs hashing time, not disk — and copied
+  otherwise, after a space check. Each tree becomes a point of its suite,
+  and the newest is served.
+- The trees are never changed. Delete them yourself once you're satisfied;
+  until then, don't edit their files in place (hardlinked, an in-place edit
+  would change what is served — rsync's default of writing a new file is
+  fine).
+
 ## More than one root
 
 ```bash

@@ -97,6 +97,8 @@ class TrackInfo:
     pinned: int | None        # a point id
     previous: int | None      # the point served before the current one
     gone: bool = False        # not in this network's latest bundle: no longer served unless pinned
+    origin: str | None = None
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -262,7 +264,7 @@ class SiteDB:
 
     # ── tracks and points ────────────────────────────────────────────────────
 
-    _T = "id, repo, name, suite, codename, pinned, previous, gone"
+    _T = "id, repo, name, suite, codename, pinned, previous, gone, origin, label"
     _P = "id, track, ident, date, stamp, snap_label, held"
 
     def ensure_track(self, repo: str, name: str, fields: dict[str, str], *, commit: bool = True) -> int:
@@ -279,12 +281,12 @@ class SiteDB:
         return tid
 
     def tracks(self, repo: str) -> list[TrackInfo]:
-        return [TrackInfo(*r[:7], bool(r[7])) for r in self._conn.execute(
+        return [TrackInfo(*r[:7], bool(r[7]), r[8], r[9]) for r in self._conn.execute(
             f"SELECT {self._T} FROM tracks WHERE repo = ? ORDER BY name", (repo,)).fetchall()]
 
     def track(self, track_id: int) -> TrackInfo | None:
         row = self._conn.execute(f"SELECT {self._T} FROM tracks WHERE id = ?", (track_id,)).fetchone()
-        return TrackInfo(*row[:7], bool(row[7])) if row else None
+        return TrackInfo(*row[:7], bool(row[7]), row[8], row[9]) if row else None
 
     def set_present(self, repo: str, names: set[str], *, commit: bool = True) -> None:
         """The tracks a complete list of the repository has; the rest are gone."""

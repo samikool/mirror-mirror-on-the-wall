@@ -206,6 +206,10 @@ class LocalRoot:
                      if layer and (overlay or layer.signing != "upstream") else "")
             return {"local": local, "layer_hold": db.get_meta(f"hold:{repo}") or ""}
 
+    def unverified(self, repo: str) -> list[str]:
+        from mmw.site.ops import unverified
+        return unverified(self.home, repo)
+
     def packages_target(self) -> tuple[Path, Store]:
         """(home, store) for the local-packages page."""
         return self.home, self.store()

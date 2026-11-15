@@ -173,6 +173,10 @@ class NetworkForm(Vertical):
                     "Retention", net.retention if net else config.DEFAULT_RETENTION, id="inp-retention",
                     hint="How long releases that left the mirror stay published (PyPI): current, "
                          "forever or days like 90d. Widening is not retroactive."),
+                TextField(
+                    "Keep points", str(net.keep_points) if net else "3", id="inp-keep-points",
+                    hint="Sync points kept per suite when the pool is pruned: a number, all, or an "
+                         "age like 90d. Snapshots and points not yet bundled are always kept."),
                 PathField(
                     "Transfer output", str(net.bundle_dir) if net and net.bundle_dir else "",
                     id="inp-bundle-dir", browse_id="btn-browse-bundle",
@@ -332,6 +336,10 @@ class NetworkForm(Vertical):
             config.retention_days(retention)
         except ValueError as e:
             return None, str(e), "inp-retention"
+        try:
+            keep_points = parse_keep_points(self._value("inp-keep-points"))
+        except ValueError as e:
+            return None, str(e), "inp-keep-points"
         bundle = self._value("inp-bundle-dir")
         arches = self._value("inp-runtime-arches").replace(",", " ").split() or ["x86_64"]
         if bad := [a for a in arches if a not in ("x86_64", "aarch64")]:
@@ -356,6 +364,7 @@ class NetworkForm(Vertical):
             "certs": self._flag("certs-switch"),
             "nginx": self._flag("nginx-switch"),
             "retention": retention,
+            "keep_points": keep_points,
             "far_side": self.query_one("#far-side-pick", Select).value,
             "runtime_arches": arches,
             "runtime_python": python,
@@ -474,3 +483,12 @@ class AddNetworkPage(Wizard):
     def result(self) -> config.NetworkConfig:
         net, _, _ = self.form.result()
         return net
+
+
+def parse_keep_points(text: str) -> int | str:
+    """`keep_points` as typed: empty → 3, a number, `all`, or an age `90d`."""
+    text = text.strip()
+    if not text:
+        return 3
+    value: int | str = int(text) if text.lstrip("-").isdigit() else text
+    return config.NetworkConfig._valid_keep_points(value)

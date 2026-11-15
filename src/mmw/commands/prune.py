@@ -70,6 +70,19 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
         )
         return 1
 
+    # Old timeline points no network keeps: counted here (read-only), dropped
+    # only once the prune goes ahead — under its lock, so their files free now.
+    from mmw.core import points
+    from mmw.core.pool import Pool
+    try:
+        with Pool(mirror_dir, read_only=True) as pool:
+            dropping = len(points.retention_plan(pool, cfg.networks))
+    except sqlite3.OperationalError:
+        dropping = 0                            # a pool from before points: none to drop
+    except (OSError, sqlite3.Error) as e:
+        eprint(f"Cannot read the pool in {mirror_dir}: {e}")
+        return 1
+
     try:
         dropped, removable, freeable = _plan(cfg, mirror_dir)
     except (OSError, sqlite3.Error) as e:
@@ -81,6 +94,9 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
         print(f"  {len(dropped)} synced mirror(s) are no longer in the config "
               f"(a suite, component or arch was removed): "
               f"{', '.join(dropped[:5])}{' …' if len(dropped) > 5 else ''}")
+    if dropping:
+        print(f"  {dropping:,} old point(s) no network keeps (keep_points) "
+              f"{'would be' if dry_run else 'will be'} dropped — their files freed with the rest")
     if dry_run:
         if removable == 0:
             print("Pool is clean — no orphaned packages found. (dry run)")
@@ -89,13 +105,14 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
                   f"freeing {_fmt_size(freeable)}. (dry run — nothing deleted)")
         return 0
 
-    if removable == 0:
+    if removable == 0 and not dropping:
         print("Pool is clean — no orphaned packages found.")
         return 0
 
     if not yes and sys.stdin.isatty():
+        also = f" and drop {dropping:,} old point(s)" if dropping else ""
         answer = input(
-            f"Remove {removable:,} orphaned package(s), freeing {_fmt_size(freeable)}? [y/N] "
+            f"Remove {removable:,} orphaned package(s), freeing {_fmt_size(freeable)}{also}? [y/N] "
         )
         if answer.strip().lower() not in ("y", "yes"):
             print("Aborted — nothing was deleted.")
@@ -109,7 +126,8 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
     try:
         removed, freed = pool.prune_orphans(
             configured, dropped,
-            progress=lambda done, total: print(f"  {done:,} of {total:,} blobs removed…", flush=True))
+            progress=lambda done, total: print(f"  {done:,} of {total:,} blobs removed…", flush=True),
+            before=lambda locked: points.apply_retention(locked, cfg.networks))
     except PoolBusy as e:
         # A sync is running. Until a mirror's refs are reconciled at the end of
         # its run, every blob it has downloaded is `packages − refs` — i.e.

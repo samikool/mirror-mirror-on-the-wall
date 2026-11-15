@@ -225,6 +225,12 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
             + ", ".join(mirror_errors),
             err=True,
         )
+    # Every sync is a point: each network using what synced records its own.
+    synced = {m.source for m in mirrors if any(s.mirror == m.name and s.metadata_ok for s in summaries)}
+    if synced:
+        from mmw.core.points import record_points_after_sync
+        typer.echo("")
+        record_points_after_sync(cfg, mirror_dir, synced, say=typer.echo)
     if total_failed or metadata_failed or resolve_errors or mirror_errors:
         if total_failed:
             typer.echo(f"\n  {total_failed} package failure(s). See output above.", err=True)

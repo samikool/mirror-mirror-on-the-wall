@@ -873,6 +873,16 @@ class SyncView(Vertical):
             pass                # unmounted while finishing (the app is exiting)
         self.post_message(self.Completed(self))
         self._finish_ticking()
+        if not (self._dry_run or self._retry_failed or self._stop_event.is_set()):
+            self._record_points()
+
+    @work(thread=True, exit_on_error=False, group="sync-points")
+    def _record_points(self) -> None:
+        """Every sync is a point: each network using what synced records its
+        own — said as a notice, never failing the sync."""
+        notice = points_notice(self._cfg, self._mirrors)
+        if notice:
+            self.app.call_from_thread(self.notify, notice, title="Points")
 
     def _finish_ticking(self) -> None:
         """Nothing moves once every card is done, so the 60 Hz tick stops —
@@ -1009,3 +1019,16 @@ class SyncView(Vertical):
             resnapshotted=summary.metadata_resnapshotted,
             stopped=summary.stopped,
         ))
+
+
+def points_notice(cfg, mirrors) -> str | None:
+    """Record each network's points after a TUI sync of `mirrors`: what it
+    says (new points, warnings), or None. Never raises."""
+    from mmw.core import points
+    lines: list[str] = []
+    try:
+        points.record_points_after_sync(cfg, cfg.settings.mirror_dir, {m.source for m in mirrors},
+                                        say=lines.append)
+    except Exception as e:  # noqa: BLE001 — a notice, not a failure
+        lines.append(f"points not recorded: {e}")
+    return "\n".join(lines) or None

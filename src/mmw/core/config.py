@@ -1057,6 +1057,10 @@ class NetworkConfig(_StrictModel):
     # far side can sign with them. Opt-in per key: anyone holding a bundle
     # can then sign as you. Only an mmw far side has a keyring to put them in.
     carry_keys: list[str] = []
+    # Timeline points kept per suite when prune runs: a number, "all", or an
+    # age ("90d"). Never dropped: one a snapshot holds, or one the network
+    # first saw after its last bundle.
+    keep_points: int | str = 3
 
     @field_validator("runtime_python")
     @classmethod
@@ -1070,6 +1074,17 @@ class NetworkConfig(_StrictModel):
         if not value:
             raise ValueError("runtime_arches needs at least one architecture")
         return sorted(set(value))
+
+    @field_validator("keep_points", mode="before")
+    @classmethod
+    def _valid_keep_points(cls, value):
+        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 1_000_000:
+            return value
+        if isinstance(value, str) and (value == "all" or (re.fullmatch(r"[1-9]\d{0,4}d", value)
+                                                          and int(value[:-1]) <= 36500)):
+            return value
+        raise ValueError(f"keep_points must be a number of points (1 or more), \"all\", or an age like "
+                         f"\"90d\" — not {value!r}")
 
     @field_validator("retention")
     @classmethod
@@ -1585,6 +1600,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": False} if not n.certs else {}),
             **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
+            **({"keep_points": n.keep_points} if n.keep_points != 3 else {}),
             **({"far_side": "mmw"} if n.far_side == "mmw" else {}),
             **({"runtime_arches": n.runtime_arches} if n.runtime_arches != ["x86_64"] else {}),
             **({"runtime_python": n.runtime_python} if n.runtime_python != DEFAULT_RUNTIME_PYTHON else {}),

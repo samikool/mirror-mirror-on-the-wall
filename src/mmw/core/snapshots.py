@@ -87,6 +87,49 @@ def _free_stamp(pool: Pool, network: str) -> str:
     return stamp
 
 
+def walk_tree(network: NetworkConfig, cfg: Config, mirror_dir: Path, pool: Pool, *,
+              progress=None, stop_event=None) -> tuple[dict[str, str], str, list[str]]:
+    """`network`'s complete tree as served — layers applied, generated nginx
+    left out — as (path → checksum, its settings JSON, warnings). Keys and
+    upstream files are frozen into the pool on the way. The caller holds the
+    pool's shared lock (see `take_snapshot`). Raises if the walk reported
+    errors, and InterruptedError on a stop."""
+    sink = RecordingSink(pool)
+    result = NetworkPublishResult(network_name=network.name, dry_run=False)
+    from mmw.core.layers import apply_build
+    apply_build(network, cfg, mirror_dir, pool, result)     # what the network serves, layer and all
+    from mmw.core.publisher import walk_network
+    mirrors = walk_network(network, cfg, mirror_dir, sink, pool, result,
+                           nginx_root=None, prune=False,
+                           progress=progress, stop_event=stop_event)
+    warnings = [*result.dist_upgrade_warnings, *result.warnings]      # reported, never dropped
+    if stop_event is not None and stop_event.is_set():
+        raise InterruptedError("snapshot stopped — nothing was recorded")
+    problems = sink.errors + result.errors
+    if problems:
+        raise ValueError(f"snapshot of {network.name} not taken: " + "; ".join(problems[:5])
+                         + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""))
+    from mmw.core.publisher.links import upstream_file_hosts, upstream_files
+    from mmw.providers import extra_hosts
+    settings = json.dumps({
+        "nginx_container": 2,
+        "network": network.model_dump(mode="json"),
+        "mirrors": [m.legacy_dict() for m in mirrors],
+        # nginx needs a server block per upstream-file host.
+        "upstream_hosts": upstream_file_hosts(upstream_files(mirror_dir, mirrors)),
+        # The bases the walk published (providers choose them); replay and
+        # bundles read these rather than re-deriving them from mirror_base.
+        "bases": result.bases,
+        # Hosts providers serve beyond their units' own (changelogs.ubuntu.com
+        # for dist-upgrade), so a snapshot's nginx is regenerated exactly.
+        "extra_hosts": extra_hosts(network, mirrors),
+        # Which repository each base belongs to: what versions and the
+        # far side track (`recorded_repos`).
+        "repos": _group_repos(result.base_repos),
+    }, sort_keys=True)
+    return dict(sink.rows), settings, warnings
+
+
 def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
                   label: str | None = None, kind: str = "manual",
                   progress=None, stop_event=None,
@@ -103,50 +146,27 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
     them and leave a snapshot that can never be published or bundled to.
     """
     with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
-        sink = RecordingSink(pool)
-        result = NetworkPublishResult(network_name=network.name, dry_run=False)
-        from mmw.core.layers import apply_build
-        apply_build(network, cfg, mirror_dir, pool, result)     # what the network serves, layer and all
-        from mmw.core.publisher import walk_network
-        mirrors = walk_network(network, cfg, mirror_dir, sink, pool, result,
-                               nginx_root=None, prune=False,
-                               progress=progress, stop_event=stop_event)
+        rows_map, settings, walk_warnings = walk_tree(network, cfg, mirror_dir, pool,
+                                                      progress=progress, stop_event=stop_event)
         if warnings is not None:
-            warnings.extend(result.dist_upgrade_warnings)     # reported, never dropped
-            warnings.extend(result.warnings)
-        if stop_event is not None and stop_event.is_set():
-            raise InterruptedError("snapshot stopped — nothing was recorded")
-        problems = sink.errors + result.errors
-        if problems:
-            raise ValueError(f"snapshot of {network.name} not taken: " + "; ".join(problems[:5])
-                             + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""))
-        from mmw.core.publisher.links import upstream_file_hosts, upstream_files
-        from mmw.providers import extra_hosts
-        settings = json.dumps({
-            "nginx_container": 2,
-            "network": network.model_dump(mode="json"),
-            "mirrors": [m.legacy_dict() for m in mirrors],
-            # nginx needs a server block per upstream-file host.
-            "upstream_hosts": upstream_file_hosts(upstream_files(mirror_dir, mirrors)),
-            # The bases the walk published (providers choose them); replay and
-            # bundles read these rather than re-deriving them from mirror_base.
-            "bases": result.bases,
-            # Hosts providers serve beyond their units' own (changelogs.ubuntu.com
-            # for dist-upgrade), so a snapshot's nginx is regenerated exactly.
-            "extra_hosts": extra_hosts(network, mirrors),
-            # Which repository each base belongs to: what versions and the
-            # far side track (`recorded_repos`).
-            "repos": _group_repos(result.base_repos),
-        }, sort_keys=True)
+            warnings.extend(walk_warnings)
         # Older snapshots first, so version numbers follow time even when a
         # snapshot is the first thing taken after upgrading.
         ensure_repo_versions(pool, network.name)
         stamp = _free_stamp(pool, network.name)
-        rows = sorted(sink.rows.items())
+        rows = sorted(rows_map.items())
         sid = pool.create_snapshot(network.name, stamp, kind=kind, label=label,
                                    rows=rows, settings=settings)
         pool.record_repo_versions(sid, network.name, stamp,
                                   repo_digests(rows, recorded_repos(settings)))
+        # Its points, as a sync would record them, listed for the snapshot.
+        from mmw.core.points import split_rows
+        ids = []
+        for repo, draft in split_rows(pool, rows_map, settings, network.name, stamp):
+            pid, _new = pool.record_point(repo, draft, stamp)
+            pool.link_network_point(network.name, pid, stamp)
+            ids.append(pid)
+        pool.link_snapshot_points(sid, ids)
         return next(s for s in pool.snapshots(network.name) if s.id == sid)
 
 

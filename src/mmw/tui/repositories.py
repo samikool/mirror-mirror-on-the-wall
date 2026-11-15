@@ -258,8 +258,12 @@ def prune_pool(cfg: "config.Config", progress=None) -> tuple[int, int]:
     from mmw.core.resolve import uncovered_mirror_names
     pool = pool_mod.Pool(cfg.settings.mirror_dir)
     try:
+        from mmw.core.points import apply_retention
+        # Old timeline points no network keeps are dropped under the prune's
+        # own lock (never while a sync runs), so their files free now.
         return pool.prune_orphans([s.identity for s in cfg.sources],
-                                  uncovered_mirror_names(cfg, pool), progress=progress)
+                                  uncovered_mirror_names(cfg, pool), progress=progress,
+                                  before=lambda locked: apply_retention(locked, cfg.networks))
     finally:
         pool.close()
 

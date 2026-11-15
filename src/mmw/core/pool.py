@@ -278,6 +278,44 @@ CREATE TABLE IF NOT EXISTS mirrors (
 -- arch/suite/component columns are still written so an older mmw can read
 -- this pool, but `dims` is what this version reads. (Kept out of the CREATE
 -- TABLE: SQLite cannot rewrite a column list with a comment in it.)
+-- Timeline points (every sync records each network's): a track is one
+-- Release stream of a repository (its dists/ dir), "" for files no Release
+-- claims; a point is one Release with one file set (`files`: their digest),
+-- so another selection of the same Release is another point. Files are
+-- interned with the snapshot rows'. A held point's blobs are GC roots; a
+-- stub (held = 0) keeps its record and file list, not its files.
+CREATE TABLE IF NOT EXISTS tracks (
+    id INTEGER PRIMARY KEY, repo TEXT NOT NULL, name TEXT NOT NULL,
+    suite TEXT, codename TEXT,
+    UNIQUE (repo, name)
+);
+CREATE TABLE IF NOT EXISTS points (
+    id INTEGER PRIMARY KEY, track INTEGER NOT NULL, ident TEXT NOT NULL, files TEXT NOT NULL,
+    date TEXT NOT NULL, stamp TEXT NOT NULL, held INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (track, ident, files)
+);
+CREATE TABLE IF NOT EXISTS point_files (
+    point INTEGER NOT NULL, path INTEGER NOT NULL, blob INTEGER NOT NULL,
+    PRIMARY KEY (point, path)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_point_files_blob ON point_files(blob, point);
+CREATE TABLE IF NOT EXISTS network_points (
+    network TEXT NOT NULL, point INTEGER NOT NULL, stamp TEXT NOT NULL,
+    last_seen TEXT NOT NULL DEFAULT '',          -- the latest recording that found it
+    PRIMARY KEY (network, point)
+) WITHOUT ROWID;
+-- What each network's repository looked like at its last recording (a
+-- digest of its rows) and the points it found: unchanged, nothing is split.
+CREATE TABLE IF NOT EXISTS network_repo_rows (
+    network TEXT NOT NULL, repo TEXT NOT NULL, digest TEXT NOT NULL, points TEXT NOT NULL,
+    PRIMARY KEY (network, repo)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS snapshot_points (
+    snapshot INTEGER NOT NULL, point INTEGER NOT NULL,
+    PRIMARY KEY (snapshot, point)
+) WITHOUT ROWID;
+-- Networks whose snapshots from before points have been split into points.
+CREATE TABLE IF NOT EXISTS points_converted (network TEXT PRIMARY KEY);
 """
 
 _CHUNK = 900
@@ -690,6 +728,26 @@ class PublishedInfo:
 
 
 @dataclass(frozen=True)
+class PoolTrack:
+    id: int
+    repo: str
+    name: str
+    suite: str | None
+    codename: str | None
+
+
+@dataclass(frozen=True)
+class PoolPoint:
+    id: int
+    track: int
+    ident: str
+    files: str          # digest of its file set
+    date: str
+    stamp: str          # when it was first recorded
+    held: bool
+
+
+@dataclass(frozen=True)
 class SnapshotInfo:
     id: int
     network: str
@@ -741,6 +799,7 @@ def _delete_snapshot_rows(conn: sqlite3.Connection, ids: list[int]) -> None:
     for sid in ids:
         conn.execute("DELETE FROM snapshot_files WHERE snapshot = ?", (sid,))
         conn.execute("DELETE FROM snapshot_repos WHERE snapshot = ?", (sid,))
+        conn.execute("DELETE FROM snapshot_points WHERE snapshot = ?", (sid,))
         conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
     # The shared tables hold exactly what some snapshot still lists —
     # prune finds a file's holders through `snapshot_blobs`.
@@ -748,8 +807,11 @@ def _delete_snapshot_rows(conn: sqlite3.Connection, ids: list[int]) -> None:
     # index of its own, and the correlated form compared every path
     # with every row (515k x 515k — it never finished on oak). NOT IN
     # builds its lookup once.
-    conn.execute("DELETE FROM snapshot_blobs WHERE id NOT IN (SELECT blob FROM snapshot_files)")
-    conn.execute("DELETE FROM snapshot_paths WHERE id NOT IN (SELECT path FROM snapshot_files)")
+    # Timeline points share these tables: what a point lists stays.
+    conn.execute("DELETE FROM snapshot_blobs WHERE id NOT IN "
+                 "(SELECT blob FROM snapshot_files UNION SELECT blob FROM point_files)")
+    conn.execute("DELETE FROM snapshot_paths WHERE id NOT IN "
+                 "(SELECT path FROM snapshot_files UNION SELECT path FROM point_files)")
 
 
 def _replace_retry_plan(conn, mirror_name, failures, source):
@@ -810,6 +872,8 @@ class Pool:
             self._conn.executescript(SCHEMA)
             # Pre-kind databases: CREATE TABLE IF NOT EXISTS won't add the
             # column, so patch it in (instant in SQLite; keeps existing pools usable).
+            if "last_seen" not in {r[1] for r in self._conn.execute("PRAGMA table_info(network_points)")}:
+                self._conn.execute("ALTER TABLE network_points ADD COLUMN last_seen TEXT NOT NULL DEFAULT ''")
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(refs)")}
             if "kind" not in cols:
                 self._conn.execute("ALTER TABLE refs ADD COLUMN kind TEXT NOT NULL DEFAULT 'pkg'")
@@ -908,6 +972,7 @@ class Pool:
         # checked once here, not per query on a connection a writer may hold.
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
         self._has_layer_rows = self._has_table("layer_rows")
+        self._has_point_files = self._has_table("point_files")
         self._has_download_sources = self._has_table("download_sources")
         self._has_retry_state = self._has_table("retry_state")
         # SQLite's planner prefers the checksum primary key (one row, but a
@@ -1289,6 +1354,12 @@ class Pool:
             ).fetchone()
         return row is not None
 
+    def blob_file(self, checksum: str) -> Path | None:
+        """Where a pooled blob is (None: not in the pool)."""
+        with self._read() as c:
+            row = c.execute("SELECT filename FROM packages WHERE checksum = ?", (checksum,)).fetchone()
+        return self.blob_path(checksum, row[0]) if row else None
+
     def blob_path(self, checksum: str, filename: str) -> Path:
         """Where `add` keeps a blob. Listings derive it rather than read the
         stored `pool_path`: that column is not in the covering index, and it
@@ -1592,6 +1663,150 @@ class Pool:
             "SELECT p.path, b.checksum FROM snapshot_files f "
             "JOIN snapshot_paths p ON p.id = f.path JOIN snapshot_blobs b ON b.id = f.blob "
             "WHERE f.snapshot = ? ORDER BY p.path", (snapshot_id,))
+
+    # ── timeline points ──────────────────────────────────────────────────────
+
+    def record_point(self, repo: str, draft, stamp: str) -> tuple[int, bool]:
+        """`draft` (a `mmw.site.tracks.PointDraft`) as a point of `repo`:
+        (its id, whether it is new). The same Release with the same files
+        is the same point; with other files (another selection), another."""
+        from mmw.site.tracks import content_ident
+        files = content_ident(draft.files)
+        self.flush_writes()
+        with self._lock:
+            c = self._conn
+            try:
+                c.execute("INSERT INTO tracks (repo, name, suite, codename) VALUES (?, ?, ?, ?) "
+                          "ON CONFLICT(repo, name) DO UPDATE SET suite = coalesce(excluded.suite, suite), "
+                          "codename = coalesce(excluded.codename, codename)",
+                          (repo, draft.track, draft.fields.get("Suite"), draft.fields.get("Codename")))
+                tid = c.execute("SELECT id FROM tracks WHERE repo = ? AND name = ?",
+                                (repo, draft.track)).fetchone()[0]
+                row = c.execute("SELECT id, held FROM points WHERE track = ? AND ident = ? AND files = ?",
+                                (tid, draft.ident, files)).fetchone()
+                if row is not None and row[1]:
+                    c.commit()
+                    return row[0], False
+                if row is not None:                   # a stub seen again: its files are here again
+                    pid = row[0]
+                    c.execute("UPDATE points SET held = 1 WHERE id = ?", (pid,))
+                else:
+                    pid = c.execute("INSERT INTO points (track, ident, files, date, stamp) VALUES (?, ?, ?, ?, ?)",
+                                    (tid, draft.ident, files, draft.date, stamp)).lastrowid
+                c.execute("CREATE TEMP TABLE IF NOT EXISTS _point_in (path TEXT PRIMARY KEY, checksum TEXT NOT NULL)")
+                c.execute("DELETE FROM _point_in")
+                c.executemany("INSERT OR REPLACE INTO _point_in VALUES (?, ?)", list(draft.files.items()))
+                c.execute("INSERT OR IGNORE INTO snapshot_paths (path) SELECT path FROM _point_in")
+                c.execute("INSERT OR IGNORE INTO snapshot_blobs (checksum) SELECT checksum FROM _point_in")
+                c.execute("INSERT INTO point_files (point, path, blob) SELECT ?, p.id, b.id FROM _point_in i "
+                          "JOIN snapshot_paths p ON p.path = i.path JOIN snapshot_blobs b ON b.checksum = i.checksum",
+                          (pid,))
+                c.execute("DELETE FROM _point_in")
+                c.commit()
+            except BaseException:
+                c.rollback()
+                raise
+        return pid, row is None
+
+    def link_network_point(self, network: str, point_id: int, stamp: str) -> bool:
+        """That `network` saw the point at `stamp` (first then, if new);
+        whether it is new to it."""
+        with self._lock:
+            cur = self._conn.execute("INSERT OR IGNORE INTO network_points (network, point, stamp, last_seen) "
+                                     "VALUES (?, ?, ?, ?)", (network, point_id, stamp, stamp))
+            new = cur.rowcount == 1
+            if not new:
+                self._conn.execute("UPDATE network_points SET last_seen = max(last_seen, ?) "
+                                   "WHERE network = ? AND point = ?", (stamp, network, point_id))
+            self._conn.commit()
+            return new
+
+    def network_point_last_seen(self, network: str, point_id: int) -> str | None:
+        with self._read() as c:
+            row = c.execute("SELECT coalesce(nullif(last_seen, ''), stamp) FROM network_points "
+                            "WHERE network = ? AND point = ?", (network, point_id)).fetchone()
+        return row[0] if row else None
+
+    def repo_rows(self, network: str, repo: str) -> tuple[str, list[int]] | None:
+        """(digest, point ids) of `repo` at `network`'s last recording."""
+        import json
+        with self._read() as c:
+            row = c.execute("SELECT digest, points FROM network_repo_rows WHERE network = ? AND repo = ?",
+                            (network, repo)).fetchone()
+        return (row[0], json.loads(row[1])) if row else None
+
+    def set_repo_rows(self, network: str, repo: str, digest: str, point_ids: list[int]) -> None:
+        import json
+        with self._lock:
+            self._conn.execute("INSERT OR REPLACE INTO network_repo_rows VALUES (?, ?, ?, ?)",
+                               (network, repo, digest, json.dumps(sorted(point_ids))))
+            self._conn.commit()
+
+    def linked_held_points(self) -> list[int]:
+        """Every held point some network (configured or not) saw."""
+        with self._read() as c:
+            return [r[0] for r in c.execute(
+                "SELECT DISTINCT p.id FROM points p JOIN network_points n ON n.point = p.id WHERE p.held = 1")]
+
+    def network_tracks(self, network: str) -> list[PoolTrack]:
+        with self._read() as c:
+            return [PoolTrack(*r) for r in c.execute(
+                "SELECT DISTINCT t.id, t.repo, t.name, t.suite, t.codename FROM tracks t "
+                "JOIN points p ON p.track = t.id JOIN network_points n ON n.point = p.id "
+                "WHERE n.network = ? ORDER BY t.repo, t.name", (network,)).fetchall()]
+
+    def network_points(self, network: str, track_id: int | None = None, *,
+                       stubs: bool = False) -> list[PoolPoint]:
+        """The points `network` saw — of one track, or all — newest date first."""
+        where = " AND p.track = ?" if track_id is not None else ""
+        args = (network, track_id) if track_id is not None else (network,)
+        with self._read() as c:
+            rows = c.execute(
+                "SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held FROM points p "
+                "JOIN network_points n ON n.point = p.id WHERE n.network = ?" + where
+                + ("" if stubs else " AND p.held = 1")
+                + " ORDER BY p.date DESC, p.stamp DESC, p.ident DESC", args).fetchall()
+        return [PoolPoint(*r[:6], bool(r[6])) for r in rows]
+
+    def network_point_stamp(self, network: str, point_id: int) -> str | None:
+        with self._read() as c:
+            row = c.execute("SELECT stamp FROM network_points WHERE network = ? AND point = ?",
+                            (network, point_id)).fetchone()
+        return row[0] if row else None
+
+    def point_files(self, point_id: int) -> dict[str, str]:
+        with self._read() as c:
+            return dict(c.execute(
+                "SELECT p.path, b.checksum FROM point_files f JOIN snapshot_paths p ON p.id = f.path "
+                "JOIN snapshot_blobs b ON b.id = f.blob WHERE f.point = ?", (point_id,)).fetchall())
+
+    def stub_point(self, point_id: int) -> None:
+        """Keep the point's record (ident, files digest, dates), not its file
+        list: nothing reads a stub's list, and lists are most of the rows."""
+        with self._lock:
+            self._conn.execute("UPDATE points SET held = 0 WHERE id = ?", (point_id,))
+            self._conn.execute("DELETE FROM point_files WHERE point = ?", (point_id,))
+            self._conn.commit()
+
+    def link_snapshot_points(self, snapshot_id: int, point_ids: list[int]) -> None:
+        with self._lock:
+            self._conn.executemany("INSERT OR IGNORE INTO snapshot_points (snapshot, point) VALUES (?, ?)",
+                                   [(snapshot_id, p) for p in point_ids])
+            self._conn.commit()
+
+    def points_converted(self, network: str) -> bool:
+        with self._read() as c:
+            return c.execute("SELECT 1 FROM points_converted WHERE network = ?", (network,)).fetchone() is not None
+
+    def mark_points_converted(self, network: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO points_converted (network) VALUES (?)", (network,))
+            self._conn.commit()
+
+    def snapshot_point_ids(self, snapshot_id: int) -> list[int]:
+        with self._read() as c:
+            return [r[0] for r in c.execute("SELECT point FROM snapshot_points WHERE snapshot = ? ORDER BY point",
+                                            (snapshot_id,))]
 
     def rename_snapshot(self, snapshot_id: int, label: str | None) -> None:
         with self._lock:
@@ -1993,7 +2208,7 @@ class Pool:
 
     def prune_orphans(self, configured_sources: list[str],
                       dropped_mirrors: "list[str] | tuple[str, ...]" = (), *,
-                      stop_event=None, progress=None) -> tuple[int, int]:
+                      stop_event=None, progress=None, before=None) -> tuple[int, int]:
         """DB-driven prune: GC refs of unconfigured repositories and of
         `dropped_mirrors`, then delete pool files no remaining ref and no
         snapshot wants. Returns (files_removed, bytes_freed).
@@ -2031,6 +2246,8 @@ class Pool:
                 "refusing to prune against no configured repositories: every ref in "
                 "the pool would look unwanted and prune would empty the whole pool")
         with exclusive_pool_lock(self.pool_dir.parent, "prune the pool"):
+            if before is not None:
+                before(self)                # e.g. dropping old points, under the same lock
             return self._prune_orphans_locked(configured_sources, list(dropped_mirrors),
                                               stop_event=stop_event, progress=progress)
 
@@ -2048,9 +2265,14 @@ class Pool:
         # only by layer_rows: without this a prune deleted every live one.
         layered = ("AND NOT EXISTS (SELECT 1 FROM layer_rows l WHERE l.checksum = packages.checksum)"
                    if self._has_layer_rows else "")
+        # A held timeline point keeps its files (superseded packages included).
+        pointed = ("AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
+                   "JOIN point_files f ON f.blob = b.id JOIN points p ON p.id = f.point "
+                   "WHERE b.checksum = packages.checksum AND p.held = 1)"
+                   if self._has_point_files and self._has_snapshot_blobs else "")
         return (f"SELECT {columns} FROM packages "
                 "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum "
-                f"AND {ref_filter}) {held} {layered}")
+                f"AND {ref_filter}) {held} {layered} {pointed}")
 
     def _has_table(self, name: str) -> bool:
         """Init-time schema probe — not for use once the pool is shared."""

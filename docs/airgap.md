@@ -130,6 +130,20 @@ No snapshot is taken: a snapshot is a label you add by hand
 (`mmw snapshot take`), and `--to <snapshot>` sends the points it holds.
 `--from <snapshot>` only bounds `--history`; what was sent decides which
 files travel. Force-deleting a snapshot never makes the next bundle full.
+
+A bundle counts as sent once it is written: mmw cannot know whether it ever
+reached the far side. If one never arrived (the drive was lost, the stage
+directory deleted), the next bundle leaves out the files it carried. Send
+the repositories again with `--full` (with `--repo` for just one):
+
+```bash
+mmw bundle -n lab --full                     # every file again
+mmw bundle -n lab --repo 'Debian' --full     # one repository's
+```
+
+The far side checks every point it is given: a point whose files are missing
+is stored incomplete and not served — applying says which, with how many
+files are missing, and `mmw site history` marks it.
 In the TUI, the transfer page's **Points** choice is
 the same switch.
 

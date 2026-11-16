@@ -28,15 +28,16 @@ from mmw.core.format import fmt_size as _fmt_size
 from mmw.core.pool import Pool, PoolBusy
 
 
-def _plan(cfg, mirror_dir: Path) -> tuple[list[str], int, int]:
+def _plan(cfg, mirror_dir: Path, released: list[int] = ()) -> tuple[list[str], int, int]:
     """(dropped mirrors, files, bytes) a prune would remove. Read-only: the
     preview is `Pool.prune_preview` — the prune's own orphan query, with the
     refs it would delete filtered out rather than deleted — on a read-only
-    pool, so a preview can never be the thing that deletes."""
+    pool, so a preview can never be the thing that deletes. `released`: the
+    points retention drops first — their files count when nothing else keeps them."""
     from mmw.core.resolve import uncovered_mirror_names
     with Pool(mirror_dir, read_only=True) as pool:
         dropped = uncovered_mirror_names(cfg, pool)
-        files, size = pool.prune_preview([s.identity for s in cfg.sources], dropped)
+        files, size = pool.prune_preview([s.identity for s in cfg.sources], dropped, released)
         gone = sorted(n for n in pool.network_names() - {n.name for n in cfg.networks}
                       if pool.snapshots(n))
     for name in gone:
@@ -49,8 +50,36 @@ def _plan(cfg, mirror_dir: Path) -> tuple[list[str], int, int]:
 
 
 @interruptible
-def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> int:
-    """Remove pool blobs no configured repository's refs want. Exit code."""
+def costs_of_keeping(cfg, mirror_dir: Path, presets=(1, 3, 10, "all")) -> dict[str, list[tuple]]:
+    """Per network: (choice, points dropped, bytes freed) for each `keep_points`
+    preset and its own setting — what that network's choice frees, against
+    it keeping everything, with the other networks as configured."""
+    from mmw.core import points
+    configured = [s.identity for s in cfg.sources]
+    out: dict[str, list[tuple]] = {}
+    with Pool(mirror_dir, read_only=True) as pool:
+        from mmw.core.resolve import uncovered_mirror_names
+        dropped = uncovered_mirror_names(cfg, pool)
+
+        def frees(net, choice) -> tuple[int, int]:
+            nets = [n.model_copy(update={"keep_points": choice}) if n.name == net.name else n
+                    for n in cfg.networks]
+            plan = points.retention_plan(pool, nets)
+            return len(plan), pool.prune_preview(configured, dropped, plan)[1]
+        for net in cfg.networks:
+            n_all, base = frees(net, "all")
+            rows = []
+            for choice in dict.fromkeys([*presets, net.keep_points]):
+                n, size = (n_all, base) if choice == "all" else frees(net, choice)
+                rows.append((choice, n - n_all, size - base))
+            out[net.name] = rows
+    return out
+
+
+def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, costs: bool = False) -> int:
+    """Remove pool blobs no configured repository's refs want. Exit code.
+    `costs`: a preview (implies `dry_run`) of what each keep_points choice frees."""
+    dry_run = dry_run or costs
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
@@ -76,15 +105,16 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
     from mmw.core.pool import Pool
     try:
         with Pool(mirror_dir, read_only=True) as pool:
-            dropping = len(points.retention_plan(pool, cfg.networks))
+            releasing = points.retention_plan(pool, cfg.networks)
     except sqlite3.OperationalError:
-        dropping = 0                            # a pool from before points: none to drop
+        releasing = []                          # a pool from before points: none to drop
     except (OSError, sqlite3.Error) as e:
         eprint(f"Cannot read the pool in {mirror_dir}: {e}")
         return 1
 
+    dropping = len(releasing)
     try:
-        dropped, removable, freeable = _plan(cfg, mirror_dir)
+        dropped, removable, freeable = _plan(cfg, mirror_dir, releasing)
     except (OSError, sqlite3.Error) as e:
         eprint(f"Cannot read the pool in {mirror_dir}: {e}")
         return 1
@@ -97,6 +127,26 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False) -> 
     if dropping:
         print(f"  {dropping:,} old point(s) no network keeps (keep_points) "
               f"{'would be' if dry_run else 'will be'} dropped — their files freed with the rest")
+    if dry_run and costs:
+        try:
+            table = costs_of_keeping(cfg, mirror_dir)
+        except sqlite3.OperationalError:
+            table = {}
+            print("  No points recorded yet — keep_points has nothing to choose between.")
+        except (OSError, sqlite3.Error) as e:
+            eprint(f"Cannot read the pool in {mirror_dir}: {e}")
+            return 1
+        if table:
+            print("  What each network's keep_points choice frees, against keeping all "
+                  "(the other networks as set):")
+        for name, rows in table.items():
+            net = next(n for n in cfg.networks if n.name == name)
+            said = " · ".join(f"{c}: {_fmt_size(b)}" + (" (now)" if c == net.keep_points else "")
+                              for c, _n, b in rows)
+            print(f"    {name}  {said}")
+            if net.keep_suites:
+                print(f"    {' ' * len(name)}  (suites set on their own keep their setting: "
+                      f"{', '.join(f'{k} {v}' for k, v in net.keep_suites.items())})")
     if dry_run:
         if removable == 0:
             print("Pool is clean — no orphaned packages found. (dry run)")

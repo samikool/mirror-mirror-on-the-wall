@@ -191,3 +191,76 @@ def test_a_new_snapshot_lists_its_points(two_mirrors):  # noqa: F811
 def test_keep_points_bounds(bad):
     with pytest.raises(ValueError, match="keep_points"):
         config.NetworkConfig(name="oak", keep_points=bad)
+
+
+def test_retention_reads_each_networks_stamps_once(tmp_path, monkeypatch):
+    """No query per point: a Debian-sized network has thousands."""
+    with Pool(tmp_path) as pool:
+        ids = []
+        for day in (1, 2, 3):
+            pid, _ = pool.record_point("R", _draft(day, {"h/dists/sid/Release": f"c{day}"}), f"202609{day:02d}T000000Z")
+            pool.link_network_point("oak", pid, f"202609{day:02d}T000000Z")
+            ids.append(pid)
+        monkeypatch.setattr(Pool, "network_point_stamp", lambda *a: pytest.fail("a query per point"))
+        monkeypatch.setattr(Pool, "network_point_last_seen", lambda *a: pytest.fail("a query per point"))
+        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points="30d")],
+                                     now="20261115T000000Z") == ids[:2]
+
+
+# ── per-suite keep, and what each choice frees ───────────────────────────────
+
+def test_keep_suites_is_checked_like_keep_points():
+    config.NetworkConfig(name="oak", keep_suites={"sid": "all", "bookworm": 5, "trixie": "90d"})
+    with pytest.raises(ValueError, match="keep_suites.sid"):
+        config.NetworkConfig(name="oak", keep_suites={"sid": 0})
+
+
+def test_a_suite_set_on_its_own_keeps_its_own_count(tmp_path):
+    with Pool(tmp_path) as pool:
+        ids = []
+        for day in (1, 2, 3):
+            pid, _ = pool.record_point("R", _draft(day, {"h/dists/sid/Release": f"c{day}"}), f"202609{day:02d}T000000Z")
+            pool.link_network_point("oak", pid, f"202609{day:02d}T000000Z")
+            ids.append(pid)
+        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points=1)]) == ids[:2]
+        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points=1,
+                                                                 keep_suites={"sid": "all"})]) == []
+        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points="all",
+                                                                 keep_suites={"h/dists/sid": 2})]) == ids[:1]
+
+
+def test_the_preview_counts_what_dropped_points_free(tmp_path):
+    with Pool(tmp_path) as pool:
+        old = _old_package(pool)
+        pid, _ = pool.record_point("R", _draft(1, {"h/pool/old.deb": old}), "20260901T000000Z")
+        pool.link_network_point("oak", pid, "20260901T000000Z")
+        assert pool.prune_preview([]) == (0, 0)                       # held by its point
+        assert pool.prune_preview([], (), [pid]) == (1, len(b"superseded package"))
+
+
+def test_prune_costs_say_each_choice(two_mirrors, monkeypatch, capsys):  # noqa: F811
+    import re
+
+    from mmw.commands import prune
+    cfg, net, md = two_mirrors
+    for day in (1, 2):
+        set_a(md, day)
+        points.record_network_points(net, cfg, md, stamp=f"2026110{day}T000000Z")
+    monkeypatch.setattr(prune, "load_config_or_none", lambda d: cfg)
+    assert prune.run(costs=True) == 0                                   # a preview: deletes nothing
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.strip().startswith(f"{net.name}  1: "))
+    one = re.search(r"1: ([\d.]+) B", line)
+    assert one and float(one[1]) > 0 and "3: 0.0 B (now)" in line           # the day-1 index goes with keep 1
+
+    net = net.model_copy(update={"keep_suites": {"stable": "all"}})
+    monkeypatch.setattr(prune, "load_config_or_none", lambda d: cfg.model_copy(update={"networks": [net]}))
+    assert prune.run(dry_run=True, costs=True) == 0
+    assert "stable all" in capsys.readouterr().out
+
+
+def test_keep_suites_survives_saving_the_config(tmp_path):
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "m"),
+                        networks=[config.NetworkConfig(name="oak", keep_suites={"bookworm": "all", "sid": 1})])
+    config.save(cfg, tmp_path)
+    (net,) = config.load(tmp_path).networks
+    assert net.keep_suites == {"bookworm": "all", "sid": 1}

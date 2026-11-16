@@ -197,6 +197,7 @@ Remove orphaned pool packages not referenced by any mirror.
 |--------|---------|-------------|
 | `--dry-run` |  | Report what would be removed without deleting anything |
 | `--yes`, `-y` |  | Skip the confirmation prompt (implied when not a TTY) |
+| `--costs` |  | With --dry-run: what each keep_points choice would free, per network (reads the pool once per choice) |
 
 ### `mmw publish`
 

@@ -315,6 +315,12 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
                              f"(first: {missing[0][:12]}…) — sync again, or `mmw verify --repair`")
         header_points: dict = {}
         sent_dates = pool.sent_dates_by_track(network.name)
+        # A suite gone since the last bundle listed it is news too: the far side retires it.
+        listed_tracks = {repo: {known[p].track for p in ids if p in known} for repo, ids in listing.items()}
+        before = pool.listed_tracks(network.name)
+        retiring = any((before.get(repo) if repo in before else
+                        {t for t in sent_dates if t in tracks and tracks[t].repo == repo}) - now
+                       for repo, now in listed_tracks.items())
         summaries = []
         for repo, ids in listing.items():
             label = repository_label(repo, cfg)
@@ -373,7 +379,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         sink.link(src, rel, size, cs, KIND_META)
     for rel, data in sorted(generated.items()):
         sink.write(rel, data)
-    if sink.sent == 0 and all(pid in sent_points for ids in listing.values() for pid in ids):
+    if sink.sent == 0 and not retiring and all(pid in sent_points for ids in listing.values() for pid in ids):
         raise ValueError("nothing to send — every chosen repository is already there")
     if stage and not _same_filesystem(mirror_dir, target.parent):
         warning = (f"{target.parent} is on another filesystem than the pool — "
@@ -406,6 +412,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     with Pool(mirror_dir) as pool:
         listed = {pid for ids in listing.values() for pid in ids} | set(current.get(net_repo, []))
         pool.record_sent(network.name, listed, sink.sent_checksums, stamp)
+        pool.set_listed_tracks(network.name, listed_tracks)
         pool.record_bundle(network.name, since, stamp, str(target), sink.sent, sink.sent_bytes, 0,
                            kind="stage" if stage else "stream" if streaming else "bundle")
     if installer and not (stop_event is not None and stop_event.is_set()):

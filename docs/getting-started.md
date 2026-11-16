@@ -362,7 +362,14 @@ mmw publish -n lab                                # back to now
 How far back you can go is the network's `keep_points` (newest 3 per suite
 by default; `all`, or an age like `90d`): `mmw prune` drops older points'
 files, and a date that needs them is refused, naming the setting. A tree
-published as of a date keeps its points through prunes.
+published as of a date keeps its points through prunes. A suite can have its
+own (`keep_suites = { bookworm = "all" }`), and `mmw prune --dry-run --costs`
+says what each choice would free.
+
+A mirror from before mmw recorded every sync has only its snapshots for the
+time before the upgrade: a date then is published as the snapshot before it,
+and the publish says so — anything synced between that snapshot and the
+upgrade isn't known.
 
 A snapshot is a label on a moment, taken by hand — nothing takes one for
 you. It keeps every package, index, key and mirrored file the network had,

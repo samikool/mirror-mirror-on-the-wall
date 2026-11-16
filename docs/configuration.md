@@ -280,6 +280,7 @@ destination is unset says so rather than inventing one.
 | `layers` | table array | `[]` | The `[[networks.layers]]` tables — custom packages this network adds to an upstream repository (below). |
 | `carry_keys` | list of string | `[]` | mmw signing keys whose **private** parts ride every bundle, so the far side can re-sign with them (`mmw site packages`). Anyone holding a bundle can then sign as you — opt-in per key. |
 | `keep_points` | int or string | `3` | Sync points kept per suite when the pool is pruned (`mmw prune`, the TUI's prune): a number, `all`, or an age like `90d`. Every sync records a point per suite that changed; older ones beyond this are dropped on prune (their record stays, their files can go). Never dropped: a point a snapshot holds, or one this network first saw after its last bundle. |
+| `keep_suites` | string or int or string | `{}` — every suite by `keep_points` | Per suite, instead of `keep_points`: `keep_suites = { bookworm = "all", sid = 1 }`. A key is a suite or codename (or, for a flat repository, the last part of its path). Same values as `keep_points`. `mmw prune --dry-run --costs` says what each `keep_points` choice would free. |
 | `history` | bool | `false` | `true`: a bundle lists every point synced since the last bundle, so the far side can serve any of them; `false`: each suite's newest point. Either way only files the network was never sent travel. `mmw bundle --history` / `--newest` override it for one bundle. |
 
 

@@ -112,3 +112,66 @@ def test_the_cli_sync_records_points_for_what_synced(tmp_path, monkeypatch):
     cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "mirror"))
     assert asyncio.run(command._mirror_all(cfg)) == 0
     assert seen == [{"https://one.test/apt"}]
+
+
+def test_ctrl_c_while_recording_points_keeps_the_sync(tmp_path, monkeypatch, capsys):
+    """The sync finished; interrupting what follows never turns it into an
+    interrupted sync — the points wait for the next one."""
+    import asyncio
+    from dataclasses import replace
+
+    import httpx
+
+    from mmw.commands import mirror as command
+    from mmw.core import config, sync_engine
+    from test_download_deduplication import BODY, package, transport
+    transport(monkeypatch, lambda request: httpx.Response(200, content=BODY))
+    units = [config.MirrorConfig(name="one", provider="apt", source="https://one.test/apt",
+                                 source_url="https://one.test/apt")]
+    monkeypatch.setattr(command, "resolve_and_report", lambda cfg: (units, []))
+    monkeypatch.setattr(sync_engine, "fetch_all_threaded", lambda provider, unit, **kwargs: (
+        [replace(package("asset", "https://one.test/asset", known=False), repo_path="one/asset")], []))
+
+    def interrupted(cfg, md, synced, say=print):
+        import os
+        import signal
+        import time
+        os.kill(os.getpid(), signal.SIGINT)              # a real Ctrl-C, through asyncio's own handler
+        time.sleep(2)
+        raise AssertionError("the interrupt never reached the recording")
+    monkeypatch.setattr(points, "record_points_after_sync", interrupted)
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "mirror"))
+    assert asyncio.run(command._mirror_all(cfg)) == 0
+    assert "the next sync records them" in capsys.readouterr().err
+
+
+def test_recording_points_beside_an_open_busy_pool(oak):
+    """The TUI keeps a Pool open and reads from it while a sync records its
+    points through another: neither waits out SQLite's busy timeout."""
+    import threading
+    import time
+    cfg, net, md = oak
+    stop, errors = threading.Event(), []
+
+    def reader():
+        try:
+            with Pool(md, read_only=True) as pool:
+                while not stop.is_set():
+                    pool.network_tracks(net.name)
+                    pool.recorded_repos(net.name)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+    with Pool(md) as held:                               # the TUI's own, open throughout
+        t = threading.Thread(target=reader)
+        t.start()
+        try:
+            started = time.monotonic()
+            for day in range(3):
+                _change_a(md) if day == 1 else None
+                points.record_network_points(net, cfg, md, stamp=f"2026111{day}T000000Z")
+                held.network_tracks(net.name)
+            assert time.monotonic() - started < 4.5          # never one busy timeout (5 s)
+        finally:
+            stop.set()
+            t.join()
+    assert not errors

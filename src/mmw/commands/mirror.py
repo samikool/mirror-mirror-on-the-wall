@@ -230,7 +230,20 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
     if synced:
         from mmw.core.points import record_points_after_sync
         typer.echo("")
-        record_points_after_sync(cfg, mirror_dir, synced, say=typer.echo)
+        # asyncio.run (3.11+) turns Ctrl-C into cancelling the whole sync; this
+        # step blocks the loop, so take Ctrl-C back for it and catch it here.
+        import signal
+        import threading
+        main = threading.current_thread() is threading.main_thread()
+        previous = signal.signal(signal.SIGINT, signal.default_int_handler) if main else None
+        try:
+            record_points_after_sync(cfg, mirror_dir, synced, say=typer.echo)
+        except KeyboardInterrupt:            # the sync itself finished: it stays a sync that worked
+            typer.echo("\n  Interrupted while recording points — the sync is complete; "
+                       "the next sync records them.", err=True)
+        finally:
+            if main:
+                signal.signal(signal.SIGINT, previous)
     if total_failed or metadata_failed or resolve_errors or mirror_errors:
         if total_failed:
             typer.echo(f"\n  {total_failed} package failure(s). See output above.", err=True)

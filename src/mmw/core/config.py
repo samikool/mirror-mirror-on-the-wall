@@ -1026,6 +1026,17 @@ class NetworkLayer(_StrictModel):
         return normalize_url(self.source)
 
 
+def check_keep(value, what: str):
+    """A retention setting: a number of points (1 or more), "all", or an age like "90d"."""
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 1_000_000:
+        return value
+    if isinstance(value, str) and (value == "all" or (re.fullmatch(r"[1-9]\d{0,4}d", value)
+                                                      and int(value[:-1]) <= 36500)):
+        return value
+    raise ValueError(f"{what} must be a number of points (1 or more), \"all\", or an age like "
+                     f"\"90d\" — not {value!r}")
+
+
 class NetworkConfig(_StrictModel):
     """A named downselect of the mirror — what one site gets.
 
@@ -1058,6 +1069,9 @@ class NetworkConfig(_StrictModel):
     # age ("90d"). Never dropped: one a snapshot holds, or one the network
     # first saw after its last bundle.
     keep_points: int | str = 3
+    # Per suite, instead of keep_points: {"bookworm" = "all", "sid" = 1}. A key
+    # is a suite or codename (or a track's path, for a flat repository).
+    keep_suites: dict[str, int | str] = {}
     # What a bundle carries for an mmw network: every point since the last
     # bundle (true), or each suite's newest (false). `--history`/`--newest`.
     history: bool = False
@@ -1078,13 +1092,14 @@ class NetworkConfig(_StrictModel):
     @field_validator("keep_points", mode="before")
     @classmethod
     def _valid_keep_points(cls, value):
-        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 1_000_000:
-            return value
-        if isinstance(value, str) and (value == "all" or (re.fullmatch(r"[1-9]\d{0,4}d", value)
-                                                          and int(value[:-1]) <= 36500)):
-            return value
-        raise ValueError(f"keep_points must be a number of points (1 or more), \"all\", or an age like "
-                         f"\"90d\" — not {value!r}")
+        return check_keep(value, "keep_points")
+
+    @field_validator("keep_suites", mode="before")
+    @classmethod
+    def _valid_keep_suites(cls, value):
+        if not isinstance(value, dict):
+            raise ValueError("keep_suites is a table: suite = how many points (a number, \"all\" or an age)")
+        return {str(k): check_keep(v, f"keep_suites.{k}") for k, v in value.items()}
 
     @field_validator("retention")
     @classmethod
@@ -1607,6 +1622,7 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             **({"certs": False} if not n.certs else {}),
             **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
             **({"keep_points": n.keep_points} if n.keep_points != 3 else {}),
+            **({"keep_suites": dict(n.keep_suites)} if n.keep_suites else {}),
             **({"history": True} if n.history else {}),
             **({"runtime_arches": n.runtime_arches} if n.runtime_arches != ["x86_64"] else {}),
             **({"runtime_python": n.runtime_python} if n.runtime_python != DEFAULT_RUNTIME_PYTHON else {}),

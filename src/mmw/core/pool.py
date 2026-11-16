@@ -330,6 +330,13 @@ CREATE TABLE IF NOT EXISTS sent_blobs (
     PRIMARY KEY (network, checksum)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS sent_migrated (network TEXT PRIMARY KEY);
+-- The suites (tracks) each repository's last bundle listed: one that is gone
+-- since makes a bundle worth sending even with nothing new, so the far side
+-- retires it.
+CREATE TABLE IF NOT EXISTS listed_tracks (
+    network TEXT NOT NULL, repo TEXT NOT NULL, track INTEGER NOT NULL,
+    PRIMARY KEY (network, repo, track)
+) WITHOUT ROWID;
 -- Each network's recordings over time: a repository's points whenever they
 -- changed ('[]': it left the network), and the walk's settings whenever
 -- they changed — what publishing as of a date reads.
@@ -342,6 +349,9 @@ CREATE TABLE IF NOT EXISTS network_settings (
     PRIMARY KEY (network, stamp)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS recordings_seeded (network TEXT PRIMARY KEY);
+-- When snapshots were seeded as recordings (the upgrade): a date before it
+-- reads the snapshot before it, not every sync.
+CREATE TABLE IF NOT EXISTS recordings_seeded_at (network TEXT PRIMARY KEY, stamp TEXT NOT NULL);
 """
 
 _CHUNK = 900
@@ -350,7 +360,7 @@ _CHUNK = 900
 # forgotten with it (the points themselves are shared and stay).
 _POINT_NETWORK_TABLES = ("network_points", "network_repo_rows", "points_converted", "sent_points",
                          "sent_blobs", "sent_migrated", "network_recordings", "network_settings",
-                         "recordings_seeded")
+                         "recordings_seeded", "recordings_seeded_at", "listed_tracks")
 
 # Reader tuning. This workload is **disk-bound**, not lock-bound: measured 1.4x
 # from these two pragmas alone, while *adding read connections made it worse*
@@ -1766,6 +1776,13 @@ class Pool:
             self._conn.commit()
             return new
 
+    def network_point_stamps(self, network: str) -> dict[int, tuple[str, str]]:
+        """Point → (when `network` first saw it, when it last did), in one query."""
+        with self._read() as c:
+            return {pid: (stamp, seen) for pid, stamp, seen in c.execute(
+                "SELECT point, stamp, coalesce(nullif(last_seen, ''), stamp) FROM network_points "
+                "WHERE network = ?", (network,))}
+
     def network_point_last_seen(self, network: str, point_id: int) -> str | None:
         with self._read() as c:
             row = c.execute("SELECT coalesce(nullif(last_seen, ''), stamp) FROM network_points "
@@ -1856,10 +1873,18 @@ class Pool:
         with self._read() as c:
             return c.execute("SELECT 1 FROM recordings_seeded WHERE network = ?", (network,)).fetchone() is not None
 
-    def mark_recordings_seeded(self, network: str) -> None:
+    def mark_recordings_seeded(self, network: str, at: str | None = None) -> None:
+        """Seeded; `at`: when, if any snapshot was (dates before it are approximate)."""
         with self._lock:
             self._conn.execute("INSERT OR IGNORE INTO recordings_seeded (network) VALUES (?)", (network,))
+            if at is not None:
+                self._conn.execute("INSERT OR IGNORE INTO recordings_seeded_at VALUES (?, ?)", (network, at))
             self._conn.commit()
+
+    def recordings_seeded_at(self, network: str) -> str | None:
+        with self._read() as c:
+            row = c.execute("SELECT stamp FROM recordings_seeded_at WHERE network = ?", (network,)).fetchone()
+        return row[0] if row else None
 
     def linked_held_points(self) -> list[int]:
         """Every held point some network (configured or not) saw."""
@@ -1940,6 +1965,22 @@ class Pool:
     def sent_migrated(self, network: str) -> bool:
         with self._read() as c:
             return c.execute("SELECT 1 FROM sent_migrated WHERE network = ?", (network,)).fetchone() is not None
+
+    def listed_tracks(self, network: str) -> dict[str, set[int]]:
+        """Repository → the tracks the last bundle listing it listed."""
+        out: dict[str, set[int]] = {}
+        with self._read() as c:
+            for repo, track in c.execute("SELECT repo, track FROM listed_tracks WHERE network = ?", (network,)):
+                out.setdefault(repo, set()).add(track)
+        return out
+
+    def set_listed_tracks(self, network: str, by_repo: dict[str, set[int]]) -> None:
+        with self._lock:
+            for repo, tracks in by_repo.items():
+                self._conn.execute("DELETE FROM listed_tracks WHERE network = ? AND repo = ?", (network, repo))
+                self._conn.executemany("INSERT INTO listed_tracks VALUES (?, ?, ?)",
+                                       [(network, repo, t) for t in tracks])
+            self._conn.commit()
 
     def mark_sent_migrated(self, network: str) -> None:
         with self._lock:
@@ -2443,7 +2484,7 @@ class Pool:
                                               stop_event=stop_event, progress=progress)
 
     def _orphans_sql(self, ref_filter: str = "1",
-                     columns: str = "checksum, pool_path, size") -> str:
+                     columns: str = "checksum, pool_path, size", *, released: bool = False) -> str:
         """Packages no ref passing `ref_filter` wants and no snapshot holds —
         the one definition of an orphan, shared by the prune and its preview."""
         # Only a complete snapshot holds: a history-only one's files may go.
@@ -2459,7 +2500,8 @@ class Pool:
         # A held timeline point keeps its files (superseded packages included).
         pointed = ("AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
                    "JOIN point_files f ON f.blob = b.id JOIN points p ON p.id = f.point "
-                   "WHERE b.checksum = packages.checksum AND p.held = 1)"
+                   "WHERE b.checksum = packages.checksum AND p.held = 1"
+                   + (" AND p.id NOT IN (SELECT value FROM json_each(?))" if released else "") + ")"
                    if self._has_point_files and self._has_snapshot_blobs else "")
         return (f"SELECT {columns} FROM packages "
                 "WHERE NOT EXISTS (SELECT 1 FROM refs r WHERE r.checksum = packages.checksum "
@@ -2476,13 +2518,16 @@ class Pool:
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (name,)).fetchone())
 
     def prune_preview(self, configured_sources: list[str],
-                      dropped_mirrors: "list[str] | tuple[str, ...]" = ()) -> tuple[int, int]:
+                      dropped_mirrors: "list[str] | tuple[str, ...]" = (),
+                      released_points: "list[int] | tuple[int, ...]" = ()) -> tuple[int, int]:
         """(files, bytes) `prune_orphans` would remove — without writing.
 
         The same orphan query, with the refs the prune would delete filtered
         out instead of deleted. Snapshot-held blobs are excluded exactly as
         the prune excludes them: the preview used to be a second copy of the
         SQL, and it drifted the moment snapshots became GC roots.
+        `released_points`: points the prune drops first (retention) — their
+        files count as freed unless something else keeps them.
         """
         if self._has_source:
             keep = "(r.source = ''"
@@ -2497,9 +2542,12 @@ class Pool:
         else:
             # A pre-`source` pool can prove nothing about any ref.
             keep, params = "1", []
+        released = (json.dumps(sorted(released_points)) if released_points
+                    and self._has_point_files and self._has_snapshot_blobs else None)
         with self._read() as c:
-            row = c.execute(self._orphans_sql(keep, "COUNT(*), COALESCE(SUM(size), 0)"),
-                            params).fetchone()
+            row = c.execute(self._orphans_sql(keep, "COUNT(*), COALESCE(SUM(size), 0)",
+                                              released=released is not None),
+                            [*params, *([released] if released is not None else [])]).fetchone()
         return (int(row[0]), int(row[1])) if row else (0, 0)
 
     def _prune_orphans_locked(self, configured_sources: list[str],

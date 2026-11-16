@@ -57,3 +57,24 @@ def test_conversion_leaves_bundles_alone(two_mirrors, tmp_path):  # noqa: F811
     with Pool(md) as pool:
         points.convert_snapshots(pool, net.name)
     assert names(tmp_path / "2.tar") == before
+
+
+def test_one_snapshot_that_fails_to_split_is_said_and_skipped(two_mirrors, monkeypatch):  # noqa: F811
+    """One bad old snapshot never stops a network's points on every sync."""
+    cfg, net, md = two_mirrors
+    set_a(md, 1)
+    take_snapshot(net, cfg, md)
+    set_a(md, 2)
+    bad = take_snapshot(net, cfg, md)
+    real = points.split_rows
+
+    def split(pool, rows, settings, network, stamp):
+        if stamp == bad.stamp:
+            raise ValueError("a damaged Release")
+        return real(pool, rows, settings, network, stamp)
+    monkeypatch.setattr(points, "split_rows", split)
+    said = []
+    with Pool(md) as pool:
+        assert points.convert_snapshots(pool, net.name, warnings=said) == 1
+        assert pool.points_converted(net.name)
+    assert len(said) == 1 and bad.stamp in said[0] and "a damaged Release" in said[0]

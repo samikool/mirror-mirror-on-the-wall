@@ -319,7 +319,7 @@ def publish_as_of(
     """Lay `network` out at `root` as it was recorded at or before `when` (a
     date or stamp): each repository's points then, that day's settings.
     `moment`: `moment_rows`' answer, if already read. **Blocking.**"""
-    from mmw.core.points import AS_OF, moment_rows, prepare_recordings, resolve_when
+    from mmw.core.points import AS_OF, moment_rows, prepare_recordings, resolve_when, seeded_note
 
     stamp = resolve_when(when)
     result = NetworkPublishResult(network_name=network.name, dry_run=False)
@@ -331,6 +331,9 @@ def publish_as_of(
         prepare_recordings(mirror_dir, network.name)
         with Pool(mirror_dir, read_only=True) as pool:
             moment = moment_rows(pool, network.name, stamp)
+    with Pool(mirror_dir, read_only=True) as pool:
+        if note := seeded_note(pool, network.name, stamp):
+            result.warnings.append(note)
     rows, settings = moment
     warm_for_publish(mirror_dir, progress, stop_event)
     if stop_event and stop_event.is_set():

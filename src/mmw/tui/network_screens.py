@@ -177,6 +177,10 @@ class NetworkForm(Vertical):
                     "Keep points", str(net.keep_points) if net else "3", id="inp-keep-points",
                     hint="Sync points kept per suite when the pool is pruned: a number, all, or an "
                          "age like 90d. Snapshots and points not yet bundled are always kept."),
+                TextField(
+                    "Keep per suite", format_keep_suites(net.keep_suites) if net else "", id="inp-keep-suites",
+                    hint="Optional: suites kept by their own setting, as suite=setting — "
+                         "bookworm=all sid=1. The rest follow Keep points."),
                 PathField(
                     "Transfer output", str(net.bundle_dir) if net and net.bundle_dir else "",
                     id="inp-bundle-dir", browse_id="btn-browse-bundle",
@@ -337,6 +341,10 @@ class NetworkForm(Vertical):
             keep_points = parse_keep_points(self._value("inp-keep-points"))
         except ValueError as e:
             return None, str(e), "inp-keep-points"
+        try:
+            keep_suites = parse_keep_suites(self._value("inp-keep-suites"))
+        except ValueError as e:
+            return None, str(e), "inp-keep-suites"
         bundle = self._value("inp-bundle-dir")
         arches = self._value("inp-runtime-arches").replace(",", " ").split() or ["x86_64"]
         if bad := [a for a in arches if a not in ("x86_64", "aarch64")]:
@@ -360,6 +368,7 @@ class NetworkForm(Vertical):
             "nginx": self._flag("nginx-switch"),
             "retention": retention,
             "keep_points": keep_points,
+            "keep_suites": keep_suites,
             "runtime_arches": arches,
             "runtime_python": python,
             "carry_keys": carry,
@@ -477,6 +486,21 @@ class AddNetworkPage(Wizard):
     def result(self) -> config.NetworkConfig:
         net, _, _ = self.form.result()
         return net
+
+
+def format_keep_suites(keep: dict) -> str:
+    return " ".join(f"{suite}={value}" for suite, value in keep.items())
+
+
+def parse_keep_suites(text: str) -> dict[str, int | str]:
+    """`keep_suites` as typed: `bookworm=all sid=1` (commas allowed); empty → none."""
+    out: dict[str, int | str] = {}
+    for item in text.replace(",", " ").split():
+        suite, sep, value = item.partition("=")
+        if not sep or not suite or not value:
+            raise ValueError(f"keep per suite is suite=setting, like bookworm=all — not {item!r}")
+        out[suite] = config.check_keep(int(value) if value.isdigit() else value, f"keep for {suite}")
+    return out
 
 
 def parse_keep_points(text: str) -> int | str:

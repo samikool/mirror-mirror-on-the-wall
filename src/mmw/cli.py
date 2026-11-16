@@ -617,10 +617,13 @@ def cmd_prune(
         False, "--dry-run", help="Report what would be removed without deleting anything"),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the confirmation prompt (implied when not a TTY)"),
+    costs: bool = typer.Option(
+        False, "--costs", help="Preview what each keep_points choice would free, per network "
+                               "(implies --dry-run; reads the pool once per choice)"),
 ):
     """Remove orphaned pool packages not referenced by any mirror."""
     from mmw.commands.prune import run
-    raise typer.Exit(run(_cfg_dir(), dry_run=dry_run, yes=yes))
+    raise typer.Exit(run(_cfg_dir(), dry_run=dry_run, yes=yes, costs=costs))
 
 
 @app.command("certs")

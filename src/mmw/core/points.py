@@ -72,11 +72,13 @@ def _say(repo: str, draft, cfg: Config) -> str:
     return f"{label} {suite} {day(draft.date)}"
 
 
-def convert_snapshots(pool: Pool, network: str) -> int:
+def convert_snapshots(pool: Pool, network: str, warnings: list[str] | None = None) -> int:
     """Once per network: every complete snapshot taken before points, oldest
     first, split into points — linked to the network at the snapshot's own
     stamp and listed for the snapshot. History-only (imported) snapshots
-    have no files to split. How many were converted."""
+    have no files to split. One that cannot be split is said in `warnings`
+    and skipped — it stays a label — so it never stops the network's points.
+    How many were converted."""
     if pool.points_converted(network):
         return 0
     done = 0
@@ -84,8 +86,15 @@ def convert_snapshots(pool: Pool, network: str) -> int:
         if not snap.complete:
             continue
         rows = dict(pool.snapshot_files(snap.id))
+        try:
+            drafts = split_rows(pool, rows, snap.settings, network, snap.stamp)
+        except Exception as e:  # noqa: BLE001 — one old snapshot never blocks the rest
+            if warnings is not None:
+                warnings.append(f"snapshot {snap.stamp} of {network} could not be split into points ({e}) "
+                                "— it stays a label; dates before the next one fall back to it")
+            continue
         ids = []
-        for repo, draft in split_rows(pool, rows, snap.settings, network, snap.stamp):
+        for repo, draft in drafts:
             pid, _new = pool.record_point(repo, draft, snap.stamp)
             pool.link_network_point(network, pid, snap.stamp)
             ids.append(pid)
@@ -95,12 +104,14 @@ def convert_snapshots(pool: Pool, network: str) -> int:
     return done
 
 
-def seed_recordings(pool: Pool, network: str) -> int:
+def seed_recordings(pool: Pool, network: str, now: str | None = None) -> int:
     """Once per network: each complete snapshot's points, per repository, as
     a recording at its stamp, and its settings — so a date before 3c's first
-    recording can still be published. How many snapshots seeded."""
+    recording can still be published. When (`now`) is kept: a date before it
+    is only as exact as the snapshots. How many snapshots seeded."""
     if pool.recordings_seeded(network):
         return 0
+    from mmw.core.publisher.manifest import now_stamp
     done = 0
     for snap in reversed(pool.snapshots(network)):
         if not snap.complete:
@@ -122,7 +133,7 @@ def seed_recordings(pool: Pool, network: str) -> int:
         if snap.settings:
             pool.record_settings(network, snap.stamp, snap.settings)
         done += 1
-    pool.mark_recordings_seeded(network)
+    pool.mark_recordings_seeded(network, (now or now_stamp()) if done else None)
     return done
 
 
@@ -133,7 +144,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
     stamp = stamp or now_stamp()
     report = PointsReport(network.name)
     with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
-        convert_snapshots(pool, network.name)      # their points first, at their own stamps
+        convert_snapshots(pool, network.name, report.warnings)   # their points first, at their own stamps
         seed_recordings(pool, network.name)
         rows, settings, warnings = walk_tree(network, cfg, mirror_dir, pool, progress=progress,
                                              stop_event=stop_event)
@@ -226,6 +237,37 @@ def prepare_recordings(mirror_dir: Path, network: str) -> None:
         seed_recordings(pool, network)
 
 
+def seeded_note(pool: Pool, network: str, stamp: str) -> str | None:
+    """When `stamp` falls before mmw recorded every sync (the snapshots were
+    seeded as recordings at the upgrade) and so is read from the snapshot
+    before it: what that means. None when the date is recorded as it was,
+    or the pool can't say (a read-only pool from before this was kept)."""
+    import sqlite3
+
+    from mmw.site.versionref import day
+    try:
+        if not pool.recordings_seeded(network):
+            return None
+        at = pool.recordings_seeded_at(network)
+        with pool._read() as c:
+            stamps = [r[0] for r in c.execute("SELECT DISTINCT stamp FROM network_recordings "
+                                              "WHERE network = ? ORDER BY stamp", (network,))]
+    except sqlite3.OperationalError:
+        return None
+    # Seeded recordings sit at the stamps of the snapshots they came from.
+    seeded = {s.stamp for s in pool.snapshots(network) if s.complete} & set(stamps)
+    if at is None:                       # seeded before the moment was kept: its first sync after
+        at = next((s for s in stamps if s not in seeded), None)
+    if at is not None and stamp >= at:
+        return None
+    read_from = max((s for s in seeded if s <= stamp), default=None)
+    if read_from is None:
+        return None
+    since = f"since {day(at)}" if at else "from its first sync after the upgrade"
+    return (f"{network} on {day(stamp)} is read from its snapshot of {day(read_from)}: mmw records every "
+            f"sync only {since} — what synced in between isn't known")
+
+
 def moment_rows(pool: Pool, network: str, stamp: str):
     """(rows, settings) of `network` as recorded at `stamp`: rows are
     (path, checksum, pool path, size) in path order. Refused when nothing was
@@ -274,12 +316,18 @@ def history_since(pool: Pool, network: str) -> tuple[dict[str, str], str | None]
     return pool.last_sent_by_repo(network), (bundles[0].to_stamp if bundles else None)
 
 
+def keep_for(network: NetworkConfig, track) -> int | str:
+    """The network's setting for one suite: its `keep_suites` entry (by suite,
+    codename, the track's last path part or its whole path), else `keep_points`."""
+    names = (track.suite, track.codename, track.name.rsplit("/", 1)[-1] if track.name else None, track.name)
+    return next((network.keep_suites[n] for n in names if n and n in network.keep_suites), network.keep_points)
+
+
 def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
     """The points `network` keeps: per track the newest `keep_points` (or
     those it saw within the age), what it is on now, every point a snapshot
     holds, and — once it has been bundled — every point it first saw after
     its repository was last bundled."""
-    keep = network.keep_points
     by_repo, fallback = history_since(pool, network.name)
     current = {pid for ids in current_points(pool, network.name).values() for pid in ids}
     # Only a complete snapshot holds: a history-only one stopped holding its files.
@@ -287,14 +335,17 @@ def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
                          for pid in pool.snapshot_point_ids(s.id)}
     published = {pid for p in pool.published(network.name) if p.target.startswith(AS_OF)
                  for ids in pool.points_at(network.name, p.target[len(AS_OF):]).values() for pid in ids}
-    cutoff = _cutoff(now, int(keep[:-1])) if isinstance(keep, str) and keep != "all" else None
     kept: set[int] = set()
+    stamps = pool.network_point_stamps(network.name)
     for t in pool.network_tracks(network.name):
+        keep = keep_for(network, t)
+        cutoff = _cutoff(now, int(keep[:-1])) if isinstance(keep, str) and keep != "all" else None
         last_sent = by_repo.get(t.repo, fallback)
         for i, p in enumerate(pool.network_points(network.name, t.id)):
-            first = pool.network_point_stamp(network.name, p.id) or p.stamp
+            first, seen = stamps.get(p.id, (None, None))
+            first = first or p.stamp
             # An age counts from when the network last had it; what it's on now always stays.
-            seen = pool.network_point_last_seen(network.name, p.id) or first
+            seen = seen or first
             if (i == 0 or p.id in current or keep == "all" or (isinstance(keep, int) and i < keep)
                     or (cutoff is not None and seen >= cutoff)
                     or p.id in held_by_snapshots or p.id in published or (last_sent is not None and first > last_sent)):

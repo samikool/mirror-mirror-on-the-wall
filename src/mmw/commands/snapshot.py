@@ -74,7 +74,10 @@ def list_(cfg_dir: Path, network: str, repos: bool = False) -> int:
         snapshots.import_ledger(pool, cfg.settings.mirror_dir, net.name)
         if repos:
             from mmw.core.points import convert_snapshots
-            convert_snapshots(pool, net.name)           # dates come from their points
+            said: list[str] = []
+            convert_snapshots(pool, net.name, said)     # dates come from their points
+            for line in said:
+                print(f"warning: {line}", file=sys.stderr)
         snaps = pool.snapshots(net.name)
         if not snaps:
             print(f"No snapshots of {net.name} yet — `mmw snapshot take -n {net.name}`.")

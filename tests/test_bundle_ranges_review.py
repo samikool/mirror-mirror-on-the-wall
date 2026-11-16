@@ -112,3 +112,40 @@ def test_history_skips_a_suite_the_repository_no_longer_has(mmw_net, tmp_path):
     h = _header(bundle_network(net, cfg, md, out_path=tmp_path / "2.tar").out_path)
     assert {p["track"] for p in h["points"][_key(cfg, "a")]["points"]} != set() and not any(
         p["fields"].get("Suite") == "stable" for p in h["points"][_key(cfg, "a")]["points"])
+
+
+def _with_old_suite(md, on: bool):
+    """Mirror `a` with suite `stable` under `dists/`, plus — when `on` — a
+    second suite `old` beside it."""
+    from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE
+    from test_dry_run_totals import SHARED, _index, _sha
+    from test_site_apply_timeline import DATES
+    files = {"shared.deb": SHARED, "a.deb": b"a" * 300}
+    idx = _index(files)
+    rel = f"Origin: ex\nSuite: stable\nDate: {DATES[1]}\nSHA256:\n {_sha(idx)} {len(idx)} Packages\n".encode()
+    blobs = [(n, d, KIND_PKG) for n, d in files.items()] + [("dists/stable/Packages", idx, KIND_META),
+                                                                   ("dists/stable/Release", rel, KIND_RELEASE)]
+    if on:
+        old = b"Package: old\nVersion: 1\n"
+        old_rel = f"Origin: ex\nSuite: old\nDate: {DATES[1]}\nSHA256:\n {_sha(old)} {len(old)} Packages\n".encode()
+        blobs += [("dists/old/Packages", old, KIND_META), ("dists/old/Release", old_rel, KIND_RELEASE)]
+    with Pool(md) as pool:
+        for name, data, _kind in blobs:
+            pool.add(data, _sha(data), "sha256", name.rsplit("/", 1)[-1], len(data))
+        pool.reconcile_refs("a", [(_sha(d), n, k) for n, d, k in blobs])
+
+
+def test_a_bundle_that_only_retires_a_suite_is_made_once(mmw_net, tmp_path):
+    """A suite gone with nothing else changed: the next bundle goes (so the far
+    side retires it), and the one after is "nothing to send" again."""
+    cfg, net, md = mmw_net
+    a = _key(cfg, "a")
+    _with_old_suite(md, True)
+    h = _header(bundle_network(net, cfg, md, out_path=tmp_path / "1.tar").out_path)
+    tracks = {pt["track"] for pt in h["points"][a]["points"]}
+    assert len(tracks) == 2
+    _with_old_suite(md, False)                                      # `old` is gone upstream
+    h = _header(bundle_network(net, cfg, md, out_path=tmp_path / "2.tar").out_path)
+    assert len({pt["track"] for pt in h["points"][a]["points"]}) == 1
+    with pytest.raises(ValueError, match="nothing to send"):
+        bundle_network(net, cfg, md, out_path=tmp_path / "3.tar")

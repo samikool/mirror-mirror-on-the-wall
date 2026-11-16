@@ -188,3 +188,48 @@ def test_a_network_with_keys_gets_its_network_track_and_bundles_them(mmw_net, tm
     _names, _header, rows = _open(_bundle(cfg, net, md, tmp_path / "1.tar").out_path)
     assert any(r["p"] == "keys/custom/archive.gpg" for r in rows)
     assert any(r["p"] == "nginx/mirror.conf" for r in rows)
+
+
+def test_an_unchanged_network_makes_no_new_network_point(mmw_net):
+    """Syncing with nothing changed adds no `network` point: its files are the
+    keys, the same bytes walk after walk. TLS and the generated config are
+    never in a point (publish adds them; a bundle never carries a key)."""
+    from mmw.core.certs import generate_certs
+    cfg, net, md = mmw_net
+    (md / "keys" / "custom").mkdir(parents=True)
+    (md / "keys" / "custom" / "archive.gpg").write_bytes(b"a public key")
+    generate_certs(net, cfg)                       # a key, request and config of its own
+    for stamp in ("20261110T000000Z", "20261111T000000Z", "20261112T000000Z"):
+        points.record_network_points(net, cfg, md, stamp=stamp)
+    with Pool(md, read_only=True) as pool:
+        (track,) = [t for t in pool.network_tracks(net.name) if t.repo == f"network:{net.name}"]
+        (only,) = pool.network_points(net.name, track.id)
+        assert sorted(pool.point_files(only.id)) == ["keys/custom/archive.gpg"]
+
+
+def test_a_full_stage_carries_everything_again(mmw_net, tmp_path):
+    from mmw.core.publisher.bundle import stage_network
+    cfg, net, md = mmw_net
+    first = stage_network(net, cfg, md, tmp_path / "one")
+    again = stage_network(net, cfg, md, tmp_path / "two", full=True)
+
+    def blobs(r):
+        return sorted(p.name for p in (r.out_path / "blobs").rglob("*") if p.is_file())
+    assert blobs(again) == blobs(first) and blobs(first)
+
+
+def test_a_stream_whose_pipe_breaks_records_nothing(mmw_net, tmp_path):
+    """`--out -` into a pipe that closes: the far side got nothing, so
+    nothing counts as sent."""
+    cfg, net, md = mmw_net
+
+    class Broken(io.RawIOBase):
+        def writable(self):
+            return True
+
+        def write(self, b):
+            raise BrokenPipeError(32, "Broken pipe")
+    with pytest.raises(BrokenPipeError):
+        bundle_network(net, cfg, md, out_path="-", stdout=Broken())
+    with Pool(md, read_only=True) as pool:
+        assert pool.sent_point_ids(net.name) == set() and pool.bundles(net.name) == []

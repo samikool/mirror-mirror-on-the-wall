@@ -116,6 +116,8 @@ class TreeCheck:
     strays: dict[str, list[str]] = field(default_factory=dict)       # kind → rel paths (not imported)
     refused: dict[str, str] = field(default_factory=dict)            # track dir → why
     stats: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)   # rel → (dev, ino, size, mtime)
+    unhashed: dict[str, int] = field(default_factory=dict)          # track dir → index entries with no SHA256
+    signed_by: dict[str, str] = field(default_factory=dict)         # track dir → "uid (fingerprint)" that verified it
 
 
 def keyring_from(keys: list[bytes], into: Path) -> Path:
@@ -127,24 +129,41 @@ def keyring_from(keys: list[bytes], into: Path) -> Path:
     return into
 
 
-def _gpgv(keyring: Path, *files: Path) -> str:
+def _gpgv(keyring: Path, *files: Path) -> tuple[str, str | None]:
+    """(verdict, the key that signed it — "uid (fingerprint)" — when verified)."""
     if shutil.which("gpgv") is None:
-        return "not checked (gpgv is not installed)"
-    run = subprocess.run(["gpgv", "--keyring", str(keyring), *map(str, files)], capture_output=True, timeout=120)
+        return "not checked (gpgv is not installed)", None
+    run = subprocess.run(["gpgv", "--status-fd", "1", "--keyring", str(keyring), *map(str, files)],
+                         capture_output=True, timeout=120)
     if run.returncode == 0:
-        return "verified"
+        # Each good signature: GOODSIG's uid, then VALIDSIG's primary-key fingerprint (its last field).
+        uids, fprs = [], []
+        for ln in run.stdout.decode(errors="replace").splitlines():
+            parts = ln.split(" ", 3)
+            if parts[:2] == ["[GNUPG:]", "GOODSIG"] and len(parts) == 4:
+                uids.append(parts[3])
+            elif parts[:2] == ["[GNUPG:]", "VALIDSIG"]:
+                fields = ln.split()
+                fprs.append(fields[-1] if len(fields) >= 12 else fields[2] if len(fields) > 2 else "")
+        who = "; ".join(" ".join(x for x in (u, f"({f})" if f else None) if x)
+                        for u, f in zip(uids, fprs + [""] * (len(uids) - len(fprs)))) or None
+        return "verified", who
     lines = [ln for ln in run.stderr.decode(errors="replace").splitlines() if ln.strip()]
-    return "bad: " + (lines[-1].removeprefix("gpgv: ") if lines else f"gpgv exit {run.returncode}")
+    return "bad: " + (lines[-1].removeprefix("gpgv: ") if lines else f"gpgv exit {run.returncode}"), None
 
 
-def _signature(d: Path, keyring: Path | None) -> str:
+def _signature_and_signer(d: Path, keyring: Path | None) -> tuple[str, str | None]:
     if keyring is None:
-        return "not checked"
+        return "not checked", None
     if (d / "InRelease").is_file():
         return _gpgv(keyring, d / "InRelease")
     if (d / "Release.gpg").is_file() and (d / "Release").is_file():
         return _gpgv(keyring, d / "Release.gpg", d / "Release")
-    return "not checked (unsigned)"
+    return "not checked (unsigned)", None
+
+
+def _signature(d: Path, keyring: Path | None) -> str:
+    return _signature_and_signer(d, keyring)[0]
 
 
 def _release_sums(text: str) -> dict[str, tuple[str, int]]:
@@ -177,19 +196,25 @@ def _stanzas(text: str):
         yield cur
 
 
-def _named(text: str, stem: str) -> dict[str, tuple[str, int | None]]:
-    """Files a Packages or Sources index names, relative to the archive root."""
-    out = {}
+def _named(text: str, stem: str) -> tuple[dict[str, tuple[str, int | None]], set[str]]:
+    """Files a Packages or Sources index names, relative to the archive root;
+    and the files it names with no SHA256 to check them by (MD5 only)."""
+    out, unhashed = {}, set()
     for s in _stanzas(text):
         if stem == "Packages":
             if "Filename" in s and "SHA256" in s:
                 out[posixpath.normpath(s["Filename"])] = (s["SHA256"], int(s["Size"]) if "Size" in s else None)
+            elif "Filename" in s:
+                unhashed.add(posixpath.normpath(s["Filename"]))
         elif "Directory" in s:
-            for ln in s.get("Checksums-Sha256", "").splitlines():
-                parts = ln.split()
+            lines = [ln.split() for ln in s.get("Checksums-Sha256", "").splitlines()]
+            for parts in lines:
                 if len(parts) == 3:
                     out[posixpath.normpath(f"{s['Directory']}/{parts[2]}")] = (parts[0], int(parts[1]))
-    return out
+            if not any(len(p) == 3 for p in lines):
+                unhashed |= {posixpath.normpath(f"{s['Directory']}/{ln.split()[2]}")
+                             for ln in s.get("Files", "").splitlines() if len(ln.split()) == 3}
+    return out, unhashed
 
 
 def _safe(rel: str) -> bool:
@@ -258,9 +283,13 @@ def check_tree(tree: FoundTree, keyring: Path | None, progress=None) -> TreeChec
     def want(rel: str, tdir: str, value: tuple[str, int | None]) -> None:
         wants.setdefault(rel, {})[tdir] = value
 
+    release_hashes: dict[str, set[str]] = {}      # track dir → every SHA256 its Release lists (by-hash)
+    unhashed_files: set[str] = set()              # named with MD5 only: said once, as such, not as strays
     for t in tree.tracks:
         d = root / t.dir if t.dir else root
-        check.signature[t.dir] = _signature(d, keyring)
+        check.signature[t.dir], signer = _signature_and_signer(d, keyring)
+        if signer:
+            check.signed_by[t.dir] = signer
         if check.signature[t.dir].startswith("bad"):
             check.refused[t.dir] = f"its signature is bad ({check.signature[t.dir][5:]})"
         release, inrelease = _release_text(d)
@@ -270,6 +299,7 @@ def check_tree(tree: FoundTree, keyring: Path | None, progress=None) -> TreeChec
         text = body.decode("utf-8", "replace")
         prefix = f"{t.dir}/" if t.dir else ""
         listed = {prefix + p: v for p, v in _release_sums(text).items()}
+        release_hashes[t.dir] = {cs for cs, _size in listed.values()}
         stems: dict[str, list[str]] = {}
         for rel in listed:
             name = rel.rsplit("/", 1)[-1]
@@ -293,7 +323,11 @@ def check_tree(tree: FoundTree, keyring: Path | None, progress=None) -> TreeChec
                     text_ix = _DECOMPRESS[v[len(stem_path):]]((root / v).read_bytes()).decode("utf-8", "replace")
                 except (OSError, EOFError, lzma.LZMAError, ValueError):
                     continue
-                for rel, value in _named(text_ix, stem).items():
+                named, unhashed = _named(text_ix, stem)
+                if unhashed:
+                    check.unhashed[t.dir] = check.unhashed.get(t.dir, 0) + len(unhashed)
+                    unhashed_files.update(unhashed)
+                for rel, value in named.items():
                     if not _safe(rel):
                         check.refused.setdefault(t.dir, f"an index names {rel!r}, outside the tree")
                         continue
@@ -317,20 +351,43 @@ def check_tree(tree: FoundTree, keyring: Path | None, progress=None) -> TreeChec
         check.present[rel] = got
         check.expected[rel] = (got, by_track[owners[0]][1])
     suites = [f"{t.dir}/" for t in tree.tracks if t.dir]
+    # An installer's SHA256SUMS the Release vouches for (and that matched it)
+    # vouches for the installer's files in turn: path → sha256.
+    installer_sums: dict[str, str] = {}
+    for rel in sorted(check.present):
+        if rel.rsplit("/", 1)[-1] == "SHA256SUMS" and "/installer-" in rel and rel not in check.mismatched:
+            here = rel.rsplit("/", 1)[0]
+            try:
+                text = (root / rel).read_text(errors="replace")
+            except OSError:
+                continue
+            for ln in text.splitlines():
+                parts = ln.strip().split(None, 1)            # "<sha>  ./name", "<sha> *name" (binary), spaces kept
+                if len(parts) == 2 and len(parts[0]) == 64:
+                    name = parts[1][1:] if parts[1].startswith("*") else parts[1]
+                    installer_sums[posixpath.normpath(f"{here}/{name}")] = parts[0].lower()
     for rel in sorted(files):
-        if rel in wants:
+        if rel in wants or rel in unhashed_files:
             continue
         if any(rel.startswith(s) for s in suites) or "/" not in rel:
             got = sha(rel)
+            suite = next((s[:-1] for s in suites if rel.startswith(s)), None)
             if got is None:
                 check.strays.setdefault("unreadable", []).append(rel)
-            elif "/by-hash/SHA256/" in rel and rel.rsplit("/", 1)[-1] != got:
+            elif "/by-hash/SHA256/" in rel and (rel.rsplit("/", 1)[-1] != got
+                                                 or got not in release_hashes.get(suite, set())):
+                # Its name is its hash — and the Release must list that hash, or nothing vouches for it.
+                check.strays.setdefault("damaged" if rel.rsplit("/", 1)[-1] != got else "unlisted", []).append(rel)
+            elif rel in installer_sums and installer_sums[rel] != got:
                 check.strays.setdefault("damaged", []).append(rel)
             else:
                 check.present[rel] = got                 # a suite's own file, or the archive root's
         else:
             check.strays.setdefault("pool" if rel.startswith("pool/") else "other", []).append(rel)
     check.sizes = {rel: files[rel].st_size for rel in check.present}
+    # Adopting needs what was promised only for files that aren't here: a full
+    # Debian tree's million entries otherwise stay in memory per tree checked.
+    check.expected = {rel: v for rel, v in check.expected.items() if rel in check.missing}
     return check
 
 
@@ -366,7 +423,7 @@ def new_repo_key(base: str) -> str:
 
 
 def _ingest(src_root: Path, present: dict[str, str], stats: dict, sizes: dict[str, int], store,
-            root_path: Path, result: AdoptResult) -> None:
+            root_path: Path, result: AdoptResult, progress=None) -> None:
     """Every file adopted into the store: hardlinked when the tree is on the
     store's filesystem, else copied — after checking there is room."""
     from mmw.core import disk_io
@@ -384,6 +441,8 @@ def _ingest(src_root: Path, present: dict[str, str], stats: dict, sizes: dict[st
     disk_io.ops.mkdir(store.tmp, parents=True, exist_ok=True)
     for cs, rel in sorted(todo.items(), key=lambda kv: kv[1]):
         src = src_root / rel
+        if progress:
+            progress(rel, sizes.get(rel, 0))
         if same_fs and _linkable(src) and _link_in(src, cs, stats.get(rel), store):
             result.linked += 1
             continue
@@ -455,7 +514,8 @@ def adopt_tree(home: Path, tree: FoundTree, check: TreeCheck, *, repo: str | Non
         root_cfg = roots.of(state)
         roots.check_mounted(root_cfg)
         store = roots.store(root_cfg)
-        _ingest(tree.path, check.present, check.stats, check.sizes, store, Path(root_cfg.path), result)
+        _ingest(tree.path, check.present, check.stats, check.sizes, store, Path(root_cfg.path), result,
+                progress)
         rows = {f"{base}/{rel}": cs for rel, cs in check.present.items()}
         sizes = {cs: check.sizes[rel] for rel, cs in check.present.items()}
         for rel, owners in check.missing.items():
@@ -595,6 +655,9 @@ def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None
     result = AdoptResult("", tree.network)
     files = _files(tree.path)
     bases = apt_bases(tree.rows)
+    if any(p.startswith("dists/") and p.rsplit("/", 1)[-1] in ("Release", "InRelease") for p in tree.rows):
+        result.lines.append("  dists/ at the tree's top is under no host — kept as the network's own files, "
+                            "not a repository (apt serves it from the server's root)")
 
     def base_of(rel: str) -> str | None:
         return next((b for b in bases if rel.startswith(b + "/")), None)
@@ -661,6 +724,9 @@ def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None
                                 f"is {mine}'s, with its own")
         if in_place:
             db.record_applied(tree.created, None, "adopted")
+        if keys:
+            result.lines.append("  signatures not checked here: the connected side checked them when it synced "
+                                "(check them now: mmw site check-signatures)")
         for key in keys:
             switched = _reserve(db, roots, key)
             result.lines.extend(f"  {key[len(ADOPTED):]}  {w}" for w in switched.warnings)
@@ -747,17 +813,17 @@ def originals(home: Path) -> list[Original]:
     from mmw.site.db import SiteDB
     with SiteDB(home) as db:
         recorded = db.metas(_ORIGINAL)
-    out = []
-    for key, value in sorted(recorded.items()):
-        path = Path(key[len(_ORIGINAL):])
-        stamp, refused = _recorded(value)
-        if not path.is_dir():
-            out.append(Original(path, stamp, False, 0, 0, refused))
-            continue
-        files = _files(path)
-        out.append(Original(path, stamp, True, len(files),
-                            sum(st.st_size for st in files.values() if st.st_nlink == 1), refused))
-    return out
+    return [_original(Path(key[len(_ORIGINAL):]), value) for key, value in sorted(recorded.items())]
+
+
+def _original(path: Path, value: str) -> Original:
+    """One recorded tree: whether it is here, and what removing it frees."""
+    stamp, refused = _recorded(value)
+    if not path.is_dir():
+        return Original(path, stamp, False, 0, 0, refused)
+    files = _files(path)
+    return Original(path, stamp, True, len(files),
+                    sum(st.st_size for st in files.values() if st.st_nlink == 1), refused)
 
 
 def _holds_a_mirror(path: Path) -> Path | None:
@@ -778,10 +844,30 @@ def remove_original(home: Path, path: Path, other_roots: list[Path] = ()) -> int
     """Delete an adopted tree — only one adoption recorded, never a root of
     this mirror (or `other_roots`), inside one or holding one, nor a tree
     holding any mirror at all. The bytes it freed."""
-    from mmw.site.db import SiteDB
-    from mmw.site.home import load_site
+    from mmw.site.lock import SiteLock
     path = Path(path).resolve()
-    found = next((o for o in originals(home) if o.path == path), None)
+    from mmw.site.db import SiteDB
+    with SiteLock(home):                          # checked beside no adopt recording a tree
+        found = _removable(home, path, other_roots)
+    if found.present:
+        shutil.rmtree(path)                       # a big tree takes a while: never holding the lock
+    with SiteLock(home), SiteDB(home) as db:
+        db.delete_meta(_ORIGINAL + str(path))
+    return found.frees
+
+
+def original(home: Path, path: Path) -> Original | None:
+    """One recorded tree, by its path — nothing else is walked."""
+    from mmw.site.db import SiteDB
+    path = Path(path).resolve()
+    with SiteDB(home) as db:
+        value = db.get_meta(_ORIGINAL + str(path))
+    return None if value is None else _original(path, value)
+
+
+def _removable(home: Path, path: Path, other_roots) -> Original:
+    from mmw.site.home import load_site
+    found = original(home, path)
     if found is None:
         raise ValueError(f"{path} is not an adopted tree — `mmw site adopted` lists them")
     for rp in [Path(r.path).resolve() for r in load_site(home).roots] + [Path(p).resolve() for p in other_roots]:
@@ -791,7 +877,4 @@ def remove_original(home: Path, path: Path, other_roots: list[Path] = ()) -> int
         held = _holds_a_mirror(path)
         if held is not None:
             raise ValueError(f"{path} holds a mirror or a mounted filesystem ({held}) — not removing it")
-        shutil.rmtree(path)
-    with SiteDB(home) as db:
-        db.delete_meta(_ORIGINAL + str(path))
-    return found.frees
+    return found

@@ -380,8 +380,9 @@ class RootApply:
         recorded: dict[str, list] = {}
         arrived = set(sizes)
         if not self.foreign and (not self.points_bundle or self.selection):
+            every_base = [b for plan in planned.values() for b in plan["meta"]["bases"]]
             for repo, plan in planned.items():       # only this network's own bundle names what was adopted
-                _claim_adopted(db, repo, plan["meta"], result)
+                _claim_adopted(db, repo, plan["meta"], result, every_base)
         for repo, plan in planned.items():
             meta = plan["meta"]
             rows = dict(plan["rows"])
@@ -419,12 +420,24 @@ class RootApply:
             result.network_changed = False     # nothing of the network's was touched
         if self.network_files:
             old = roots.network_files(db, roots.primary)
-            db.set_network_files(network, {c: _size(store, c, sizes) for c in network.values()})
+            served = _served_by_repos(db, set(old) - set(network))
+            # A path a repository in this bundle holds is that repository's now
+            # (an adopted tree's files start as the network's) — but until that
+            # repository serves it, it stays the network's: kept, and recorded,
+            # so a stop, hold or incomplete point never leaves it unserved, and
+            # the bundle after the repository drops it removes it.
+            claimed = {p for plan in planned.values() for p, _c in plan["rows"]}
+            carried = {rel: cs for rel, cs in old.items()
+                       if rel not in network and rel in claimed and rel not in served}
+            keep = {**network, **carried}
+            db.set_network_files(keep, {c: _size(store, c, sizes) for c in keep.values()})
             new = roots.network_files(db, roots.primary)
             for rel, checksum in sorted(new.items()):
                 if old.get(rel) != checksum or not disk_io.ops.exists(root / rel):
                     place_served_file(store, root, rel, checksum, network=True)
             for rel in sorted(set(old) - set(new)):
+                if rel in served:
+                    continue                    # a repository serves it now: only the record goes
                 if disk_io.ops.remove(root / rel) is not None:
                     _prune_empty_parents(str(root), str((root / rel).parent))
         if header.settings and self.network_files:
@@ -528,17 +541,33 @@ class RootApply:
         return result
 
 
-def _claim_adopted(db, repo: str, meta: dict, result) -> None:
+def _claim_adopted(db, repo: str, meta: dict, result, every_base: list[str] | None = None) -> None:
     """A repository new here that a tree adopted from apply.py already holds
-    (`adopted:<base>`, the same bases): it is that one, now named."""
+    (`adopted:<base>`): it is that one, now named. The same bases first;
+    else one whose every base lies under this repository's — a flat
+    repository's Release in a subdirectory gives a deeper base than the
+    connected side's — and only where no other repository in the bundle
+    (`every_base`) has a longer base over it. Another adopted repository
+    under the same bases is said, not merged."""
     from mmw.site.adopt import ADOPTED
     if db.repo_state(repo) is not None or not meta.get("bases"):
         return
-    for st in db.repo_states():
-        if st.repo.startswith(ADOPTED) and sorted(st.bases) == sorted(meta["bases"]):
-            db.rename_repo(st.repo, repo, meta["label"], list(meta["bases"]))
-            result.lines.append(f"  {meta['label']}  is the repository adopted at {', '.join(st.bases)}")
-            return
+    mine = list(meta["bases"])
+    every = sorted(set(every_base or []) | set(mine), key=len, reverse=True)
+
+    def owner(b: str) -> str | None:
+        return next((m for m in every if b == m or b.startswith(m + "/")), None)
+    adopted = [st for st in db.repo_states() if st.repo.startswith(ADOPTED) and st.bases]
+    exact = [st for st in adopted if sorted(st.bases) == sorted(mine)]
+    under = [st for st in adopted if st not in exact and all(owner(b) in mine for b in st.bases)]
+    found = (exact or under)[:1]
+    for st in found:
+        db.rename_repo(st.repo, repo, meta["label"], mine)
+        result.lines.append(f"  {meta['label']}  is the repository adopted at {', '.join(st.bases)}")
+    for st in (exact + under)[1:]:
+        result.lines.append(f"  {meta['label']}  another tree adopted at {', '.join(st.bases)} lies under it "
+                            f"too — still served on its own ({st.repo}); remove it once "
+                            f"{meta['label']} serves its files")
 
 
 def apply_bundle(home: Path, src: str, *, forward: set[str] | None = None, forward_all: bool = False,
@@ -733,6 +762,20 @@ def _day(stamp: str) -> str:
 
 def _suite_of(track) -> str:
     return track.suite or track.codename or (track.name.rsplit("/", 1)[-1] if track.name else "files")
+
+
+def _served_by_repos(db, paths: set[str]) -> set[str]:
+    """Which of `paths` some repository here serves now."""
+    if not paths:
+        return set()
+    out: set[str] = set()
+    for st in db.repo_states():
+        if st.serving is None:
+            continue
+        mine = {p for p in paths if any(p.startswith(b + "/") for b in st.bases)}
+        if mine:
+            out |= mine & set(db.served_files(st.serving.id, db.repo_overlay(st.repo)))
+    return out
 
 
 def served_upstream_dates(home: Path, repos) -> dict[str, str]:

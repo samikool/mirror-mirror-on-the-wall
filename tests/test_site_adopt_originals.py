@@ -49,3 +49,25 @@ def test_removal_needs_yes(cli_site, tmp_path):  # noqa: F811
     assert r.exit_code == 1 and "--yes" in r.output and src.exists()
     r = run("adopted", "--root", str(cli_site), "--remove", str(src), "--yes")
     assert r.exit_code == 0 and not src.exists()
+
+
+def test_removing_an_original_takes_the_lock_and_reads_only_its_own_record(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from mmw.site import adopt as A
+    from mmw.site import home as H
+    from mmw.site.lock import LockHeld, SiteLock
+    home = H.init_root(tmp_path / "srv", name="main", set_id="s1", network="oak")
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "f").write_bytes(b"x")
+        A.record_original(home, tmp_path / name, "20261101T000000Z")
+    seen = []
+    real = A._files
+    monkeypatch.setattr(A, "_files", lambda p: seen.append(p) or real(p))
+    with SiteLock(home), pytest.raises(LockHeld):
+        A.remove_original(home, tmp_path / "one")
+    assert (tmp_path / "one").exists()
+    A.remove_original(home, tmp_path / "one")
+    assert not (tmp_path / "one").exists() and (tmp_path / "two").exists()
+    assert all(Path(p).name != "two" for p in seen)               # the other tree is never walked

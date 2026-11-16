@@ -762,7 +762,7 @@ def _hash_progress(where: Path):
 
 
 def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_lock: bool,
-                 say=print, err=eprint) -> int:
+                 say=print, err=eprint, hashing=_hash_progress) -> int:
     """A tree apply.py manages: converted in place (no --root), or adopted
     into the mirror --root names."""
     import sys
@@ -798,9 +798,9 @@ def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_loc
     try:
         if target is None:
             from mmw.site.adopt import adopt_apply_tree
-            r = adopt_apply_tree(managed, progress=_hash_progress(managed.path))
+            r = adopt_apply_tree(managed, progress=hashing(managed.path))
         else:
-            r = target.adopt_apply_tree(managed, progress=_hash_progress(managed.path))
+            r = target.adopt_apply_tree(managed, progress=hashing(managed.path))
     except _ERRORS as e:
         return (err(str(e).strip("'\"")) or 1)
     if target is None:
@@ -818,9 +818,10 @@ def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_loc
 
 def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base: str | None = None,
           key: Path | None = None, unverified: bool = False, dry_run: bool = False, yes: bool = False,
-          break_lock: bool = False, say=print, err=eprint) -> int:
+          break_lock: bool = False, say=print, err=eprint, hashing=_hash_progress) -> int:
     """Take over the APT trees under `path`: report them by suite, check each,
-    and adopt them — the trees themselves are never changed."""
+    and adopt them — the trees themselves are never changed. `hashing(where)`:
+    a `(rel, size)` callback per file read (default: a line on stderr now and then)."""
     import sys
     import tempfile
 
@@ -828,7 +829,7 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
     from mmw.site.versionref import day
     managed = find_apply_tree(Path(path))
     if managed is not None:
-        return _adopt_apply(managed, root, dry_run, yes, break_lock, say, err)
+        return _adopt_apply(managed, root, dry_run, yes, break_lock, say, err, hashing)
     trees = find_trees(Path(path))
     if not trees:
         err(f"no APT trees under {path} (an archive root has dists/*/Release, or a Release beside Packages)")
@@ -886,21 +887,35 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
                 return 1
         checked = []
         for t in sorted(trees, key=lambda t: min(x.date for x in t.tracks)):
-            check = check_tree(t, keyring, progress=_hash_progress(t.path))
+            check = check_tree(t, keyring, progress=hashing(t.path))
             checked.append((t, check))
             sig = sorted(set(check.signature.values()))
             notes = [", ".join(sig).replace("not checked", "signature not checked")]
+            signers = sorted(set(check.signed_by.values()))
+            if signers:                          # any key under keys/ can verify: say whose it was
+                notes.append("by " + "; ".join(signers))
             if check.missing:
                 notes.append(f"{len(check.missing)} file(s) missing")
             if check.refused:
                 notes.append("refused: " + "; ".join(f"{d.rsplit('/', 1)[-1] or 'files'}: {why}"
                                                      for d, why in check.refused.items()))
             say(f"  {t.path}: {' · '.join(notes)}")
+            if check.unhashed:
+                n = sum(check.unhashed.values())
+                say(f"    not adopted: {n} index entr{'y' if n == 1 else 'ies'} with no SHA256 (MD5 only) — "
+                    "nothing to check those files by, so they stay out")
             stray = check.strays
             if stray:
                 parts = ([f"{len(stray['pool'])} pool file(s) no index names"] if stray.get("pool") else []) + \
-                        ([f"{len(stray['other'])} other file(s)"] if stray.get("other") else [])
-                say(f"    not adopted: {', '.join(parts)} (apt can't reach them)")
+                        ([f"{len(stray['other'])} other file(s)"] if stray.get("other") else []) + \
+                        ([f"{len(stray['damaged'])} damaged (not what their name or SHA256SUMS says)"]
+                         if stray.get("damaged") else []) + \
+                        ([f"{len(stray['unreadable'])} unreadable"] if stray.get("unreadable") else [])
+                if parts:
+                    say(f"    not adopted: {', '.join(parts)} (apt can't reach them)")
+                if stray.get("unlisted"):              # a full mirror keeps older generations' by-hash files
+                    say(f"    not adopted: {len(stray['unlisted'])} by-hash file(s) of earlier Releases — "
+                        "nothing here vouches for them (this Release doesn't list them)")
         if dry_run:
             return 0
         if not yes:
@@ -914,7 +929,7 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
             key_here, label, base, into = dest[t.identity()]
             try:
                 r = into.adopt_tree(t, check, repo=key_here, label=label, base=base,
-                                    progress=_hash_progress(t.path))
+                                    progress=hashing(t.path))
             except _ERRORS as e:
                 err(f"{t.path}: {e}")
                 continue
@@ -984,7 +999,7 @@ def adopted(root: Path | None = None, remove: Path | None = None, yes: bool = Fa
         return 0
     target = Path(remove).resolve()
     for r in roots_here:
-        found = next((o for o in r.originals() if o.path == target), None)
+        found = r.original(target)                       # this tree only: never every recorded one
         if found is None:
             continue
         print(f"Remove {target}? It frees {fmt_size(found.frees)}; what was adopted from it stays served.")
@@ -996,9 +1011,10 @@ def adopted(root: Path | None = None, remove: Path | None = None, yes: bool = Fa
                 return 1
             if input("Remove it? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 1
+        from mmw.site.lock import LockHeld
         try:
             freed = r.remove_original(target, every_root)
-        except (ValueError, OSError) as e:
+        except (LockHeld, ValueError, OSError) as e:
             return _fail(e)
         print(f"removed {target} — {fmt_size(freed)} freed")
         return 0

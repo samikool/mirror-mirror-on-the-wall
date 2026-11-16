@@ -122,3 +122,125 @@ def test_a_bundle_claims_only_matching_bases(far, tmp_path):
         assert [s.repo for s in db.repo_states()] == ["https://archive.ubuntu.com/ubuntu"]
         (track,) = [t for t in db.tracks("https://archive.ubuntu.com/ubuntu") if t.name]
         assert db.points(track.id)
+
+
+def test_the_first_bundle_never_unserves_adopted_files_its_repositories_hold(far, tmp_path, monkeypatch):
+    """Adopted as the network's (nothing claimed it yet), now a repository's:
+    the network-file step leaves it for that repository's switch — which
+    here doesn't happen (held) — so it is still served."""
+    import hashlib
+    import json
+    import tarfile
+
+    from mmw.site import apply as A
+    from mmw.site.home import root_home
+    from mmw.site.switch import SwitchResult
+    from test_bundle_snapshots import _state
+    cfg, net, md, snaps, published, dest = far
+    adopt_apply_tree(find_apply_tree(dest))
+    _state(md, 4)
+    from mmw.core import snapshots
+    monkeypatch.setattr(snapshots, "now_stamp", lambda: "20991231T000000Z")
+    r = _mmw_bundle(cfg, net, md, tmp_path / "m.tar")
+    with tarfile.open(r.out_path) as tar:
+        rows = [json.loads(ln) for ln in tar.extractfile(".mmw/manifest.jsonl").read().decode().splitlines()[1:]]
+    kept = next(row["p"] for row in rows if row.get("r") and (dest / row["p"]).is_file())   # here, and still upstream's
+    with SiteDB(root_home(dest)) as db:                       # as if adoption couldn't place it
+        files = db.network_files()
+        files[kept] = hashlib.sha256((dest / kept).read_bytes()).hexdigest()
+        db.set_network_files(files, {})
+    monkeypatch.setattr(A, "switch_in", lambda *a, **k: SwitchResult(0, 0, held="its layer can't be built"))
+    A.apply_bundle(root_home(dest), str(r.out_path), say=lambda *a: None)
+    assert (dest / kept).exists()
+    from mmw.site.apply import _served_by_repos
+    with SiteDB(root_home(dest)) as db:                       # someone's: a later bundle can remove it
+        assert kept in db.network_files() or _served_by_repos(db, {kept})
+
+
+def test_a_flat_repository_in_a_subdirectory_is_claimed_by_its_repository():
+    """apply.py's tree has `b.example/flat/amd64/Release`: adopted with base
+    `b.example/flat/amd64`; the connected side's base is `b.example/flat`.
+    Its first bundle claims it — and never one under another base."""
+    from types import SimpleNamespace
+
+    from mmw.site.apply import _claim_adopted
+    renamed = []
+    db = SimpleNamespace(
+        repo_state=lambda repo: None,
+        repo_states=lambda: [SimpleNamespace(repo="adopted:b.example/flat/amd64", bases=["b.example/flat/amd64"]),
+                             SimpleNamespace(repo="adopted:b.example/flatter", bases=["b.example/flatter"])],
+        rename_repo=lambda *a: renamed.append(a))
+    result = SimpleNamespace(lines=[])
+    _claim_adopted(db, "https://b.example/flat", {"label": "flat", "bases": ["b.example/flat"]}, result)
+    assert [r[0] for r in renamed] == ["adopted:b.example/flat/amd64"]
+
+
+def test_a_dists_at_the_trees_top_is_said(far):
+    from mmw.site.adopt import ApplyTree
+    *_x, dest = far
+    tree = find_apply_tree(dest)
+    rel = "dists/stable/Release"
+    (dest / rel).parent.mkdir(parents=True)
+    (dest / rel).write_bytes(b"Suite: stable\n")
+    import hashlib
+    tree = ApplyTree(**{**tree.__dict__, "rows": {**tree.rows, rel: hashlib.sha256(b"Suite: stable\n").hexdigest()}})
+    r = adopt_apply_tree(tree)
+    assert any("dists/ at the tree's top" in ln for ln in r.lines)
+
+
+def test_adopting_an_apply_tree_says_its_signatures_were_not_checked_here(far):
+    *_x, dest = far
+    r = adopt_apply_tree(find_apply_tree(dest))
+    assert any("signatures not checked here" in ln and "check-signatures" in ln for ln in r.lines)
+
+
+def test_claiming_goes_to_the_longest_base_and_says_another_tree_under_it():
+    from types import SimpleNamespace
+
+    from mmw.site.apply import _claim_adopted
+    renamed = []
+    adopted = [SimpleNamespace(repo="adopted:h/debian", bases=["h/debian"]),
+              SimpleNamespace(repo="adopted:h/a", bases=["h/a"]), SimpleNamespace(repo="adopted:h/b", bases=["h/b"])]
+    db = SimpleNamespace(repo_state=lambda repo: None, repo_states=lambda: adopted,
+                         rename_repo=lambda *a: renamed.append(a[0]))
+    every = ["h", "h/debian"]
+    host = SimpleNamespace(lines=[])
+    _claim_adopted(db, "https://h", {"label": "host", "bases": ["h"]}, host, every)
+    assert renamed == ["adopted:h/a"]                                 # never h/debian: its own repository's
+    assert any("adopted at h/b lies under it" in ln for ln in host.lines)
+    deb = SimpleNamespace(lines=[])
+    _claim_adopted(db, "https://h/debian", {"label": "Debian", "bases": ["h/debian"]}, deb, every)
+    assert renamed[-1] == "adopted:h/debian"
+
+
+def test_a_network_file_a_repository_will_hold_stays_recorded_until_it_does(far, tmp_path, monkeypatch):
+    """No repository serves it yet and this one's switch doesn't happen: it is
+    still the network's — served and recorded, so a later bundle can remove it."""
+    import hashlib
+    import json
+    import tarfile
+
+    from mmw.site import apply as A
+    from mmw.site.home import root_home
+    from mmw.site.switch import SwitchResult
+    from test_bundle_snapshots import _state
+    cfg, net, md, snaps, published, dest = far
+    adopt_apply_tree(find_apply_tree(dest))
+    with SiteDB(root_home(dest)) as db:
+        db.drop_repo(f"adopted:{BASE}")                       # nothing serves the tree's files any more
+    _state(md, 4)
+    from mmw.core import snapshots
+    monkeypatch.setattr(snapshots, "now_stamp", lambda: "20991231T000000Z")
+    r = _mmw_bundle(cfg, net, md, tmp_path / "m.tar")
+    with tarfile.open(r.out_path) as tar:
+        rows = [json.loads(ln) for ln in tar.extractfile(".mmw/manifest.jsonl").read().decode().splitlines()[1:]]
+    kept = next(row["p"] for row in rows if row.get("r") and (dest / row["p"]).is_file())
+    with SiteDB(root_home(dest)) as db:
+        files = db.network_files()
+        files[kept] = hashlib.sha256((dest / kept).read_bytes()).hexdigest()
+        db.set_network_files(files, {})
+    monkeypatch.setattr(A, "switch_in", lambda *a, **k: SwitchResult(0, 0, held="its layer can't be built"))
+    A.apply_bundle(root_home(dest), str(r.out_path), say=lambda *a: None)
+    assert (dest / kept).exists()
+    with SiteDB(root_home(dest)) as db:
+        assert kept in db.network_files()

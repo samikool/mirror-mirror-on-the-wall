@@ -244,3 +244,134 @@ def test_a_wrong_key_leaves_it(site, tmp_path, upstream):
     r = _adopt(home, make_tree(tmp_path / "t", sign_with=(upstream, "up"), inrelease=False))
     (v,) = recheck_signatures(home, _ring(upstream, tmp_path, "other"))
     assert v[2].startswith("bad") and unverified(home, r.repo)
+
+
+def test_an_index_entry_with_md5_only_is_said(tmp_path):
+    """An entry with no SHA256 has nothing to check its file by: counted and
+    said, not silently left out."""
+    import hashlib
+    root = make_tree(tmp_path / "t", packages={"hello_1.0_amd64.deb": b"h" * 40, "old_1.0_amd64.deb": b"o" * 9})
+    ix = root / "dists/bookworm/main/binary-amd64/Packages"
+    text = ix.read_text()
+    old_sha = hashlib.sha256(b"o" * 9).hexdigest()
+    new = text.replace(f"SHA256: {old_sha}", f"MD5sum: {hashlib.md5(b'o' * 9).hexdigest()}")
+    ix.write_text(new)
+    (ix.parent / "Packages.gz").unlink()
+    rel = root / "dists/bookworm/Release"
+    before = hashlib.sha256(text.encode()).hexdigest()
+    rel.write_text(rel.read_text().replace(f"{before} {len(text.encode())} main/binary-amd64/Packages",
+                                           f"{hashlib.sha256(new.encode()).hexdigest()} {len(new.encode())} "
+                                           "main/binary-amd64/Packages"))
+    (tree,) = find_trees(root)
+    check = check_tree(tree, None)
+    assert check.unhashed == {"dists/bookworm": 1}
+
+
+def test_named_counts_md5_only_entries():
+    from mmw.site.adopt import _named
+    named, unhashed = _named("Package: a\nFilename: pool/a.deb\nMD5sum: x\n\nPackage: b\nFilename: pool/b.deb\n"
+                             "SHA256: " + "f" * 64 + "\n", "Packages")
+    assert list(named) == ["pool/b.deb"] and unhashed == {"pool/a.deb"}
+
+
+def test_adopting_says_each_file_it_takes_in(site, tmp_path):
+    home, _root = site
+    src = make_tree(tmp_path / "old", packages={"a_1.0_amd64.deb": b"a" * 10, "b_1.0_amd64.deb": b"b" * 20})
+    (tree,) = find_trees(src)
+    seen = []
+    adopt_tree(home, tree, check_tree(tree, None), repo=None, label="Debian", base=BASE,
+               progress=lambda rel, size: seen.append((rel, size)))
+    assert ("pool/main/a/a/a_1.0_amd64.deb", 10) in seen and ("pool/main/b/b/b_1.0_amd64.deb", 20) in seen
+
+
+def test_the_tuis_adopt_hears_how_far_hashing_has_got(site, tmp_path):
+    from mmw.tui.site.adopt_flow import AdoptChoice, _run_adopt
+    home, root = site
+    src = make_tree(tmp_path / "old")
+    said = []
+    code, _lines = _run_adopt(str(root), AdoptChoice(str(src), BASE, None, True), dry_run=True, said=said.append)
+    assert code == 0 and said and "files done" in said[0]
+
+
+def test_check_says_which_key_verified(upstream, tmp_path):
+    make_tree(tmp_path / "t", sign_with=(upstream, "up"))
+    (tree,) = find_trees(tmp_path / "t")
+    check = check_tree(tree, _ring(upstream, tmp_path))
+    fpr = next(k.fingerprint for k in upstream.list() if k.name == "up")
+    assert check.signature == {"dists/bookworm": "verified"} and fpr in check.signed_by["dists/bookworm"]
+
+
+def test_a_by_hash_file_its_release_doesnt_list_is_not_adopted(tmp_path):
+    import hashlib
+    root = make_tree(tmp_path / "t")
+    ix = root / "dists/bookworm/main/binary-amd64/Packages"
+    listed = hashlib.sha256(ix.read_bytes()).hexdigest()
+    junk = b"not anything the Release lists"
+    unlisted = hashlib.sha256(junk).hexdigest()
+    bh = ix.parent / "by-hash/SHA256"
+    bh.mkdir(parents=True)
+    (bh / listed).write_bytes(ix.read_bytes())
+    (bh / unlisted).write_bytes(junk)                       # named by its own hash: still nobody's
+    (tree,) = find_trees(root)
+    check = check_tree(tree, None)
+    rel = "dists/bookworm/main/binary-amd64/by-hash/SHA256/"
+    assert rel + listed in check.present and rel + unlisted not in check.present
+    assert check.strays["unlisted"] == [rel + unlisted]
+
+
+def test_an_installer_file_is_checked_against_its_sha256sums(tmp_path):
+    import hashlib
+    images = "dists/bookworm/main/installer-amd64/current/images"
+    good, bad = b"a netboot image", b"a damaged image"
+    sums = (f"{hashlib.sha256(good).hexdigest()}  ./netboot.tar.gz\n"
+            f"{hashlib.sha256(b'the real one').hexdigest()}  ./mini.iso\n").encode()
+    root = make_tree(tmp_path / "t", extra={f"{images}/netboot.tar.gz": good, f"{images}/mini.iso": bad})
+    # The Release vouches for SHA256SUMS: add it to the Release's list.
+    (root / images / "SHA256SUMS").write_bytes(sums)
+    release = root / "dists/bookworm/Release"
+    release.write_text(release.read_text() + f" {hashlib.sha256(sums).hexdigest()} {len(sums)} "
+                       "main/installer-amd64/current/images/SHA256SUMS\n")
+    (tree,) = find_trees(root)
+    check = check_tree(tree, None)
+    assert f"{images}/netboot.tar.gz" in check.present and f"{images}/mini.iso" in check.strays["damaged"]
+
+
+def test_a_check_keeps_promises_only_for_what_is_missing(tmp_path):
+    root = make_tree(tmp_path / "t", packages={"hello_1.0_amd64.deb": b"h" * 40, "gone_1.0_amd64.deb": b"g" * 9})
+    (root / "pool/main/g/gone/gone_1.0_amd64.deb").unlink()
+    (tree,) = find_trees(root)
+    check = check_tree(tree, None)
+    assert set(check.expected) == set(check.missing) == {"pool/main/g/gone/gone_1.0_amd64.deb"}
+
+
+def test_md5_only_files_are_said_once_not_also_as_strays(tmp_path):
+    import hashlib
+    root = make_tree(tmp_path / "t", packages={"hello_1.0_amd64.deb": b"h" * 40, "old_1.0_amd64.deb": b"o" * 9})
+    ix = root / "dists/bookworm/main/binary-amd64/Packages"
+    text = ix.read_text()
+    new = text.replace(f"SHA256: {hashlib.sha256(b'o' * 9).hexdigest()}", "MD5sum: x")
+    ix.write_text(new)
+    (ix.parent / "Packages.gz").unlink()
+    rel = root / "dists/bookworm/Release"
+    rel.write_text(rel.read_text().replace(f"{hashlib.sha256(text.encode()).hexdigest()} {len(text.encode())} ",
+                                           f"{hashlib.sha256(new.encode()).hexdigest()} {len(new.encode())} ", 1))
+    (tree,) = find_trees(root)
+    check = check_tree(tree, None)
+    assert check.unhashed == {"dists/bookworm": 1} and "pool/main/o/old/old_1.0_amd64.deb" not in \
+        check.strays.get("pool", [])
+
+
+def test_sha256sums_with_binary_markers_and_spaces(tmp_path):
+    import hashlib
+    images = "dists/bookworm/main/installer-amd64/current/images"
+    a, b = b"image a", b"image b"
+    sums = (f"{hashlib.sha256(b'other').hexdigest()} *netboot.tar.gz\n"
+            f"{hashlib.sha256(b).hexdigest()}  ./my image.iso\n").encode()
+    root = make_tree(tmp_path / "t", extra={f"{images}/netboot.tar.gz": a, f"{images}/my image.iso": b})
+    (root / images / "SHA256SUMS").write_bytes(sums)
+    release = root / "dists/bookworm/Release"
+    release.write_text(release.read_text() + f" {hashlib.sha256(sums).hexdigest()} {len(sums)} "
+                       "main/installer-amd64/current/images/SHA256SUMS\n")
+    (tree,) = find_trees(root)
+    check = check_tree(tree, None)
+    assert f"{images}/netboot.tar.gz" in check.strays["damaged"] and f"{images}/my image.iso" in check.present

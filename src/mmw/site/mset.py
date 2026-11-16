@@ -279,6 +279,10 @@ class LocalRoot:
         from mmw.site.adopt import originals
         return originals(self.home)
 
+    def original(self, path):
+        from mmw.site.adopt import original
+        return original(self.home, path)
+
     def remove_original(self, path, other_roots=()):
         from mmw.site.adopt import remove_original
         return remove_original(self.home, path, other_roots)

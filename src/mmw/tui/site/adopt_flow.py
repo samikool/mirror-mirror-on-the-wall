@@ -25,13 +25,29 @@ class AdoptChoice:
     unverified: bool
 
 
-def _run_adopt(root: str, c: AdoptChoice, dry_run: bool) -> tuple[int, list[str]]:
-    """**Blocking.** `mmw site adopt`, its lines kept."""
+def _run_adopt(root: str, c: AdoptChoice, dry_run: bool, said=None) -> tuple[int, list[str]]:
+    """**Blocking.** `mmw site adopt`, its lines kept. `said(text)`: how far
+    hashing has got, now and then (never more than a few times a second)."""
+    import time
+
     from mmw.commands.site import adopt
+    from mmw.core.format import fmt_size
     lines: list[str] = []
+
+    def hashing(where):
+        seen, last = [0, 0], [0.0]
+
+        def tick(_rel: str, size: int) -> None:
+            seen[0] += 1
+            seen[1] += size
+            now = time.monotonic()
+            if said is not None and now - last[0] > 0.25:
+                last[0] = now
+                said(f"{where}: {seen[0]:,} files done ({fmt_size(seen[1])})")
+        return tick
     code = adopt(Path(c.path).expanduser(), Path(root), None, c.as_base or None,
                  Path(c.key).expanduser() if c.key else None, c.unverified, dry_run, True,
-                 say=lines.append, err=lines.append)
+                 say=lines.append, err=lines.append, hashing=hashing)
     return code, lines
 
 
@@ -82,16 +98,24 @@ class AdoptPage(Page):
         if not c.path:
             self.set_status("Say which folder.", "error")
             return
+        self._looked = None                     # looking again: its progress shows, its answer replaces
         self.query_one("#adopt-report", Static).update("looking and checking…")
         self._look(c)
 
     @work(thread=True, exclusive=True, group="adopt-look", exit_on_error=False)
     def _look(self, c: AdoptChoice) -> None:
         try:
-            code, lines = _run_adopt(self._root, c, dry_run=True)
+            code, lines = _run_adopt(self._root, c, dry_run=True, said=self._said)
         except Exception as e:  # noqa: BLE001 — shown on the page
             code, lines = 1, [str(e)]
         self.app.call_from_thread(self._show, c, code, lines)
+
+    def _said(self, text: str) -> None:
+        """From the worker: how far looking has got."""
+        def show() -> None:
+            if self.is_attached and self._looked is None:
+                self.query_one("#adopt-report", Static).update(f"looking and checking… {text}")
+        self.app.call_from_thread(show)
 
     def _show(self, c: AdoptChoice, code: int, lines: list[str]) -> None:
         if not self.is_attached:
@@ -132,10 +156,17 @@ class AdoptRunPage(Page):
     @work(thread=True, exclusive=True, group="adopt-run", exit_on_error=False)
     def _run(self) -> None:
         try:
-            code, lines = _run_adopt(self._root, self._choice, dry_run=False)
+            code, lines = _run_adopt(self._root, self._choice, dry_run=False, said=self._said)
         except Exception as e:  # noqa: BLE001 — shown on the page
             code, lines = 1, [str(e)]
         self.app.call_from_thread(self._done, code, lines)
+
+    def _said(self, text: str) -> None:
+        """From the worker: how far adopting has got."""
+        def show() -> None:
+            if self.is_attached and not self.finished:
+                self.query_one("#adopt-out", Static).update(f"adopting — {text}")
+        self.app.call_from_thread(show)
 
     def action_back(self) -> None:
         if self.finished:                         # never mid-run: it carries on either way

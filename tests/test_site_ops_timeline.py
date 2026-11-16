@@ -89,3 +89,114 @@ def test_delete_ambiguous_across_suites_asks_for_the_track(env, tmp_path):  # no
     _cfg, _net, _md, home, a = _days(env, tmp_path, (1,))
     with pytest.raises(LookupError, match="no suite"):
         ops.delete_point(home, a, "2026-11-01", track="nonesuch")
+
+
+def test_force_deleting_the_only_point_stops_serving_it(env, tmp_path):  # noqa: F811
+    """`… then serves nothing` means it: the repository's files leave the root."""
+    _cfg, _net, _md, home, a = _days(env, tmp_path, (1,))
+    served = tmp_path / "srv" / "example.com" / "a"
+
+    def files():
+        return [p for p in served.rglob("*") if p.is_file()] if served.exists() else []
+    assert files()
+    with pytest.raises(ValueError, match="serves nothing"):
+        ops.delete_point(home, a, "2026-11-01")
+    ops.delete_point(home, a, "2026-11-01", force=True)
+    assert files() == []
+
+
+def test_a_serve_resumed_after_a_kill_keeps_the_repository_unheld(env, tmp_path, monkeypatch):  # noqa: F811
+    """Serving an older day pins its suite; it never holds the repository.
+    Killed halfway and finished later, the same — not decided by v-numbers."""
+    from mmw.site.lock import break_lock
+    from mmw.site.store import Store
+    from mmw.site.switch import resume_switches
+    from mmw.site.roots import Roots
+    from mmw.site.home import load_site
+    _cfg, _net, _md, home, a = _days(env, tmp_path, (1, 2))
+    real = Store.place
+
+    def boom(self, cs, dest):
+        if dest.name == "Packages":
+            raise KeyboardInterrupt
+        return real(self, cs, dest)
+    monkeypatch.setattr(Store, "place", boom)
+    with pytest.raises(KeyboardInterrupt):
+        ops.serve(home, a, "2026-11-01")
+    monkeypatch.setattr(Store, "place", real)
+    break_lock(home)
+    with SiteDB(home) as db:
+        assert resume_switches(db, Roots(load_site(home))) == [a]
+        assert not db.repo_state(a).held and _served_day(db, a) == "20261101"
+
+
+def test_point_sizes_looks_each_blob_up_rather_than_listing_every_file(env, tmp_path):  # noqa: F811
+    """History asks this per point: no full scan of the other points' or
+    states' files."""
+    _cfg, _net, _md, home, a = _days(env, tmp_path, (1, 2))
+    with SiteDB(home) as db:
+        pid = db.points(_track(db, a).id)[0].id
+        total, only = db.point_sizes(pid)
+        assert total > 0 and 0 <= only <= total
+        captured = []
+        db._conn.set_trace_callback(captured.append)
+        db.point_sizes(pid)
+        db._conn.set_trace_callback(None)
+        only_sql = captured[-1]                       # traced with its values filled in
+        plan = " ".join(r[-1] for r in db._conn.execute("EXPLAIN QUERY PLAN " + only_sql).fetchall())
+        assert "SCAN version_files" not in plan and "SCAN f " not in plan and "SCAN point_files" not in plan, plan
+
+
+def test_a_resumed_switch_finishes_with_the_hold_it_began_with(env, tmp_path, monkeypatch):  # noqa: F811
+    """Held (its layer couldn't be built), then a fast-forward killed halfway:
+    resumed, it ends as begun — not held — never held with no reason given."""
+    from mmw.site.home import load_site
+    from mmw.site.lock import break_lock
+    from mmw.site.roots import Roots
+    from mmw.site.store import Store
+    from mmw.site.switch import resume_switches, switch_in
+    _cfg, _net, _md, home, a = _days(env, tmp_path, (1, 2))
+    from mmw.site.timeline import ensure_state
+    with SiteDB(home) as db:
+        db.set_held(a, True)
+        t = _track(db, a)
+        roots = Roots(load_site(home))
+        older_id, _w = ensure_state(db, roots.store(roots.primary), a, {t.id: db.points(t.id)[1].id})
+    real = Store.place
+
+    def boom(self, cs, dest):
+        if dest.name == "Packages":
+            raise KeyboardInterrupt
+        return real(self, cs, dest)
+    monkeypatch.setattr(Store, "place", boom)
+    with SiteDB(home) as db, pytest.raises(KeyboardInterrupt):
+        switch_in(db, Roots(load_site(home)), a, older_id, held=False)
+    monkeypatch.setattr(Store, "place", real)
+    break_lock(home)
+    with SiteDB(home) as db:
+        assert resume_switches(db, Roots(load_site(home))) == [a]
+        assert not db.repo_state(a).held
+
+
+def test_a_forced_delete_never_unserves_when_older_points_lost_files(env, tmp_path):  # noqa: F811
+    """Serving 2 Nov; 1 Nov is kept but its files are gone here. Deleting 2 Nov
+    with --yes keeps what is served rather than serving nothing."""
+    from mmw.site.home import load_site
+    from mmw.site.roots import Roots
+    _cfg, _net, _md, home, a = _days(env, tmp_path, (1, 2))
+    roots = Roots(load_site(home))
+    with SiteDB(home) as db:
+        t = _track(db, a)
+        older, newer = db.points(t.id)[1], db.points(t.id)[0]
+        only_older = set(db.point_files(older.id).values()) - set(db.point_files(newer.id).values())
+    store = roots.store(roots.primary)
+    for cs in only_older:
+        store.path(cs).unlink()
+    served = tmp_path / "srv" / "example.com" / "a"
+
+    def live():                                   # what is served, not the dated trees beside it
+        return sorted(str(p.relative_to(served)) for p in served.rglob("*")
+                      if p.is_file() and not str(p.relative_to(served)).startswith("@"))
+    before = live()
+    ops.delete_point(home, a, "2026-11-02", force=True)
+    assert live() == before and before

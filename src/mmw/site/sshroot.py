@@ -82,6 +82,9 @@ class SshRoot:
 
     is_local = False
 
+    def served_dates(self, repos: list[str]) -> dict[str, str]:
+        return {}                        # the review then says when each was stored
+
     def __init__(self, location: str, info: dict):
         self._kind, self.host, self.path = ssh.parse_location(location)
         self._info = info
@@ -185,6 +188,9 @@ class SshRoot:
 
     def record_export(self, target: str, sent: list, stamp: str) -> None:
         self._call("record-export", input=json.dumps({"target": target, "sent": sent, "stamp": stamp}).encode())
+
+    def forget_export(self, target: str, stamp: str) -> None:
+        self._call("forget-export", input=json.dumps({"target": target, "stamp": stamp}).encode())
 
     def verify(self, repair: bool = False):
         return self._call("verify", *(["--repair"] if repair else []))

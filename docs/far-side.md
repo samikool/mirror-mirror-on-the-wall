@@ -159,7 +159,10 @@ never sent. `--out -` writes the tar to stdout (the summary goes to stderr).
 On the other side, `mmw site apply to-elm.tar` merges it as above: its
 repositories take the points, `--deploy LABEL` adds one it lacks, and each
 point's `Release` is checked against its digest — one that doesn't match is
-refused on its own. In the TUI, **x** opens **Export to another network**:
+refused on its own. The other side needs an mmw that reads points (this
+version or later): an older one stops at the bundle's header, before writing
+anything — update it there first (a bundle from the connected side carries the installer). In
+the TUI, **x** opens **Export to another network**:
 the network (those sent to before, or a new one), the repositories, what
 goes, and what that would send — then a progress page.
 

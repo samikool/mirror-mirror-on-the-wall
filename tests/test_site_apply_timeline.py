@@ -233,3 +233,51 @@ def test_foreign_repo_deployed_on_request(two_nets, tmp_path):
     set_a(md, 2)
     _set_apply(root, _bundle(cfg, oak, md, tmp_path / "x2", from_ref=None))
     assert "example.net" in _nginx(root) and (root / "example.net/c/c.deb").exists()
+
+
+def test_one_conflicting_suite_never_refuses_the_whole_repository(env, tmp_path):
+    """`old` conflicts, `stable` is fine: the repository isn't refused — the
+    suite is, and says so."""
+    from test_bundle_ranges_review import _with_old_suite
+    cfg, net, md, home = env
+    a = _key(cfg, "a")
+    _with_old_suite(md, True)
+    _apply(home, _bundle(cfg, net, md, tmp_path / "f", from_ref=None))
+    with SiteDB(home) as db:                              # this mirror's record of old's index goes wrong
+        old = next(t for t in db.tracks(a) if t.name.endswith("/old"))
+        pid = db.points(old.id)[0].id
+        bad = db._blob_id("f" * 64, 1)
+        db._conn.execute("UPDATE point_files SET blob = ? WHERE point = ? AND path = "
+                         "(SELECT id FROM paths WHERE path LIKE '%/old/Packages')", (bad, pid))
+        db.commit()
+    r = _apply(home, _bundle(cfg, net, md, tmp_path / "f2", from_ref=None))
+    assert a not in r.refused
+    assert [s for s in r.refused_suites[a]] and all("old" in s for s in r.refused_suites[a])
+    assert any("refused:" in ln and "old" in ln for ln in r.lines)
+
+
+def test_the_review_compares_upstream_dates_with_upstream_dates(env, tmp_path):
+    """Serving 1 Nov (stored today), the bundle brings 2 Nov: the review reads
+    1 Nov → 2 Nov, never today → 2 Nov."""
+    from mmw.site.apply import plan_apply
+    cfg, net, md, home = env
+    a = _key(cfg, "a")
+    _apply(home, _bundle(cfg, net, md, tmp_path / "1", from_ref=None))
+    set_a(md, 2)
+    plan = plan_apply(home, _bundle(cfg, net, md, tmp_path / "2"))
+    (row,) = [r for r in plan.rows if r.repo == a]
+    assert row.serving_date[:8] == "20261101" and row.to_date[:8] == "20261102"
+
+
+def test_serving_a_bundle_says_a_suite_whose_point_is_gone(env, tmp_path):
+    """`stable` rolls back; `old`'s point from then was deleted — said, not silent."""
+    from mmw.site.mset import open_set
+    from test_bundle_ranges_review import _with_old_suite
+    cfg, net, md, home = env
+    a = _key(cfg, "a")
+    _with_old_suite(md, True)
+    first = _apply(home, _bundle(cfg, net, md, tmp_path / "1", from_ref=None)).created
+    ops.delete_point(home, a, "2026-11-01", track="old", force=True)
+    steps = ops.bundle_plan(open_set([str(tmp_path / "srv")]), first)
+    (step,) = [s for s in steps if s.key == a]
+    assert step.target and step.note and "old" in step.note and "deleted" in step.note

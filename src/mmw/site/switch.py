@@ -67,8 +67,9 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
         if disk_io.ops.remove(root / rel) is not None:
             removed += 1
             _prune_empty_parents(str(root), str((root / rel).parent))
-    if held is None:
-        held = to_id != db.versions(repo)[0].id
+    if held is None:                     # a resumed switch: as it was begun, else the repository's own hold
+        begun = db.switch_held(repo)
+        held = begun if begun is not None else state.held
     _set_previous(db, from_id, to_id)
     db.set_overlay(repo, overlay, commit=False)
     db.set_serving(repo, to_id, held=held)
@@ -111,7 +112,7 @@ def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None,
         db.set_held(repo, True)
         db.set_meta(f"hold:{repo}", layered.hold_reason)
         return SwitchResult(0, 0, held=layered.hold_reason, warnings=tuple(layered.warnings))
-    db.begin_switch(repo, from_id, to_id, layered.digest)
+    db.begin_switch(repo, from_id, to_id, layered.digest, held)
     result = _run(db, store, Path(root), repo, from_id, to_id, progress, layered.digest, held)
     return SwitchResult(result.placed, result.removed, warnings=tuple(layered.warnings))
 

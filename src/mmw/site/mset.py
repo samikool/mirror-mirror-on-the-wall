@@ -155,6 +155,10 @@ class LocalRoot:
         from mmw.site import ops
         return ops.clean(self.home, points)
 
+    def served_dates(self, repos: list[str]) -> dict[str, str]:
+        from mmw.site.apply import served_upstream_dates
+        return served_upstream_dates(self.home, repos)
+
     def keep_costs(self) -> dict:
         from mmw.site import ops
         return ops.keep_costs_here(self.home)
@@ -189,6 +193,12 @@ class LocalRoot:
         from mmw.site.db import SiteDB
         with SiteDB(self.home) as db:
             return db.export_targets()
+
+    def forget_export(self, target: str, stamp: str) -> None:
+        from mmw.site.db import SiteDB
+        from mmw.site.lock import SiteLock
+        with SiteLock(self.home), SiteDB(self.home) as db:
+            db.forget_export(target, stamp)
 
     def record_export(self, target: str, sent: list, stamp: str) -> None:
         from mmw.site.db import SiteDB

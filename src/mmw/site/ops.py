@@ -77,14 +77,18 @@ def _served_points(db: SiteDB, repo: str) -> dict[int, int]:
     return {db.point(p).track: p for p in db.state_points(state.serving.id) if db.point(p)}
 
 
-def _reserve(db: SiteDB, roots: Roots, repo: str, progress=None, *, again: bool = False) -> SwitchResult:
+def _reserve(db: SiteDB, roots: Roots, repo: str, progress=None, *, again: bool = False,
+             empty_ok: bool = False) -> SwitchResult:
     """Serve what the timeline chooses now (pins, else newest complete).
-    `again`: switch even to what is served — its site layer is rebuilt."""
+    `again`: switch even to what is served — its site layer is rebuilt.
+    `empty_ok`: with nothing to choose, serve nothing (a forced delete of the
+    last point); otherwise nothing chosen leaves what is served alone, so a
+    store that lost files never unserves a repository."""
     from mmw.site.timeline import choose, ensure_state
     state = db.repo_state(repo)
     store = roots.store(roots.of(state))
     chosen, warnings = choose(db, store, repo)
-    if not chosen:
+    if not chosen and not (empty_ok and state.serving is not None):
         return SwitchResult(0, 0, warnings=tuple(warnings))
     vid, more = ensure_state(db, store, repo, chosen)
     if state.serving is not None and state.serving.id == vid and not again:
@@ -223,10 +227,10 @@ def relayer(home: Path, ref: str, progress=None) -> SwitchResult:
             chosen = choose(db, store, repo)[0]
             if chosen:                       # nothing to choose: keep what is served
                 target = ensure_state(db, store, repo, chosen)[0]
-        result = switch_in(db, roots, repo, target,
+        # Layer-held: once it builds, serving the timeline's choice is a fast-forward
+        # (the hold clears); otherwise a re-layer keeps the repository's own hold.
+        result = switch_in(db, roots, repo, target, held=False if layer_held else held,
                            progress=(lambda rel, _kind: progress(rel)) if progress else None)
-        if not result.held and not layer_held:
-            db.set_held(repo, held)              # a re-layer is not a fast-forward
         _render(roots, db)
         return result
 
@@ -340,7 +344,10 @@ def delete_point(home: Path, ref: str, when: str, track: str | None = None, forc
             raise ValueError(why[1])
         db.stub_point(p.id)
         if why and why[0] == "served":
-            _reserve(db, roots, repo)
+            # Serve nothing only when nothing of it is kept any more: kept points
+            # whose files are missing here keep what is served, never unserve it.
+            last = not any(db.points(t.id) for t in db.tracks(repo))
+            _reserve(db, roots, repo, empty_ok=last)
         _render(roots, db)                    # its dated tree goes before its blobs can
         db.drop_unused_states(repo)
         return _gc(db, roots)
@@ -521,8 +528,9 @@ def history(home: Path, ref: str) -> list[tuple[TrackInfo, list[tuple[PointInfo,
             rows = []
             for pt in db.points(t.id, stubs=True):
                 total, frees = db.point_sizes(pt.id)
-                mark = ("serving" if pt.id in served else "pinned" if t.pinned == pt.id
-                        else "previous" if t.previous == pt.id else "stub" if not pt.held
+                # A deleted point is a stub first: it can't be rolled back to.
+                mark = ("serving" if pt.id in served else "stub" if not pt.held
+                        else "pinned" if t.pinned == pt.id else "previous" if t.previous == pt.id
                         else "incomplete" if is_complete(db, store, pt.id) else "")
                 rows.append((pt, total, 0 if not pt.held else frees, mark))
             if rows:
@@ -1066,12 +1074,14 @@ def bundle_plan(mset, when: str) -> list[BundleStep]:
                 continue
             if then[1] == "stub":
                 # What it served then was deleted here; an older one would be a guess.
-                lost.append(then[0].stamp)
+                lost.append((suite, then[0].stamp))
                 continue
             target[suite] = (then[0].date, then[0].ident)
         note = None
-        if lost and not target:
-            note = f"its point from then ({when_list([max(lost)])[0]}) was deleted — left as it is"
+        if lost:
+            gone = ", ".join(f"{suite} ({when_list([stamp])[0]})" for suite, stamp in sorted(lost))
+            note = (f"its point from then was deleted — left as it is: {gone}" if not target else
+                    f"left as it is (its point from then was deleted): {gone}")
         steps.append(BundleStep(root, st.repo, st.label, current, target, note))
     steps.sort(key=lambda s: s.label.lower())
     for name in mset.missing:

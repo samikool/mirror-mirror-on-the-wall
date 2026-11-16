@@ -237,6 +237,10 @@ class ApplyRunPage(RunPage):
         for repo, state in self._state.items():
             if state in ("waiting", "received", "receiving"):
                 self._state[repo] = "unchanged"
+        for repo, suites in getattr(result, "refused_suites", {}).items():
+            if repo not in result.refused:              # the rest of it went on
+                n = len(suites)
+                self._state[repo] = f"{self._state.get(repo, 'unchanged')} · {n} suite{'s' * (n != 1)} refused"
         self.query_one("#run-repos", Static).update(self._repo_lines())
         lines = [f"[b $success]✓ applied {result.created}[/]", *map(escape_markup, result.lines)]
         lines += [f"[b $warning]! {escape_markup(a)}[/]" for a in result.actions]

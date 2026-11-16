@@ -95,3 +95,30 @@ def test_repos_filter_by_label(site):
     home, _store = site
     assert len(plan_root_export(home, "elm", repos={"debian"}, mode="all", since=None)) == 1
     assert plan_root_export(home, "elm", repos={"nothing-here"}, mode="all", since=None) == []
+
+
+def test_nothing_to_send_says_what_was_skipped(tmp_path):
+    """Its only point incomplete here: the refusal says so, not just "nothing new"."""
+    from mmw.site.export import export_bundle
+    from mmw.site.mset import open_set
+    home = H.init_root(tmp_path / "srv", name="main", set_id="s1", network="oak")
+    roots = Roots(H.load_site(home))
+    with SiteDB(home) as db:
+        _day(db, roots.store(roots.primary), 1, skip_blob="ex.org/debian/pool/p1.deb")
+        db.set_meta("timeline", "1")
+    with pytest.raises(ValueError, match="nothing new for elm; skipped") as e:
+        export_bundle(open_set([str(tmp_path / "srv")]), "elm", str(tmp_path / "1.tar"))
+    assert "incomplete" in str(e.value) and not (tmp_path / "1.tar").exists()
+
+
+def test_a_file_lost_since_import_is_skipped_not_a_crash(site, tmp_path):
+    from mmw.site.export import export_bundle
+    from mmw.site.mset import open_set
+    home, store = site
+    with SiteDB(home) as db:
+        (t,) = db.tracks(KEY)
+        newest = db.points(t.id)[0]
+        lost = db.point_files(newest.id)["ex.org/debian/pool/p3.deb"]
+    store.path(lost).unlink()                                   # gone from the disk since
+    r = export_bundle(open_set([str(tmp_path / "srv")]), "elm", str(tmp_path / "1.tar"))
+    assert any("2026-11-03" in s and "incomplete" in s for s in r.skipped) and (tmp_path / "1.tar").exists()

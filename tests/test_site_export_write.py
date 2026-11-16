@@ -95,3 +95,48 @@ def test_export_spans_roots_including_ssh(hosts, tmp_path):  # noqa: F811
     assert "farhost" in (tmp_path / "ssh.log").read_text()
     with SiteDB(read_root(str(r2)).home) as db:                  # the ssh root's own ledger
         assert db.export_targets() == ["elm"]
+
+
+def test_the_cli_plans_an_export_once(one_root, tmp_path, monkeypatch):
+    """The summary and the tar come from one plan: never planned twice."""
+    from typer.testing import CliRunner
+
+    from mmw.cli import app
+    from mmw.site import export
+    calls = []
+    real = export.plan_root_export
+    monkeypatch.setattr(export, "plan_root_export", lambda *a, **k: calls.append(1) or real(*a, **k))
+    r = CliRunner().invoke(app, ["site", "bundle", "--to", "elm", "--out", str(tmp_path / "1.tar"),
+                                 "--root", str(one_root)])
+    assert r.exit_code == 0, r.output
+    assert len(calls) == 1 and "point(s)" in r.output and (tmp_path / "1.tar").exists()
+
+
+def test_a_root_that_cant_record_leaves_no_root_recording_it(hosts, tmp_path, monkeypatch):  # noqa: F811
+    """An ssh drop while the record is written: no root keeps the record, the
+    tar goes, and trying again sends the same."""
+    from mmw.site.mset import LocalRoot
+    from mmw.site.sshroot import SshRoot
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    out = tmp_path / "elm.tar"
+    originals = {kind: kind.record_export for kind in (LocalRoot, SshRoot)}
+    calls = []                                                    # whichever records second fails
+
+    def flaky(real):
+        def record(self, *a, **k):
+            calls.append(self.info.name)
+            if len(calls) == 2:
+                raise OSError("ssh: connection dropped")
+            return real(self, *a, **k)
+        return record
+    monkeypatch.setattr(LocalRoot, "record_export", flaky(LocalRoot.record_export))
+    monkeypatch.setattr(SshRoot, "record_export", flaky(SshRoot.record_export))
+    with pytest.raises(ValueError, match="couldn't record it .*removed; try again"):
+        export_bundle(open_set(), "elm", str(out))
+    assert not out.exists()
+    for root in (r1, r2):
+        with SiteDB(read_root(str(root)).home) as db:
+            assert db.exported("elm", next(iter(db.repo_states())).repo) == {}
+    for kind, real in originals.items():
+        monkeypatch.setattr(kind, "record_export", real)
+    assert export_bundle(open_set(), "elm", str(out)).points == 2

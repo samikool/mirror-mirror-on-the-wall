@@ -232,3 +232,71 @@ def test_root_apply_takes_members_pushed_to_it(env, tmp_path):
         r = ra.finish()
     assert sorted(r.updated) == sorted([_key(cfg, "a"), _key(cfg, "b")])
     assert _tree(root) == _published(cfg, net, md, tmp_path, "p1")
+
+
+@pytest.mark.parametrize("damage", ["no track", "label a number", "points a list"])
+def test_a_malformed_points_header_is_a_malformed_bundle(env, tmp_path, damage):
+    import json
+    cfg, net, md, home, root = env
+    good = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+
+    def change(m, data):
+        if m.name != ".mmw/manifest.jsonl":
+            return data
+        first, rest = data.split(b"\n", 1)
+        head = json.loads(first)
+        repo = next(iter(head["points"]))
+        if damage == "no track":
+            del head["points"][repo]["points"][0]["track"]
+        elif damage == "label a number":
+            head["points"][repo]["label"] = 5
+        else:
+            head["points"] = [head["points"]]
+        return json.dumps(head).encode() + b"\n" + rest
+    bad = _rewrite(good, tmp_path / "bad.tar", change)
+    with pytest.raises(ApplyError, match="malformed") as e:
+        apply_bundle(home, str(bad), say=lambda *a: None)
+    assert e.value.code == 2 and _tree(root) == {}
+
+
+def test_a_member_its_manifest_doesnt_name_is_a_malformed_bundle(env, tmp_path):
+    """Junk in a points bundle is said, never counted as "not mirrored here"
+    (where it could hide a member that is missing)."""
+    cfg, net, md, home, root = env
+    good = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+    bad = tmp_path / "bad.tar"
+    import shutil
+    shutil.copy(good, bad)
+    with tarfile.open(bad, "a") as tar:
+        info = tarfile.TarInfo("blobs/ff/" + "f" * 64)
+        info.size = 4
+        tar.addfile(info, io.BytesIO(b"junk"))
+    from mmw.site.apply import apply_to_set
+    with pytest.raises(ApplyError, match="not in its manifest") as e:
+        apply_to_set(None, str(bad), place={"*": str(tmp_path / "set")}, say=lambda *a: None)
+    assert e.value.code == 2
+
+
+@pytest.mark.parametrize("k", [[-1], ["0"], [99]])
+def test_point_indices_out_of_range_are_a_malformed_bundle(env, tmp_path, k):
+    import json
+
+    from mmw.site.apply import apply_to_set
+    cfg, net, md, home, root = env
+    good = _bundle(cfg, net, md, tmp_path / "1", from_ref=None)
+
+    def change(m, data):
+        if m.name != ".mmw/manifest.jsonl":
+            return data
+        lines = data.split(b"\n")
+        for i, line in enumerate(lines[1:], 1):
+            row = json.loads(line) if line.strip() else None
+            if row and row.get("k"):
+                row["k"] = k
+                lines[i] = json.dumps(row).encode()
+                break
+        return b"\n".join(lines)
+    bad = _rewrite(good, tmp_path / "bad.tar", change)
+    with pytest.raises(ApplyError, match="malformed") as e:
+        apply_to_set(None, str(bad), place={"*": str(tmp_path / "set")}, say=lambda *a: None)
+    assert e.value.code == 2

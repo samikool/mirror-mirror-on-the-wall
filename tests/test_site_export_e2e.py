@@ -118,3 +118,23 @@ def test_stdout_carries_only_the_tar(two_far_sides, tmp_path):
     assert b"first export" not in r.stdout_bytes and b"oak \xe2\x86\x92 elm" not in r.stdout_bytes
     with tarfile.open(fileobj=io.BytesIO(r.stdout_bytes)) as tar:
         assert tar.getnames()[0] == ".mmw/manifest.jsonl"
+
+
+def test_a_repository_deployed_from_a_third_network_is_served_after_it_travels_on(env, tmp_path):  # noqa: F811
+    """A deploys c to B; B sends it on to C, which deploys it too: C's nginx
+    serves it (its mirror entry went with it)."""
+    cfg, oak, md, _home = env
+    elm = oak.model_copy(update={"name": "elm", "root": tmp_path / "pub-elm"})
+    pine = oak.model_copy(update={"name": "pine", "root": tmp_path / "pub-pine"})
+    cfg_a = _add_c(cfg, md).model_copy(update={"networks": [oak, elm, pine]})
+    a_root = _far_side(cfg_a, oak, md, tmp_path, "A", (1,))
+    plain = cfg.model_copy(update={"networks": [oak, elm, pine]})
+    b_root = _far_side(plain, elm, md, tmp_path, "B", (1,))
+    c_root = _far_side(plain, pine, md, tmp_path, "C", (1,))
+    out = tmp_path / "to-elm.tar"
+    assert run("bundle", "--to", "elm", "--out", str(out), "--root", str(a_root)).exit_code == 0
+    apply_to_set(open_set([str(b_root)]), str(out), deploy={"c"}, place={"example.net": str(b_root)}, say=quiet)
+    on = tmp_path / "to-pine.tar"
+    assert run("bundle", "--to", "pine", "--out", str(on), "--root", str(b_root), "--repo", "c").exit_code == 0
+    apply_to_set(open_set([str(c_root)]), str(on), deploy={"c"}, place={"example.net": str(c_root)}, say=quiet)
+    assert (c_root / "example.net/c/c.deb").exists() and "example.net" in _nginx(c_root)

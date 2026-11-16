@@ -62,7 +62,8 @@ class ApplyResult:
     created: str = ""
     updated: list[str] = field(default_factory=list)
     stored_held: list[str] = field(default_factory=list)
-    refused: dict[str, str] = field(default_factory=dict)
+    refused: dict[str, str] = field(default_factory=dict)          # repo -> why: nothing of it was taken
+    refused_suites: dict[str, list[str]] = field(default_factory=dict)   # repo -> "suite date" refused
     network_changed: bool = False
     actions: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
@@ -261,6 +262,7 @@ class RootApply:
             raise ApplyError(5, 'this bundle was made for apply.py by an older mmw — bundle again with this one '
                                 '(a tree apply.py already manages converts with `mmw site adopt PATH`)')
         _check_paths(p for p, _c, _r in rows)
+        _check_points(header)
         held_by: dict[str, tuple[int, ...]] = {}
         if header.format == 3:
             # Points. From this network's own connected side (`selection`)
@@ -271,7 +273,8 @@ class RootApply:
             self.selection = bool(header.selection) and header.network == self.settings.network
             if not self.selection:
                 self.network_files = False
-            _h, rows5 = iter_manifest_points(self.manifest_path)
+            rows5 = _points_rows(self.manifest_path)
+            _check_holders(header, rows5)
             held_by = {(p, c): k for p, c, _r, _s, k in rows5}
         result.created = header.created
         expected = _member_checksums(header, rows)
@@ -295,12 +298,20 @@ class RootApply:
         # Check everything before writing anything: each repository's new
         # version is complete (or refused alone), and so are the network files.
         planned: dict[str, dict] = {}
+        by_repo: dict = {}                                # one pass over the rows, not one per repository
+        for p, c, r in rows:
+            by_repo.setdefault(r, []).append((p, c))
         for repo, pmeta in sorted((header.points or {}).items() if header.format == 3 else ()):
-            mine = [(p, c) for p, c, r in rows if r == repo]
+            mine = by_repo.get(repo, [])
+            point_files: list[dict] = [{} for _ in pmeta["points"]]
+            for p, c in mine:                             # each row to the points that hold it
+                for i in held_by.get((p, c), ()):
+                    if i < len(point_files):
+                        point_files[i][p] = c
             drafts = []
             for i, pt in enumerate(pmeta["points"]):
-                files = {p: c for p, c in mine if i in held_by.get((p, c), ())}
-                drafts.append((PointDraft(pt["track"], pt["ident"], pt["date"], pt.get("fields") or {}, files),
+                drafts.append((PointDraft(pt["track"], pt["ident"], pt["date"], pt.get("fields") or {},
+                                          point_files[i]),
                                pt["stamp"], pt.get("snap_label")))
             # Its rows no point holds (a deployed repository's keys/LABEL/):
             # files no Release claims, as their own content point.
@@ -312,7 +323,7 @@ class RootApply:
             planned[repo] = {"meta": {"label": pmeta["label"], "bases": pmeta["bases"]}, "rows": mine,
                              "points": drafts}
         for repo, meta in sorted((header.repos or {}).items() if header.format != 3 else ()):
-            mine = [(p, c) for p, c, r in rows if r == repo]
+            mine = by_repo.get(repo, [])
             label = meta["label"]
             if repo_digests(mine, {repo: meta["bases"]})[repo] != meta["digest"]:
                 raise ApplyError(2, f"{label}: its files do not match the version the bundle names")
@@ -390,7 +401,9 @@ class RootApply:
                 what = f"{o.suite or 'files'} {_day(o.date)}"
                 if o.status == "conflict":
                     why = o.note if o.note.startswith("its ") else f"{o.note} differs inside one Release"
-                    result.refused[repo] = why
+                    result.refused_suites.setdefault(repo, []).append(what)
+                    if all(x.status == "conflict" for x in outcomes):
+                        result.refused[repo] = why       # the repository as a whole: nothing of it taken
                     result.lines.append(f"  {label}  {what} refused: {why} — "
                                         "the bundle or this mirror is damaged; run mmw site verify")
                 elif o.status == "incomplete":
@@ -573,7 +586,7 @@ class PlanRow:
     root: Path
     points: int | None = None        # format 3: how many points it brings
     to_date: str | None = None       # the newest date it brings (a stamp)
-    serving_date: str | None = None  # when what it serves now was stored (a stamp)
+    serving_date: str | None = None  # the newest upstream date it serves (a stamp; else when it was stored)
 
 
 @dataclass(frozen=True)
@@ -678,6 +691,7 @@ def plan_apply(target, src: str) -> ApplyPlan:
             sent[repo][1] += size
     out = []
     found: dict[str, tuple] = {}
+    served_dates: dict[str, str] = {}   # by the newest upstream date served: what `to_date` compares with
     if roots_here is None:
         for home in homes:
             with SiteDB(home) as db:
@@ -685,12 +699,16 @@ def plan_apply(target, src: str) -> ApplyPlan:
                     st = db.repo_state(repo)
                     if st is not None and repo not in found:
                         found[repo] = (st, Path(load_site(home).root))
+            for repo, d in served_upstream_dates(home, repos).items():
+                served_dates.setdefault(repo, d)
         first_root = Path(load_site(homes[0]).root) if homes else None
     else:
         for r in roots_here:
             for st in r.status():
                 if st.repo in repos and st.repo not in found:
                     found[st.repo] = (st, Path(r.info.path))
+            for repo, d in r.served_dates(list(repos)).items():   # an ssh root: none (when stored, then)
+                served_dates.setdefault(repo, d)
         first_root = Path(roots_here[0].info.path) if roots_here else None
     for repo, meta in sorted(repos.items(), key=lambda kv: kv[1]["label"].lower()):
         st, root = found.get(repo, (None, first_root))
@@ -700,7 +718,7 @@ def plan_apply(target, src: str) -> ApplyPlan:
                            # By content: version numbers on the two sides are not the same count.
                            bool(st and st.serving and meta["digest"] and st.serving.digest == meta["digest"]),
                            root, meta.get("points"), meta.get("to_date") or header.created,
-                           st.serving.stamp if st and st.serving else None))
+                           served_dates.get(repo) or (st.serving.stamp if st and st.serving else None)))
     network = sum(1 for _p, _c, r in rows if r is None)
     return ApplyPlan(header.created, header.network, out, network,
                      sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))
@@ -715,6 +733,17 @@ def _day(stamp: str) -> str:
 
 def _suite_of(track) -> str:
     return track.suite or track.codename or (track.name.rsplit("/", 1)[-1] if track.name else "files")
+
+
+def served_upstream_dates(home: Path, repos) -> dict[str, str]:
+    """Each repository's newest upstream date among the points it serves."""
+    out = {}
+    with SiteDB(home) as db:
+        for repo in repos:
+            dates = [d for _t, d, _p in _served_by_track(db, db.repo_state(repo)).values()]
+            if dates:
+                out[repo] = max(dates)
+    return out
 
 
 def _served_by_track(db, state) -> dict:
@@ -808,6 +837,7 @@ class SetApplyResult:
             out.updated += r.updated
             out.stored_held += r.stored_held
             out.refused.update(r.refused)
+            out.refused_suites.update(r.refused_suites)
             out.incomplete.update(r.incomplete)
             out.stopped += r.stopped
             out.network_changed = out.network_changed or r.network_changed
@@ -1070,6 +1100,48 @@ def _repo_meta(header) -> dict[str, dict]:
     return header.repos or {}
 
 
+def _check_points(header) -> None:
+    """A format-3 header's points are the shape this mmw reads — said as a
+    malformed bundle, never a KeyError halfway through."""
+    if header.format != 3:
+        return
+    points = header.points
+    if not isinstance(points, dict):
+        raise ApplyError(2, "bundle is malformed: its points aren't a table of repositories")
+    for repo, meta in points.items():
+        if not (isinstance(meta, dict) and isinstance(meta.get("label"), str)
+                and isinstance(meta.get("bases"), list) and all(isinstance(b, str) for b in meta["bases"])
+                and isinstance(meta.get("points"), list)):
+            raise ApplyError(2, f"bundle is malformed: repository {repo!r} lacks a label, bases or points")
+        for pt in meta["points"]:
+            if not (isinstance(pt, dict)
+                    and all(isinstance(pt.get(k), str) for k in ("track", "ident", "date", "stamp"))
+                    and isinstance(pt.get("fields") or {}, dict)):
+                raise ApplyError(2, f"bundle is malformed: a point of {meta['label']!r} lacks its suite, "
+                                    "identity or date")
+
+
+def _points_rows(path) -> list:
+    """A format-3 manifest's rows with their point indices, read once."""
+    try:
+        return list(iter_manifest_points(path)[1])
+    except (TypeError, ValueError, KeyError) as e:
+        raise ApplyError(2, f"bundle is malformed: its manifest rows can't be read ({e})") from None
+
+
+def _check_holders(header, rows5) -> None:
+    """Each row's point indices name points of its own repository — whole
+    numbers in range — or the bundle is malformed."""
+    counts = {repo: len(meta["points"]) for repo, meta in (header.points or {}).items()}
+    for p, _c, r, _s, k in rows5:
+        if not k:
+            continue
+        n = counts.get(r)
+        if n is None or not isinstance(k, (list, tuple)) or not all(
+                isinstance(i, int) and not isinstance(i, bool) and 0 <= i < n for i in k):
+            raise ApplyError(2, f"bundle is malformed: {p!r} names points its repository doesn't have")
+
+
 def _check_paths(paths) -> None:
     """Every path a manifest names stays inside the root — a row the bundle
     carries, or one served from the store (a delta's unchanged file, any
@@ -1149,12 +1221,18 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         header, rows = iter_manifest_sized(scratch)
         rows = list(rows)
         _check_paths(p for p, _c, _r, _s in rows)                 # before anything is written anywhere
+        _check_points(header)
         if (header.format or 1) < 2:
             raise ApplyError(5, 'this bundle was made for apply.py by an older mmw — bundle again with this one '
                                 '(a tree apply.py already manages converts with `mmw site adopt PATH`)')
         k_of: dict = {}
         if header.format == 3:
-            k_of = {(p, c): k for p, c, _r, _s, k in iter_manifest_points(scratch)[1]}
+            rows5 = _points_rows(scratch)
+            _check_holders(header, rows5)
+            k_of = {(p, c): k for p, c, _r, _s, k in rows5}
+        # Every member the bundle's own manifest names, before anything is filtered
+        # out for this mirror: one it doesn't name is junk, never "not mirrored here".
+        named = {blob_member(c) for _p, c, _r, _s in rows} if header.format == 3 else None
         foreign = mset is not None and header.network != mset.network
         network = mset.network if foreign else header.network
         dropped: set[str] = set()
@@ -1351,6 +1429,8 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                     progress("receive", name=m.name, bytes=m.size)
                 if foreign and m.name.startswith((TLS_PREFIX, SIGNING_PREFIX, RUNTIME_PREFIX)):
                     continue                               # another network's: never applied here
+                if named is not None and not m.name.startswith(".mmw/") and m.name not in named:
+                    raise ApplyError(2, f"bundle is malformed: {m.name!r} is not in its manifest")
                 if m.name in dropped or (points_bundle and not m.name.startswith(".mmw/")
                                           and m.name not in cs_of):
                     if not m.name.startswith(".mmw/"):

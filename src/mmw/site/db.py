@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS repos (
     repo TEXT PRIMARY KEY, label TEXT NOT NULL, bases TEXT NOT NULL DEFAULT '[]',
     serving INTEGER, held INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS network_files (path TEXT PRIMARY KEY, blob INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_network_files_blob ON network_files(blob);
 CREATE TABLE IF NOT EXISTS switches (
     repo TEXT PRIMARY KEY, from_version INTEGER, to_version INTEGER NOT NULL,
     phase TEXT NOT NULL DEFAULT 'pkg');
@@ -144,8 +145,11 @@ class SiteDB:
             self._conn.execute("ALTER TABLE repos ADD COLUMN root TEXT")
         if "overlay" not in repo_cols:          # the site layer digest it serves, if any
             self._conn.execute("ALTER TABLE repos ADD COLUMN overlay TEXT")
-        if "overlay" not in {r[1] for r in self._conn.execute("PRAGMA table_info(switches)")}:
+        switch_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(switches)")}
+        if "overlay" not in switch_cols:
             self._conn.execute("ALTER TABLE switches ADD COLUMN overlay TEXT")
+        if "held" not in switch_cols:           # held afterwards, as begun (NULL: from before this was kept)
+            self._conn.execute("ALTER TABLE switches ADD COLUMN held INTEGER")
         if "points" not in {r[1] for r in self._conn.execute("PRAGMA table_info(versions)")}:
             self._conn.execute("ALTER TABLE versions ADD COLUMN points TEXT")
         if "gone" not in {r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")}:
@@ -426,13 +430,16 @@ class SiteDB:
         total = self._conn.execute(
             "SELECT COALESCE(SUM(b.size), 0) FROM blobs b WHERE b.id IN "
             "(SELECT blob FROM point_files WHERE point = ?)", (point_id,)).fetchone()[0]
+        # Per blob of this point, an index lookup each — never a list of every
+        # other point's, state's or network file (history asks this per point).
         only = self._conn.execute(
             "SELECT COALESCE(SUM(b.size), 0) FROM blobs b WHERE b.id IN "
             "(SELECT blob FROM point_files WHERE point = ?) "
-            "AND b.id NOT IN (SELECT f.blob FROM point_files f JOIN points p ON p.id = f.point "
-            "                 WHERE f.point != ? AND p.held = 1) "
-            "AND b.id NOT IN (SELECT blob FROM version_files) "
-            "AND b.id NOT IN (SELECT blob FROM network_files)", (point_id, point_id)).fetchone()[0]
+            "AND NOT EXISTS (SELECT 1 FROM point_files f JOIN points p ON p.id = f.point "
+            "                WHERE f.blob = b.id AND f.point != ? AND p.held = 1) "
+            "AND NOT EXISTS (SELECT 1 FROM version_files v WHERE v.blob = b.id) "
+            "AND NOT EXISTS (SELECT 1 FROM network_files n WHERE n.blob = b.id)",
+            (point_id, point_id)).fetchone()[0]
         return total, only
 
     # ── states: one chosen point per track ───────────────────────────────────
@@ -530,6 +537,12 @@ class SiteDB:
                                "VALUES (?, ?, ?, ?, ?)", out)
         self._conn.commit()
 
+    def forget_export(self, target: str, stamp: str) -> None:
+        """Undo one export's record (a bundle that never went): its points
+        count as not sent there — they go again, never the other way."""
+        self._conn.execute("DELETE FROM exports WHERE target = ? AND stamp = ?", (target, stamp))
+        self._conn.commit()
+
     def export_targets(self) -> list[str]:
         """Every network this site has sent to, the latest first."""
         return [r[0] for r in self._conn.execute(
@@ -593,10 +606,17 @@ class SiteDB:
 
     # ── switches left halfway ────────────────────────────────────────────────
 
-    def begin_switch(self, repo: str, from_id: int | None, to_id: int, overlay: str | None = None) -> None:
-        self._conn.execute("INSERT OR REPLACE INTO switches (repo, from_version, to_version, phase, overlay) "
-                           "VALUES (?, ?, ?, 'pkg', ?)", (repo, from_id, to_id, overlay))
+    def begin_switch(self, repo: str, from_id: int | None, to_id: int, overlay: str | None = None,
+                     held: bool | None = None) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO switches (repo, from_version, to_version, phase, overlay, held) "
+                           "VALUES (?, ?, ?, 'pkg', ?, ?)",
+                           (repo, from_id, to_id, overlay, None if held is None else int(held)))
         self._conn.commit()
+
+    def switch_held(self, repo: str) -> bool | None:
+        """Whether the switch under way leaves the repository held (None: not said)."""
+        row = self._conn.execute("SELECT held FROM switches WHERE repo = ?", (repo,)).fetchone()
+        return None if row is None or row[0] is None else bool(row[0])
 
     def switch_overlay(self, repo: str) -> str | None:
         row = self._conn.execute("SELECT overlay FROM switches WHERE repo = ?", (repo,)).fetchone()

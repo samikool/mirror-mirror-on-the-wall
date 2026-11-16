@@ -300,6 +300,7 @@ _VERBS = {
     "export-plan": _simple(lambda r, a, i: r.export_plan(**_json_in(i))),
     "export-targets": _simple(lambda r, a, i: r.export_targets()),
     "record-export": _simple(lambda r, a, i: r.record_export(**_json_in(i)) or {"ok": True}),
+    "forget-export": _simple(lambda r, a, i: r.forget_export(**_json_in(i)) or {"ok": True}),
     "serve-preview": _simple(lambda r, a, i: r.serve_preview(a[0], a[1], a[2] if len(a) > 2 else None)),
     "serve": _simple(lambda r, a, i: r.serve(a[0], a[1], a[2] if len(a) > 2 else None)),
     "forward": _simple(lambda r, a, i: r.forward(a[0] if a else None)),

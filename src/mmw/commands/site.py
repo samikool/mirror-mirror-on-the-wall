@@ -105,7 +105,8 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
         print(f"! {verb} nginx in {name}:")
         for cmd in cmds:
             print(f"    {cmd}")
-    return 3 if any(x.refused for x in r.per_root.values()) else 0
+    # A refused suite is damage somewhere (the bundle or this mirror): scripts hear it.
+    return 3 if any(x.refused or x.refused_suites for x in r.per_root.values()) else 0
 
 
 def _interactive_far() -> bool:
@@ -721,22 +722,23 @@ def bundle(to: str, out: str, repos: list[str] | None, since: str | None, all_: 
     say = eprint if out == "-" else print            # stdout carries the tar itself
     try:
         mset = _set(root, break_lock)
-        plan = export_bundle(mset, to, out, repos=set(repos) if repos else None, mode=mode, since=since,
-                             dry_run=True)
-        if plan.new_target and mode == "new":
-            known = f" (known targets: {', '.join(plan.known_targets)})" if plan.known_targets else ""
-            say(f"first export to '{plan.target}': nothing recorded as sent there, so everything goes{known}")
-        n = len(plan.per_repo)
-        say(f"{mset.network} → {plan.target}: {plan.points} point(s) of {n} "
-              f"repositor{'y' if n == 1 else 'ies'}, {plan.files} file(s), {fmt_size(plan.bytes)}")
-        for label, points in sorted(plan.per_repo.items()):
-            say(f"  {label}  {', '.join(points)}")
-        for s in plan.skipped:
-            say(f"  skipped: {s}")
+        def summary(plan) -> None:
+            if plan.new_target and mode == "new":
+                known = f" (known targets: {', '.join(plan.known_targets)})" if plan.known_targets else ""
+                say(f"first export to '{plan.target}': nothing recorded as sent there, so everything goes{known}")
+            n = len(plan.per_repo)
+            say(f"{mset.network} → {plan.target}: {plan.points} point(s) of {n} "
+                f"repositor{'y' if n == 1 else 'ies'}, {plan.files} file(s), {fmt_size(plan.bytes)}")
+            for label, points in sorted(plan.per_repo.items()):
+                say(f"  {label}  {', '.join(points)}")
+            for s in plan.skipped:
+                say(f"  skipped: {s}")
+        # One plan: what is said is what is written.
+        export_bundle(mset, to, out, repos=set(repos) if repos else None, mode=mode, since=since,
+                      dry_run=dry_run, on_plan=summary)
         if dry_run:
             say(f"would write {out}")
             return 0
-        export_bundle(mset, to, out, repos=set(repos) if repos else None, mode=mode, since=since)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     if out != "-":

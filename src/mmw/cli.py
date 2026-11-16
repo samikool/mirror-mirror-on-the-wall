@@ -1124,6 +1124,20 @@ def cmd_site_clean(root: Path = _ROOT,
     raise typer.Exit(clean(root, dry_run, yes))
 
 
+@site_app.command("combine")
+def cmd_site_combine(repo: str = _REPO,
+                     whens: list[str] = typer.Argument(..., help="The points to combine: their dates (two or more)"),
+                     track: str = typer.Option(..., "--track", help="The suite"),
+                     key: str = typer.Option(..., "--key", help="The site signing key to re-sign with "
+                                                                "(mmw site signing-key)"),
+                     yes: bool = _YES, root: Path = _ROOT):
+    """Serve one suite's slices from different days together (amd64 from one,
+    arm64 from another): a new Release, re-signed with a site key — said
+    first, since clients then need that key."""
+    from mmw.commands.site import combine
+    raise typer.Exit(combine(repo, track, whens, key, yes, root))
+
+
 @site_app.command("keep")
 def cmd_site_keep(repo: str = _REPO,
                   track: str = typer.Option(..., "--track", help="The suite"),

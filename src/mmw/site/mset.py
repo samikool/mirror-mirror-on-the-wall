@@ -271,6 +271,16 @@ class LocalRoot:
         from mmw.site.adopt import remove_original
         return remove_original(self.home, path, other_roots)
 
+    def combine(self, repo: str, track: str, whens: list[str], key: str):
+        from mmw.site.combine import combine
+        return combine(self.home, repo, track, whens, key)
+
+    def point_notes(self, repo: str) -> dict[int, str]:
+        from mmw.site.combine import notes
+        from mmw.site.db import SiteDB
+        with SiteDB(self.home) as db:
+            return notes(db, repo)
+
     def unverified(self, repo: str) -> list[str]:
         from mmw.site.ops import unverified
         return unverified(self.home, repo)

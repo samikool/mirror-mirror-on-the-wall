@@ -474,6 +474,7 @@ def history(repo: str, root: Path | None = None) -> int:
     except _ERRORS as e:
         return _fail(e)
     from mmw.site.ops import suite_of
+    said = r_.point_notes(key) if hasattr(r_, "point_notes") else {}
     for t, rows in tracks:
         print(suite_of(t))
         for p, total, frees, mark in rows:
@@ -482,6 +483,39 @@ def history(repo: str, root: Path | None = None) -> int:
             tail = mark if mark else f"frees {fmt_size(frees)}"
             print(f"{arrow} {_day_time(p.date)}  {p.ident.split(':', 1)[-1][:6]}{label}  "
                   f"{fmt_size(total):>10}  {tail}")
+            if said.get(p.id):
+                print(f"    {said[p.id]}")
+    return 0
+
+
+def combine(repo: str, track: str, whens: list[str], key: str, yes: bool = False, root: Path | None = None) -> int:
+    """Combine slices of one suite from different days into one served point,
+    re-signed with a site key — said first, done on --yes."""
+    import sys
+    try:
+        r_, k = _repo(root, repo)
+    except _ERRORS as e:
+        return _fail(e)
+    if not hasattr(r_, "combine"):
+        eprint(f"{r_.info.name} is over ssh — run it on that machine")
+        return 1
+    print(f"Combining {repo} {track} from {', '.join(whens)} writes a new Release: it is no longer signed by "
+          f"upstream. It is re-signed with the site key {key!r}; clients need that key, served beside the "
+          f"repository at mmw-keys/{key}.gpg, before they can use it.")
+    if not yes:
+        if not sys.stdin.isatty():
+            eprint("pass --yes to combine them (no terminal to ask on)")
+            return 1
+        if input("Combine them? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    try:
+        res = r_.combine(k, track, whens, key)
+    except _ERRORS as e:
+        return _fail(e)
+    print(f"combined {track} from {', '.join(res.sources)} — now served, signed by {key}")
+    print(f"  clients trust it with: {res.key_url}")
+    for line in res.lines:
+        print(line)
     return 0
 
 

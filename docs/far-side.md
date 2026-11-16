@@ -234,6 +234,41 @@ next, release files last, removals after — a client mid-`apt update` never
 sees an index naming a file that is not there. A switch cut short (power,
 Ctrl-C) is finished by the next `mmw site` command.
 
+## Combining slices
+
+A point is one upstream `Release` with the part of it this mirror holds —
+some architectures and components. `mmw site history` says each point's
+slice, and when an older point has one the newest lacks:
+
+```
+stable
+▶ 2026-11-02 00:00  9c41e2   …  serving
+    amd64 · main
+  2026-11-01 00:00  51ab07   …  previous
+    arm64 · main · has arm64; the newest doesn't
+```
+
+Two networks sending the same `Release` with different slices merge into one
+fuller point by themselves — upstream's signature still covers every file.
+Points from different days are separate; serving them together needs a
+`Release` upstream never signed:
+
+```bash
+mmw site signing-key generate site          # once, if this mirror has no key yet
+mmw site combine debian --track bookworm 2026-11-01 2026-11-02 --key site
+```
+
+mmw says first that the result is no longer signed by upstream, which key
+re-signs it, and that clients need that key — served beside the repository
+at `mmw-keys/site.gpg` — then, on `--yes`, writes the new point: each slice
+from the newest chosen point that has it, re-signed, and served. History
+marks it "mmw-signed, combined from …". It is dated as the newest day it
+holds, so a later bundle's newer point replaces it as usual. Each listed
+file keeps the hashes of the day it came from; the combined `Release` has
+no `Valid-Until` (it is mmw's now) and no by-hash (clients set to
+`Acquire::By-Hash "force"` need it off). A flat repository is one slice:
+there is nothing to combine — serve the point you want.
+
 ## Adopting existing trees
 
 APT mirrors made before mmw — rsync'd, debmirror'd, copied off a drive —

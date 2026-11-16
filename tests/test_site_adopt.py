@@ -375,3 +375,57 @@ def test_sha256sums_with_binary_markers_and_spaces(tmp_path):
     (tree,) = find_trees(root)
     check = check_tree(tree, None)
     assert f"{images}/netboot.tar.gz" in check.strays["damaged"] and f"{images}/my image.iso" in check.present
+
+
+def test_two_repositories_sharing_a_base_share_one_dated_tree(site, tmp_path):
+    """An adopted tree beside another repository at the same base: one day's
+    @dir holds both suites, not whichever was built last."""
+    home, root = site
+    first = make_tree(tmp_path / "one", suite="bookworm", day=1)
+    second = make_tree(tmp_path / "two", suite="trixie", day=1, packages={"other_1.0_amd64.deb": b"o" * 30})
+    (t1,) = find_trees(first)
+    (t2,) = find_trees(second)
+    adopt_tree(home, t1, check_tree(t1, None), repo=None, label="Debian", base=BASE)
+    adopt_tree(home, t2, check_tree(t2, None), repo="https://elsewhere.example/debian", label="Other", base=BASE)
+    with SiteDB(home) as db:
+        assert len(db.repo_states()) == 2
+    day = root / BASE / "@2026-11-01"
+    assert (day / "dists/bookworm/Release").is_file() and (day / "dists/trixie/Release").is_file()
+
+
+def test_status_says_dated_trees_past_valid_until(site, tmp_path):
+    from typer.testing import CliRunner
+
+    from mmw import cli
+    home, root = site
+    src = make_tree(tmp_path / "old", day=1)
+    rel = src / "dists/bookworm/Release"
+    rel.write_text(rel.read_text().replace("Architectures:", "Valid-Until: Sun, 08 Nov 2026 00:00:00 UTC\n"
+                                                             "Architectures:", 1))
+    (tree,) = find_trees(src)
+    adopt_tree(home, tree, check_tree(tree, None), repo=None, label="Debian", base=BASE)
+    r = CliRunner().invoke(cli.app, ["site", "status", "--root", str(root)])
+    assert r.exit_code == 0 and "past Valid-Until: 1" in r.output and "check-valid-until=no" in r.output, r.output
+
+
+def test_a_shared_dated_tree_is_rebuilt_when_one_repository_leaves_it(site, tmp_path):
+    """Two repositories share @2026-11-01; one's point there is deleted: the
+    dir is rebuilt from the other alone (its files freed), not left as it was."""
+    from mmw.site import ops
+    home, root = site
+    first = make_tree(tmp_path / "one", suite="bookworm", day=1)
+    second = make_tree(tmp_path / "two", suite="trixie", day=1, packages={"other_1.0_amd64.deb": b"o" * 30})
+    (t1,) = find_trees(first)
+    (t2,) = find_trees(second)
+    adopt_tree(home, t1, check_tree(t1, None), repo=None, label="Debian", base=BASE)
+    later = make_tree(tmp_path / "two2", suite="trixie", day=2, packages={"other_2.0_amd64.deb": b"p" * 30})
+    adopt_tree(home, t2, check_tree(t2, None), repo="https://elsewhere.example/debian", label="Other", base=BASE)
+    (t3,) = find_trees(later)
+    adopt_tree(home, t3, check_tree(t3, None), repo="https://elsewhere.example/debian", label="Other", base=BASE)
+    last = make_tree(tmp_path / "two3", suite="trixie", day=3, packages={"other_3.0_amd64.deb": b"q" * 30})
+    (t4,) = find_trees(last)                       # so 1 Nov is neither served nor the one before
+    adopt_tree(home, t4, check_tree(t4, None), repo="https://elsewhere.example/debian", label="Other", base=BASE)
+    day = root / BASE / "@2026-11-01"
+    assert (day / "dists/trixie/Release").is_file()
+    ops.delete_point(home, "https://elsewhere.example/debian", "2026-11-01")
+    assert (day / "dists/bookworm/Release").is_file() and not (day / "dists/trixie").exists()

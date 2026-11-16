@@ -90,6 +90,7 @@ class SiteHomePage(Page):
         Binding("k", "packages", "Packages", show=False),
         Binding("K", "signing_keys", "Signing keys", show=False),
         Binding("u", "local_update", "Update local", show=False),
+        Binding("j", "combine", "Combine", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
 
@@ -777,6 +778,27 @@ class SiteHomePage(Page):
         from mmw.tui.signing_keys import SigningKeysPage
         self.app.push_screen(SigningKeysPage(root.keyring_root(), root.key_users))
 
+    def action_combine(self) -> None:
+        """Serve slices from different days of one suite together (re-signed)."""
+        repo, picked = self.selected_repo(), self.selected_point()
+        if repo is None or picked is None:
+            self.set_status("Pick a point of the suite in the history first.", "error")
+            return
+        track, point, _mark = picked
+        newest = next((p for t, p, *_x in self._history if t.id == track.id and p is not None), None)
+        from mmw.site.versionref import day
+        days = sorted({day(p.date) for p in (point, newest) if p is not None})
+        keys = []
+        root = self.app.root_of(repo)
+        if hasattr(root, "keyring_root"):              # an ssh root's keys are there: typed by name
+            from mmw.core.signing import Keyring
+            keys = [k.name for k in Keyring(root.keyring_root()).list()]
+        label = next(s.label for s in self._states if s.repo == repo)
+        self.app.push_screen(
+            CombinePage(label, ops.suite_of(track), days, keys),
+            lambda c: c and self._act(f"combined {label} {c[0]} — re-signed with {c[2]}",
+                                      self.app.root_of(repo).combine, repo, c[0], c[1], c[2]))
+
     def action_tidy(self) -> None:
         self.app.push_screen(TidyRunPage([r.info.name for r in self.app.mset.roots]), lambda _: self._load())
 
@@ -964,6 +986,53 @@ class PassphrasePage(Page):
         from textual.widgets import Input
         value = self.query_one("#ca-pass", Input).value
         self.dismiss(value if self._optional else (value or None))
+
+
+class CombinePage(Page):
+    """Which days of one suite to serve together, and the site key that signs
+    the Release mmw writes for them — said before anything is done."""
+
+    TITLE = "Combine slices"
+
+    def __init__(self, label: str, suite: str, days: list[str], keys: list[str]):
+        super().__init__()
+        self.subtitle = f"{label} · {suite}"
+        self._suite, self._days, self._keys = suite, days, keys
+
+    def compose_body(self) -> ComposeResult:
+        from mmw.tui.ui.form import Form, TextField
+        yield Static("Each architecture and component comes from the newest of these days that has it. "
+                     "The result is no longer signed by upstream: mmw writes its Release and signs it with "
+                     "the key below, served beside the repository — clients must trust that key.",
+                     id="combine-warning")
+        yield Form(
+            TextField("Days", " ".join(self._days), id="combine-days",
+                      hint="Two or more, by date: 2026-11-01 2026-11-02"),
+            TextField("Site key", self._keys[0] if self._keys else "", id="combine-key",
+                      hint="A signing key here (Signing keys, K)" if self._keys else
+                      "Its name: a signing key on the root that serves this repository"))
+
+    def compose_actions(self) -> ComposeResult:
+        yield Button("Cancel", id="btn-combine-cancel", compact=True)
+        yield Button("Combine and re-sign", id="btn-combine-go", variant="warning", compact=True)
+
+    @on(Button.Pressed, "#btn-combine-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-combine-go")
+    def _go(self) -> None:
+        from mmw.tui.ui.form import Form
+        values = self.query_one(Form).values()
+        days = values["combine-days"].replace(",", " ").split()
+        key = values["combine-key"].strip()
+        if len(days) < 2:
+            self.set_status("Name two or more days of the suite.", "error")
+            return
+        if not key:
+            self.set_status("Say which site key signs it.", "error")
+            return
+        self.dismiss((self._suite, days, key))
 
 
 class ServeBundlePage(Page):

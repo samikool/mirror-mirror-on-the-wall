@@ -200,3 +200,15 @@ def test_a_forced_delete_never_unserves_when_older_points_lost_files(env, tmp_pa
     before = live()
     ops.delete_point(home, a, "2026-11-02", force=True)
     assert live() == before and before
+
+
+def test_a_clean_up_keeps_what_is_known_complete(env, tmp_path):  # noqa: F811
+    """A GC frees only what no held point holds: the others needn't be checked again."""
+    _cfg, _net, _md, home, a = _days(env, tmp_path, (1, 2, 3))
+    with SiteDB(home) as db:
+        t = _track(db, a)
+        for p in db.points(t.id):
+            db.set_complete(p.id, True)
+    ops.delete_point(home, a, "2026-11-01")                        # its files go: a GC runs
+    with SiteDB(home) as db:
+        assert all(db.known_complete(p.id) for p in db.points(t.id))

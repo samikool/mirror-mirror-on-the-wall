@@ -270,7 +270,12 @@ holds, so a later bundle's newer point replaces it as usual. Each listed
 file keeps the hashes of the day it came from; the combined `Release` has
 no `Valid-Until` (it is mmw's now) and no by-hash (clients set to
 `Acquire::By-Hash "force"` need it off). A flat repository is one slice:
-there is nothing to combine — serve the point you want.
+there is nothing to combine — serve the point you want. Installer indexes
+(`main/debian-installer/binary-ARCH/`) go with their architecture's slice.
+
+In the TUI, pick a point of the suite in the history and press **j**: the
+same warning, the days (that one and the newest, to edit) and the key. It
+works on a root reached over ssh too (the far root's own key signs).
 
 ## Adopting existing trees
 
@@ -531,7 +536,9 @@ The trees are hardlinks into the store — inodes, not bytes — built when a
 point arrives and removed when Clean up deletes it. `mmw site status` lists
 each repository's first and last dated URL. A dated tree's `Release` is
 that day's own, so signatures verify, but an old one's `Valid-Until` may have
-passed: clients pinned to it need `Acquire::Check-Valid-Until "false";`.
+passed: clients pinned to it need `Acquire::Check-Valid-Until "false";` (or
+`[check-valid-until=no]` in that sources line). `mmw site status` says how
+many dated trees that is.
 `mmw site settings --no-dated` removes them all; `--dated` builds them again.
 
 ## Checking it

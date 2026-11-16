@@ -342,7 +342,7 @@ def _keep_words(keep) -> str:
 
 
 def settings(root: Path | None = None, keep: str | None = None, keep_all: bool = False,
-             auto_clean: bool | None = None, dated: bool | None = None) -> int:
+             auto_clean: bool | None = None, dated: bool | None = None, costs: bool = False) -> int:
     from mmw.core.format import fmt_size
     from mmw.site import ops
     from mmw.site.lock import LockHeld
@@ -363,9 +363,11 @@ def settings(root: Path | None = None, keep: str | None = None, keep_all: bool =
                 s = r.site_settings()
                 print(f"  {'cleans after each apply' if s.auto_clean else 'cleans only when asked: mmw site clean'}"
                       f" · dated URLs {'on' if s.dated else 'off'}")
-                costs = r.keep_costs()
+            if costs:                                 # reads every point's files: only when asked
                 print("  Clean up would free now, keeping — " + ", ".join(
-                    f"{k if k == 'all' else f'newest {k}'}: {fmt_size(v)}" for k, v in costs.items()))
+                    f"{_keep_words(k)}: {fmt_size(v)}" for k, v in r.keep_costs().items()))
+            else:
+                print("  what each setting would free: mmw site settings --costs")
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     return 0
@@ -374,6 +376,8 @@ def settings(root: Path | None = None, keep: str | None = None, keep_all: bool =
 def clean(root: Path | None = None, dry_run: bool = False, yes: bool = False) -> int:
     """Clean up: what each root's setting lets go, with what each point frees."""
     import sys
+
+    from mmw.site.lock import LockHeld
 
     from mmw.core.format import fmt_size
     try:
@@ -384,7 +388,10 @@ def clean(root: Path | None = None, dry_run: bool = False, yes: bool = False) ->
     for r in mset.roots:
         if not hasattr(r, "clean_plan"):
             print(f"root {r.info.name}: over ssh — run mmw site clean there")
-    plans = [(r, r.clean_plan()) for r in roots_here]
+    try:
+        plans = [(r, r.clean_plan()) for r in roots_here]
+    except (LockHeld, *_ERRORS) as e:                  # an ssh root that can't be reached: said, not a traceback
+        return _fail(e)
     if not any(plan for _r, plan in plans):
         print("nothing to clean — every point is kept by the setting, or served, pinned or served before")
         return 0
@@ -399,7 +406,10 @@ def clean(root: Path | None = None, dry_run: bool = False, yes: bool = False) ->
             return 1
         if input("Delete these points? Their records stay. [y/N] ").strip().lower() not in ("y", "yes"):
             return 1
-    freed = sum(r.clean({i.point for i in plan}) for r, plan in plans if plan)
+    try:
+        freed = sum(r.clean({i.point for i in plan}) for r, plan in plans if plan)
+    except (LockHeld, *_ERRORS) as e:
+        return _fail(e)
     print(f"cleaned up — freed {fmt_size(freed)}")
     return 0
 
@@ -432,6 +442,8 @@ def status(root: Path | None = None) -> int:
     roots_by = {r.info.name: r for r in mset.roots}
     from mmw.site.ops import suite_of
     from mmw.site.versionref import day
+    dated_by_root: dict[str, list] = {}
+    expired_by_root: dict[str, list] = {}
     for name, s in rows:
         hist = roots_by[name].history(s.repo)
         served, newer, pinned = [], False, False
@@ -450,10 +462,18 @@ def status(root: Path | None = None) -> int:
         print(f"  {where}{s.label:<36} {serving:<36} {state}{local}")
         if extra.get("layer_hold"):
             print(f"  {where}{'':<36} held by its local packages: {extra['layer_hold']}")
-        dated = [u for lab, u in getattr(roots_by[name], "dated_urls", lambda: [])() if lab == s.label]
+        if name not in dated_by_root:                   # one read per root, not one per repository
+            dated_by_root[name] = getattr(roots_by[name], "dated_urls", lambda: [])()
+        dated = [u for lab, u in dated_by_root[name] if lab == s.label]
         if dated:
             span = dated[0] if len(dated) == 1 else f"{dated[0]} … {dated[-1]}"
             print(f"  {where}{'':<36} dated: {span} ({len(dated)})")
+            if name not in expired_by_root:
+                expired_by_root[name] = getattr(roots_by[name], "dated_expired", lambda: [])()
+            old = [u for lab, u in expired_by_root[name] if lab == s.label]
+            if old:
+                print(f"  {where}{'':<36} past Valid-Until: {len(old)} (newest {old[-1]}) — apt refuses "
+                      "them unless the sources line says [check-valid-until=no]")
         unchecked = getattr(roots_by[name], "unverified", None)
         unchecked = unchecked(s.repo) if unchecked is not None else []
         if unchecked:
@@ -475,7 +495,10 @@ def history(repo: str, root: Path | None = None) -> int:
     except _ERRORS as e:
         return _fail(e)
     from mmw.site.ops import suite_of
-    said = r_.point_notes(key) if hasattr(r_, "point_notes") else {}
+    try:
+        said = r_.point_notes(key) if hasattr(r_, "point_notes") else {}
+    except _ERRORS:                                    # notes are extra: the history shows without them
+        said = {}
     for t, rows in tracks:
         print(suite_of(t))
         for p, total, frees, mark in rows:

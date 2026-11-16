@@ -172,3 +172,98 @@ def test_a_flat_repository_has_nothing_to_combine(tmp_path, monkeypatch):
             combine(home, repo, "tools", ["2026-11-01", "2026-11-02"], "site")
     finally:
         keys.stop_agent()
+
+
+def test_notes_compare_with_what_is_served_and_read_files_once(two_slices, monkeypatch):
+    """Serving the older (arm64) day: the newer one is what has something
+    the served one lacks. A second look reads no file lists."""
+    from mmw.site import ops
+    home, _root, repo, _k = two_slices
+    t, pts = _points(home, repo)
+    ops.serve(home, repo, pts[1].date[:8], track=t.name)
+    with SiteDB(home) as db:
+        said = notes(db, repo)
+    assert "has amd64; what is served doesn't" in said[pts[0].id]
+    monkeypatch.setattr(SiteDB, "point_files", lambda *a, **k: pytest.fail("read again"))
+    with SiteDB(home) as db:
+        notes(db, repo)
+
+
+def test_installer_indexes_go_with_their_architecture():
+    """They add no architecture of their own (apt would look for its main
+    index); combining takes them from the same day as that architecture."""
+    files = {"dists/sid/main/binary-amd64/Packages": "a",
+             "dists/sid/main/debian-installer/binary-arm64/Packages": "b"}
+    assert selection(files, "dists/sid") == {"arches": ["amd64"], "components": ["main"]}
+
+
+def test_a_refused_combination_leaves_nothing_in_the_store(two_slices, monkeypatch):
+    from mmw.site import timeline
+    home, root, repo, _keys = two_slices
+    t, pts = _points(home, repo)
+    before = {p.name for p in (root / ".mmw" / "store").rglob("*") if p.is_file()}
+
+    def refuse(*a, **k):
+        raise ValueError("the combined point was refused: a test")
+    monkeypatch.setattr(timeline, "import_points", refuse)
+    with pytest.raises(ValueError, match="refused"):
+        combine(home, repo, t.name, [pts[0].date[:8], pts[1].date[:8]], "site")
+    assert {p.name for p in (root / ".mmw" / "store").rglob("*") if p.is_file()} == before
+
+
+def test_combine_from_the_tui(two_slices):
+    """Pick the older point, j: the warning, the days and the key are there;
+    Combine serves both slices."""
+    import asyncio
+
+    from textual.widgets import DataTable
+
+    from mmw.site import recents
+    from waiting import until
+    home, root, repo, _keys = two_slices
+    recents.remember(str(root))
+
+    async def go():
+        from mmw.site.mset import open_set
+        from mmw.tui.site.app import SiteApp
+        from mmw.tui.site.home import CombinePage
+        app = SiteApp(open_set())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage")
+            t = app.screen.query_one("#site-history", DataTable)
+            await until(pilot, lambda: t.row_count >= 3)
+            page = app.screen
+            t.move_cursor(row=next(i for i, (_t, p, *_x) in enumerate(page._history)
+                                   if p is not None and p.date.startswith("20261101")))
+            await pilot.press("j")
+            await until(pilot, lambda: isinstance(app.screen, CombinePage))
+            values = app.screen.query_one("#combine-days").value
+            assert "2026-11-01" in values and "2026-11-02" in values
+            assert app.screen.query_one("#combine-key").value == "site"
+            assert "no longer signed by upstream" in str(app.screen.query_one("#combine-warning").render())
+            app.screen.query_one("#btn-combine-go").press()
+            await until(pilot, lambda: app.screen is page
+                        and "combined" in str(page.query_one("#page-status").render()))
+    asyncio.run(go())
+    with SiteDB(home) as db:
+        (t,) = [t for t in db.tracks(repo) if t.name]
+        assert db.points(t.id)[0].ident.startswith("combined:")
+
+
+def test_a_point_that_gains_a_slice_says_it(two_slices):
+    """Its slice was worked out (amd64); the same Release arrives with arm64
+    too: history says the new slice, not the cached one."""
+    from mmw.site.tracks import PointDraft
+    home, _root, repo, _k = two_slices
+    t, pts = _points(home, repo)
+    with SiteDB(home) as db:
+        notes(db, repo)                                               # cached now
+        newest, older = pts[0], pts[1]
+        files = db.point_files(newest.id)
+        extra = {p.replace("binary-amd64", "binary-arm64"): cs for p, cs in db.point_files(older.id).items()
+                 if "/binary-arm64/" in p}
+        status = db.import_point(t.id, PointDraft(t.name, newest.ident, newest.date, {}, {**files, **extra}),
+                                 {}, newest.stamp, None)[1]
+        assert status == "widened"
+        said = notes(db, repo)
+    assert "amd64,arm64" in said[newest.id]

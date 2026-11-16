@@ -189,6 +189,34 @@ class SshRoot:
     def record_export(self, target: str, sent: list, stamp: str) -> None:
         self._call("record-export", input=json.dumps({"target": target, "sent": sent, "stamp": stamp}).encode())
 
+    # ── retention, per-suite keep, slice notes, combining (as a local root) ──
+
+    def clean_plan(self):
+        from mmw.site.ops import CleanItem
+        return [CleanItem(**d) for d in self._call("clean-plan")]
+
+    def clean(self, points=None) -> int:
+        body = {"points": sorted(points) if points is not None else None}
+        return self._call("clean", input=json.dumps(body).encode())["freed"]
+
+    def keep_costs(self) -> dict:
+        return {int(k) if k.isdigit() else k: v for k, v in self._call("keep-costs").items()}
+
+    def set_track_keep(self, repo: str, track: str, keep) -> None:
+        self._call("set-track-keep", repo, track, "" if keep is None else str(keep))
+
+    def set_options(self, *, keep=None, auto_clean: bool | None = None, dated: bool | None = None) -> None:
+        body = {"keep": keep, "auto_clean": auto_clean, "dated": dated}
+        self._call("set-options", input=json.dumps(body).encode())
+
+    def point_notes(self, repo: str) -> dict[int, str]:
+        return {int(k): v for k, v in self._call("point-notes", repo).items()}
+
+    def combine(self, repo: str, track: str, whens: list[str], key: str):
+        from mmw.site.combine import CombineResult
+        body = {"repo": repo, "track": track, "whens": list(whens), "key": key}
+        return CombineResult(**self._call("combine", input=json.dumps(body).encode()))
+
     def forget_export(self, target: str, stamp: str) -> None:
         self._call("forget-export", input=json.dumps({"target": target, "stamp": stamp}).encode())
 

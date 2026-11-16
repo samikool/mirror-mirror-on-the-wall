@@ -16,7 +16,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_SLICE = re.compile(r"([^/]+)/(binary-([^/]+)|source)/")
+from mmw.core import disk_io
+
+# A component's slice: its binary-ARCH or source indexes — and its
+# debian-installer/binary-ARCH ones, which go with that architecture's.
+_SLICE = re.compile(r"([^/]+)/(debian-installer/)?(binary-([^/]+)|source)/")
 _SIGNATURES = ("Release", "InRelease", "Release.gpg")
 
 
@@ -30,8 +34,10 @@ def selection(files: dict[str, str], track: str) -> dict[str, list[str]]:
         m = _SLICE.match(path[len(prefix):])
         name = path.rsplit("/", 1)[-1]
         if m and name.startswith(("Packages", "Sources")):
+            if m.group(2):                  # installer indexes: their arch's main ones say it
+                continue
             comps.add(m.group(1))
-            arches.add(m.group(3) or "source")
+            arches.add(m.group(4) or "source")
     return {"arches": sorted(arches), "components": sorted(comps)}
 
 
@@ -40,9 +46,24 @@ def _combined(db, track_id: int, ident: str) -> dict | None:
     return json.loads(raw) if raw else None
 
 
+def _selection_of(db, point_id: int, track: str) -> dict[str, list[str]]:
+    """A point's slice — worked out from its files once, then kept."""
+    import sqlite3
+    got = db.point_selection(point_id)
+    if got is None:
+        got = selection(db.point_files(point_id), track)
+        try:
+            db.set_point_selection(point_id, got)
+        except sqlite3.OperationalError:            # a busy database (an apply): worked out again next time
+            pass
+    return got
+
+
 def notes(db, repo: str) -> dict[int, str]:
     """Point id → what it covers ("amd64,arm64 · main"), what it has that
-    its suite's newest lacks, and whether mmw signed it (combined)."""
+    what its suite serves lacks, and whether mmw signed it (combined)."""
+    from mmw.site.ops import _served_points
+    served = _served_points(db, repo)
     out = {}
     for t in db.tracks(repo):
         if not t.name:
@@ -50,15 +71,18 @@ def notes(db, repo: str) -> dict[int, str]:
         pts = db.points(t.id)
         if not pts:
             continue
-        sel = {p.id: selection(db.point_files(p.id), t.name) for p in pts}
-        newest = sel[pts[0].id]
+        sel = {p.id: _selection_of(db, p.id, t.name) for p in pts}
+        # Compared with what is served (it may not be the newest): else the newest.
+        base_id = served.get(t.id) if served.get(t.id) in sel else pts[0].id
+        base = sel[base_id]
         for p in pts:
             s = sel[p.id]
             words = [f"{','.join(s['arches']) or '—'} · {' '.join(s['components']) or '—'}"]
-            extra = [a for a in s["arches"] if a not in newest["arches"]] + \
-                    [c for c in s["components"] if c not in newest["components"]]
-            if p.id != pts[0].id and extra:
-                words.append(f"has {', '.join(extra)}; the newest doesn't")
+            extra = [a for a in s["arches"] if a not in base["arches"]] + \
+                    [c for c in s["components"] if c not in base["components"]]
+            if p.id != base_id and extra:
+                words.append(f"has {', '.join(extra)}; what is served doesn't" if base_id != pts[0].id
+                             else f"has {', '.join(extra)}; the newest doesn't")
             made = _combined(db, t.id, p.ident)
             if made:
                 words.append(f"mmw-signed ({made['key']}), combined from {', '.join(made['from'])}")
@@ -165,7 +189,8 @@ def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> Com
             # Each slice from the newest chosen point holding its index; other suite files newest-wins.
             def slice_of(path: str) -> str | None:
                 m = _SLICE.match(path[len(prefix):]) if path.startswith(prefix) else None
-                return m.group(0) if m else None
+                # An installer's indexes are their architecture's slice: one day for both.
+                return f"{m.group(1)}/{m.group(3)}/" if m else None
 
             owner: dict[str, int] = {}
             for p in sources:                                          # newest first: the first wins
@@ -239,6 +264,8 @@ def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> Com
                 raise ValueError(f"{suite} isn't under any base of {st.label}")
             files = {**pool, **suite_files}
             sizes = {}
+            stored = [cs for cs in (hashlib.sha256(b).hexdigest() for b in (release, inrelease, detached, public))
+                      if not store.has(cs)]                       # new here: gone again if this fails
             for rel, body in ((f"{t.name}/Release", release), (f"{t.name}/InRelease", inrelease),
                               (f"{t.name}/Release.gpg", detached), (f"{base}/mmw-keys/{key}.gpg", public)):
                 cs = hashlib.sha256(body).hexdigest()
@@ -250,9 +277,17 @@ def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> Com
             ident = "combined:" + hashlib.sha256(release).hexdigest()
             # Dated as the newest day it holds: a later upstream Release still outranks it.
             draft = PointDraft(t.name, ident, sources[0].date, _fields(release.decode("utf-8", "replace")), files)
-            (outcome,) = import_points(db, store, repo, st.label, st.bases, [(draft, stamp, None)], sizes, set())
-            if outcome.point is None or outcome.status == "conflict":
-                raise ValueError(f"the combined point was refused: {outcome.note}")
+            try:
+                (outcome,) = import_points(db, store, repo, st.label, st.bases, [(draft, stamp, None)],
+                                           sizes, set())
+                if outcome.point is None or outcome.status == "conflict":
+                    raise ValueError(f"the combined point was refused: {outcome.note}")
+            except BaseException:
+                keep = roots.referenced(db, roots.of(st))
+                for cs in stored:                                 # what this left in the store, unowned
+                    if cs not in keep:
+                        disk_io.ops.unlink(store.path(cs), missing_ok=True)
+                raise
             labels = [day(p.date) for p in sorted(sources, key=lambda p: p.date)]
             db.set_meta(f"combined:{t.id}:{ident}", json.dumps({"key": key, "from": labels}))
             switched = _reserve(db, roots, repo)

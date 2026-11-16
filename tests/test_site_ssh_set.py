@@ -157,3 +157,21 @@ def test_a_bundle_carrying_keys_applies_to_a_set_with_an_ssh_root(hosts, tmp_pat
     assert "tools" in {k.name for k in Keyring(read_root(str(r1)).home).list()}
     Keyring(md).stop_agent()
     Keyring(read_root(str(r1)).home).stop_agent()
+
+
+def test_retention_keep_and_notes_work_over_ssh(hosts, tmp_path):  # noqa: F811
+    """An ssh root plans and runs Clean up, takes a suite's own keep, prices
+    the settings and says its points' slices — as a local root does."""
+    from mmw.site.sshroot import SshRoot
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    far = next(r for r in open_set().roots if isinstance(r, SshRoot))
+    (st,) = far.status()
+    assert far.clean_plan() == [] and far.clean(set()) >= 0
+    assert set(far.keep_costs()) >= {1, 3, 10, "all"}
+    with pytest.raises(ValueError, match="has no suite"):          # the far side's own answer, relayed
+        far.set_track_keep(st.repo, "bookworm", "all")
+    far.set_options(auto_clean=True)
+    from mmw.site.home import load_site
+    assert load_site(read_root(str(r2)).home).auto_clean
+    assert isinstance(far.point_notes(st.repo), dict)
+    assert "farhost" in (tmp_path / "ssh.log").read_text()

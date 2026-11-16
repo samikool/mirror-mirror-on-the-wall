@@ -167,6 +167,13 @@ class LocalRoot:
         from mmw.site import ops
         ops.set_track_keep(self.home, repo, track, keep)
 
+    def dated_expired(self) -> list[tuple[str, str]]:
+        from mmw.site.dated import expired
+        from mmw.site.db import SiteDB
+        from mmw.site.ops import _roots
+        with SiteDB(self.home) as db:
+            return expired(db, _roots(self.home))
+
     def dated_urls(self) -> list[tuple[str, str]]:
         from mmw.site.dated import urls
         from mmw.site.db import SiteDB

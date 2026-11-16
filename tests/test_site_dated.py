@@ -119,3 +119,18 @@ def test_a_bad_keep_never_reads(tmp_path):
     with pytest.raises(ValueError):
         H.SiteSettings(roots=[], keep=0)
     assert H.SiteSettings(roots=[], keep="5").keep == 5
+
+
+
+def test_status_reads_each_roots_dated_urls_once(env, tmp_path, monkeypatch):  # noqa: F811
+    """Two repositories on one root: its dated URLs are read once, not once each."""
+    from typer.testing import CliRunner
+
+    from mmw import cli
+    from mmw.site.mset import LocalRoot
+    home, root = _days(env, (1, 2), tmp_path)
+    calls = []
+    real = LocalRoot.dated_urls
+    monkeypatch.setattr(LocalRoot, "dated_urls", lambda self: calls.append(1) or real(self))
+    r = CliRunner().invoke(cli.app, ["site", "status", "--root", str(root)])
+    assert r.exit_code == 0 and r.output.count("dated:") >= 1 and len(calls) == 1, (calls, r.output)

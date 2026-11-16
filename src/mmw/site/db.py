@@ -158,8 +158,14 @@ class SiteDB:
             self._conn.execute("ALTER TABLE tracks ADD COLUMN keep TEXT")
         # Completeness, once known: every file of the point is in the store
         # (NULL: not checked since its files or the store last changed).
-        if "complete" not in {r[1] for r in self._conn.execute("PRAGMA table_info(points)")}:
+        point_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(points)")}
+        if "complete" not in point_cols:
             self._conn.execute("ALTER TABLE points ADD COLUMN complete INTEGER")
+        # The slice a point covers ({"arches", "components"} as JSON), worked
+        # out once — and again when its files grow (a widened or refilled
+        # point). NULL: not yet.
+        if "selection" not in point_cols:
+            self._conn.execute("ALTER TABLE points ADD COLUMN selection TEXT")
 
     def __enter__(self) -> "SiteDB":
         return self
@@ -368,8 +374,8 @@ class SiteDB:
                     return pid, f"conflict:{clash}"
                 extra = {p: cs for p, cs in draft.files.items() if p not in have}
                 self._add_point_files(pid, extra, sizes)
-                if extra or not point.held:
-                    c.execute("UPDATE points SET complete = NULL WHERE id = ?", (pid,))
+                if extra or not point.held:          # its files grew: worked out again
+                    c.execute("UPDATE points SET complete = NULL, selection = NULL WHERE id = ?", (pid,))
                 if draft.ident.startswith("content:") and stamp > point.stamp:
                     # Files no Release dates: the same content arriving again
                     # is that content now — it moves to the front of its track.
@@ -423,6 +429,14 @@ class SiteDB:
         self._conn.execute("UPDATE tracks SET previous = ? WHERE id = ?", (point_id, track_id))
         if commit:
             self._conn.commit()
+
+    def point_selection(self, point_id: int) -> dict | None:
+        row = self._conn.execute("SELECT selection FROM points WHERE id = ?", (point_id,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
+    def set_point_selection(self, point_id: int, selection: dict) -> None:
+        self._conn.execute("UPDATE points SET selection = ? WHERE id = ?", (json.dumps(selection), point_id))
+        self._conn.commit()
 
     def point_sizes(self, point_id: int) -> tuple[int, int]:
         """(bytes its files take, bytes only it holds — what stubbing it frees

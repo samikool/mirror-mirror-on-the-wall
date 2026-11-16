@@ -99,7 +99,15 @@ def test_settings_show_what_each_preset_costs(env, tmp_path):  # noqa: F811
     costs = ops.keep_costs_here(home)
     assert set(costs) == {1, 3, 10, "all"} and costs["all"] == 0 and costs[1] >= costs[3] >= costs[10] >= 0
     r = CliRunner().invoke(cli.app, ["site", "settings", "--root", str(home.parent.parent)])
-    assert r.exit_code == 0 and "keeps the newest 3" in r.output and "all:" in r.output, r.output
+    assert r.exit_code == 0 and "keeps the newest 3" in r.output and "--costs" in r.output, r.output
+    r = CliRunner().invoke(cli.app, ["site", "settings", "--root", str(home.parent.parent), "--costs"])
+    assert r.exit_code == 0 and "every point:" in r.output, r.output
+
+
+def test_an_age_setting_is_among_the_costs(env, tmp_path):  # noqa: F811
+    cfg, home = _days(env, range(1, 4), tmp_path)
+    H.save_settings(home, H.load_site(home).model_copy(update={"keep": "30d"}))
+    assert "30d" in ops.keep_costs_here(home)
 
 
 @pytest.mark.parametrize("value", ["all", "5", "30d"])

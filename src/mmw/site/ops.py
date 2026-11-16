@@ -301,7 +301,8 @@ def space(home: Path) -> SpaceReport:
 
 
 def _gc(db: SiteDB, roots: Roots) -> int:
-    db.set_complete(None, None)              # the store changes: completeness is checked afresh
+    # Only blobs nothing references go — never a held point's — so what is
+    # known complete stays complete: no point needs checking again.
     freed = 0
     for r in roots.all:
         if disk_io.ops.is_dir(Path(r.path) / ".mmw" / "store"):
@@ -438,26 +439,40 @@ def keep_costs(db: SiteDB, settings, presets=(1, 3, 10, "all")) -> dict:
     """Per preset of the site's `keep`, the bytes Clean up would free — what
     choosing it costs or saves against keeping everything."""
     held: dict[int, set[str]] = {}
+    states: list[tuple[set[int], set[str]]] = []       # each stored state: its points, its files
+    base = set(db.network_files().values())
     for st in db.repo_states():
         for t in db.tracks(st.repo):
             for p in db.points(t.id):
                 held[p.id] = set(db.point_files(p.id).values())
-    base = set(db.network_files().values())
-    everything = set().union(base, *held.values()) if held else base
+        for v in db.versions(st.repo):
+            states.append((set(db.state_points(v.id)), set(db.version_files(v.id).values())))
+        if st.serving is not None:                      # what is served, with its site layer: always kept
+            base |= set(db.served_files(st.serving.id, db.repo_overlay(st.repo)).values())
+    everything = set().union(base, *held.values(), *(f for _p, f in states))
     sizes = db.blob_sizes(everything)
     out = {}
     for preset in presets:
         trial = settings.model_copy(update={"keep": preset})
         gone = {i.point for i in clean_plan(db, trial)}
-        kept = set().union(base, *(cs for pid, cs in held.items() if pid not in gone))
+        # A state holding a point that goes goes with it (as Clean up drops it); the rest keep their files.
+        kept = set().union(base, *(cs for pid, cs in held.items() if pid not in gone),
+                           *(f for pts, f in states if not pts & gone))
         out[preset] = sum(sizes.get(c, 0) for c in everything - kept)
     return out
 
 
 def keep_costs_here(home: Path) -> dict:
     _ensure_migrated(home)
+    settings = load_site(home)
+    from mmw.site.home import parse_keep
+    try:
+        current = parse_keep(settings.keep)
+    except ValueError:
+        current = None
+    presets = tuple(dict.fromkeys([1, 3, 10, "all", *([current] if current is not None else [])]))
     with SiteDB(home) as db:
-        return keep_costs(db, load_site(home))
+        return keep_costs(db, settings, presets)
 
 
 def set_track_keep(home: Path, ref: str, track: str, keep) -> None:

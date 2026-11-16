@@ -1110,11 +1110,13 @@ def cmd_site_settings(root: Path = _ROOT,
                       auto_clean: bool = typer.Option(None, "--auto-clean/--no-auto-clean",
                                                       help="Clean up after each apply, by the setting"),
                       dated: bool = typer.Option(None, "--dated/--no-dated",
-                                                 help="Every held point at HOST/PATH/@YYYY-MM-DD/")):
-    """Show or change what the mirror keeps (in every root here), with what
-    each choice would free."""
+                                                 help="Every held point at HOST/PATH/@YYYY-MM-DD/"),
+                      costs: bool = typer.Option(False, "--costs", help="Also say what each setting would "
+                                                 "free (reads every point's file list)")):
+    """Show or change what the mirror keeps (in every root here); --costs
+    says what each choice would free."""
     from mmw.commands.site import settings
-    raise typer.Exit(settings(root, keep, keep_all, auto_clean, dated))
+    raise typer.Exit(settings(root, keep, keep_all, auto_clean, dated, costs))
 
 
 @site_app.command("clean")

@@ -112,6 +112,12 @@ def refresh(db, roots) -> bool:
             before = {}                                          # an earlier record's shape: rebuilt once
         after: dict[str, dict] = {}
         if roots.settings.dated:
+            # Every repository-day's dirs. A dir two repositories share (an
+            # adopted tree beside a synced one, one base) is built from both,
+            # and again whenever one of them changes, arrives or leaves.
+            wanted: dict[str, tuple] = {}                     # key → (bases, ids, day)
+            trees_of: dict[str, dict[str, dict[str, str]]] = {}
+            changed_keys: set[str] = set()
             for repo in sorted(roots.placed_in(db, r)):
                 st = db.repo_state(repo)
                 bases = sorted(st.bases, key=len, reverse=True)
@@ -120,6 +126,7 @@ def refresh(db, roots) -> bool:
                     ids_key = _ids_key(ids)
                     rec = before.get(k)
                     if rec and rec.get("ids") == ids_key and all(_ours(root / x) for x in rec.get("dirs", [])):
+                        wanted[k] = (bases, ids, d)
                         after[k] = rec
                         continue
                     trees = _files(db, bases, ids, d)
@@ -127,10 +134,41 @@ def refresh(db, roots) -> bool:
                         if rec:
                             after[k] = rec                       # a file is gone from the store: keep what is there
                         continue
-                    for rel_dir, files in trees.items():
-                        _build(root, store, rel_dir, files)
+                    wanted[k] = (bases, ids, d)
+                    trees_of[k] = trees
                     after[k] = {"ids": ids_key, "dirs": sorted(trees)}
+                    changed_keys.add(k)
+
+            def sharers(recs: dict) -> dict[str, set[str]]:
+                out: dict[str, set[str]] = {}
+                for k, rec in recs.items():
+                    for x in rec.get("dirs", []):
+                        out.setdefault(x, set()).add(k)
+                return out
+            now_by_dir, before_by_dir = sharers(after), sharers(before)
+            dirty = {x for k in changed_keys for x in after[k]["dirs"]}
+            dirty |= {x for x, ks in now_by_dir.items() if ks != before_by_dir.get(x, set())}
+            for rel_dir in sorted(dirty):
+                merged: dict[str, str] = {}
+                buildable = True
+                for k in sorted(now_by_dir.get(rel_dir, ())):
+                    if k not in wanted:                      # kept as it was (files missing): can't rebuild from it
+                        buildable = False
+                        break
+                    if k not in trees_of:
+                        bases, ids, d = wanted[k]
+                        trees_of[k] = _files(db, bases, ids, d)
+                    merged.update(trees_of[k].get(rel_dir, {}))
+                if buildable and all(store.has(cs) for cs in set(merged.values())):
+                    _build(root, store, rel_dir, merged)
                     changed = True
+                else:                                        # not built: what changed is tried again next time
+                    for k in now_by_dir.get(rel_dir, ()):
+                        if k in changed_keys:
+                            if k in before:
+                                after[k] = before[k]
+                            else:
+                                after.pop(k, None)
         wanted_dirs = {x for rec in after.values() for x in rec["dirs"]}
         for rec in before.values():
             for x in rec.get("dirs", []):
@@ -159,3 +197,40 @@ def urls(db, roots) -> list[tuple[str, str]]:
             if isinstance(rec, dict):
                 out += [(labels.get(k.split("|", 1)[0], "?"), x + "/") for x in rec.get("dirs", [])]
     return sorted(out, key=lambda x: (x[0], x[1]))
+
+
+def expired(db, roots, now=None) -> list[tuple[str, str]]:
+    """(label, dated URL) of each dated tree holding a Release past its
+    `Valid-Until`: apt refuses those unless told not to check."""
+    from datetime import datetime, timezone
+    from email.utils import parsedate_to_datetime
+    now = now or datetime.now(timezone.utc)
+    root_of = {}
+    for r in roots.all:
+        for k, rec in json.loads(db.get_meta(f"dated:{r.name}") or "{}").items():
+            if isinstance(rec, dict):
+                for x in rec.get("dirs", []):
+                    root_of[x] = Path(r.path)
+    out = []
+    for label, url in urls(db, roots):
+        tree = root_of.get(url.rstrip("/"))
+        dists = tree / url / "dists" if tree is not None else None
+        if dists is None or not disk_io.ops.is_dir(dists):
+            continue
+        for suite in disk_io.ops.iterdir(dists):
+            release = suite / "Release"
+            if not disk_io.ops.is_file(release):
+                continue
+            for line in disk_io.ops.read_text(release, errors="replace").splitlines():
+                if line[:1].isspace() or line.endswith(":"):
+                    break                                   # the hash sections: the fields are above
+                if line.startswith("Valid-Until:"):
+                    try:
+                        if parsedate_to_datetime(line.split(":", 1)[1].strip()) < now:
+                            out.append((label, url))
+                    except (TypeError, ValueError):
+                        pass
+                    break
+            if out and out[-1] == (label, url):
+                break
+    return out

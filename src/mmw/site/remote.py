@@ -12,6 +12,7 @@ before `commit` changes nothing.
 Never a secret: nothing here reads keys or passphrases, and the CA key never
 comes near it (certificates: the root makes its key and request; only the
 request leaves and only the certificate arrives)."""
+import dataclasses
 import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -301,6 +302,14 @@ _VERBS = {
     "export-targets": _simple(lambda r, a, i: r.export_targets()),
     "record-export": _simple(lambda r, a, i: r.record_export(**_json_in(i)) or {"ok": True}),
     "forget-export": _simple(lambda r, a, i: r.forget_export(**_json_in(i)) or {"ok": True}),
+    # Retention, per-suite keep, slice notes and combining — as on a local root.
+    "clean-plan": _simple(lambda r, a, i: [dataclasses.asdict(x) for x in r.clean_plan()]),
+    "clean": _simple(lambda r, a, i: {"freed": r.clean(_json_in(i).get("points"))}),
+    "keep-costs": _simple(lambda r, a, i: {str(k): v for k, v in r.keep_costs().items()}),
+    "set-track-keep": _simple(lambda r, a, i: r.set_track_keep(a[0], a[1], a[2] or None) or {"ok": True}),
+    "set-options": _simple(lambda r, a, i: r.set_options(**_json_in(i)) or {"ok": True}),
+    "point-notes": _simple(lambda r, a, i: {str(k): v for k, v in r.point_notes(a[0]).items()}),
+    "combine": _simple(lambda r, a, i: dataclasses.asdict(r.combine(**_json_in(i)))),
     "serve-preview": _simple(lambda r, a, i: r.serve_preview(a[0], a[1], a[2] if len(a) > 2 else None)),
     "serve": _simple(lambda r, a, i: r.serve(a[0], a[1], a[2] if len(a) > 2 else None)),
     "forward": _simple(lambda r, a, i: r.forward(a[0] if a else None)),

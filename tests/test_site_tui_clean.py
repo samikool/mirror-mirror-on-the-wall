@@ -7,6 +7,7 @@ from mmw.site.db import SiteDB
 from test_dry_run_totals import two_mirrors  # noqa: F401
 from test_site_apply_timeline import _apply, _bundle, env, set_a  # noqa: F401
 from test_snapshot_repo_versions import _key
+from site_run import run_done
 from waiting import until
 
 
@@ -28,8 +29,11 @@ def test_clean_up_from_the_tui(env, tmp_path, monkeypatch):  # noqa: F811
             await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
             assert "2026-11-01" in str(app.screen.query_one("#confirm-message").render())
             app.screen.query_one("#confirm").press()
-            await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
-                        and "cleaned up" in str(app.screen.query_one("#page-status").render()))
+            await until(pilot, lambda: type(app.screen).__name__ == "ActionRunPage"
+                        and "cleaned up 2 point(s)" in run_done(app))
+            assert "freed" in run_done(app)
+            app.screen.query_one("#btn-run-close").press()
+            await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage")
     asyncio.run(go())
     with SiteDB(home) as db:
         (t,) = [t for t in db.tracks(_key(cfg, "a")) if t.name]

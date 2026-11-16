@@ -11,6 +11,7 @@ from site_points import nth
 from test_site_apply import env  # noqa: F401
 from test_site_ops import _three
 from test_dry_run_totals import two_mirrors  # noqa: F401
+from site_run import run_done
 from waiting import until
 
 
@@ -128,12 +129,17 @@ def test_delete_refusal_is_a_status(env, tmp_path):  # noqa: F811
         await pilot.press("d")
         await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
-        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
-                    and "served before" in str(app.screen.query_one("#page-status").render()))
+        await until(pilot, lambda: type(app.screen).__name__ == "ActionRunPage"
+                    and "served before" in run_done(app))
+        app.screen.query_one("#btn-run-close").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage")
         await _pick(app, pilot, "a", p1)
         await pilot.press("d")
         await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm"))
         app.screen.query_one("#confirm").press()
+        await until(pilot, lambda: type(app.screen).__name__ == "ActionRunPage"
+                    and "freed" in run_done(app))
+        app.screen.query_one("#btn-run-close").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
                     and any("stub" in r[3] for r in _rows(app, "site-history")))
     _run(home, check)
@@ -232,7 +238,7 @@ def test_apply_flow_end_to_end(env, tmp_path):  # noqa: F811
     async def check(app, pilot):
         await _review_and_go(app, pilot, bundle)
         await until(pilot, lambda: app.screen.finished)
-        done = str(app.screen.query_one("#run-done").render())
+        done = run_done(app)
         assert "a  files " in done and "b  files " in done and " → " in done
         app.screen.query_one("#btn-run-close").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
@@ -249,7 +255,7 @@ def test_apply_flow_shows_a_failed_check(env, tmp_path):  # noqa: F811
     async def check(app, pilot):
         await _review_and_go(app, pilot, bad)
         await until(pilot, lambda: app.screen.finished)
-        done = str(app.screen.query_one("#run-done").render())
+        done = run_done(app)
         assert "damaged" in done and "the mirror is unchanged" in done
     _run(home, check)
     assert _tree(root) == before
@@ -280,7 +286,7 @@ def test_apply_flow_stop_before_switch(env, tmp_path, monkeypatch):  # noqa: F81
         await until(pilot, lambda: page._stop.is_set())
         gate.set()
         await until(pilot, lambda: page.finished)
-        assert "stopped" in str(app.screen.query_one("#run-done").render())
+        assert "stopped" in run_done(app)
     _run(home, check)
     assert _tree(root) == before
 

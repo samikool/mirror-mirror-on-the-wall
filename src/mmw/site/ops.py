@@ -186,9 +186,10 @@ def _pinned(db: SiteDB, repo: str) -> bool:
     return any(t.pinned is not None for t in db.tracks(repo))
 
 
-def forward(home: Path, ref: str | None) -> list[str]:
+def forward(home: Path, ref: str | None, progress=None) -> list[str]:
     """Clear a repository's hold and pins — one, or (None) every held or
-    pinned one — and serve each suite's newest. The repositories moved."""
+    pinned one — and serve each suite's newest. The repositories moved.
+    `progress(event, **data)`: a run page's — each switch, each file placed."""
     moved = []
     with _session(home) as (db, roots):
         repos = ([resolve_repo(db, ref)] if ref is not None
@@ -199,10 +200,17 @@ def forward(home: Path, ref: str | None) -> list[str]:
                 if t.pinned is not None:
                     db.set_pin(t.id, None)
             db.set_held(repo, False)
-            if _reserve(db, roots, repo).held:
+            if progress:
+                progress("switch", repo=repo)
+            result = _reserve(db, roots, repo, _files_progress(progress))
+            if progress:
+                progress("finished", repo=repo)
+            if result.held:
                 continue                        # still held: its layer cannot be built yet
             moved.append(repo)
         if moved:
+            if progress:
+                progress("phase", text="dated trees and pages")
             _render(roots, db)
     return moved
 
@@ -300,13 +308,22 @@ def space(home: Path) -> SpaceReport:
     return rep
 
 
-def _gc(db: SiteDB, roots: Roots) -> int:
+def _files_progress(progress):
+    """A `progress(event, **data)` (a run page's) as the per-file callback
+    switches and the store take: each file one tick, named."""
+    return (lambda rel, *_kind: progress("receive", bytes=1, name=rel)) if progress else None
+
+
+def _gc(db: SiteDB, roots: Roots, progress=None) -> int:
     # Only blobs nothing references go — never a held point's — so what is
     # known complete stays complete: no point needs checking again.
+    if progress:
+        progress("phase", text="freeing space: removing files nothing keeps")
     freed = 0
+    tick = _files_progress(progress)
     for r in roots.all:
         if disk_io.ops.is_dir(Path(r.path) / ".mmw" / "store"):
-            freed += roots.store(r).gc(roots.referenced(db, r))[1]
+            freed += roots.store(r).gc(roots.referenced(db, r), progress=tick)[1]
     return freed
 
 
@@ -330,7 +347,8 @@ def _protected(db: SiteDB, repo: str, track: TrackInfo, point: PointInfo) -> tup
     return None
 
 
-def delete_point(home: Path, ref: str, when: str, track: str | None = None, force: bool = False) -> int:
+def delete_point(home: Path, ref: str, when: str, track: str | None = None, force: bool = False,
+                 progress=None) -> int:
     """Delete a kept point: its file list stays (a stub), its files go
     unless something else holds them. Bytes freed."""
     with _session(home) as (db, roots):
@@ -348,10 +366,14 @@ def delete_point(home: Path, ref: str, when: str, track: str | None = None, forc
             # Serve nothing only when nothing of it is kept any more: kept points
             # whose files are missing here keep what is served, never unserve it.
             last = not any(db.points(t.id) for t in db.tracks(repo))
-            _reserve(db, roots, repo, empty_ok=last)
+            if progress:
+                progress("phase", text="serving what is kept instead")
+            _reserve(db, roots, repo, _files_progress(progress), empty_ok=last)
+        if progress:
+            progress("phase", text="dated trees and pages")
         _render(roots, db)                    # its dated tree goes before its blobs can
         db.drop_unused_states(repo)
-        return _gc(db, roots)
+        return _gc(db, roots, progress)
 
 
 @dataclass(frozen=True)
@@ -409,23 +431,28 @@ def clean_plan_here(home: Path, today: str | None = None) -> list[CleanItem]:
         return clean_plan(db, load_site(home), today)
 
 
-def _clean(db: SiteDB, roots: Roots, settings, only: set[int] | None = None) -> tuple[list[CleanItem], int]:
+def _clean(db: SiteDB, roots: Roots, settings, only: set[int] | None = None,
+           progress=None) -> tuple[list[CleanItem], int]:
     items = clean_plan(db, settings)
     if only is not None:
         items = [i for i in items if i.point in only]        # what was confirmed, if it still applies
     for i in items:
+        if progress:
+            progress("phase", text=f"deleting {i.label} {i.suite} {i.date}")
         db.stub_point(i.point)
     from mmw.site.dated import refresh
+    if progress and items:
+        progress("phase", text="dated trees: taking the deleted days' away")
     refresh(db, roots)                        # a cleaned point's dated tree goes before its blobs can
-    return items, (_gc(db, roots) if items else 0)
+    return items, (_gc(db, roots, progress) if items else 0)
 
 
-def clean(home: Path, points: "set[int] | None" = None) -> int:
+def clean(home: Path, points: "set[int] | None" = None, progress=None) -> int:
     """Clean up: delete what `clean_plan` names — only `points` (what was
     shown and confirmed) when given, and only those it still names. Bytes
-    freed."""
+    freed. `progress(event, **data)`: a run page's."""
     with _session(home) as (db, roots):
-        return _clean(db, roots, load_site(home), points)[1]
+        return _clean(db, roots, load_site(home), points, progress)[1]
 
 
 def apply_retention(db: SiteDB, roots: Roots, settings) -> list[tuple[str, str, str]]:

@@ -575,8 +575,17 @@ network, **r** adds a root (an empty folder or
 `host:/path` becomes a new root of this mirror), **m** moves a repository to
 another root, **b** serves the whole mirror as of a bundle, **c** manages
 certificates, **t** tidies, **A** adopts trees mmw didn't make, **C**
-cleans up (after saying what each point frees), **ctrl+r** refreshes.
-The buttons along the bottom do the same.
+cleans up (after saying what each point frees), **j** combines slices from
+different days of a suite, **s** opens the settings (what the mirror keeps,
+Clean up after each apply, dated URLs — and what each keep would free),
+**e** sets the selected suite's own keep, **v** verifies every served file
+(and offers to repair what is wrong), **g** checks the signatures of points
+adopted without a key, **o** lists the trees adopted from (and removes one),
+**ctrl+r** refreshes. The buttons along the bottom do the ones used most.
+
+Deleting, cleaning up, combining, verifying and removing an adopted tree
+each run on a progress page: what it is doing now, each file it places or
+removes, and what it did — freed space included.
 
 Applying from the TUI: pick the bundle (a `.tar` or a stage directory; the
 last five are remembered), review it — every repository it changes, ticked

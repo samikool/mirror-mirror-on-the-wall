@@ -219,6 +219,7 @@ def test_combine_from_the_tui(two_slices):
     from textual.widgets import DataTable
 
     from mmw.site import recents
+    from site_run import run_done
     from waiting import until
     home, root, repo, _keys = two_slices
     recents.remember(str(root))
@@ -242,8 +243,9 @@ def test_combine_from_the_tui(two_slices):
             assert app.screen.query_one("#combine-key").value == "site"
             assert "no longer signed by upstream" in str(app.screen.query_one("#combine-warning").render())
             app.screen.query_one("#btn-combine-go").press()
-            await until(pilot, lambda: app.screen is page
-                        and "combined" in str(page.query_one("#page-status").render()))
+            await until(pilot, lambda: type(app.screen).__name__ == "ActionRunPage"
+                        and "combined" in run_done(app))
+            assert "mmw-keys/site.gpg" in run_done(app)
     asyncio.run(go())
     with SiteDB(home) as db:
         (t,) = [t for t in db.tracks(repo) if t.name]

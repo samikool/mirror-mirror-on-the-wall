@@ -369,3 +369,27 @@ def test_prune_shows_its_progress(tmp_path, monkeypatch):
         await _done(app, pilot)
         await until(pilot, lambda: "Removed 12,000" in _status(app))
     _run(tmp_path, check)
+
+
+def test_prune_says_what_it_removes_before_asking(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "prune_preview", lambda cfg: (3, 120, 5_000_000))
+
+    async def check(app, pilot):
+        await pilot.press("p")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        said = str(app.screen.query_one("#confirm-message").render())
+        assert "120 file(s)" in said and "5.0 MB" in said and "3 old point(s)" in said
+        await pilot.press("escape")
+    _run(tmp_path, check)
+
+
+def test_keep_costs_say_each_choice(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "keep_costs", lambda cfg: {"lab": [(1, 2, 1024), (3, 0, 0), ("all", 0, 0)]})
+
+    async def check(app, pilot):
+        await pilot.press("c")
+        await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog")
+        said = str(app.screen.query_one("#confirm-message").render())
+        assert "lab:" in said and "1: 1.0 KB" in said and "3: 0.0 B" in said
+        await pilot.press("escape")
+    _run(tmp_path, check)

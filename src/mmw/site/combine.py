@@ -150,7 +150,7 @@ def _set_field(text: str, name: str, value: str | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> CombineResult:
+def combine(home: Path, ref: str, suite: str, whens: list[str], key: str, progress=None) -> CombineResult:
     """One served point from the slices of the points `whens` name (two or
     more) in suite `suite`: each slice's indexes from the newest point that
     has it, pool files their union, a new Release re-signed with site key
@@ -164,6 +164,9 @@ def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> Com
     from mmw.site.tracks import PointDraft, _fields
     from mmw.site.versionref import day, resolve_point
 
+    def phase(text: str) -> None:
+        if progress:
+            progress("phase", text=text)
     keyring = Keyring(home)
     try:
         if not any(k.name == key for k in keyring.list()):
@@ -183,6 +186,7 @@ def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> Com
             for p in chosen.values():
                 if not p.held or is_complete(db, store, p.id, cached=False):
                     raise ValueError(f"{suite} {day(p.date)} isn't complete here — its files are needed")
+            phase("reading the chosen days' indexes")
             sources = sorted(chosen.values(), key=lambda p: (p.date, p.stamp), reverse=True)   # newest first
             prefix = t.name + "/"
             files_of = {p.id: db.point_files(p.id) for p in sources}
@@ -251,6 +255,7 @@ def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> Com
                 text = _set_field(text, gone, None)
             release = (text + "".join(f"{section}:\n" + "".join(f"{ln}\n" for ln in entries[section])
                                       for section in order)).encode()
+            phase(f"signing the new Release with {key}")
             try:
                 inrelease = keyring.clearsign(key, release)
                 detached = keyring.detach_sign(key, release)
@@ -277,6 +282,7 @@ def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> Com
             ident = "combined:" + hashlib.sha256(release).hexdigest()
             # Dated as the newest day it holds: a later upstream Release still outranks it.
             draft = PointDraft(t.name, ident, sources[0].date, _fields(release.decode("utf-8", "replace")), files)
+            phase("storing the combined point")
             try:
                 (outcome,) = import_points(db, store, repo, st.label, st.bases, [(draft, stamp, None)],
                                            sizes, set())
@@ -290,7 +296,12 @@ def combine(home: Path, ref: str, suite: str, whens: list[str], key: str) -> Com
                 raise
             labels = [day(p.date) for p in sorted(sources, key=lambda p: p.date)]
             db.set_meta(f"combined:{t.id}:{ident}", json.dumps({"key": key, "from": labels}))
-            switched = _reserve(db, roots, repo)
+            phase("serving it")
+            if progress:
+                progress("switch", repo=repo)
+            switched = _reserve(db, roots, repo, (lambda rel, *_k: progress("receive", bytes=1, name=rel))
+                                if progress else None)
+            phase("dated trees and pages")
             _render(roots, db)
             lines = [f"  {st.label}  {suite}: {w}" for w in (*warnings, *switched.warnings)]
             pinned = db.track(t.id).pinned

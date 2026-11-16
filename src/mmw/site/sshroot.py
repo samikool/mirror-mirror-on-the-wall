@@ -167,13 +167,13 @@ class SshRoot:
         # The remote answers once it's done: no file-by-file progress over ssh.
         return _ns(self._call("serve", key, when, *([track] if track else [])))
 
-    def forward(self, key: str | None) -> list[str]:
+    def forward(self, key: str | None, progress=None) -> list[str]:
         return self._call("forward", *([key] if key else []))
 
     def hold(self, key: str) -> str:
         return self._call("hold", key)["label"]
 
-    def delete(self, key: str, when: str, track: str | None = None, force: bool = False) -> int:
+    def delete(self, key: str, when: str, track: str | None = None, force: bool = False, progress=None) -> int:
         return self._call("delete", key, when, track or "", *(["--force"] if force else []))["freed"]
 
     def space(self):
@@ -195,7 +195,7 @@ class SshRoot:
         from mmw.site.ops import CleanItem
         return [CleanItem(**d) for d in self._call("clean-plan")]
 
-    def clean(self, points=None) -> int:
+    def clean(self, points=None, progress=None) -> int:
         body = {"points": sorted(points) if points is not None else None}
         return self._call("clean", input=json.dumps(body).encode())["freed"]
 
@@ -212,7 +212,7 @@ class SshRoot:
     def point_notes(self, repo: str) -> dict[int, str]:
         return {int(k): v for k, v in self._call("point-notes", repo).items()}
 
-    def combine(self, repo: str, track: str, whens: list[str], key: str):
+    def combine(self, repo: str, track: str, whens: list[str], key: str, progress=None):
         from mmw.site.combine import CombineResult
         body = {"repo": repo, "track": track, "whens": list(whens), "key": key}
         return CombineResult(**self._call("combine", input=json.dumps(body).encode()))

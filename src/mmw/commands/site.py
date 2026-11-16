@@ -334,11 +334,8 @@ def delete(repo: str, version: str, root: Path | None = None, yes: bool = False,
 
 
 def _keep_words(keep) -> str:
-    if keep == "all":
-        return "every point"
-    if isinstance(keep, str):
-        return f"{keep[:-1]} days of points"
-    return f"the newest {keep}"
+    from mmw.site.home import keep_words
+    return keep_words(keep)
 
 
 def settings(root: Path | None = None, keep: str | None = None, keep_all: bool = False,

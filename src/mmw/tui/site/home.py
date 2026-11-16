@@ -71,7 +71,9 @@ class SiteHomePage(Page):
             "serving them, until you forward it.\n"
             "k: local .debs this site adds to the repository, and how it is then signed;\n"
             "K: this site's signing keys (carried ones from the connected side included);\n"
-            "u: bring in the mmw instances this site serves locally (mmw site local).")
+            "u: bring in the mmw instances this site serves locally (mmw site local);\n"
+            "s: what the mirror keeps (and what each choice frees); e: a suite's own keep;\n"
+            "g: check adopted points' signatures; o: trees adopted from; v: verify (and repair).")
     BINDINGS = [
         # Short, so the footer fits 80 columns; the buttons say the rest.
         Binding("enter", "serve", "Serve", show=False),
@@ -91,6 +93,11 @@ class SiteHomePage(Page):
         Binding("K", "signing_keys", "Signing keys", show=False),
         Binding("u", "local_update", "Update local", show=False),
         Binding("j", "combine", "Combine", show=False),
+        Binding("s", "settings", "Settings", show=False),
+        Binding("e", "suite_keep", "Suite keep", show=False),
+        Binding("g", "check_signatures", "Check signatures", show=False),
+        Binding("o", "adopted", "Adopted trees", show=False),
+        Binding("v", "verify", "Verify", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
 
@@ -517,13 +524,23 @@ class SiteHomePage(Page):
             self.app.push_screen(
                 ConfirmDialog(f"Delete {label} {suite} {when}, which is being served?", warn,
                               confirm_label="Delete anyway", confirm_variant="warning"),
-                lambda ok: ok and self._act(f"deleted {label} {suite} {when}", root.delete, *args, True))
+                lambda ok: ok and self._run_action(f"Deleting {label} {suite} {when}", [(repo, label)],
+                                                   lambda progress: root.delete(*args, True, progress=progress),
+                                                   lambda freed: f"deleted {label} {suite} {when} — "
+                                                                 f"{fmt_size(freed)} freed"))
             return
         self.app.push_screen(
             ConfirmDialog(f"Delete {label} {suite} {when} from this site?",
                           "Its files go too, unless another kept point uses them. Its record stays.",
                           confirm_label="Delete"),
-            lambda ok: ok and self._act(f"deleted {label} {suite} {when}", root.delete, *args))
+            lambda ok: ok and self._run_action(f"Deleting {label} {suite} {when}", [(repo, label)],
+                                               lambda progress: root.delete(*args, progress=progress),
+                                               lambda freed: f"deleted {label} {suite} {when} — "
+                                                             f"{fmt_size(freed)} freed"))
+
+    def _run_action(self, title: str, rows, job, said) -> None:
+        """A change that may take a while, on its own progress page."""
+        self.app.push_screen(ActionRunPage(title, rows, job, said), lambda _: self._load())
 
     @work(thread=True, exclusive=True, group="site-act", exit_on_error=False)
     def _act(self, done: str, fn, *args) -> None:
@@ -796,8 +813,157 @@ class SiteHomePage(Page):
         label = next(s.label for s in self._states if s.repo == repo)
         self.app.push_screen(
             CombinePage(label, ops.suite_of(track), days, keys),
-            lambda c: c and self._act(f"combined {label} {c[0]} — re-signed with {c[2]}",
-                                      self.app.root_of(repo).combine, repo, c[0], c[1], c[2]))
+            lambda c: c and self._run_action(
+                f"Combining {label} {c[0]}", [(repo, label)],
+                lambda progress: self.app.root_of(repo).combine(repo, c[0], c[1], c[2], progress=progress),
+                lambda r: f"combined {label} {c[0]} from {', '.join(r.sources)} — re-signed with {c[2]}; "
+                          f"clients get its key at {r.key_url}"))
+
+    # ── settings and upkeep ──────────────────────────────────────────────────
+
+    def action_settings(self) -> None:
+        """What the mirror keeps, Clean up after each apply, dated URLs."""
+        if self.app.mset is None:
+            return
+        self._settings_read(list(self.app.mset.roots))
+
+    @work(thread=True, exclusive=True, group="site-settings", exit_on_error=False)
+    def _settings_read(self, roots) -> None:
+        try:
+            keep = roots[0].keep_setting()
+            local = next((r for r in roots if hasattr(r, "site_settings")), None)
+            s = local.site_settings() if local is not None else None
+        except Exception as e:  # noqa: BLE001 — said on the page
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        auto, dated = (s.auto_clean, s.dated) if s is not None else (None, None)   # ssh only: not known here
+        from mmw.tui.site.settings_flow import SiteSettingsPage
+        self.app.call_from_thread(self.app.push_screen, SiteSettingsPage(roots, keep, auto, dated),
+                                  lambda c: self._settings_save(roots, c) if c else
+                                  (c == {} and self.set_status("Nothing changed.")))
+
+    @work(thread=True, exclusive=True, group="site-settings", exit_on_error=False)
+    def _settings_save(self, roots, c: dict) -> None:
+        try:
+            for r in roots:
+                r.set_options(keep=c.get("keep"), auto_clean=c.get("auto_clean"), dated=c.get("dated"))
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self._load, str(e), "error")
+            return
+        from mmw.site.home import keep_words
+        said = ([f"keeps {keep_words(c['keep'])} per suite"] if "keep" in c else []) + \
+               ([f"cleans {'after each apply' if c['auto_clean'] else 'only when asked'}"]
+                if "auto_clean" in c else []) + \
+               ([f"dated URLs {'on' if c['dated'] else 'off'}"] if "dated" in c else [])
+        self.app.call_from_thread(self._load, " · ".join(said))
+
+    def action_suite_keep(self) -> None:
+        """The selected suite's own history setting."""
+        repo, picked = self.selected_repo(), self.selected_point()
+        if repo is None or picked is None:
+            self.set_status("Pick a point of the suite in the history first.", "error")
+            return
+        track = picked[0]
+        if not track.name:
+            self.set_status("Those are files no Release names — they have no suite to keep by.", "error")
+            return
+        self._suite_keep_read(repo, track)
+
+    @work(thread=True, exclusive=True, group="site-suite-keep", exit_on_error=False)
+    def _suite_keep_read(self, repo: str, track) -> None:
+        """The mirror's keep, from the root (over ssh, a round trip: never on the screen's thread)."""
+        from mmw.site.home import keep_words
+        from mmw.tui.site.settings_flow import SuiteKeepPage
+        root = self.app.root_of(repo)
+        try:
+            site_keep = root.keep_setting()
+        except Exception as e:  # noqa: BLE001 — an ssh host out of reach: said
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        label = next(s.label for s in self._states if s.repo == repo)
+        suite = ops.suite_of(track)
+
+        def chosen(c) -> None:
+            if not c:
+                return
+            keep = None if c[0] == "site" else c[0]
+            said = "what the mirror keeps" if keep is None else keep_words(keep)
+            # By the track's own name: two suites never mistaken for each other.
+            self._act(f"{label} {suite} keeps {said}", root.set_track_keep, repo, track.name, keep)
+        self.app.call_from_thread(self.app.push_screen, SuiteKeepPage(label, suite, track.keep, site_keep), chosen)
+
+    def action_check_signatures(self) -> None:
+        roots = [r for r in (self.app.mset.roots if self.app.mset else []) if r.is_local]
+        if not roots:
+            self.set_status("Checking signatures runs where the files are: mmw site check-signatures there.",
+                            "warning")
+            return
+        from mmw.tui.site.settings_flow import CheckSignaturesPage
+        self.app.push_screen(CheckSignaturesPage(), lambda key: key is not None and self._run_action(
+            "Checking signatures", [(r.info.name, r.info.name) for r in roots],
+            lambda progress: _recheck(roots, key, progress), _rechecked))
+
+    def action_adopted(self) -> None:
+        roots = [r for r in (self.app.mset.roots if self.app.mset else []) if r.is_local]
+        if not roots:
+            self.set_status("Adopted trees are listed where the files are: mmw site adopted there.", "warning")
+            return
+        self._adopted_read(roots)
+
+    @work(thread=True, exclusive=True, group="site-adopted", exit_on_error=False)
+    def _adopted_read(self, roots) -> None:
+        try:
+            rows = [(r, o) for r in roots for o in r.originals()]
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self.set_status, str(e), "error")
+            return
+        from mmw.tui.site.settings_flow import AdoptedPage
+        self.app.call_from_thread(self.app.push_screen, AdoptedPage(rows), self._adopted_remove)
+
+    def _adopted_remove(self, picked) -> None:
+        if not picked:
+            return
+        from mmw.tui.ui.dialog import ConfirmDialog
+        root, o = picked
+        every = [Path(r.info.path) for r in self.app.mset.roots if r.is_local]
+        refused = (f"\nNot adopted from it (refused): {', '.join(o.refused)} — removing it loses those files."
+                   if o.refused else "")
+        self.app.push_screen(
+            ConfirmDialog(f"Remove {o.path}?", f"It frees {fmt_size(o.frees)}; what was adopted from it stays "
+                                               f"served.{refused}", confirm_label="Remove", confirm_variant="error"),
+            lambda ok: ok and self._run_action(
+                f"Removing {o.path}", [(str(o.path), str(o.path))],
+                lambda progress: (progress("phase", text=f"removing {o.path}"),
+                                  root.remove_original(o.path, every))[1],
+                lambda freed: f"removed {o.path} — {fmt_size(freed)} freed"))
+
+    def action_verify(self) -> None:
+        """Every served file present and what the site says it serves."""
+        if self.app.mset is None:
+            return
+        roots = list(self.app.mset.roots)
+        found: list[str] = []                    # filled root by root: a later root's failure keeps these
+
+        def job(progress):
+            _verify(roots, progress, found)
+            return found
+        self.app.push_screen(
+            ActionRunPage("Verifying", [(r.info.name, r.info.name) for r in roots], job, _verified),
+            lambda _: self._offer_repair(roots, len(found)))
+
+    def _offer_repair(self, roots, problems: int) -> None:
+        if not problems:
+            self._load()
+            return
+        from mmw.tui.ui.dialog import ConfirmDialog
+        self.app.push_screen(
+            ConfirmDialog(f"Repair {problems} served file(s)?",
+                          "Each is put back from the store, as the site says it serves it.",
+                          confirm_label="Repair"),
+            lambda ok: ok and self._run_action(
+                "Repairing", [(r.info.name, r.info.name) for r in roots],
+                lambda progress: sum(r.verify(repair=True) for r in roots),
+                lambda fixed: f"repaired {fixed} file(s)"))
 
     def action_tidy(self) -> None:
         self.app.push_screen(TidyRunPage([r.info.name for r in self.app.mset.roots]), lambda _: self._load())
@@ -837,7 +1003,10 @@ class SiteHomePage(Page):
                           "\n".join(lines) + "\nTheir records stay in the history; their files go unless "
                                               "another kept point uses them.",
                           confirm_label="Clean up"),
-            lambda ok: ok and self._act("cleaned up", lambda: sum(r.clean({i.point for i in p}) for r, p in plans)))
+            lambda ok: ok and self._run_action(
+                "Cleaning up", sorted({(i.repo, i.label) for i in items}),
+                lambda progress: sum(r.clean({i.point for i in p}, progress=progress) for r, p in plans),
+                lambda freed: f"cleaned up {len(items)} point(s) — {fmt_size(freed)} freed"))
 
     def action_adopt(self) -> None:
         """Take over APT trees mmw didn't make (or a tree apply.py manages)."""
@@ -1066,6 +1235,81 @@ class ServeBundlePage(Page):
     def _go(self) -> None:
         from textual.widgets import Select
         self.dismiss(self.query_one("#bundle-pick", Select).value)
+
+
+def _recheck(roots, key: str, progress) -> list:
+    """**Blocking.** Every root's unverified adopted points, checked."""
+    import tempfile
+
+    from mmw.core import disk_io
+    from mmw.site.adopt import keyring_from
+    out = []
+    for r in roots:
+        progress("phase", text=f"checking {r.info.name}")
+        keys = [disk_io.ops.read_bytes(Path(key).expanduser())] if key else r.network_keys()
+        if not keys:
+            raise ValueError(f"{r.info.name}: no key to check with — give upstream's public key file")
+        with tempfile.TemporaryDirectory() as tmp:
+            out += r.recheck_signatures(keyring_from(keys, Path(tmp) / "k.gpg"))
+    return out
+
+
+def _rechecked(results) -> str:
+    if not results:
+        return "nothing to check — every adopted point's signature was checked when it was adopted"
+    good = sum(1 for _l, _w, v in results if v == "verified")
+    lines = [f"checked {len(results)} point(s): {good} verified"]
+    lines += [f"{label}  {what}  {verdict}" for label, what, verdict in results if verdict != "verified"]
+    return "\n".join(lines)
+
+
+def _verify(roots, progress, problems: list[str]) -> list[str]:
+    """**Blocking.** What is wrong in each root, added to `problems` as each
+    is checked (nothing: all right)."""
+    for r in roots:
+        progress("phase", text=f"checking every file {r.info.name} serves")
+        problems += r.verify()
+    return problems
+
+
+def _verified(problems: list[str]) -> str:
+    if not problems:
+        return "every served file is there and right"
+    shown = problems[:20] + ([f"… and {len(problems) - 20} more"] if len(problems) > 20 else [])
+    return "\n".join([f"{len(problems)} problem(s) — Close to repair them:", *shown])
+
+
+class ActionRunPage(RunPage):
+    """One change that can take a while — deleting, cleaning up, combining:
+    what it is doing now, each file it places or removes, and what it did.
+    No Stop: each is one piece of work that must finish whole."""
+
+    UNIT = "files"
+    RATE = "handling"
+
+    def __init__(self, title: str, rows: list[tuple[str, str]], job, said):
+        super().__init__(None, rows)
+        self.TITLE = title
+        self.subtitle = and_list([label for _repo, label in rows])
+        self._job, self._said = job, said
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#btn-run-stop", Button).disabled = True
+
+    def updated_note(self) -> str:
+        return "done"
+
+    def job(self, progress, stop):
+        return self._job(progress)
+
+    def _done(self, result) -> None:
+        for repo in list(self._state):
+            self._state[repo] = "updated"
+        self.query_one("#run-repos", Static).update(self._repo_lines())
+        self.query_one("#run-done", Static).update(f"[b $success]✓ {_esc(self._said(result))}[/]")
+        self.set_status("")
+        self._finish()
 
 
 class SwitchRunPage(RunPage):

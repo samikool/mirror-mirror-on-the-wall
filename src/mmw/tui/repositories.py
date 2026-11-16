@@ -249,6 +249,35 @@ def pool_busy(mirror_dir: Path) -> bool:
     return pool_mod.pool_is_busy(mirror_dir)
 
 
+def prune_preview(cfg: "config.Config") -> tuple[int, int, int]:
+    """(old points dropped by keep_points, files, bytes) a prune would remove
+    now. **Blocking.** Read-only: the prune's own query, nothing deleted."""
+    import sqlite3
+
+    from mmw.core import points
+    from mmw.core.resolve import uncovered_mirror_names
+    if not disk_io.ops.exists(cfg.settings.mirror_dir):
+        return 0, 0, 0
+    if not cfg.sources:
+        raise ValueError("no repositories are configured — every package would look unwanted; "
+                         "the prune refuses until there are some")
+    with pool_mod.Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        try:
+            releasing = points.retention_plan(pool, cfg.networks)
+        except sqlite3.OperationalError:
+            releasing = []                          # a pool from before points: none to drop
+        dropped = uncovered_mirror_names(cfg, pool)
+        files, size = pool.prune_preview([s.identity for s in cfg.sources], dropped, releasing)
+    return len(releasing), files, size
+
+
+def keep_costs(cfg: "config.Config") -> dict[str, list[tuple]]:
+    """Per network, what each keep_points choice would free (as `mmw prune
+    --dry-run --costs`). **Blocking**, and a pool read per choice."""
+    from mmw.commands.prune import costs_of_keeping
+    return costs_of_keeping(cfg, cfg.settings.mirror_dir)
+
+
 def prune_pool(cfg: "config.Config", progress=None) -> tuple[int, int]:
     """(removed, freed bytes). **Blocking.** Raises `pool.PoolBusy` while a
     sync runs: everything it has downloaded so far is unreferenced until its

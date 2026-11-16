@@ -27,6 +27,7 @@ class RunPage(Page):
     - `("check")`: everything is in, being checked;
     - `("switch", repo=)`: that repository is switching;
     - `("finished", repo=)`: that repository is done;
+    - `("phase", text=)`: what the job is doing now (in place of a rate);
     - `("done")`: the job ended.
 
     A total of None is not known beforehand: the bar runs without one.
@@ -53,6 +54,7 @@ class RunPage(Page):
         self._pending_bytes = 0
         self._pending_name = ""
         self._last_report = 0.0
+        self._phase = ""                        # what the job says it is doing, if it says
 
     def compose_body(self) -> ComposeResult:
         yield ProgressBar(total=None if self._total is None else max(self._total, 1), show_eta=False, id="run-bar")
@@ -168,7 +170,8 @@ class RunPage(Page):
             self.query_one("#run-bar", ProgressBar).update(progress=self._read)
             elapsed = max(time.monotonic() - self._started, 0.001)
             rate = self._read / elapsed
-            text = f"{self.RATE} at {self._fmt(int(rate))}/s"
+            text = f"{self._phase} · " if self._phase else ""
+            text += f"{self.RATE} at {self._fmt(int(rate))}/s"
             if self._total:
                 left = max(self._total - self._read, 0) / rate if rate else 0
                 text += f" · about {int(left // 60)} min {int(left % 60)} s left"
@@ -177,6 +180,9 @@ class RunPage(Page):
             self.query_one("#run-rate", Static).update(text)
         elif event == "check":
             self.query_one("#run-rate", Static).update("checking everything against the manifest…")
+        elif event == "phase":
+            self._phase = data.get("text", "")
+            self.query_one("#run-rate", Static).update(f"{self._phase}…")
         elif event == "switch":
             for repo in list(self._state):
                 if self._state[repo] == "switching":
@@ -206,7 +212,15 @@ class RunPage(Page):
             if not self.handled(e):
                 self.app.call_from_thread(self._failed, str(e))
             return
-        self.app.call_from_thread(self.job_done, result)
+        self._progress("done")                     # hands over the last files counted, too
+        self.app.call_from_thread(self._job_done_safely, result)
+
+    def _job_done_safely(self, result) -> None:
+        """`job_done`, never leaving the page stuck: Close always comes on."""
+        try:
+            self.job_done(result)
+        except Exception as e:  # noqa: BLE001 — a result that can't be said is said as such
+            self._failed(f"done, but its result can't be shown: {e}")
 
     def _finish(self) -> None:
         self.finished = True

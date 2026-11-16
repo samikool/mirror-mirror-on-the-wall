@@ -216,3 +216,12 @@ def hostnames(home: Path) -> set[str]:
     with SiteDB(home) as db:
         return {b.split("/", 1)[0] for st in db.repo_states() for b in st.bases
                 if not db.get_meta(f"moving_in:{st.repo}")}         # a move's copy not yet its home
+
+
+def keep_words(keep) -> str:
+    """A keep setting, said: "the newest 3", "every point", "90 days of points"."""
+    if keep == "all":
+        return "every point"
+    if isinstance(keep, str):
+        return f"{keep[:-1]} days of points"
+    return f"the newest {keep}"

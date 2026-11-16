@@ -264,3 +264,16 @@ def test_keep_suites_survives_saving_the_config(tmp_path):
     config.save(cfg, tmp_path)
     (net,) = config.load(tmp_path).networks
     assert net.keep_suites == {"bookworm": "all", "sid": 1}
+
+
+def test_the_tuis_prune_preview_and_keep_costs(two_mirrors):  # noqa: F811
+    from mmw.tui import repositories
+    cfg, net, md = two_mirrors
+    for day in (1, 2):
+        set_a(md, day)
+        points.record_network_points(net, cfg, md, stamp=f"2026110{day}T000000Z")
+    keep1 = cfg.model_copy(update={"networks": [net.model_copy(update={"keep_points": 1})]})
+    dropping, files, size = repositories.prune_preview(keep1)
+    assert dropping == 1 and files >= 1 and size > 0
+    (rows,) = repositories.keep_costs(cfg).values()
+    assert {c for c, _n, _b in rows} >= {1, 3, 10, "all"}

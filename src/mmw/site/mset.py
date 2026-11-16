@@ -115,17 +115,17 @@ class LocalRoot:
         from mmw.site import ops
         return ops.serve(self.home, key, when, track, progress=progress)
 
-    def forward(self, key: str | None) -> list[str]:
+    def forward(self, key: str | None, progress=None) -> list[str]:
         from mmw.site import ops
-        return ops.forward(self.home, key)
+        return ops.forward(self.home, key, progress)
 
     def hold(self, key: str) -> str:
         from mmw.site import ops
         return ops.hold(self.home, key)
 
-    def delete(self, key: str, when: str, track: str | None = None, force: bool = False) -> int:
+    def delete(self, key: str, when: str, track: str | None = None, force: bool = False, progress=None) -> int:
         from mmw.site import ops
-        return ops.delete_point(self.home, key, when, track, force)
+        return ops.delete_point(self.home, key, when, track, force, progress)
 
     def space(self):
         from mmw.site import ops
@@ -151,9 +151,9 @@ class LocalRoot:
         from mmw.site import ops
         return ops.clean_plan_here(self.home)
 
-    def clean(self, points=None) -> int:
+    def clean(self, points=None, progress=None) -> int:
         from mmw.site import ops
-        return ops.clean(self.home, points)
+        return ops.clean(self.home, points, progress)
 
     def served_dates(self, repos: list[str]) -> dict[str, str]:
         from mmw.site.apply import served_upstream_dates
@@ -294,9 +294,9 @@ class LocalRoot:
         from mmw.site.adopt import remove_original
         return remove_original(self.home, path, other_roots)
 
-    def combine(self, repo: str, track: str, whens: list[str], key: str):
+    def combine(self, repo: str, track: str, whens: list[str], key: str, progress=None):
         from mmw.site.combine import combine
-        return combine(self.home, repo, track, whens, key)
+        return combine(self.home, repo, track, whens, key, progress)
 
     def point_notes(self, repo: str) -> dict[int, str]:
         from mmw.site.combine import notes

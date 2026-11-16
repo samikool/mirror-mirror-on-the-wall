@@ -100,7 +100,8 @@ class RepositoriesPage(Page):
             "r retries missing VS Code and PyPI files using saved metadata, without a full sync.\n"
             "k adds your own .debs — to a folder repository, or to an upstream mirror per network;\n"
             "f shows a folder repository's sources file for clients.\n"
-            "Prune drops packages no index references; wipe deletes every downloaded byte.")
+            "Prune drops packages no index references; wipe deletes every downloaded byte;\n"
+            "c says what each network's keep_points choice would free.")
     BINDINGS = [
         Binding("space", "tick", "Tick"),
         Binding("ctrl+a", "tick_all", "Tick all"),
@@ -114,6 +115,7 @@ class RepositoriesPage(Page):
         Binding("r", "retry_failed", "Retry missing", show=False),
         Binding("f", "sources_file", "Sources file", show=False),
         Binding("k", "add_packages", "Add packages", show=False),
+        Binding("c", "keep_costs", "Keep costs", show=False),
     ]
 
     def __init__(self):
@@ -436,14 +438,52 @@ class RepositoriesPage(Page):
     def _prune_pressed(self) -> None:
         self.action_prune()
 
+    def action_keep_costs(self) -> None:
+        self._start(self._keep_costs)
+
+    async def _keep_costs(self) -> None:
+        """What each keep_points choice would free, per network."""
+        self.set_status("Working out what each keep_points choice frees (a pool read per choice)…")
+        try:
+            table = await asyncio.to_thread(repositories.keep_costs, self.app.cfg)
+        except Exception as e:  # noqa: BLE001 — a pool from before points, a busy one
+            self.set_status(f"Can't say yet: {e}", "warning")
+            return
+        if not table:
+            self.set_status("No network keeps points yet.")
+            return
+        nets = {n.name: n for n in self.app.cfg.networks}
+        lines = []
+        for name, rows in table.items():
+            now = nets[name].keep_points if name in nets else None
+            lines.append(f"{name}:  " + " · ".join(f"{c}: {fmt_size(b)}" + (" (now)" if c == now else "")
+                                                     for c, _n, b in rows))
+        self.set_status("")
+        await self.app.push_screen_wait(ConfirmDialog(
+            "What each keep_points choice frees",
+            "\n".join(lines) + "\nAgainst keeping every point, the other networks as set. "
+                                 "Change it on the network (Keep points).", "Close"))
+
     @on(Button.Pressed, "#btn-wipe-pool")
     def _wipe_pressed(self) -> None:
         self.action_wipe()
 
     async def _prune(self) -> None:
+        self.set_status("Working out what a prune removes…")
+        try:
+            dropping, files, size = await asyncio.to_thread(repositories.prune_preview, self.app.cfg)
+        except Exception as e:  # noqa: BLE001 — said, then asked anyway
+            dropping, files, size = 0, 0, 0
+            self.set_status(f"Could not work out what a prune removes: {e}", "warning")
+        else:
+            self.set_status("")
+        what = (f"It removes {files:,} file(s), freeing {fmt_size(size)}"
+                + (f" — {dropping:,} old point(s) past their network's keep_points go first." if dropping else ".")
+                if files or dropping else "Nothing is orphaned now.")
         if not await self.app.push_screen_wait(ConfirmDialog(
                 "Prune the package pool",
                 "Remove pool packages no configured repository's index references?\n"
+                f"{what}\n"
                 "Refs of repositories removed from the config are cleaned up too.\n"
                 "Published network trees keep their own hardlinks until republished.",
                 "Prune")):

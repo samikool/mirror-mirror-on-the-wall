@@ -212,3 +212,18 @@ def test_a_clean_up_keeps_what_is_known_complete(env, tmp_path):  # noqa: F811
     ops.delete_point(home, a, "2026-11-01")                        # its files go: a GC runs
     with SiteDB(home) as db:
         assert all(db.known_complete(p.id) for p in db.points(t.id))
+
+
+def test_deleting_and_cleaning_say_what_they_are_doing(env, tmp_path):  # noqa: F811
+    """A run page hears the phases, and each file the GC removes."""
+    _cfg, _net, _md, home, a = _days(env, tmp_path, (1, 2, 3, 4))
+    heard = []
+    ops.delete_point(home, a, "2026-11-01", progress=lambda event, **data: heard.append((event, data)))
+    phases = [d["text"] for e, d in heard if e == "phase"]
+    assert any("freeing space" in p for p in phases) and any("dated trees" in p for p in phases)
+    assert any(e == "receive" for e, _d in heard)                      # a removed file, named
+    heard.clear()
+    from mmw.site.home import load_site, save_settings
+    save_settings(home, load_site(home).model_copy(update={"keep": 1}))
+    ops.clean(home, progress=lambda event, **data: heard.append((event, data)))
+    assert any(e == "phase" and "deleting" in d["text"] for e, d in heard)

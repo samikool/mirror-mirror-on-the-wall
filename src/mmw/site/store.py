@@ -71,8 +71,9 @@ class Store:
         disk_io.ops.mkdir(Path(dest).parent, parents=True, exist_ok=True)
         disk_io.ops.place(self.path(checksum), Path(dest), self.place_tmp)
 
-    def gc(self, keep: set[str]) -> tuple[int, int]:
-        """Remove every blob not in `keep`; (files, bytes) freed."""
+    def gc(self, keep: set[str], progress=None) -> tuple[int, int]:
+        """Remove every blob not in `keep`; (files, bytes) freed.
+        `progress(name)` per blob removed."""
         files = freed = 0
         if not disk_io.ops.exists(self.dir):
             return 0, 0
@@ -84,6 +85,8 @@ class Store:
                     size = disk_io.ops.remove(blob)
                     if size is not None:
                         files, freed = files + 1, freed + size
+                        if progress:
+                            progress(blob.name)
         return files, freed
 
     def sweep_tmp(self) -> None:

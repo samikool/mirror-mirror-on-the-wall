@@ -1,0 +1,98 @@
+# Upgrading to timelines
+
+This release changes how history is kept, on both sides. The connected side
+records a **point** per suite at every sync, and bundles carry points. A far
+side running mmw keeps a **timeline** per suite, serves the newest complete
+point, and serves any other on request. `apply.py`, `sign.py` and
+`make-ca.py` are gone: the far side runs mmw itself.
+
+Nothing needs converting by hand. Below is what happens on its own and what
+to do yourself, by where you start from. Do the connected side first.
+
+## The connected side
+
+Install the new mmw and sync as usual. On the first sync (or the first
+bundle, publish or `mmw snapshot list`, whichever comes first), each network:
+
+- **Turns its snapshots into points**, once, each at its own date. One that
+  can't be split is named and skipped (it stays a snapshot).
+- **Seeds its recordings from those snapshots**, so `mmw publish --as-of` reaches
+  back past the upgrade. A date before the upgrade is published as the
+  snapshot before it, and the publish says so: what synced between that
+  snapshot and the upgrade wasn't recorded.
+- **Carries over what it has sent**, so the first bundle afterwards is still
+  a delta. A full bundle a forced snapshot delete had queued is sent full,
+  once.
+
+Then:
+
+- **`far_side = "apply"` in `mmw.toml` is retired.** mmw says so once per
+  run and otherwise ignores it. Remove the line.
+- **Snapshots are labels now.** Nothing takes one for you. Bundling and
+  publishing choose points by date. Keep taking snapshots for the moments you
+  want to name.
+- **History has a limit:** `keep_points` (default 3 per suite, `all`, or an
+  age like `90d`), per suite with `keep_suites`. `mmw prune --dry-run
+  --costs` says what each choice frees. Points a snapshot holds, or that a
+  network hasn't been sent yet, are always kept.
+- **Bundles need mmw on the far side.** Tick **Include mmw installer** (or
+  `mmw bundle --installer`) for the first bundle to a far side that doesn't
+  have this version yet.
+
+## A far side already running mmw
+
+Install the new mmw there (`sh mmw-<version>/install.sh` from the installer
+file) on every machine that holds one of its roots: a root over ssh needs
+the same version. Converting is one-way, so first copy each root's
+`.mmw/site/` (its database and settings, small) somewhere safe. Then the
+first `mmw site` command that opens the mirror:
+
+- **Splits every kept version into timelines**, once. A held repository is
+  pinned to what it serves.
+- **Reads `keep_versions = N`** in its settings as `keep = N` with
+  `auto_clean = true`, the same behaviour under the new names. See `mmw site
+  settings`.
+
+Bundles made before the upgrade still apply. Applying one made for
+`apply.py` is refused with exit code 5: bundle again with the new mmw.
+
+## A far side `apply.py` manages
+
+Install mmw there, then `mmw site adopt /srv/www --yes`: the tree becomes
+an mmw root where it stands (every file checked against its
+`.mmw/manifest.jsonl`; nothing served changes), and the network's next
+bundle names its repositories. See [far-side.md](far-side.md#a-far-side-applypy-manages).
+
+## A tree mmw didn't make
+
+An APT mirror kept by other tools (apt-mirror, debmirror, rsync):
+
+```bash
+mmw site adopt /srv/mirror --as deb.debian.org/debian --key debian-archive.gpg --dry-run
+```
+
+Each suite is checked against its signature (the key you give, or the keys
+under the root's `keys/`), its Release and its indexes.
+
+- **The report says which key verified each suite**, and lists what isn't
+  adopted: pool files no index names, by-hash files of earlier Releases,
+  entries listed with MD5 only, and damaged files.
+- **Installer images are checked against their `SHA256SUMS`.**
+- **With no key, `--unverified` adopts anyway.** Those points are marked
+  until `mmw site check-signatures` checks them.
+
+## A published tree copied to a drive
+
+A tree `mmw publish` wrote carries `.mmw/manifest.jsonl` like an `apply.py`
+tree does, so the same applies: `mmw site adopt PATH` makes it a far side.
+It carries the connected side's TLS key. `mmw site certs` gives the far
+side a key of its own.
+
+## After any of these
+
+- `mmw site status` shows what each repository serves, any dated URLs
+  (`HOST/PATH/@YYYY-MM-DD/`), and any dated tree past `Valid-Until`.
+- `mmw site history REPO` lists each suite's points, what each covers, and
+  what is served.
+- `mmw site settings` shows what is kept; `--costs` adds what each setting
+  would free.

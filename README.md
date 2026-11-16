@@ -101,6 +101,7 @@ end, from zero to a client running `apt update` against your mirror.
 |----------|----------------|
 | [Getting started](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/getting-started.md) | Zero → first sync → first published tree → served → verified from a real client |
 | [Airgapped operation](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/airgap.md) | Bundle, transfer, `mmw site`, nginx, DNS, GPG import on the far side, troubleshooting |
+| [Upgrading to timelines](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/upgrading.md) | From snapshots, an older far side, an `apply.py` tree, or a tree mmw didn't make: what happens on its own, and what to do |
 | [Configuration](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/configuration.md) | Every `mmw.toml` key and default, generated from the models |
 | [CLI reference](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/cli.md) | Every command and flag, generated from the CLI |
 | [VS Code](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/vscode.md) | Mirror the VS Code Marketplace, installers and Remote-SSH server builds |

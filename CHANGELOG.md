@@ -6,6 +6,99 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0]
+
+History you can move through. Every sync records a point per suite; a far side
+running mmw keeps a timeline of them, serves any day on request, at a dated URL
+too, and merges history that arrives out of order or from another network. mmw
+is now the one far-side tool: `apply.py`, `sign.py` and `make-ca.py` are gone,
+and trees mmw didn't make, or that `apply.py` kept, are adopted where they
+stand.
+
+Upgrading from 1.4.0 converts on its own — see
+[Upgrading to timelines](docs/upgrading.md). The connected side turns its
+snapshots into points on first use. A far side already running mmw converts
+on its first `mmw site` command after the new mmw is installed there (copy each
+root's `.mmw/site/` first: the conversion is one-way). Bundles from 1.5.0 need
+1.5.0 on the far side: tick **Include mmw installer** for the first one.
+
+### Added
+
+- **Every sync is a point.** Every sync records a point per suite that
+  changed, for each network that uses it; `keep_points` on a network
+  (default 3 per suite, `all`, or an age like `90d`, per suite with
+  `keep_suites`) says how many `mmw prune` keeps — `mmw prune --dry-run
+  --costs` (or `c` on the Sources page) says what each choice frees, and Prune
+  says what it removes before asking. Existing snapshots become points
+  automatically.
+- **Publish as of a date.** `mmw publish -n NET --as-of DATE` publishes a
+  network as it was recorded on that date (`2026-11-03`, `3nov`, a stamp);
+  the TUI's publish page has the same choice.
+- **Bundles carry points.** `mmw bundle --history` (or `history = true` on a
+  network) sends every point synced since the last bundle, so the far side
+  can serve any of them; `--newest` sends just each suite's newest; `--full`
+  carries every file again. The TUI's transfer page has the same choice.
+- **Far-side timelines.** A far side keeps a timeline per suite, ordered by
+  the date upstream signed it: bundles that arrive out of order, or from
+  another network, are merged in instead of refused (`--deploy LABEL` also
+  deploys a repository this mirror lacks). `mmw site serve REPO DATE` serves
+  a repository as it was that day, pinned until `mmw site forward`;
+  `mmw site history` lists each suite's points and what each covers.
+- **Dated URLs.** Every point a far side keeps is served at
+  `http://deb.example/debian/@2026-06-14/`, so a build can pin its
+  `sources.list` to a day; `mmw site status` says which are past
+  `Valid-Until` (`mmw site settings --no-dated` turns them off).
+- **History between far sides.** `mmw site bundle --to NETWORK --out FILE`
+  sends a far side's history to another network — only what it hasn't sent
+  there before (`--since`, `--all`, `--repo`, `--dry-run`); the other side
+  applies it with `mmw site apply`. The TUI's Export (`x`) does the same.
+- **Combining slices.** `mmw site combine` serves architectures or
+  components from different days of a suite together, re-signed with a site
+  key — said first, since clients then need that key, served beside the
+  repository. In the TUI, `j` on a point.
+- **Adopting trees.** `mmw site adopt PATH` takes over APT trees mmw didn't
+  make — each suite checked against its signature (and says which key
+  verified it), its Release and its indexes, then hardlinked into the mirror,
+  the newest served; the trees are never changed. A tree `apply.py` kept
+  converts in place. `mmw site check-signatures` checks points adopted
+  without a key; `mmw site adopted` lists the trees adopted from, and
+  `--remove` deletes one.
+- **The far-side TUI does what `mmw site` does:** adopt (`A`), clean up
+  (`C`), settings with what each keep would free (`s`), a suite's own keep
+  (`e`), verify and repair (`v`), signature checks (`g`) and adopted trees
+  (`o`). Long jobs — delete, clean up, combine, verify — show their progress.
+- **Roots over ssh** can be cleaned up, given a suite's own keep, priced and
+  combined from, as local ones.
+
+### Changed
+
+- **mmw is the one far-side tool.** Bundles and published trees no longer
+  carry `apply.py`, `sign.py` or `make-ca.py`; `far_side` in a config is
+  ignored (said once for `"apply"`). A bundle never carries a TLS private
+  key: the far side signs its own with `mmw site certs`, which gains
+  `--out DIR` to collect certificates for a proxy (Nginx Proxy Manager).
+- **The far side keeps history by a setting**: the newest 3 points per suite
+  by default, `all`, or an age (`mmw site settings --keep`, per suite with
+  `mmw site keep`), and deletes nothing on its own — Clean up (`mmw site
+  clean`, `C`) says what each point frees first; `--auto-clean` cleans after
+  each apply (an old `keep_versions` setting turns it on).
+- **Snapshots are labels** taken by hand; publishing and bundles never take
+  one, and force-deleting one no longer makes the next bundle full.
+- **Versions are named by date** (`2026-11-03`, `3nov`), label or digest, not
+  v-numbers.
+- **Deleting a point keeps its record.** The point being served can be
+  deleted after a warning (`--yes`); the one served just before is kept for
+  rolling back. A delta whose starting point is missing is stored
+  incomplete and reported, instead of refused.
+
+### Fixed
+
+- Selecting a PyPI mirror no longer crashes with `KeyError: 'python'`. Its
+  pure-wheels/sdists part was misread from the database as an apt-style
+  unit; existing databases are repaired the next time mmw opens them.
+- A malformed bundle — a damaged header, or a member its manifest doesn't
+  name — is reported as malformed before anything is written.
+
 ## [1.4.0]
 
 Your own packages, wherever they need to be. A folder of `.deb` files becomes

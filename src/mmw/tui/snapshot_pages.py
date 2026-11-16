@@ -145,8 +145,11 @@ class BundlePickPage(Page):
     with what that sends, as a bundle or (mmw) a stage. Dismisses with a `BundleChoice`, or None."""
 
     def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, mirror_dir: Path,
-                 repos: dict[str, str] | None = None):
+                 repos: dict[str, str] | None = None, installer_due: bool | None = None):
         super().__init__()
+        # Worked out by the caller off the screen's thread (it reads the pool);
+        # None: here, as a page built on its own (a test) has no caller to ask.
+        self._due = installer_due
         self.TITLE = f"Transfer {net.name}"
         # An mmw far side: key → label of the repositories to choose from.
         self._repos = repos
@@ -214,6 +217,8 @@ class BundlePickPage(Page):
         self._estimate_now()
 
     def _installer_due(self) -> bool:
+        if self._due is not None:
+            return self._due
         from mmw.core import runtime as rt
         try:
             return rt.installer_due(self._net, self._mirror_dir)

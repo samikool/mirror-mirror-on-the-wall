@@ -3,9 +3,9 @@
 
 Moved out of the full-screen `_TransferProgressModal` so a transfer runs
 inside the app while the other sections are browsed. `record()` and the 60 Hz
-tick are the modal's, unchanged: `publish_group` (`core/publisher/links.py`)
-fires the identical `progress(rel, status)` calls into a `BundleSink` as into
-a `TreeSink`, so publish and bundle share the counters, the lock-protected
+tick are the modal's, unchanged: a publish (`publish_group` into a `TreeSink`)
+and a bundle (`PointsSink`) make the same `progress(rel, status)` calls, so
+they share the counters, the lock-protected
 buffer and the completion states. The two differ only in wording, the widget
 id prefix and whether a per-mirror bar renders (`TransferKind`).
 
@@ -175,7 +175,7 @@ class TransferView(Vertical):
         self._speed_ema: float = 0.0
         self._last_speed_time: float = 0.0
         self._last_speed_linked: int = 0
-        # Archive-writing phase (BundleSink.close()): the real I/O of a bundle.
+        # Archive-writing phase (PointsSink.close()): the real I/O of a bundle.
         self._archive_total_files: int = 0
         self._archive_total_bytes: int = 0
         self._archive_files_done: int = 0
@@ -185,7 +185,7 @@ class TransferView(Vertical):
         self._archive_last_sample_time: float = 0.0
         self._archive_last_sample_files: int = 0
         self._archive_last_sample_bytes: int = 0
-        # One large file's own progress (BundleSink._ProgressFile).
+        # One large file's own progress (sinks._ProgressFile).
         self._current_large_file: str = ""
         self._current_large_file_done: int = 0
         self._current_large_file_size: int = 0
@@ -546,7 +546,7 @@ class TransferView(Vertical):
                     f"  [dim]# destination scan done: {int(checked):,} checked, "
                     f"{int(removed):,} removed[/]"
                 )
-            # Archive-writing phase (BundleSink.close()) — see the __init__
+            # Archive-writing phase (PointsSink.close()) — see the __init__
             # comment above these fields. `link()`/`write()` only ever append
             # to in-memory lists, so these are the only status events that
             # correspond to real disk I/O for a bundle.
@@ -585,7 +585,7 @@ class TransferView(Vertical):
                 self._archive_files_done = int(files_done)
                 self._archive_bytes_done = int(bytes_done)
                 # `dst` is whichever file happened to complete the instant
-                # this (throttled, see BundleSink._maybe_report_archive_
+                # this (throttled, see PointsSink._maybe_report_archive_
                 # progress) report fired — not every file, the same way the
                 # numeric counters above only sample rather than tick per
                 # file. Enough to show real motion through the archive
@@ -757,7 +757,7 @@ class TransferView(Vertical):
                 )
                 rate_label.display = True
                 # One big file's own progress, when there is one in flight —
-                # see BundleSink._ProgressFile. Filename only, on its own line.
+                # see sinks._ProgressFile. Filename only, on its own line.
                 file_label = self.query_one(f"#{p}-archive-file-label", Label)
                 if current_large_file and current_large_file_size:
                     file_pct = 100 * current_large_file_done / current_large_file_size

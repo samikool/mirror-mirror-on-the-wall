@@ -155,3 +155,36 @@ def test_full_carries_everything_and_nothing_new_says_so(mmw_net, tmp_path):
         _bundle(cfg, net, md, tmp_path / "2.tar")
     again, _h2, _r2 = _open(_bundle(cfg, net, md, tmp_path / "3.tar", full=True).out_path)
     assert sorted(again) == sorted(first)
+
+
+def test_progress_says_which_repository_is_being_bundled(mmw_net, tmp_path):
+    cfg, net, md = mmw_net
+    started = []
+    bundle_network(net, cfg, md, out_path=tmp_path / "1.tar",
+                   mirror_start_callback=lambda name, i, n, **kw: started.append((name, i, n)))
+    assert [(i, n) for _name, i, n in started] == [(1, 2), (2, 2)]
+    assert {name for name, _i, _n in started} == {"example.com/a", "example.com/b"}
+
+
+def test_a_network_with_no_files_of_its_own_still_bundles_its_nginx(mmw_net, tmp_path):
+    """No keys, nothing outside a repository: no `network:` track — and the
+    bundle still carries the network's generated nginx."""
+    cfg, net, md = mmw_net
+    points.record_network_points(net, cfg, md)
+    with Pool(md, read_only=True) as pool:
+        assert not [t for t in pool.network_tracks(net.name) if t.repo.startswith("network:")]
+    _names, _header, rows = _open(_bundle(cfg, net, md, tmp_path / "1.tar").out_path)
+    assert any(r["p"] == "nginx/mirror.conf" and "r" not in r for r in rows)
+
+
+def test_a_network_with_keys_gets_its_network_track_and_bundles_them(mmw_net, tmp_path):
+    cfg, net, md = mmw_net
+    (md / "keys" / "custom").mkdir(parents=True)
+    (md / "keys" / "custom" / "archive.gpg").write_bytes(b"a public key")
+    points.record_network_points(net, cfg, md)
+    with Pool(md, read_only=True) as pool:
+        mine = [t for t in pool.network_tracks(net.name) if t.repo == f"network:{net.name}"]
+        assert len(mine) == 1
+    _names, _header, rows = _open(_bundle(cfg, net, md, tmp_path / "1.tar").out_path)
+    assert any(r["p"] == "keys/custom/archive.gpg" for r in rows)
+    assert any(r["p"] == "nginx/mirror.conf" for r in rows)

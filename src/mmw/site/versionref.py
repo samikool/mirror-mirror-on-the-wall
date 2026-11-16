@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import date, datetime, timezone
 from typing import Iterable
+from datetime import date, datetime, timezone
 
 from mmw.site.db import VersionInfo
 
@@ -23,6 +23,7 @@ _ISO = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
 _DAY_MONTH = re.compile(rf"(\d{{1,4}})[\s\-/]*({_MONTH})\.?", re.I)
 _MONTH_DAY = re.compile(rf"({_MONTH})\.?[\s\-/]*(\d{{1,4}})", re.I)
 _NUMERIC_DM = re.compile(r"(\d{1,2})/(\d{1,2})")
+_HEX = re.compile(r"[0-9a-f]{6,64}", re.I)
 
 
 def _when(stamp: str, with_time: bool = False) -> str:
@@ -81,10 +82,6 @@ def when_list(stamps: list[str]) -> list[str]:
     return [_when(s, days.count(s[:8]) > 1) for s in stamps]
 
 
-def _kept(versions: list[VersionInfo]) -> str:
-    return ", ".join(f"v{v.number} · {_when(v.stamp)}" for v in versions) or "none"
-
-
 def _other_years(versions: list[VersionInfo], prefix: str) -> str:
     """A hint when a day and month matched nothing this year: the same day in others."""
     same = sorted({v.stamp[:8] for v in versions if v.stamp[4:8] == prefix[4:8]}, reverse=True)
@@ -108,29 +105,12 @@ def _named(versions: list[VersionInfo], text: str, today: date | None) -> tuple[
     return found, (_other_years(versions, prefix) if assumed and not found else "")
 
 
-def resolve(versions: list[VersionInfo], text: str, today: date | None = None) -> VersionInfo:
-    """The one version `text` names, among a repository's (newest first)."""
-    text = text.strip()
-    if m := _NUMBER.fullmatch(text):
-        number = int(m[1])
-        for v in versions:
-            if v.number == number:
-                return v
-        raise ValueError(f"no v{number} kept here — kept: {_kept(versions)}")
-    found, hint = _named(versions, text, today)
-    if len(found) == 1:
-        return found[0]
-    if not found:
-        raise ValueError(f"no version {text!r} kept here{hint} — kept: {_kept(versions)}")
-    named = ", ".join(f"v{v.number} · {_when(v.stamp, True)}" for v in found)
-    raise ValueError(f"{text!r} matches {named} — say which: its v-number or its stamp")
-
-
 def bundle_stamp(versions: Iterable[VersionInfo], text: str, today: date | None = None) -> str:
-    """The one bundle `text` names, across every repository's versions."""
+    """The one bundle `text` names — its date, stamp or label — across every
+    repository's versions."""
     text = text.strip()
-    if _NUMBER.fullmatch(text):
-        raise ValueError(f"{text!r} is one repository's version — name a bundle by its date, stamp or label")
+    if _NUMBER.fullmatch(text) and text.lower().startswith("v"):
+        raise ValueError(f"{text!r} isn't a bundle — name it by its date, stamp or label")
     versions = list(versions)
     found, hint = _named(versions, text, today)
     stamps = sorted({v.stamp for v in found}, reverse=True)
@@ -141,17 +121,6 @@ def bundle_stamp(versions: Iterable[VersionInfo], text: str, today: date | None 
         raise ValueError(f"no bundle {text!r} here{hint} — bundles: {', '.join(when_list(known)) or 'none'}")
     named = ", ".join(f"{_when(s, True)} ({s})" for s in stamps)
     raise ValueError(f"{text!r} matches more than one bundle: {named} — give its stamp")
-
-
-def as_of(versions: list[VersionInfo], stamp: str) -> VersionInfo | None:
-    """The version a repository had once the bundle `stamp` was applied: its
-    newest at or before it (None when it arrived later)."""
-    return next((v for v in sorted(versions, key=lambda v: v.stamp, reverse=True) if v.stamp <= stamp), None)
-
-
-# ── timeline points ──────────────────────────────────────────────────────────
-
-_HEX = re.compile(r"[0-9a-f]{6,64}", re.I)
 
 
 def short(ident: str) -> str:

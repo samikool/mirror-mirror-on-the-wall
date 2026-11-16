@@ -82,7 +82,7 @@ def test_apt_get_installs_a_site_layer_deb_from_the_far_side(lab, tmp_path):  # 
     from mmw.site.db import SiteDB
     from mmw.site.layers import site_layer_dir
     from mmw.site.ops import relayer
-    net = config.NetworkConfig(name="lab", root=lab.tmp / "pub", far_side="mmw")
+    net = config.NetworkConfig(name="lab", root=lab.tmp / "pub")
     cfg = config.Config(settings=config.Settings(mirror_dir=lab.mirror_dir), sources=[lab.src], networks=[net])
     home = H.init_root(lab.tmp / "srv", name="main", set_id="s1", network="lab")
     apply_bundle(home, str(bundle_network(net, cfg, lab.mirror_dir, out_path=lab.tmp / "b",

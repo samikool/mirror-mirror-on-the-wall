@@ -245,7 +245,7 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
     `tls_include` (a bundle's far side, whose certificate is signed there):
     every server block includes this wildcard path instead. nginx ignores a
     wildcard include that matches nothing, so the config loads before any
-    certificate exists; apply.py writes the matching file — `listen 443 ssl`
+    certificate exists; mmw writes the matching file — `listen 443 ssl`
     and the certificate paths — once a signed certificate fits the key.
 
     `extra_hosts` are directories published beside the mirrors that are also
@@ -278,7 +278,7 @@ def nginx_files(mirrors: list[MirrorConfig], root: str, *,
         hosts = hosts + [_dns_name(s.server_name) for s in provider_sites]
     tls_note = ("#\n# HTTPS: every host also listens on 443 with\n"
                 f"#   {tls[0]}\n") if tls else (
-        "#\n# HTTPS: on once a signed certificate is installed — apply.py then\n"
+        "#\n# HTTPS: on once a signed certificate is installed — mmw then\n"
         f"# writes {tls_include.replace('*', '')}\n") if tls_include else ""
     return {
         "nginx/mirror.conf": _MAIN.format(

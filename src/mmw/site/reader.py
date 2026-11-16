@@ -1,8 +1,7 @@
 """A bundle's members, from wherever it arrives: a tar file, a tar streamed
 on stdin (`cat lab.tar | ssh host mmw site apply -`), or a stage directory
 (`mmw stage`). Members come in any order, with or without a leading `./`;
-every name is checked before anything uses it, with the same rules as
-`apply.py`."""
+every name is checked before anything uses it (`served_tree.is_safe_path`)."""
 import sys
 import tarfile
 from dataclasses import dataclass

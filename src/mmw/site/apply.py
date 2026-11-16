@@ -173,7 +173,7 @@ class RootApply:
         elif m.name.startswith(RUNTIME_PREFIX):
             self.seen.add("runtime")
         elif m.name.startswith(".mmw/"):
-            return                              # the bundle's own apply.py and the like
+            return                              # an older bundle's own control files
         elif m.kind == "link":
             self.links[m.name] = m.linkname
         elif self.dry_run:

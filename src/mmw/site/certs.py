@@ -282,14 +282,14 @@ def tls_notes(home: Path) -> list[str]:
     return notes
 
 
-def collect_certs(roots: list[tuple[str, Path]], network: str, out: Path) -> list[str]:
+def collect_certs(roots: list[tuple[str, Path]], network: str, out: Path, settings=None) -> list[str]:
     """For a proxy in front of the mirror (Nginx Proxy Manager): each signed
     root's certificate and key as `NETWORK-ROOT.crt` / `.key` (0600), and the
     CA's `ca.crt`, in `out`. A root not signed yet is skipped. The names
-    written."""
+    written. `settings`: a site's own (an older site records its CA there)."""
     import os
     import shutil
-    ca = _ca_paths(None)
+    ca = _ca_paths(settings)
     if ca is None:
         raise ValueError("no CA yet — mmw site ca load --cert … --key …, or mmw site ca make --out …")
     out = Path(out)

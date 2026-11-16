@@ -494,8 +494,7 @@ def adopt_tree(home: Path, tree: FoundTree, check: TreeCheck, *, repo: str | Non
         switched = _reserve(db, roots, repo)
         result.lines.extend(f"  {label}  {w}" for w in switched.warnings)
         _render(roots, db)
-        db.set_meta(_ORIGINAL + str(tree.path.resolve()),
-                    json.dumps({"stamp": stamp, "refused": sorted(result.refused)}))
+        _note_original(db, tree.path, stamp, sorted(result.refused))
     return result
 
 
@@ -667,8 +666,7 @@ def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None
             result.lines.extend(f"  {key[len(ADOPTED):]}  {w}" for w in switched.warnings)
         _render(roots, db)
         if not in_place:
-            db.set_meta(_ORIGINAL + str(tree.path.resolve()),
-                        json.dumps({"stamp": tree.created, "refused": sorted(result.refused)}))
+            _note_original(db, tree.path, tree.created, sorted(result.refused))
     if in_place:
         record = tree.path / ".mmw" / "manifest.jsonl"
         os.replace(record, record.with_name("manifest.apply.jsonl"))   # converted: never again
@@ -724,11 +722,15 @@ class Original:
     refused: list = field(default_factory=list)   # what wasn't adopted from it: lost with it
 
 
+def _note_original(db, path: Path, stamp: str, refused: list) -> None:
+    """A tree adopted from: when, and what of it was not adopted (lost with it)."""
+    db.set_meta(_ORIGINAL + str(Path(path).resolve()), json.dumps({"stamp": stamp, "refused": refused}))
+
+
 def record_original(home: Path, path: Path, stamp: str, refused: list | None = None) -> None:
-    import json
     from mmw.site.db import SiteDB
     with SiteDB(home) as db:
-        db.set_meta(_ORIGINAL + str(Path(path).resolve()), json.dumps({"stamp": stamp, "refused": refused or []}))
+        _note_original(db, path, stamp, refused or [])
 
 
 def _recorded(value: str) -> tuple[str, list]:

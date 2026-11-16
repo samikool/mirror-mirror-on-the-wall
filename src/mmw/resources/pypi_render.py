@@ -1,7 +1,7 @@
 """Render a tree's PyPI pages from its shards — stdlib only.
 
 Shipped as `pypi-data/render.py` beside the shards it reads, and run by one
-rule (`render_derived` in apply.py): after a live publish, after a snapshot
+rule (`render_derived` in `mmw.core.served_tree`): after a live publish, after a snapshot
 replay, and on the far side after a bundle is applied. The pages under
 `pypi.org/` are derived, never shipped: snapshots and bundles carry 256
 shards instead of millions of pages.

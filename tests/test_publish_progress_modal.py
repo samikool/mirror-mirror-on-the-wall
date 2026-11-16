@@ -101,7 +101,7 @@ def test_record_short_path_under_four_segments_kept_whole():
 
 
 def test_record_archive_phase_messages():
-    """`BundleSink.close()` is where a bundle does its real I/O — reading pool
+    """`PointsSink.close()` is where a bundle does its real I/O — reading pool
     blobs into the tar — invisible to the fast enumeration phase the tests
     above cover. These status events are its only signal."""
     modal = _modal()
@@ -246,7 +246,7 @@ def test_large_file_progress_renders_on_its_own_line(tmp_path):
 def test_record_archive_progress_logs_the_file_that_just_completed():
     """Once enumeration's list of "planned" files finishes, the log should
     keep moving with what's actually been tarred — sampled at
-    the same throttled cadence as the numeric counters (see BundleSink.
+    the same throttled cadence as the numeric counters (see PointsSink.
     _maybe_report_archive_progress), not a second unthrottled per-file path."""
     modal = _modal()
     modal.record("", "archive-start:10:1000")
@@ -258,7 +258,7 @@ def test_record_archive_progress_logs_the_file_that_just_completed():
 def test_archive_progress_repurposes_overall_bar_and_mirror_label(tmp_path):
     """Once the archive phase starts, the overall bar and the mirror-label
     line switch to reporting it — the enumeration phase's own progress is
-    already over by the time BundleSink.close() runs.
+    already over by the time PointsSink.close() runs.
 
     Both the bar and the percentage are bytes-based, not
     file-count-based: a pool holding files from a few KB to several GB would

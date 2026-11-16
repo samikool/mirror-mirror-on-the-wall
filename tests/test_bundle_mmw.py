@@ -16,7 +16,6 @@ from test_snapshot_repo_versions import _change_a, _key
 
 def _mmw(two_mirrors):  # noqa: F811
     cfg, net, mirror_dir = two_mirrors
-    net = net.model_copy(update={"far_side": "mmw"})
     return cfg.model_copy(update={"networks": [net]}), net, mirror_dir
 
 

@@ -47,7 +47,7 @@ def _extract(bundle: Path, dest: Path) -> None:
         # filter="data" is the modern (3.12+) extraction filter: it
         # rejects absolute paths, `..` traversal, device files, and
         # strips owner/permission bits that could affect files outside
-        # the archive. Test-only convenience — apply.py (Task 8) ships to
+        # the archive. Test-only convenience — the far side ships to
         # far sides as old as RHEL 8's Python 3.6, where `filter=` does
         # not exist, so it must do its own path validation rather than
         # lean on this.
@@ -62,7 +62,7 @@ def _tree(root: Path) -> dict[str, bytes]:
 
 
 def test_bundle_network_forwards_archive_progress(seeded, tmp_path):
-    """`bundle_network` threads its `progress` callback into `BundleSink` so
+    """`bundle_network` threads its `progress` callback into the bundle sink so
     the archive-writing phase — the actual I/O, which happens entirely
     inside `close()` — is visible too, not just the fast in-memory
     enumeration phase `publish_group` reports on."""

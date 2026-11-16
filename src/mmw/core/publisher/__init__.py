@@ -142,7 +142,7 @@ def publish_network(
 
 def _render_derived(root: Path, progress=None, stop_event=None) -> None:
     """The derived pages (PyPI's) from the tree's shards — the same rule
-    apply.py runs on the far side, its page writes on this job's write lane
+    the far side runs, its page writes on this job's write lane
     (a full index is millions of small files)."""
     from mmw.core.served_tree import render_derived
 
@@ -541,7 +541,7 @@ def walk_network(
         for provider in all_providers():
             provider.contribute(ctx)
 
-    # Must run before sink.close(): BundleSink (Task 6) finalizes the
+    # Must run before sink.close(): a sink finalizes the
     # whole archive there, so anything written after close is dropped.
     if not (stop_event and stop_event.is_set()):
         nginx_rels: set[str] = set()

@@ -1,11 +1,11 @@
 """Bundle manifests: what a network's tree is expected to contain.
 
 A manifest describes the **complete** tree at a point in time, not the delta
-that produced it. That is what makes `apply.py --verify` meaningful and what
+that produced it. That is what makes `mmw site verify` meaningful and what
 makes a diverged site recoverable later.
 
 JSONL — a header line then one line per file — so the far side can stream it
-rather than hold millions of entries in memory. Plain text: apply.py reads it
+rather than hold millions of entries in memory. Plain text: anything reads it
 with nothing but Python. Ledger files written before that are zstd
 (`.manifest.jsonl.zst`) and are still read here.
 
@@ -74,21 +74,20 @@ class ManifestHeader:
     full: bool
     # How many real files (payload + generated, never the fixed .mmw/
     # control members) THIS bundle's tar actually contains — set by
-    # BundleSink.close() once its own send/generate lists are final, just
+    # PointsSink.close() once what it carries is final, just
     # before the manifest is written. Never confused with the manifest's own
     # (always-complete) file list: a delta bundle's file_count is correctly
     # much smaller than len(files), since most of the tree is carried
     # forward unchanged. Optional and defaulted so an older manifest already
-    # on disk — written before this field existed — still parses; apply.py
+    # on disk — written before this field existed — still parses; the far side
     # treats its absence as "can't check this, don't try."
     file_count: int | None = None
-    # The snapshots' labels, for people: printed by apply.py and kept in its
-    # state file. Optional — older manifests and apply.py ignore them.
+    # The snapshots' labels, for people. Optional — older manifests have none.
     previous_label: str | None = None
     created_label: str | None = None
     # Format 2 (bundles for a far side running mmw): `format = 2` and, per
     # repository key, {"label", "from", "to", "digest", "bases"} with
-    # version numbers. Written only when set, so an apply.py network's
+    # version numbers. Written only when set, so an older network's
     # manifest stays byte-for-byte what it was.
     format: int | None = None
     repos: dict | None = None
@@ -258,7 +257,7 @@ def delta(prev: dict[str, str], cur: dict[str, str]) -> tuple[set[str], set[str]
 
 
 # What a destination was last given: a publish writes it into its tree, and
-# apply.py into the tree a bundle lands in — the bundle manifest's own name.
+# a far side into the tree a bundle lands in — the bundle manifest's own name.
 RECORD_PATH = ".mmw/manifest.jsonl"
 
 

@@ -80,6 +80,8 @@ def free_at(location: str) -> int:
 class SshRoot:
     """A root on another machine, reached with plain ssh and key auth."""
 
+    is_local = False
+
     def __init__(self, location: str, info: dict):
         self._kind, self.host, self.path = ssh.parse_location(location)
         self._info = info

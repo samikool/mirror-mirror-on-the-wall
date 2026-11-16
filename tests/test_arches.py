@@ -514,7 +514,7 @@ def test_a_failing_key_link_surfaces_in_the_network_result(tmp_path, monkeypatch
 
 def test_publish_keys_runs_before_sink_close(tmp_path, monkeypatch):
     """`publish_keys` used to run after `finally: sink.close()` — harmless only
-    because `TreeSink.close()` is a no-op today. `BundleSink` (Task 6)
+    because `TreeSink.close()` is a no-op today. a bundle sink
     finalizes the whole tar in `close()`, so keys handed to a closed sink would
     be silently dropped."""
     from mmw.core.publisher import publish_network

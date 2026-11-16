@@ -328,7 +328,7 @@ def test_publish_page_refuses_a_snapshot_first_of_a_snapshot(two_mirrors):  # no
 
 def _mmw_net(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, mirror_dir = two_mirrors
-    net = net.model_copy(update={"far_side": "mmw", "bundle_dir": tmp_path / "usb"})
+    net = net.model_copy(update={"bundle_dir": tmp_path / "usb"})
     return cfg.model_copy(update={"networks": [net]}), net, mirror_dir
 
 

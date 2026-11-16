@@ -98,7 +98,7 @@ def test_bump_stamp_rolls_over_minute_and_day_boundaries():
 
 
 def test_a_manifest_is_plain_jsonl(tmp_path):
-    """apply.py reads it with nothing but Python."""
+    """Anything reads it with nothing but Python."""
     import json
     p = tmp_path / "m.manifest.jsonl"
     write_manifest(p, ManifestHeader(network="lab", created="20260906T143000Z",

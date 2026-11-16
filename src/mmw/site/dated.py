@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import shutil
 from pathlib import Path
+
+from mmw.core import disk_io
 
 DATED_DIR = re.compile(r"\.?@\d{4}-\d{2}-\d{2}(\.building|\.old)?")
 MARKER = ".mmw-dated"
@@ -65,12 +65,13 @@ def _ids_key(point_ids: list[int]) -> str:
 
 
 def _ours(path: Path) -> bool:
-    return path.is_dir() and not path.is_symlink() and (path / MARKER).is_file()
+    return (disk_io.ops.is_dir(path) and not disk_io.ops.is_symlink(path)
+            and disk_io.ops.is_file(path / MARKER))
 
 
 def _remove(path: Path) -> bool:
     if _ours(path):
-        shutil.rmtree(path, ignore_errors=True)
+        disk_io.ops.rmtree(path, ignore_errors=True)
         return True
     return False
 
@@ -80,18 +81,18 @@ def _build(root: Path, store, rel_dir: str, files: dict[str, str]) -> None:
     final = root / rel_dir
     tmp = final.with_name(f".{final.name}.building")
     old = final.with_name(f".{final.name}.old")
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True)
-    (tmp / MARKER).write_text("built by mmw: a dated tree of this repository\n")
+    disk_io.ops.rmtree(tmp, ignore_errors=True)
+    disk_io.ops.mkdir(tmp, parents=True)
+    disk_io.ops.write_text(tmp / MARKER, "built by mmw: a dated tree of this repository\n")
     for rel, cs in sorted(files.items()):
         dest = tmp / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        os.link(store.path(cs), dest)
+        disk_io.ops.mkdir(dest.parent, parents=True, exist_ok=True)
+        disk_io.ops.hardlink(store.path(cs), dest)
     if _ours(final):
-        shutil.rmtree(old, ignore_errors=True)
-        os.replace(final, old)
-    os.replace(tmp, final)
-    shutil.rmtree(old, ignore_errors=True)
+        disk_io.ops.rmtree(old, ignore_errors=True)
+        disk_io.ops.replace(final, old)
+    disk_io.ops.replace(tmp, final)
+    disk_io.ops.rmtree(old, ignore_errors=True)
 
 
 def refresh(db, roots) -> bool:
@@ -102,7 +103,7 @@ def refresh(db, roots) -> bool:
     every_base = {b for st in db.repo_states() for b in st.bases}
     for r in roots.all:
         root = Path(r.path)
-        if not (root / ".mmw" / "store").is_dir():
+        if not disk_io.ops.is_dir(root / ".mmw" / "store"):
             continue                                             # not mounted: left as it is
         store = roots.store(r)
         key = f"dated:{r.name}"
@@ -138,9 +139,9 @@ def refresh(db, roots) -> bool:
         # Marked trees nothing wants — a moved repository's, a build a crash cut short.
         for base in every_base:
             bdir = root / base
-            if not bdir.is_dir() or bdir.is_symlink():
+            if not disk_io.ops.is_dir(bdir) or disk_io.ops.is_symlink(bdir):
                 continue
-            for entry in bdir.iterdir():
+            for entry in disk_io.ops.iterdir(bdir):
                 rel = f"{base}/{entry.name}"
                 if DATED_DIR.fullmatch(entry.name) and rel not in wanted_dirs and _remove(entry):
                     changed = True

@@ -13,7 +13,7 @@ own answer to the same three questions and they disagreed:
   network's mirrors before it will publish or bundle; the headless verbs
   called `publish_network`/`bundle_network` straight out. `pool.mirror_files()`
   is `refs ⋈ packages`, so a ref whose blob the pool doesn't hold is
-  *invisible* to it: it lands in neither tree nor tarball, `apply.py --verify`
+  *invisible* to it: it lands in neither tree nor tarball, the far side's apply
   passes, and the gap surfaces as a 404 during `apt install` on the far side
   of an airgap. For publish it is worse — the destination prune then runs
   against an under-complete keep set and deletes correct files out of a live

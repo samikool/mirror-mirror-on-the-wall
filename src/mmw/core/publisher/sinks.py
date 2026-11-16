@@ -2,7 +2,7 @@
 
 `publish_group` enumerates from the pool and orders pkg → meta → release; a
 Sink decides what "put this file there" means. `TreeSink` hardlinks into a
-directory (a live-served mirror); `BundleSink` streams into a plain tar that
+directory (a live-served mirror); `PointsSink` streams into a plain tar that
 crosses an airgap.
 
 `rel` is always network-root-relative and POSIX:
@@ -10,7 +10,7 @@ crosses an airgap.
 
 **The `progress` callback a Sink is constructed with follows the same rule:**
 every call is `progress(rel: str, status: str)` — a sink-relative POSIX
-string, never a `Path`. `BundleSink` has no destination path to hand back at
+string, never a `Path`. A bundle sink has no destination path to hand back at
 all, so a contract that assumed one could not survive it. The one production
 consumer, `TransferView.record` (`tui/transfer.py`), expects a
 `str` and will raise on a `Path`.
@@ -47,7 +47,7 @@ _ANNOUNCE_LARGE_FILE_BYTES = 50 * 1024 * 1024
 # treat as the leftovers of a dropped repository. `nginx/` and `keys/` get
 # their own reconcile pass instead (`finalize_group` with that prefix, driven
 # by `publish_network`/`bundle_network`); `changelogs.ubuntu.com/` belongs to
-# the dist-upgrade step; `.mmw/` is apply.py's staging area and `.mmw-state`
+# the dist-upgrade step; `.mmw/` is the far side's staging area and `.mmw-state`
 # its ledger cursor — deleting either from a far side would be catastrophic.
 # `pypi.org` is rendered in place from `pypi-data/` (render_derived), never a sink base.
 NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw", "vscode-gallery",
@@ -55,7 +55,7 @@ NON_BASE_DIRS = frozenset({"nginx", "keys", "changelogs.ubuntu.com", ".mmw", "vs
 
 # Where a `certs` network's certificate and key land on the far side:
 # under `.mmw/`, which no generated server block serves (each one's root is a
-# hostname directory). Fixed control members like `.mmw/apply.py`, not
+# hostname directory). Fixed control members under `.mmw/`, not
 # manifest payload — so they ride every bundle, delta or full, and sit near
 # the front of the archive rather than in the tail a cut-short copy loses.
 TLS_DIR = ".mmw/tls"
@@ -63,7 +63,7 @@ NON_BASE_FILES = frozenset({"UPGRADE.md", "PYPI.md", ".mmw-state", "apply.py", "
 
 # Where TreeSink stages content before renaming it onto a live-served path.
 # Never inside a `mirror_base`, so nginx can never serve it — the same
-# reasoning as apply.py's own `{root}/.mmw/tmp/`.
+# reasoning as the far side's own `{root}/.mmw/tmp/`.
 _TMP_SUBDIR = (".mmw", "tmp")
 
 
@@ -157,7 +157,7 @@ class Sink(Protocol):
         by-hash retirement and destination pruning share one instance across a
         multi-repository network), so this cannot be a running total —
         `publish_group` adds the return value straight onto that group's own
-        `MirrorPublishResult`. `BundleSink` returns
+        `MirrorPublishResult`. A bundle sink returns
         (len(deletions recorded for this group), 0).
         """
         ...
@@ -308,7 +308,7 @@ class TreeSink:
         bh_dirs: set[Path] = set()
         checked = 0
         # `progress` always receives a sink-relative POSIX str, never a Path —
-        # a BundleSink has no destination path at all, so the callback
+        # a bundle sink has no destination path at all, so the callback
         # contract cannot assume one. `base` stands in for `dst_root` here.
         if self._progress:
             self._progress(base, "prune-scan-start")
@@ -546,457 +546,44 @@ def _prune_by_hash_dir(bh_dir: Path, live_checksums: set[str], job: "disk_io.Dis
                if isinstance(size, int))
 
 
-class BundleSink:
-    """Collects a bundle plan, then writes one plain tar in `close()` — no
-    compression: the payload is packages, already compressed.
+class PointsSink:
+    """A bundle of timeline points (manifest format 3): rows are (path,
+    checksum) with the points holding them; each file goes once, named by
+    its checksum, and only if `sent` (what this network was sent before)
+    lacks it. One plain tar (no compression: the payload is packages,
+    already compressed), or the members through `writer`.
 
-    Not a streaming writer: `.mmw/manifest.jsonl` must be FIRST in the tar
-    stream so apply.py can validate before extracting anything, and the
-    manifest is only complete once every group has been enumerated. So link()
-    and write() record rows and do no tar I/O. Payload bytes are never
-    buffered — only (rel, src, size, checksum) tuples, read straight from the
-    pool blob when close() finally streams the archive.
-    """
+    `link_point` is a repository's file of point `k`; `link`/`write` are
+    network-level (no repository). Nothing is written until `close()`: the
+    manifest goes first and is complete only once every row is known.
+    `sent_checksums`, once closed: what the tar carried — the caller records
+    it only after this returns."""
 
-    def __init__(self, out_path: Path, header: ManifestHeader, prev: dict[str, str],
-                apply_script: bytes, prune: bool = True,
-                full: bool = False, progress=None,
-                tls_files: dict[str, bytes] | None = None, stop_event=None,
-                writer=None, scratch_dir: Path | None = None, row_repo=None,
-                signing_files: dict[str, bytes] | None = None):
+    def __init__(self, out_path: Path, header: ManifestHeader, *, sent: set[str], progress=None,
+                 stop_event=None, writer=None, scratch_dir: Path | None = None,
+                 signing_files: dict[str, bytes] | None = None):
         self.out_path = out_path
+        self.header = header
         # Where the members go (`members.MemberWriter` factory); by default
         # one plain tar at `out_path`, written beside it and renamed in.
         self._writer = writer
         # Where the manifest is staged before it becomes the first member
         # (tarfile needs its size up front): beside the bundle by default.
         self._scratch_dir = scratch_dir
-        # Format-2 manifests tag each row with its repository: path → key
-        # or None (network-level). None here: untagged rows, as always.
-        self.row_repo = row_repo
         self.job = disk_io.DiskJob("bundle", stop_event=stop_event)
-        # name → bytes, written as `{TLS_DIR}/{name}`; a name ending `.key`
-        # goes in 0600. Empty unless the network has certs on.
-        self._tls_files = dict(tls_files or {})
         # name → armoured private key, written as `.mmw/signing/{name}.asc`
-        # (0600): the keys a network carries to an mmw far side.
+        # (0600): the keys a network carries to its far side.
         self._signing_files = dict(signing_files or {})
-        self.header = header
-        self._prev = prev
-        self._apply_script = apply_script
-        self._prune = prune
-        # link()/write() only ever append to in-memory lists — close() is
-        # where the real I/O happens (reading pool blobs, streaming them
-        # into the tar), so it is the only place archive
-        # progress can be reported from. Same `progress(rel, status)`
-        # contract as the Sink protocol, with its own status vocabulary
-        # (`archive-start`/`archive-progress`/`archive-done`) — see close().
         self._progress = progress
-        # A full bundle means "send everything", never "forget what the far side
-        # has". `prev` is populated the same way for a full bundle as for a
-        # delta one (bundle.py always reads the latest manifest) — the delete
-        # set in `finalize_group` is computed from it exactly as usual. `full`
-        # only bypasses `prev` for the SEND decision in link()/write() below.
-        self._full = full
-        self.recheck = full                  # providers recheck what they would reuse
-
-        self.manifest_rows: list[tuple[str, str]] = []
-        # The header actually written into the tar, complete with
-        # `file_count`; set by close(). `bundle_network` writes THIS to the
-        # ledger so the ledger is a faithful record of what shipped.
-        self.written_header: ManifestHeader | None = None
-        self._send: list[tuple[str, Path, int, str]] = []
-        self._generated: dict[str, bytes] = {}
-        self._seen: set[str] = set()
-        self.deleted: list[str] = []
-        self.errors: list[str] = []
-        self.archive_sha256: str | None = None     # the written tar's, when it is a file
-        self._sizes: dict[str, int] = {}           # rel → size, for the manifest's "s"
-
-    def link(self, src: Path, rel: str, size: int, checksum: str, kind: str) -> str:
-        if rel in self._seen:
-            return "skipped"
-        self._seen.add(rel)
-        self.manifest_rows.append((rel, checksum))
-        self._sizes[rel] = size
-        # `and checksum` is a deliberate divergence from manifest.delta()'s
-        # pure `prev.get(rel) != cs` set difference: an empty checksum has no
-        # content hash to trust an "unchanged, skip resend" judgement on, so
-        # it is always resent. Every producer passes a real checksum today
-        # (keys included — `publish_keys` hashes them); this is the backstop.
-        # `test_bundle_sink_delta_agrees_with_manifest_delta` only asserts the
-        # two rules agree where both have a real checksum.
-        if unchanged(self._prev, rel, checksum, self._full):
-            return "skipped"
-        self._send.append((rel, src, size, checksum))
-        return "linked"
-
-    def write(self, rel: str, data: bytes) -> None:
-        checksum = hashlib.sha256(data).hexdigest()
-        self._seen.add(rel)
-        self.manifest_rows.append((rel, checksum))
-        self._sizes[rel] = len(data)
-        if unchanged(self._prev, rel, checksum, self._full):
-            return
-        self._generated[rel] = data
-
-    @property
-    def sent(self) -> int:
-        """Tar entries this bundle carries, hardlink entries included."""
-        return len(self._send) + len(self._generated)
-
-    @property
-    def sent_bytes(self) -> int:
-        """File bytes this bundle's tar actually carries. A repeated checksum
-        is written as a hardlink entry with no payload (see close()), so it
-        is counted once — summing every row reported the logical tree size,
-        ~10% over the real tar on oak (arch:all debs on both archive and
-        ports, CUDA debs shared across repos), and the archive progress bar
-        stalled at ~91% against it.
-        """
-        seen: set[str] = set()
-        total = sum(len(d) for d in self._generated.values())
-        for _rel, _src, size, checksum in self._send:
-            if checksum:
-                if checksum in seen:
-                    continue
-                seen.add(checksum)
-            total += size
-        return total
-
-    def drop_if_empty(self, base: str) -> None:
-        # The manifest tracks files only; apply.py cleans up empty directories.
-        pass
-
-    def finalize_group(self, base: str, keep: set[str],
-                       live_checksums: set[str], exclude: set[str]) -> tuple[int, int]:
-        """A bundle cannot delete; it records what the far side must remove.
-
-        Always returns a tuple — never `None` — even when this network isn't
-        pruning: `publish_group` unpacks the return value unconditionally
-        (`result.pruned, result.pruned_bytes = sink.finalize_group(...)`), so
-        a bare `return` here would raise on every non-pruning network.
-
-        `by-hash/` paths need their own rule, exactly as `TreeSink` gives them
-        one (`if "by-hash" in here.parts: ...` before the generic sweep,
-        `sinks.py`). `publish_group` builds `keep` from canonical repo_paths
-        only — by-hash entries are synthesized separately by `_link_rows`
-        (`links.py`) and are never members of `keep` by construction. Running
-        the generic `rel not in keep` sweep over them would therefore schedule
-        every *live* by-hash path for deletion: its checksum is unchanged, so
-        `link()` correctly never re-sends it, and the naive sweep would then
-        tell the far side to delete a file this same bundle's own manifest
-        still lists as present — permanently eroding by-hash on every
-        pruning apt network, one bundle at a time, since by-hash exists
-        precisely to protect a client mid-`apt update`.
-
-        **That fix was only ever applied to the flat case.** The `by-hash`
-        branch below used to `continue` *before* the `exclude` test, so the
-        outer group of a nested publish base evaluated the INNER group's
-        by-hash entries against the OUTER group's `live_checksums` — which
-        never contain them, by construction. The inner group then correctly
-        declined to delete them, but they were already on the list, and the
-        same bundle's own manifest still named them present: `apply.py`
-        deleted a file its manifest listed, so `--verify` failed on every
-        bundle of a nested-base network and by-hash eroded there exactly as
-        it had everywhere before. `exclude` is therefore tested FIRST, and it
-        applies to by-hash paths as much as to plain ones.
-
-        A by-hash entry's filename IS its checksum, so its retention rule is
-        exact and needs no directory listing: delete it only when that
-        checksum is absent from `live_checksums`. This deliberately does NOT
-        reproduce `TreeSink`'s `_BY_HASH_KEEP_STALE = 2` (keep a couple of
-        stale generations for in-flight clients) — that rule sorts a real
-        directory by mtime, and a bundle has no mtime information about the
-        far side's files at all. Deleting strictly on "checksum not live" is
-        still strictly safer than the bug this replaces, which deleted the
-        *live* generation.
-        """
-        if not self._prune:
-            return 0, 0
-        prefix = base + "/" if base else ""
-        added = 0
-        for rel in self._prev:
-            if not rel.startswith(prefix):
-                continue
-            # BEFORE the by-hash branch — see the docstring. A nested base's
-            # paths are another group's business whatever shape they have.
-            if any(rel == x or rel.startswith(x + "/") for x in exclude):
-                continue
-            if "by-hash" in rel.split("/"):
-                checksum = rel.rsplit("/", 1)[-1]
-                if checksum not in live_checksums:
-                    self.deleted.append(rel)
-                    added += 1
-                continue
-            if rel not in keep:
-                self.deleted.append(rel)
-                added += 1
-        # Bundle deletions are far-side path removals, not local bytes freed —
-        # the previous manifest carries no size, only checksum. `bytes_pruned`
-        # is always 0 for this sink; see the Sink protocol docstring.
-        return added, 0
-
-    def prune_stale_bases(self, live_bases: set[str]) -> tuple[int, int]:
-        """See the Sink protocol. The bundle equivalent of `TreeSink`'s
-        subtree sweep: `finalize_group` only ever iterates `prev` under the
-        CURRENT group's prefix, so a path belonging to a base this run
-        produced no group for was matched by nothing at all."""
-        if not self._prune:
-            return 0, 0
-        ancestors = base_ancestors(live_bases)
-        added = 0
-        for rel in self._prev:
-            top = rel.split("/", 1)[0]
-            if top in NON_BASE_DIRS or rel in NON_BASE_FILES:
-                continue
-            if rel in self._seen:
-                # This run produced it, so whatever base it belongs to is
-                # live even if it isn't spelled in `live_bases` (changelogs
-                # and UPGRADE.md take this route on an older layout).
-                continue
-            rel_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
-            if not rel_dir:
-                continue
-            if _is_stale_base(rel_dir, live_bases, ancestors):
-                self.deleted.append(rel)
-                added += 1
-        return added, 0
-
-    def close(self) -> None:
-        try:
-            self._close()
-        finally:
-            self.job.close()
-
-    def _close(self) -> None:
-        if self._writer is None:
-            disk_io.ops.mkdir(self.out_path.parent, parents=True, exist_ok=True)
-        # ── Pre-flight: every pool blob must be exactly what was recorded,
-        # or NOTHING is written. Not one row dropped and the rest shipped:
-        # that was tried, on the theory that a manifest no longer naming the
-        # path would make the next delta resend it. Deltas are computed from
-        # snapshots now, and the destination snapshot still names the path,
-        # so the next bundle took it as already sent — the far side lacked
-        # the file for good, with every later `apply.py --verify` failing on
-        # it. A missing or wrong-sized blob is a damaged pool: the fix is
-        # `mmw verify --repair` and a sync, then the same bundle again.
-        #
-        # Checked BEFORE any tar write: TarFile.addfile() writes the entry's
-        # header (and whatever chunks it manages to read) straight to the
-        # stream before a short read can raise, so a failure mid-loop would
-        # leave a misaligned archive. The stats run on the job's read lane —
-        # the same helper `mmw verify --stat` uses — with progress, since on
-        # a cold pool this is minutes that otherwise read as a lock-up.
-        from mmw.core.verify import blob_stats
-        total = len(self._send)
-        report = ((lambda done: self._progress("", f"preflight:{done}:{total}"))
-                  if self._progress else None)
-        bad: list[str] = []
-        for (rel, _src, size, _checksum), st in blob_stats(
-                self._send, self.job, path_of=lambda r: r[1], on_progress=report):
-            if isinstance(st, OSError):
-                bad.append(f"{rel}: {st}")
-            elif st.st_size != size:
-                bad.append(f"{rel}: pool blob is {st.st_size} bytes, expected {size}")
-        stop = self.job.stop_event
-        if stop is not None and stop.is_set():
-            raise InterruptedError("bundle stopped — nothing was written")
-        if bad:
-            self.errors.extend(bad)
-            raise ValueError(
-                f"{len(bad)} file(s) are damaged in the pool, so nothing was bundled "
-                f"(first: {bad[0]}). `mmw verify --repair` drops them and the next "
-                "`mmw sync` downloads them again.")
-        send = self._send
-
-        # `_send`/`_generated` are final the instant link()/write() stop being
-        # called, so exactly how many real files (never the fixed .mmw/
-        # control members) THIS bundle's tar will contain is known before any
-        # archive I/O runs — declared in the manifest header apply.py reads
-        # first, so it can tell "this bundle never meant to include that path"
-        # (a delta bundle's normal, correct shape) apart from "this bundle's
-        # tar got cut short" (see ManifestHeader.file_count's docstring).
-        header = replace(self.header, file_count=len(send) + len(self._generated))
-        # The ledger must record the header that actually shipped, not the
-        # one bundle_network constructed — `file_count` only exists on this
-        # one, so a ledger written from the original was not a faithful copy
-        # of what the far side received.
-        self.written_header = header
-        # The manifest is written to a temp file first: it goes in as the
-        # first tar member and tarfile needs its size up front.
-        scratch = self._scratch_dir or self.out_path.parent
-        disk_io.ops.mkdir(scratch, parents=True, exist_ok=True)
-        tmp_manifest = scratch / (self.out_path.name + ".manifest.tmp")
-        write_manifest(tmp_manifest, header, self.tagged_rows())
-
-        # `sent`/`sent_bytes` are final the instant link()/write() stop being
-        # called (both only ever append to in-memory lists), so the totals
-        # for a determinate progress bar are known before any archive I/O
-        # runs at all — the UI need never show an indeterminate spinner.
-        if self._progress:
-            self._progress("", f"archive-start:{self.sent}:{self.sent_bytes}")
-        files_written = 0
-        # Bytes of file data fed into the tar so far — comparable to
-        # `self.sent_bytes` (tar headers and padding are not counted).
-        raw_written = 0
-        self._archive_last_report = time.monotonic()
-
-        writer = self._writer() if self._writer is not None else self._tar_writer()
-        committed = False
-        try:
-            with ExitStack() as stack:
-                manifest_bytes = disk_io.ops.read_bytes(tmp_manifest)
-                writer.add_bytes(".mmw/manifest.jsonl", manifest_bytes)
-                files_written += 1
-                raw_written += len(manifest_bytes)
-                if self._prune:
-                    body = "\n".join(sorted(self.deleted))
-                    if body:
-                        body += "\n"
-                    writer.add_bytes(".mmw/delete.list", body.encode())
-                    files_written += 1
-                    raw_written += len(body.encode())
-                writer.add_bytes(".mmw/apply.py", self._apply_script, mode=0o755)
-                files_written += 1
-                raw_written += len(self._apply_script)
-                for name, data in sorted(self._tls_files.items()):
-                    writer.add_bytes(f"{TLS_DIR}/{name}", data,
-                                     mode=0o600 if name.endswith(".key") else 0o644)
-                    files_written += 1
-                    raw_written += len(data)
-                for name, data in sorted(self._signing_files.items()):
-                    writer.add_bytes(f".mmw/signing/{name}.asc", data, mode=0o600)
-                    files_written += 1
-                    raw_written += len(data)
-                for rel, data in self._generated.items():
-                    writer.add_bytes(rel, data)
-                    files_written += 1
-                    raw_written += len(data)
-                # The rows that carry payload — the first of each
-                # checksum; a repeat is a hardlink entry — have their
-                # blobs opened ahead on the job's read lane while this
-                # thread writes the tar in order (`disk_readahead`).
-                seen: set[str] = set()
-                payload = []
-                for _rel, src, _size, checksum in send:
-                    if not checksum or checksum not in seen:
-                        payload.append(src)
-                        seen.add(checksum)
-                opened = self.job.stream_open(payload)
-                stack.callback(opened.close)        # handles opened ahead close on abort
-                by_checksum: dict[str, str] = {}
-                for rel, src, size, checksum in send:
-                    first = by_checksum.get(checksum) if checksum else None
-                    if first is not None:
-                        writer.add_hardlink(rel, first)
-                        files_written += 1
-                        # A hardlink entry carries no payload bytes of
-                        # its own — the size was already counted for
-                        # the first occurrence of this checksum.
-                        self._maybe_report_archive_progress(
-                            rel, files_written, raw_written)
-                        continue
-                    is_large = size >= _ANNOUNCE_LARGE_FILE_BYTES
-                    if self._progress and is_large:
-                        self._progress(rel, f"archive-large-file:{size}")
-                    # Every pre-detectable failure was filtered out
-                    # above; a blob that vanishes between that stat
-                    # and this open did so DURING the write, with
-                    # the manifest already in the tar declaring it.
-                    # Skipping it here would ship a tar the far side
-                    # refuses forever, so this aborts instead: the
-                    # exception propagates, `tmp_out` is discarded by
-                    # the `finally` below, and `bundle_network` never
-                    # reaches the ledger write.
-                    fh = _next_open(opened, self.job)
-                    with fh:
-                        # Size is already verified — a failure here
-                        # means the blob changed under us between the
-                        # stat() above and this read. Let it
-                        # propagate: close() aborts and tmp_out is
-                        # discarded (finally, below), which is safer
-                        # than risking a silently misaligned archive.
-                        # Wrapping `fh` for a large file only costs a
-                        # `.read()` indirection — `tarfile` only ever
-                        # calls `.read()` on it, so nothing else here
-                        # needs to know or care which one it got.
-                        stream = (_ProgressFile(fh, size, self._progress, rel)
-                                 if self._progress and is_large else fh)
-                        writer.add_blob(rel, stream, size, src=Path(src))
-                    files_written += 1
-                    raw_written += size
-                    self._maybe_report_archive_progress(
-                        rel, files_written, raw_written)
-                    # Only a successfully-written entry may become the
-                    # hardlink target for a later duplicate checksum —
-                    # registering it earlier would let a failed write
-                    # leave a hardlink entry pointing at nothing.
-                    if checksum:
-                        by_checksum[checksum] = rel
-            if self._progress:
-                self._progress("", f"archive-done:{files_written}:{raw_written}")
-            writer.commit()
-            committed = True
-            self.archive_sha256 = getattr(writer, "sha256", None)
-        finally:
-            disk_io.ops.unlink(tmp_manifest, missing_ok=True)
-            if not committed:
-                writer.abort()
-
-    def tagged_rows(self):
-        """The manifest rows as written: tagged with their repository when
-        `row_repo` is set."""
-        if self.row_repo is None:
-            return self.manifest_rows
-        return [(p, c, self.row_repo(p), self._sizes.get(p)) for p, c in self.manifest_rows]
-
-    def _tar_writer(self):
-        from mmw.core.publisher.members import TarMembers
-        tmp_out = self.out_path.with_suffix(self.out_path.suffix + ".tmp")
-        return TarMembers(disk_io.ops.open_file(tmp_out, "wb"), final_path=self.out_path, tmp_path=tmp_out)
-
-    def _maybe_report_archive_progress(
-        self, rel: str, files_written: int, raw_written: int) -> None:
-        """Throttled to `_ARCHIVE_REPORT_INTERVAL` — `rel` is whichever file
-        happened to complete at the moment a report is allowed through, not
-        every file. Unlike `link()`'s per-file log during the (in-memory, no
-        natural rate limit) enumeration phase, this loop does real disk I/O:
-        a burst of cache-hit small files could still fire fast enough to
-        flood a log kept at full per-file fidelity, so "what's being archived
-        right now" rides the same throttle as the byte/file counters instead
-        of adding a second, unthrottled path to the same UI.
-        """
-        if not self._progress:
-            return
-        now = time.monotonic()
-        if now - self._archive_last_report < _ARCHIVE_REPORT_INTERVAL:
-            return
-        self._archive_last_report = now
-        self._progress(rel, f"archive-progress:{files_written}:{raw_written}")
-
-
-
-class PointsSink(BundleSink):
-    """A bundle of timeline points (manifest format 3): rows are (path,
-    checksum) with the points holding them; each file goes once, named by
-    its checksum, and only if `sent` (what this network was sent before)
-    lacks it. No `apply.py`, no delete list — the far side runs mmw.
-
-    `link_point` is a repository's file of point `k`; `link`/`write` are
-    network-level (no repository). `sent_checksums`, once closed: what the
-    tar carried — the caller records it only after this returns."""
-
-    def __init__(self, out_path: Path, header: ManifestHeader, *, sent: set[str], progress=None,
-                 stop_event=None, writer=None, scratch_dir: Path | None = None,
-                 signing_files: dict[str, bytes] | None = None):
-        super().__init__(out_path, header, {}, b"", prune=False, full=False, progress=progress,
-                         stop_event=stop_event, writer=writer, scratch_dir=scratch_dir,
-                         signing_files=signing_files)
         self._sent_before = set(sent)
         self._rows: dict[tuple[str, str], list] = {}          # (rel, checksum) → [repo, size, {k}]
         self._carry: dict[str, tuple[Path | None, int, bytes | None]] = {}   # checksum → (src, size, data)
         self.sent_checksums: set[str] = set()
+        # The header actually written, complete with `file_count`; the
+        # ledger keeps THIS, a faithful record of what shipped.
+        self.written_header: ManifestHeader | None = None
+        self.errors: list[str] = []
+        self.archive_sha256: str | None = None     # the written tar's, when it is a file
 
     def link_point(self, src: Path, rel: str, size: int, checksum: str, kind: str, repo: str | None,
                    k: int | None) -> str:
@@ -1018,6 +605,7 @@ class PointsSink(BundleSink):
 
     @property
     def sent(self) -> int:
+        """Files this bundle's tar carries: each checksum once."""
         return len(self._carry)
 
     @property
@@ -1028,15 +616,25 @@ class PointsSink(BundleSink):
         return [(rel, cs, repo, size, tuple(sorted(k)))
                 for (rel, cs), (repo, size, k) in sorted(self._rows.items())]
 
+    def close(self) -> None:
+        try:
+            self._close()
+        finally:
+            self.job.close()
+
     def _close(self) -> None:
         from mmw.core.publisher.manifest import blob_member
         from mmw.core.verify import blob_stats
         if self._writer is None:
             disk_io.ops.mkdir(self.out_path.parent, parents=True, exist_ok=True)
-        # Every pool blob must be what was recorded, or nothing is written.
+        # Every pool blob must be exactly what was recorded, or nothing is
+        # written — checked BEFORE any tar write (a short read mid-member
+        # would leave a misaligned archive), on the job's read lane.
         pooled = [(cs, src, size) for cs, (src, size, data) in sorted(self._carry.items()) if data is None]
+        total = len(pooled)
+        report = ((lambda done: self._progress("", f"preflight:{done}:{total}")) if self._progress else None)
         bad: list[str] = []
-        for (cs, _src, size), st in blob_stats(pooled, self.job, path_of=lambda r: r[1]):
+        for (cs, _src, size), st in blob_stats(pooled, self.job, path_of=lambda r: r[1], on_progress=report):
             if isinstance(st, OSError):
                 bad.append(f"{cs}: {st}")
             elif st.st_size != size:
@@ -1057,25 +655,48 @@ class PointsSink(BundleSink):
         write_manifest(tmp_manifest, header, self.tagged_rows())
         if self._progress:
             self._progress("", f"archive-start:{self.sent}:{self.sent_bytes}")
+        # A member is named by its checksum; progress names a path it is
+        # served at, which means something to the person watching.
+        shown: dict[str, str] = {}
+        for rel, cs in sorted(self._rows):
+            shown.setdefault(cs, rel)
         writer = self._writer() if self._writer is not None else self._tar_writer()
         committed = False
         files_written, raw_written = 0, 0
         self._archive_last_report = time.monotonic()
         try:
-            writer.add_bytes(".mmw/manifest.jsonl", disk_io.ops.read_bytes(tmp_manifest))
-            for name, data in sorted(self._signing_files.items()):
-                writer.add_bytes(f".mmw/signing/{name}.asc", data, mode=0o600)
-            for cs, (src, size, data) in sorted(self._carry.items()):
-                if stop is not None and stop.is_set():
-                    raise InterruptedError("bundle stopped — nothing was written")
-                if data is not None:
-                    writer.add_bytes(blob_member(cs), data)
-                else:
-                    with disk_io.ops.open_rb(src) as fh:
-                        writer.add_blob(blob_member(cs), fh, size, src=src)
-                files_written += 1
-                raw_written += size
-                self._maybe_report_archive_progress(blob_member(cs), files_written, raw_written)
+            with ExitStack() as stack:
+                writer.add_bytes(".mmw/manifest.jsonl", disk_io.ops.read_bytes(tmp_manifest))
+                for name, data in sorted(self._signing_files.items()):
+                    writer.add_bytes(f".mmw/signing/{name}.asc", data, mode=0o600)
+                for cs, (src, size, data) in sorted(self._carry.items()):
+                    if data is not None:
+                        writer.add_bytes(blob_member(cs), data)
+                        files_written += 1
+                        raw_written += size
+                        self._maybe_report_archive_progress(shown.get(cs, blob_member(cs)), files_written,
+                                                            raw_written)
+                # Pool blobs are opened ahead on the job's read lane while this
+                # thread writes the tar in order (`disk_readahead`).
+                opened = self.job.stream_open([src for _cs, src, _size in pooled])
+                stack.callback(opened.close)        # handles opened ahead close on abort
+                for cs, src, size in pooled:
+                    if stop is not None and stop.is_set():
+                        raise InterruptedError("bundle stopped — nothing was written")
+                    member, name = blob_member(cs), shown.get(cs, blob_member(cs))
+                    large = size >= _ANNOUNCE_LARGE_FILE_BYTES
+                    if self._progress and large:
+                        self._progress(name, f"archive-large-file:{size}")
+                    # A blob gone between the pre-flight and here vanished
+                    # DURING the write, with the manifest already declaring
+                    # it: this aborts, and nothing is recorded as sent.
+                    fh = _next_open(opened, self.job)
+                    with fh:
+                        stream = _ProgressFile(fh, size, self._progress, name) if self._progress and large else fh
+                        writer.add_blob(member, stream, size, src=Path(src))
+                    files_written += 1
+                    raw_written += size
+                    self._maybe_report_archive_progress(name, files_written, raw_written)
             if self._progress:
                 self._progress("", f"archive-done:{files_written}:{raw_written}")
             writer.commit()
@@ -1086,3 +707,19 @@ class PointsSink(BundleSink):
             disk_io.ops.unlink(tmp_manifest, missing_ok=True)
             if not committed:
                 writer.abort()
+
+    def _tar_writer(self):
+        from mmw.core.publisher.members import TarMembers
+        tmp_out = self.out_path.with_suffix(self.out_path.suffix + ".tmp")
+        return TarMembers(disk_io.ops.open_file(tmp_out, "wb"), final_path=self.out_path, tmp_path=tmp_out)
+
+    def _maybe_report_archive_progress(self, rel: str, files_written: int, raw_written: int) -> None:
+        """Throttled to `_ARCHIVE_REPORT_INTERVAL` — `rel` is whichever file
+        completed when a report was allowed through, not every file."""
+        if not self._progress:
+            return
+        now = time.monotonic()
+        if now - self._archive_last_report < _ARCHIVE_REPORT_INTERVAL:
+            return
+        self._archive_last_report = now
+        self._progress(rel, f"archive-progress:{files_written}:{raw_written}")

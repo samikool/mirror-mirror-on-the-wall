@@ -335,6 +335,12 @@ def migrate_sent(pool: Pool, network: str) -> bool:
     if pool.sent_migrated(network):
         return False
     convert_snapshots(pool, network)
+    if pool.full_next(network) is not None:
+        # A forced delete said the far side's state is unknown: its history
+        # isn't trusted — nothing counts as sent, so the first bundle is full.
+        pool.clear_full_next(network)
+        pool.mark_sent_migrated(network)
+        return True
     for repo, version_id in pool.last_sent_versions(network).items():
         holders = pool.repo_version_snapshots(version_id)
         if not holders:

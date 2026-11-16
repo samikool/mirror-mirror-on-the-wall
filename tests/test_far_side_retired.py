@@ -3,7 +3,6 @@ warns once and is read as any other network; every bundle carries points;
 published trees carry no scripts."""
 import json
 import tarfile
-import warnings
 
 from mmw.core import config
 from mmw.core.publisher import publish_network
@@ -12,16 +11,17 @@ from mmw.core.publisher.bundle import bundle_network
 from test_dry_run_totals import two_mirrors  # noqa: F401
 
 
-def test_far_side_apply_is_ignored_with_a_warning(tmp_path):
+def test_far_side_apply_is_ignored_with_a_warning(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(config, "_SAID_RETIRED", set())
     (tmp_path / "mmw.toml").write_text(
         f'[settings]\nmirror_dir = "{tmp_path / "pool"}"\n\n[[networks]]\nname = "oak"\nfar_side = "apply"\n'
         '\n[[networks]]\nname = "elm"\nfar_side = "mmw"\n')
-    with warnings.catch_warnings(record=True) as seen:
-        warnings.simplefilter("always")
-        cfg = config.load(tmp_path)
+    cfg = config.load(tmp_path)
+    config.load(tmp_path)                                        # said once, not every load
     assert [n.name for n in cfg.networks] == ["oak", "elm"]
-    said = [str(w.message) for w in seen if "far_side" in str(w.message)]
-    assert len(said) == 1 and "oak" in said[0]
+    err = capsys.readouterr().err
+    assert err.count("far_side") == 1 and "network oak" in err and err.startswith("mmw: ")
+    assert ".py:" not in err                                     # no Python location before it
     config.save(cfg, tmp_path)
     assert "far_side =" not in (tmp_path / "mmw.toml").read_text()
 

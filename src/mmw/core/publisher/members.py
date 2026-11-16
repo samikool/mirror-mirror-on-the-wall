@@ -1,7 +1,7 @@
 """Where a bundle's members go: one plain tar on a file object, or the same
 members laid out as a directory (`mmw stage`).
 
-`BundleSink` decides what goes in and in what order; a writer only puts
+`PointsSink` decides what goes in and in what order; a writer only puts
 members somewhere. Neither is final until `commit()`: a tar is renamed
 into place (or, on stdout, flushed), a directory renamed from its `.tmp`
 name. `abort()` leaves nothing a later step could mistake for a whole

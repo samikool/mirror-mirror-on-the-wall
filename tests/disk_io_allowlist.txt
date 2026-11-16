@@ -4,9 +4,3 @@
 core/db_warm.py:_available_bytes  # permanent: /proc/meminfo, not disk
 core/profiler.py:_thread_cpu_ticks  # permanent: /proc reads, not disk
 core/runtime.py:source_checkout  # importlib.metadata Distribution.read_text: package metadata, not a mirror path
-core/served_tree.py:_prune_empty_parents  # moved from the far-side apply.py (stdlib-only then); route through disk_io (phase 5 deferred)
-core/served_tree.py:_sweep_tmp  # moved from the far-side apply.py; route through disk_io (phase 5 deferred)
-core/served_tree.py:_install_tls  # moved from the far-side apply.py: 0600 key written with O_EXCL; route through disk_io (phase 5 deferred)
-core/served_tree.py:_cnf_hosts  # moved from the far-side apply.py; route through disk_io (phase 5 deferred)
-core/served_tree.py:https_state  # moved from the far-side apply.py; route through disk_io (phase 5 deferred)
-core/served_tree.py:render_derived  # moved from the far-side apply.py; route through disk_io (phase 5 deferred)

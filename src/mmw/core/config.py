@@ -1108,11 +1108,6 @@ class NetworkConfig(_StrictModel):
           nginx reaches it at `gallery:8080`.
         - `far_side` chose apply.py or mmw on the airgapped side. mmw runs
           there now; "apply" warns once (`mmw site adopt` converts a tree)."""
-        if isinstance(data, dict) and data.get("far_side") == "apply":
-            import warnings
-            warnings.warn(f"network {data.get('name', '?')}: far_side = \"apply\" is retired — its far side "
-                          "runs mmw now (convert an apply.py tree there with `mmw site adopt PATH`); "
-                          "the setting is ignored", stacklevel=2)
         if isinstance(data, dict) and _LEGACY_NETWORK_KEYS.intersection(data):
             data = {k: v for k, v in data.items() if k not in _LEGACY_NETWORK_KEYS}
         return data
@@ -1449,12 +1444,23 @@ def config_path(directory: Path = Path(".")) -> Path:
     return directory / CONFIG_FILENAME
 
 
+_SAID_RETIRED: set[str] = set()
+
+
 def load(directory: Path = Path(".")) -> Config:
     path = config_path(directory)
     if not disk_io.ops.exists(path):
         raise FileNotFoundError(f"No config found at {path}. Run `mmw init` first.")
     with disk_io.ops.open_file(path, "rb") as f:
         data = tomllib.load(f)
+    for net in data.get("networks", []) if isinstance(data, dict) else []:
+        name = net.get("name", "?") if isinstance(net, dict) else "?"
+        if isinstance(net, dict) and net.get("far_side") == "apply" and name not in _SAID_RETIRED:
+            _SAID_RETIRED.add(name)                        # once per process
+            import sys
+            print(f"mmw: network {name}: far_side = \"apply\" is retired — its far side runs mmw now "
+                  "(convert an apply.py tree there with `mmw site adopt PATH`); the setting is "
+                  "ignored and goes the next time the config is saved", file=sys.stderr)
     cfg = Config.model_validate(data)
     for source in cfg.sources:
         if isinstance(source, (PypiSource, LocalAptSource)):

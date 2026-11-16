@@ -321,7 +321,7 @@ class PublishFlows:
         # for is invisible to `pool.mirror_files()` — which both publish and
         # bundle enumerate from — so it would land in neither a published tree
         # NOR a bundle. Skipping this let a bundle ship an index naming a .deb
-        # that isn't there: `apply.py --verify` passes, and the 404 only shows
+        # that isn't there: the far side applies it, and the 404 only shows
         # as `apt install` failing on the far side, where nobody can debug it.
         # A snapshot destination was gated when it was taken; its files are
         # checked by bundle_network itself.

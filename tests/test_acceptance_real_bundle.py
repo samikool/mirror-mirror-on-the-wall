@@ -41,7 +41,7 @@ def test_real_v1_bundle_applies(monkeypatch):
     print(r.output[-3000:])
     print(f"apply: {took:.0f}s, {Path(TAR).stat().st_size / took / 1e6:.0f} MB/s")
     assert r.exit_code == 0, r.output
-    assert r.output.count("full → v1") == sum(len(v) for v in plan.hosts.values())
+    assert r.output.count(" full → ") >= sum(len(v) for v in plan.hosts.values())   # a line per suite
     assert r.output.count("carries an mmw runtime — ignored") == 1
     assert "start nginx in root" in r.output and "docker compose up -d" in r.output
 
@@ -56,5 +56,5 @@ def test_real_v1_bundle_applies(monkeypatch):
     r = run("apply", TAR)
     print(f"second apply: {time.monotonic() - started:.0f}s")
     assert r.exit_code == 0, r.output
-    assert r.output.count("already at v1") == sum(len(v) for v in plan.hosts.values())
+    assert r.output.count("already serving this") == sum(len(v) for v in plan.hosts.values())
     assert sum(1 for _ in store.rglob("*")) == blobs

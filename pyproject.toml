@@ -75,6 +75,4 @@ src = ["src", "tests"]
 extend-exclude = ["mirror"]
 
 [tool.ruff.lint.per-file-ignores]
-# Moved from the far-side apply.py (once Python 3.6, stdlib only): its older
-# style stays until the code is next touched.
-"src/mmw/core/served_tree.py" = ["UP", "PTH", "SIM", "C4"]
+

@@ -111,7 +111,7 @@ def test_snapshot_bundle_picker_mmw(snap_compare, tmp_path):
     from mmw.tui.snapshot_pages import BundlePickPage
     from test_tui_sweep import snapshot_status_demo
 
-    net = config.NetworkConfig(name="lab", select=[], far_side="mmw")
+    net = config.NetworkConfig(name="lab", select=[])
     repos = {"https://deb.debian.org/debian": "debian", "pypi": "PyPI", "vscode": "VS Code"}
     assert snap_compare(_app(lambda: BundlePickPage(net, snapshot_status_demo(), tmp_path, repos=repos)),
                         terminal_size=SNAP_SIZE)

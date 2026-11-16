@@ -73,7 +73,7 @@ def test_cli_installer_flag(monkeypatch, tmp_path):
     from mmw.core import config
     from mmw.core.publisher.results import BundleResult
     (tmp_path / "mmw.toml").write_text('[settings]\nmirror_dir = "/tmp/pool"\n')
-    net = config.NetworkConfig(name="lab", bundle_dir=Path("/tmp/out"), far_side="mmw")
+    net = config.NetworkConfig(name="lab", bundle_dir=Path("/tmp/out"))
     monkeypatch.setattr(config, "load", lambda d: config.Config(
         settings=config.Settings(mirror_dir=Path("/tmp/pool")), sources=[], networks=[net]))
     seen = []
@@ -155,18 +155,18 @@ def test_tui_edits_runtime_settings(tmp_path, monkeypatch):
 
 # ── the Transfer page ────────────────────────────────────────────────────────
 
-def _pick_page(tmp_path, status, check, far_side="mmw"):
+def _pick_page(tmp_path, status, check):
     import asyncio
 
     from mmw.core import config
     from mmw.tui.snapshot_pages import BundlePickPage
     from test_tui_snapshots import _app
 
-    net = config.NetworkConfig(name="lab", select=[], far_side=far_side)
+    net = config.NetworkConfig(name="lab", select=[])
 
     async def run():
         app = _app(lambda: BundlePickPage(net, status, tmp_path,
-                                          repos={"pypi": "PyPI"} if far_side == "mmw" else None))
+                                          repos={"pypi": "PyPI"}))
         async with app.run_test() as pilot:
             await pilot.pause()
             return await check(app, pilot)
@@ -285,3 +285,43 @@ def test_transfer_page_defaults_installer_from_the_ledger(tmp_path, monkeypatch)
     async def value(app, pilot):
         return app.screen.query_one(Form).values().get("pick-installer")
     assert _pick_page(tmp_path, snapshot_status_demo(), value) == "yes"   # sent before, but this mmw is newer
+
+
+def test_cli_installer_written_once_per_destination(monkeypatch, tmp_path):
+    """Every network bundled with --installer: one installer per destination,
+    arches and Python — two networks into the same folder share it."""
+    from typer.testing import CliRunner
+
+    from mmw.cli import app
+    from mmw.commands import bundle as bundle_cmd
+    from mmw.core import config
+    from mmw.core.publisher.results import BundleResult
+    (tmp_path / "mmw.toml").write_text('[settings]\nmirror_dir = "/tmp/pool"\n')
+    nets = [config.NetworkConfig(name="apt", bundle_dir=Path("/tmp/out")),
+            config.NetworkConfig(name="lab", bundle_dir=Path("/tmp/out")),
+            config.NetworkConfig(name="dev", bundle_dir=Path("/tmp/out"), runtime_arches=["aarch64"])]
+    monkeypatch.setattr(config, "load", lambda d: config.Config(
+        settings=config.Settings(mirror_dir=Path("/tmp/pool")), sources=[], networks=nets))
+    monkeypatch.setattr(bundle_cmd, "preflight_ok", lambda *a, **k: True, raising=False)
+    seen = {}
+
+    def fake(net, cfg, mirror_dir, out_path=None, from_ref=None, to_ref="now", **kw):
+        seen[net.name] = bool(kw.get("installer"))
+        return BundleResult(network_name=net.name, out_path=Path(f"/tmp/out/{net.name}.tar"))
+    monkeypatch.setattr(bundle_cmd, "bundle_network", fake)
+    r = CliRunner().invoke(app, ["--config", str(tmp_path), "bundle", "--installer", "--allow-incomplete"])
+    assert r.exit_code == 0, r.output
+    assert seen == {"apt": True, "lab": False, "dev": True}
+
+
+def test_the_page_uses_what_its_caller_worked_out(tmp_path, monkeypatch):
+    """The transfer page never reads the pool on the screen's thread when its
+    caller already knows whether the installer is due."""
+    import mmw.core.runtime as R
+    from test_tui_sweep import snapshot_status_demo
+    monkeypatch.setattr(R, "installer_due", lambda network, mirror_dir: pytest.fail("read on the screen's thread"))
+    from mmw.core import config
+    from mmw.tui.snapshot_pages import BundlePickPage
+    page = BundlePickPage(config.NetworkConfig(name="lab", select=[]), snapshot_status_demo(), tmp_path,
+                          installer_due=True)
+    assert page._installer_due() is True

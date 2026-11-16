@@ -84,7 +84,7 @@ def publish_changelogs(sink, pool: Pool, result: NetworkPublishResult) -> None:
     """Publish pooled meta-release blobs to `changelogs.ubuntu.com/` on the sink.
 
     A real checksum is computed rather than passing `""`: `verify_tree` in
-    `apply.py` skips every empty-checksum entry, so these files (and GPG
+    the far side skips every empty-checksum entry, so these files (and GPG
     keys, see `links.publish_keys`) were the only things `--verify` could not
     actually check.
     """

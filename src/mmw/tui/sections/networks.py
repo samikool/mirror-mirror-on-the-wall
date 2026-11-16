@@ -191,12 +191,17 @@ class NetworksPage(Page):
             from mmw.tui.snapshot_pages import BundlePickPage, PublishPickPage, load_status
             mirror_dir = self.app.cfg.settings.mirror_dir
             status = await asyncio.to_thread(load_status, mirror_dir, net)
-            repos = None
+            repos, due = None, None
             if verb == "bundle":
                 from mmw.core.repos import network_repos
+                from mmw.core.runtime import installer_due
                 repos = await asyncio.to_thread(network_repos, net, self.app.cfg, mirror_dir)
+                try:                                     # it reads the pool: never on the screen's thread
+                    due = await asyncio.to_thread(installer_due, net, mirror_dir)
+                except Exception:  # noqa: BLE001 — a default, never a failure
+                    due = status.last_bundle is None
             page = (PublishPickPage(net, status) if verb == "publish"
-                    else BundlePickPage(net, status, mirror_dir, repos=repos))
+                    else BundlePickPage(net, status, mirror_dir, repos=repos, installer_due=due))
             choice = await self.app.push_screen_wait(page)
             if choice is None:
                 return          # cancelled — never falls back to a default silently

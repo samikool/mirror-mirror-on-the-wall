@@ -10,8 +10,7 @@ from pathlib import Path
 def stage_path(tmp_dir: Path, dst: Path) -> Path:
     """A collision-free staging name for `dst` inside `tmp_dir`.
 
-    Hashed rather than derived by substitution, for the same reason
-    `resources/apply.py:_tmp_path` hashes: a repo path can be arbitrarily
+    Hashed rather than derived by substitution: a repo path can be arbitrarily
     long and deep, and flattening it into one directory by replacing "/"
     risks blowing a filesystem's max filename length.
     """
@@ -80,7 +79,7 @@ def hardlink_or_copy(src: Path, dst: Path, tmp_dir: Path | None = None) -> None:
     destination: `dst` only ever transitions old-content → new-content, never
     through absent or partial. `tmp_dir` should be a directory on the
     destination's own filesystem that is never served — `TreeSink` passes
-    `{root}/.mmw/tmp/`, the same place `apply.py` stages on the far side, and
+    `{root}/.mmw/tmp/`, the same place the far side stages, and
     for the same reason (`{dst}.mmw-tmp` beside the real file was listed and
     fetchable under `autoindex on`).
     """
@@ -200,6 +199,7 @@ write_bytes = _path_method("write_bytes")
 chmod = _path_method("chmod")
 is_symlink = _path_method("is_symlink")
 walk = os.walk
+hardlink = os.link
 rmtree = shutil.rmtree
 open_file = open
 open_fd = os.open

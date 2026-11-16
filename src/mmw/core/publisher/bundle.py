@@ -2,12 +2,12 @@
 
 No compression: the payload is packages, already compressed, and zstd over
 terabytes on one disk only made it slower. Compress the tar yourself if a
-transfer medium wants it (apply.py then needs it decompressed first).
+transfer medium wants it (the far side then needs it decompressed first).
 
 Same pipeline as publish (`publisher/__init__.py:publish_network`): one
 refs⋈packages enumeration per mirror_base, ordered pkg → meta → release, the
 same dist-upgrade and key steps in the same order. Only the sink differs —
-`BundleSink` instead of `TreeSink` — which is exactly the point: if a bundle
+`PointsSink` instead of `TreeSink` — which is exactly the point: if a bundle
 and a publish ever disagree about what a network contains, that is a sink bug,
 not two independently-maintained pipelines drifting apart.
 
@@ -84,7 +84,7 @@ def _write_checksum_file(target: Path, digest: str | None = None) -> Path:
     with no mmw installed — `sha256sum -c lab-….tar.sha256` is enough. That
     distinction matters because a tarball truncated on a member boundary still
     extracts cleanly, so without this the first sign of a bad copy is
-    `apply.py --verify` an hour later, or nothing at all.
+    the far side's apply an hour later, or nothing at all.
 
     Written tmp-then-rename for the same reason the tarball and the manifest
     are: a half-written checksum file that happens to parse is worse than none.
@@ -102,7 +102,7 @@ def _write_checksum_file(target: Path, digest: str | None = None) -> Path:
 def _far_nginx(settings: str, certs: bool, *, previous: bool = False) -> dict[str, bytes]:
     """Fixed container config, or the legacy previous-manifest form.
 
-    apply.py enables HTTPS after validating the far-side certificate/key.
+    the far side enables HTTPS once its certificate fits its key.
     """
     include = f"{ROOT_PLACEHOLDER}/{TLS_DIR}/https*.conf" if certs else None
     import json
@@ -201,13 +201,14 @@ def bundle_network(
         if runtime_wheel is not None:
             _check_wheel(runtime_wheel)             # before hours of bundling, not after
     return _bundle_points(network, cfg, mirror_dir, out_path, progress, stop_event,
-                          from_ref=from_ref, to_ref=to_ref, stdout=stdout, repos=repos, stage=stage,
+                          mirror_start_callback=mirror_start_callback, from_ref=from_ref, to_ref=to_ref, stdout=stdout, repos=repos, stage=stage,
                           history=network.history if history is None else history,
                           full=full or from_ref is None, installer=installer,
                           runtime_wheel=runtime_wheel, fetcher=fetcher)
 
 
 def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_path, progress, stop_event, *,
+                   mirror_start_callback=None,
                    from_ref, to_ref: str, stdout, repos: list[str] | None, stage: bool, history: bool,
                    full: bool, installer: bool, runtime_wheel, fetcher) -> BundleResult:
     """An mmw network's bundle of timeline points: each chosen repository's
@@ -360,7 +361,9 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     sink = PointsSink(target if not streaming else Path(f"{network.name}-{name}.tar"), header, sent=sent,
                       progress=progress, stop_event=stop_event, writer=writer, signing_files=signing_files,
                       scratch_dir=ledger_dir(mirror_dir, network.name) if streaming or stage else None)
-    for repo, ids in listing.items():
+    for i, (repo, ids) in enumerate(listing.items(), 1):
+        if mirror_start_callback:                    # which repository is going in, for the progress page
+            mirror_start_callback((repo_bases.get(repo) or [repo])[0], i, len(listing))
         for k, pid in enumerate(ids):
             for rel, cs in sorted(files[pid].items()):
                 src, size = info[cs]

@@ -49,3 +49,20 @@ def test_current_points(two_mirrors):  # noqa: F811
         cur = points.current_points(pool, net.name)
         assert set(cur) >= {"https://example.com/a", "https://example.com/b"}   # (no network files here)
         assert all(len(ids) == 1 for ids in cur.values())
+
+
+def test_a_pending_full_bundle_from_before_the_upgrade_is_honoured(two_mirrors):  # noqa: F811
+    # A force-deleted snapshot left the far side's state unknown (full_next):
+    # the history it went with isn't trusted — the first bundle of points is full.
+    from mmw.core.snapshots import take_snapshot
+    cfg, net, md = _mmw(two_mirrors)
+    set_a(md, 1)
+    snap = take_snapshot(net, cfg, md, kind="bundle")
+    with Pool(md) as pool:
+        versions = pool.snapshot_repo_versions(snap.id)
+        pool.record_bundle(net.name, None, snap.stamp, "old.tar", 0, 0, 0,
+                           repos={repo: (None, v.id) for repo, v in versions.items()})
+        pool._conn.execute("INSERT INTO full_next (network, stamp) VALUES (?, ?)", (net.name, snap.stamp))
+        pool._conn.commit()
+        assert points.migrate_sent(pool, net.name)
+        assert pool.sent_point_ids(net.name) == set() and pool.full_next(net.name) is None

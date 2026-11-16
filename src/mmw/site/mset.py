@@ -16,7 +16,9 @@ class NoSuchRoot(Exception):
 
 class LocalRoot:
     """A root on a filesystem this machine mounts — the local kind of root
-    (phase 5 adds one reached over ssh)."""
+    (an `SshRoot` is reached over ssh)."""
+
+    is_local = True              # what touches this machine's own files (adoption, certificates) needs it
 
     def __init__(self, info: RootInfo):
         self.info = info

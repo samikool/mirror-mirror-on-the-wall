@@ -443,7 +443,8 @@ def forget_snapshot(pool: Pool, mirror_dir: Path, snap: SnapshotInfo) -> bool:
                 disk_io.ops.remove(path)
     from mmw.core.points import migrate_sent
     migrate_sent(pool, snap.network)
-    return pool.forget_snapshot(snap, False, mark_full=False)
+    pool.forget_snapshot(snap)
+    return False
 
 
 def delete_snapshots(pool: Pool, snaps: list[SnapshotInfo]) -> None:

@@ -1,7 +1,7 @@
 """Headless publish — `mmw publish --quiet` / `--dry-run`. Same shape as
 `commands/bundle.py`, its direct sibling over the same `[[networks]]` config;
 this one drives `publish_network`/`dry_run_network` (TreeSink) instead of
-`bundle_network` (BundleSink).
+`bundle_network` (PointsSink).
 
 The two are deliberately structurally identical, down to the order of the
 checks, because every place they drifted apart was a bug: publish exited 0

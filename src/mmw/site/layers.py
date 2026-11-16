@@ -106,7 +106,7 @@ def build_overlay(home: Path, db, store, repo: str, version_id: int) -> OverlayR
     bases = (state.bases if state and state.bases else [repo])
     base = max((b for b in bases if any(p.startswith(b + "/dists/") for p in files)), key=len, default=None)
     if base is None:
-        result.hold_reason = f"{label} v{version.number} has no dists/ tree to add packages to"
+        result.hold_reason = f"{label} as served now has no dists/ tree to add packages to"
         return result
     rows = {p[len(base) + 1:]: (p[len(base) + 1:], str(store.path(cs)), 0, "", cs)
             for p, cs in files.items() if p.startswith(base + "/")}
@@ -114,7 +114,7 @@ def build_overlay(home: Path, db, store, repo: str, version_id: int) -> OverlayR
     missing = [f"{s}/{c}" for s, c in debs if c not in published.get(s, {})]
     if missing:
         result.hold_reason = (f"{label} has local packages for {', '.join(missing)}, which "
-                              f"v{version.number} does not have")
+                              "what it serves now does not have")
         return result
     folder = site_layer_dir(Path(home), repo)
     chosen = core.read_decisions(folder)

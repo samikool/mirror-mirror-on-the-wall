@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS refs (
 CREATE TABLE IF NOT EXISTS snapshots (
     id        INTEGER PRIMARY KEY,
     network   TEXT NOT NULL,
-    stamp     TEXT NOT NULL,                 -- 20261011T120000Z, as apply.py uses
+    stamp     TEXT NOT NULL,                 -- 20261011T120000Z, as manifests use
     label     TEXT,
     kind      TEXT NOT NULL,                 -- 'manual' | 'bundle' | 'imported'
     complete  INTEGER NOT NULL DEFAULT 1,
@@ -250,6 +250,8 @@ CREATE TABLE IF NOT EXISTS layer_digests (
     PRIMARY KEY (network, base)
 );
 
+-- A forced delete pending from before bundles carried points: read once, when
+-- that network's history becomes sent records (`points.migrate_sent`).
 CREATE TABLE IF NOT EXISTS full_next (
     network  TEXT PRIMARY KEY,
     stamp    TEXT NOT NULL                    -- the snapshot forgotten
@@ -2023,32 +2025,24 @@ class Pool:
     _LAST_SENT = ("SELECT r.repo, r.to_version FROM bundle_repos r JOIN bundles b ON b.id = r.bundle "
                   "WHERE b.network = ? ORDER BY b.id")
 
-    def forget_snapshot(self, snap: SnapshotInfo, far_side_at_it: bool, mark_full: bool = True) -> bool:
+    def forget_snapshot(self, snap: SnapshotInfo) -> None:
         """Force delete: the snapshot's rows and every transfer that went to
         it, in one transaction. Version rows stay — a far side may hold one,
-        and a number must never be handed out again. When the far side may be
-        at it (`far_side_at_it`: where the next transfer would start), or a
-        repository's last-sent version came from one of those transfers, the
-        network's next default transfer is full — unless not `mark_full`
-        (an mmw network, whose sent records stand). Returns whether it now is."""
+        and a number must never be handed out again. What each network was
+        sent is recorded apart (`sent_points`/`sent_blobs`), so nothing here
+        decides the next bundle."""
         network, stamp = snap.network, snap.stamp
         with self._lock:
-            before = dict(self._conn.execute(self._LAST_SENT, (network,)).fetchall())
             went = "SELECT id FROM bundles WHERE network = ? AND to_stamp = ?"
             self._conn.execute(f"DELETE FROM bundle_repos WHERE bundle IN ({went})", (network, stamp))
             self._conn.execute("DELETE FROM bundles WHERE network = ? AND to_stamp = ?", (network, stamp))
-            full = mark_full and (far_side_at_it or dict(
-                self._conn.execute(self._LAST_SENT, (network,)).fetchall()) != before)
-            if full:
-                self._conn.execute("INSERT OR REPLACE INTO full_next (network, stamp) VALUES (?, ?)",
-                                   (network, stamp))
             _delete_snapshot_rows(self._conn, [snap.id])
             self._conn.commit()
-        return full
 
     def full_next(self, network: str) -> str | None:
-        """The forgotten snapshot that makes `network`'s next default
-        transfer full, if one does."""
+        """A forced delete from before bundles carried points left the far
+        side's state unknown: the snapshot it named, if one is pending (read
+        once, when that history becomes sent records)."""
         try:
             with self._read() as c:
                 row = c.execute("SELECT stamp FROM full_next WHERE network = ?", (network,)).fetchone()

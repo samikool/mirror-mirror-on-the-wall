@@ -7,8 +7,8 @@ pool has no blob for is invisible to that join, so it lands in neither a
 published tree nor a bundle's tar/manifest. `do_publish` already refuses via
 `_run_pre_publish` -> `_stopped_incomplete` when `verify_mirror` finds
 `refs - packages`; `do_bundle` called `_execute_bundle` directly with no
-verify phase at all, so an incomplete mirror bundled cleanly, `apply.py
---verify` passed on the far side, and the missing package only surfaced as a
+verify phase at all, so an incomplete mirror bundled cleanly, the far side
+applied it, and the missing package only surfaced as a
 404 during `apt install` -- on the far side of an airgap, where nobody can
 debug it.
 """

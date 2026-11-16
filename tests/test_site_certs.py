@@ -217,3 +217,17 @@ def test_certs_out_skips_a_root_not_signed_yet(env, tmp_path):  # noqa: F811
     home, root = _applied(env, tmp_path)
     names = C.collect_certs([("main", root)], "oak", tmp_path / "npm")
     assert names == ["ca.crt"]
+
+
+def test_certs_out_finds_a_v1_sites_own_ca(env, tmp_path, monkeypatch):  # noqa: F811
+    """An older site recorded its CA in its own settings, not this machine's:
+    `--out` finds it there, as signing does."""
+    from mmw.site import recents
+    home, root = _applied(env, tmp_path)
+    C.sign_roots(home, password=None)
+    crt, key = recents.ca_paths()
+    monkeypatch.setattr(recents, "ca_paths", lambda: None)
+    s = H.load_site(home)
+    H.save_settings(home, s.model_copy(update={"ca_cert": crt, "ca_key": key}))
+    names = C.collect_certs([("main", root)], "oak", tmp_path / "npm", settings=H.load_site(home))
+    assert "ca.crt" in names

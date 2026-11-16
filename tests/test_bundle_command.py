@@ -175,12 +175,11 @@ def test_out_option_overrides_missing_bundle_dir(cfg_dir, monkeypatch):
     assert calls == [Path("/tmp/explicit")]
 
 
-def _repo_cli(two_mirrors, tmp_path, monkeypatch, far_side):  # noqa: F811
+def _repo_cli(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
     from typer.testing import CliRunner
     from mmw import cli
     from mmw.core import config as _config
     cfg, net, md = two_mirrors
-    net = net.model_copy(update={"far_side": far_side})
     cfg = cfg.model_copy(update={"networks": [net]})
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
@@ -190,13 +189,13 @@ def _repo_cli(two_mirrors, tmp_path, monkeypatch, far_side):  # noqa: F811
 
 
 def test_cli_unknown_repo_lists_valid_names(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
-    run = _repo_cli(two_mirrors, tmp_path, monkeypatch, "mmw")
+    run = _repo_cli(two_mirrors, tmp_path, monkeypatch)
     r = run("bundle", "-n", "oak", "--out", str(tmp_path / "o"), "--allow-incomplete", "--repo", "nope")
     assert r.exit_code == 1 and "this network has: a, b" in r.output
 
 
 def test_cli_repo_by_label(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
-    run = _repo_cli(two_mirrors, tmp_path, monkeypatch, "mmw")
+    run = _repo_cli(two_mirrors, tmp_path, monkeypatch)
     r = run("bundle", "-n", "oak", "--out", str(tmp_path / "o"), "--allow-incomplete", "--repo", "A")
     assert r.exit_code == 0, r.output
     assert "  a  files new → " in r.output and "  b " not in r.output

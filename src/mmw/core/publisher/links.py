@@ -179,7 +179,7 @@ def _dedup_rows(rows) -> list[tuple]:
     republish legitimately yield **two** rows for the same shared path (e.g.
     `dists/noble-updates/InRelease`) with different checksums. Handed that
     unresolved, the sinks disagreed: `TreeSink` took the LAST (each
-    `hardlink_or_copy` replaces the previous one) and `BundleSink` took the
+    `hardlink_or_copy` replaces the previous one) and the bundle sink took the
     FIRST (`if rel in self._seen: return "skipped"`) — so a published tree and
     a bundle of the same pool could ship different bytes at the same path,
     which is precisely the divergence `test_bundle_matches_publish_exactly`
@@ -336,7 +336,7 @@ def file_checksum(path: Path) -> str:
     Keys and the changelogs meta-release blobs are published from real files
     rather than from a pool row, so nothing hands their checksum in. They
     used to be linked with `checksum=""`, which made them invisible to
-    `apply.py --verify`: `verify_tree` skips an empty-checksum entry, so a
+    the far side's verify: it skips an empty-checksum entry, so a
     missing or corrupted **key** — the one artefact that makes every package
     beside it verifiable — was exactly what the far side's integrity check
     could not detect.
@@ -365,7 +365,7 @@ def upstream_files(mirror_dir: Path, mirrors: list[MirrorConfig]) -> dict[str, P
     Computed BEFORE any group is published, because a file can sit inside a
     repository's own directory (NVIDIA's `…/x86_64/3bf863cc.pub`) without
     being in its index — that group's prune has to be told to keep it, or a
-    TreeSink deletes it every publish and a BundleSink tells the far side to.
+    TreeSink deletes it every publish; a bundle's selection retires it on the far side.
     """
     from mmw.core import upstream
     found: dict[str, Path] = {}

@@ -81,7 +81,6 @@ def test_cli_converts_an_apply_tree_in_place(far, tmp_path, monkeypatch):
 
 
 def _mmw_bundle(cfg, net, md, out):
-    net = net.model_copy(update={"far_side": "mmw"})
     return bundle_network(net, cfg.model_copy(update={"networks": [net]}), md, out_path=out)
 
 

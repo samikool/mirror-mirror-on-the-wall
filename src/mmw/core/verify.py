@@ -6,7 +6,7 @@ Two independent questions, because they fail differently:
 pool cannot fill?"  This is the one that matters before a publish or a bundle:
 `pool.mirror_files()` is `refs ⋈ packages`, so a ref with no blob is *invisible*
 to the enumeration — it lands in neither a published tree nor a bundle's tar or
-manifest, `apply.py --verify` passes, and the gap only surfaces as a 404 during
+manifest, the far side applies it cleanly, and the gap only surfaces as a 404 during
 `apt install` on the far side of an airgap. It is answered entirely from the
 database (`pool.missing_for`), so it is cheap enough to gate every publish.
 

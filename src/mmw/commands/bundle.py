@@ -99,7 +99,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         # The same completeness gate `do_bundle` runs in the TUI, which the
         # headless door never had: a ref whose blob the pool lacks is
         # invisible to `pool.mirror_files()`, so it lands in neither the tar
-        # nor the manifest, `apply.py --verify` passes, and the gap surfaces
+        # nor the manifest, the far side applies it, and the gap surfaces
         # as a 404 during `apt install` on the far side of an airgap.
         # Only "now" is checked here: an existing snapshot's own files are
         # checked by the bundle itself (refused if any left the pool).

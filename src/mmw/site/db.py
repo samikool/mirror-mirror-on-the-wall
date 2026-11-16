@@ -193,7 +193,8 @@ class SiteDB:
         found = self.version(repo, number)
         if found is not None:
             if found.digest != digest:
-                raise ValueError(f"{label} v{number} here differs from the one in this bundle")
+                raise ValueError(f"{label} as of {found.stamp[:4]}-{found.stamp[4:6]}-{found.stamp[6:8]} here "
+                                 "differs from the one in this bundle")
             return found.id
         c = self._conn
         try:

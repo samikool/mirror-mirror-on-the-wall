@@ -76,11 +76,11 @@ needs_gpg = pytest.mark.skipif(shutil.which("gpg") is None or shutil.which("gpgv
 
 @pytest.fixture
 def site(lab):  # noqa: F811
-    """`lab`'s upstream bundled (far_side = mmw) and applied to a fresh site."""
+    """`lab`'s upstream bundled and applied to a fresh site."""
     from mmw.core.publisher.bundle import bundle_network
     from mmw.site import home as H
     from mmw.site.apply import apply_bundle
-    net = config.NetworkConfig(name="lab", root=lab.tmp / "pub", far_side="mmw")
+    net = config.NetworkConfig(name="lab", root=lab.tmp / "pub")
     cfg = config.Config(settings=config.Settings(mirror_dir=lab.mirror_dir), sources=[lab.src], networks=[net])
     home = H.init_root(lab.tmp / "srv", name="main", set_id="s1", network="lab")
     out = bundle_network(net, cfg, lab.mirror_dir, out_path=lab.tmp / "b1", from_ref=None).out_path

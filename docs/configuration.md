@@ -91,8 +91,11 @@ dist_upgrade = true
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `mirror_dir` | path | **required** | Where everything lands: `.pool/` (blobs + the SQLite index), `keys/`, and `certs/` for networks with `certs = true`. **No browsable mirror tree is created here** — trees exist only at publish destinations. Needs to be on a filesystem that supports hardlinks, and ideally the same filesystem as your publish roots, or publishing copies instead of linking. |
-| `update_check` | bool | `true` | Check PyPI for a newer mmw on every start and offer it (CLI and TUI). `MMW_NO_UPDATE_CHECK=1` also turns it off. |
 | `max_connections` | int | `os.cpu_count()`, or `10` if that is unavailable | Global cap on simultaneous HTTP downloads — across *all* mirrors, not per mirror. Also the size of the single thread pool every network operation (metadata, packages, GPG keys) runs on. Raise it for a fast link and many small files; lower it if you are being rate-limited or the disk is the bottleneck. |
+| `update_check` | bool | `true` | Check PyPI for a newer mmw on every start and offer it (CLI and TUI). `MMW_NO_UPDATE_CHECK=1` also turns it off. |
+| `disk_write_threads` | int | `8` | How many links, unlinks and renames run at once on a cold cache (publish, prune). `1` is the old serial behaviour. |
+| `disk_read_threads` | int | `16` | How many stats, opens and small reads run at once on a cold cache (verify, bundle pre-flight). `1` is the old serial behaviour. |
+| `disk_readahead` | int | `16` | How many files a stream (a bundle being written) opens ahead of the one it is writing. `0` turns read-ahead off. |
 | `theme` | string | `'mmw'` | Colour theme for the TUI: `mmw`, `mmw-light`, any built-in Textual theme (`nord`, `gruvbox`, `tokyo-night`, `catppuccin-mocha`, …), or the name of a custom theme file in `themes/` beside `mmw.toml`. Changed from the Settings page or the command palette (Ctrl+P); an unknown name falls back to `mmw` with a warning. See [themes.md](themes.md). |
 | `database` | path | `{mirror_dir}/.pool/mmw.db` | The pool's SQLite database. Publish, bundle and verify read it heavily, so on a spinning pool disk put it on a fast disk; the pool's `packages/` and `tmp/` stay under `mirror_dir`. Always written on save. Move it with Settings → **Move…** or `mmw move-database PATH`; if you edit this key by hand, move the file (and its `-wal`/`-shm`) yourself — mmw refuses to start over an existing pool whose database is not where this says. |
 
@@ -253,6 +256,7 @@ key      = "tools"
 | `component` | string | `'main'` | The component, when `structured`. |
 | `contents` | bool | `false` | Also write `Contents-{arch}` files, so `apt-file` finds these packages. It reads every deb's file list (once; unchanged debs are cached), so syncing and signing can take significantly longer. |
 
+
 ## `[[networks]]`
 
 A network is a named downselect of the mirror — what one site gets. `publish`
@@ -271,11 +275,12 @@ destination is unset says so rather than inventing one.
 | `certs` | bool | `true` | Generate a 4096-bit TLS key and CSR for the network in `{mirror_dir}/certs/{name}/`. A published tree carries the key, request, OpenSSL config and the signed certificate when there is one under private `{root}/.mmw/tls/` (key 0600; directory 0700; outside the generated web roots); sign it with `mmw certs`. A bundle never carries a private key: the far side makes its own and signs it with `mmw site certs`. On by default — PyPI and VS Code clients speak only HTTPS, and an unsigned network still serves plain HTTP. The retired `bundle_tls` field is ignored. |
 | `nginx` | bool | `true` | Include the official `nginx:latest` Linux amd64 image tar, `nginx/compose.yaml`, setup instructions, and `nginx/mirror.conf` with a server block per mirrored hostname. Config roots always use `/srv/mmw` inside the container; replace the host-side `/path/to/<network>` placeholders in its simple bind mounts. Mounts are read-only; bridge networking maps editable host ports to container ports 80/443. VS Code networks include an internal gallery service. Compose never pulls on the serving host. Signed networks can serve HTTPS. Set `false` to omit nginx artifacts; a VS Code network then has nothing that starts its gallery. The retired `gallery_port` field is ignored. See [Serving it](../README.md#serving-it). |
 | `retention` | string | `'90d'` | How long a release that left a provider's keep set stays published (PyPI): `current`, `forever` or a number of days like `30d`. The widest window of the networks selecting a source decides what the pool keeps; widening is not retroactive. |
+| `runtime_arches` | list of `x86_64` \| `aarch64` | `['x86_64']` | the far-side machine architectures mmw's shipped runtime is built for — `x86_64`, `aarch64` or both. Each adds an interpreter and a set of wheels (~100 MB) to the bundles that carry it. See [far-side.md](far-side.md#first-contact-installing-mmw). |
+| `runtime_python` | string | `'3.12'` | the Python version shipped in that runtime (a python-build-standalone build). |
+| `layers` | table array | `[]` | The `[[networks.layers]]` tables — custom packages this network adds to an upstream repository (below). |
+| `carry_keys` | list of string | `[]` | mmw signing keys whose **private** parts ride every bundle, so the far side can re-sign with them (`mmw site packages`). Anyone holding a bundle can then sign as you — opt-in per key. |
 | `keep_points` | int or string | `3` | Sync points kept per suite when the pool is pruned (`mmw prune`, the TUI's prune): a number, `all`, or an age like `90d`. Every sync records a point per suite that changed; older ones beyond this are dropped on prune (their record stays, their files can go). Never dropped: a point a snapshot holds, or one this network first saw after its last bundle. |
 | `history` | bool | `false` | `true`: a bundle lists every point synced since the last bundle, so the far side can serve any of them; `false`: each suite's newest point. Either way only files the network was never sent travel. `mmw bundle --history` / `--newest` override it for one bundle. |
-| `runtime_arches` | list | `['x86_64']` | the far-side machine architectures mmw's shipped runtime is built for — `x86_64`, `aarch64` or both. Each adds an interpreter and a set of wheels (~100 MB) to the bundles that carry it. See [far-side.md](far-side.md#first-contact-installing-mmw). |
-| `runtime_python` | string | `'3.12'` | the Python version shipped in that runtime (a python-build-standalone build). |
-| `carry_keys` | list of string | `[]` | mmw signing keys whose **private** parts ride every bundle, so the far side can re-sign with them (`mmw site packages`). Anyone holding a bundle can then sign as you — opt-in per key. |
 
 
 ### `[[networks.layers]]`
@@ -302,6 +307,7 @@ key     = "tools"
 | `drop_valid_until` | bool | `false` | Remove `Valid-Until` from the rewritten `Release`, so an airgapped copy never expires. A security trade-off: a client can no longer tell a stale mirror from a fresh one. |
 | `contents` | bool | `false` | Rewrite `Contents-{arch}` so `apt-file` finds the custom packages. Upstream's Contents files are large, so this can make signing take significantly longer. |
 
+
 A rewritten `Release` keeps upstream's `Date` and `Valid-Until`; only the
 changed index files' hash lines change. A rebuild with unchanged inputs (the
 same upstream release, debs and settings) is skipped. A custom deb with the
@@ -318,7 +324,7 @@ a dimension filter keeps following the repository.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `source` | string | **required** | The repository URI this selection applies to — must match a `[[sources]]` `url`. Normalized before comparison, so a trailing slash or an upper-case host still matches. |
-| `dims` | dict[str, list[str]] | every dimension *all* | Not a key itself: write one list per dimension of that source's provider, as flat keys — apt: `suites`, `components`, `arches`; apt-flat: `arches`; vscode: `kinds`, `platforms`, `qualities`; pypi: `pythons`, `platforms`, `arches`. Empty = everything mirrored for it on that dimension, **and it keeps meaning that** as new suites or architectures appear upstream — the reason selection is by dimension rather than by a frozen list of mirror names. A key that is not a dimension of the source's provider is a load error. A flat repository whose URL names no architecture matches any `arches` filter; a VS Code extensions unit (no quality) matches any `qualities` filter; the PyPI universal unit (pure wheels and sdists) matches every filter. |
+| `dims` | string or list of string | every dimension *all* | Not a key itself: write one list per dimension of that source's provider, as flat keys — apt: `suites`, `components`, `arches`; apt-flat: `arches`; vscode: `kinds`, `platforms`, `qualities`; pypi: `pythons`, `platforms`, `arches`. Empty = everything mirrored for it on that dimension, **and it keeps meaning that** as new suites or architectures appear upstream — the reason selection is by dimension rather than by a frozen list of mirror names. A key that is not a dimension of the source's provider is a load error. A flat repository whose URL names no architecture matches any `arches` filter; a VS Code extensions unit (no quality) matches any `qualities` filter; the PyPI universal unit (pure wheels and sdists) matches every filter. |
 
 
 ## Where things live

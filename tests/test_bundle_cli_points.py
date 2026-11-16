@@ -54,7 +54,7 @@ def test_full_flag(cfg_dir, tmp_path, monkeypatch):
 
 def test_history_round_trips_in_config(tmp_path):
     cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "pool"),
-                        networks=[config.NetworkConfig(name="oak", far_side="mmw", history=True)])
+                        networks=[config.NetworkConfig(name="oak", history=True)])
     config.save(cfg, tmp_path)
     assert config.load(tmp_path).networks[0].history is True
 

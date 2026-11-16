@@ -692,14 +692,17 @@ def certs(root: Path | None = None, days: int = 730, force: bool = False, out: P
     if recreate:
         print(f"! recreate nginx in {', '.join(recreate)} on the serving host")
     if out is not None:
-        local = [(r.info.name, Path(r.info.path)) for r in h.roots if hasattr(r, "adopt_tree")]
+        local = [(r.info.name, Path(r.info.path)) for r in h.roots if r.is_local]
         try:
-            names = site_certs.collect_certs(local, h.network, out)
+            # An older site records its CA in a root's own settings: whichever has one.
+            settings = next((s for s in (r.site_settings() for r in h.roots if r.is_local)
+                             if s is not None and s.ca_cert is not None), None)
+            names = site_certs.collect_certs(local, h.network, out, settings=settings)
         except (ValueError, OSError) as e:
             eprint(str(e))
             return 1
         print(f"collected in {out}: {', '.join(names)}")
-        skipped = [r.info.name for r in h.roots if not hasattr(r, "adopt_tree")]
+        skipped = [r.info.name for r in h.roots if not r.is_local]
         if skipped:
             print(f"  (over ssh, collect on that machine: {', '.join(skipped)})")
     return 0
@@ -776,7 +779,7 @@ def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_loc
             target = _set(root, break_lock).roots[0]
         except _ERRORS as e:
             return (err(str(e).strip("'\"")) or 1)
-        if not hasattr(target, "adopt_tree"):
+        if not target.is_local:
             err(f"{target.info.name} is over ssh — run mmw site adopt on that machine")
             return 1
         say(f"→ into {target.info.name}")
@@ -836,7 +839,7 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
             target, repo_key = mset.roots[0], None
     except _ERRORS as e:
         return (err(str(e).strip("'\"")) or 1)
-    if not hasattr(target, "adopt_tree"):
+    if not target.is_local:
         err(f"{target.info.name} is over ssh — run mmw site adopt on that machine")
         return 1
 
@@ -844,7 +847,7 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
     for t in trees:
         groups.setdefault(t.identity(), []).append(t)
     dest: dict[tuple, tuple] = {}         # identity → (repo key, label, base, the root it goes to)
-    candidates = [r for r in mset.roots if hasattr(r, "adopt_tree")] if repo is None else [target]
+    candidates = [r for r in mset.roots if r.is_local] if repo is None else [target]
     for ident, members in groups.items():
         match, match_root = None, target
         for r in candidates:                        # a suite already here, in any root of the set
@@ -936,7 +939,7 @@ def check_signatures(root: Path | None = None, key: Path | None = None, break_lo
 
     from mmw.site.adopt import keyring_from
     try:
-        roots_here = [r for r in _set(root, break_lock).roots if hasattr(r, "recheck_signatures")]
+        roots_here = [r for r in _set(root, break_lock).roots if r.is_local]
     except _ERRORS as e:
         return _fail(e)
     checked, code = 0, 0
@@ -962,8 +965,8 @@ def adopted(root: Path | None = None, remove: Path | None = None, yes: bool = Fa
 
     from mmw.core.format import fmt_size
     try:
-        roots_here = [r for r in _set(root).roots if hasattr(r, "originals")]
-        every_root = [Path(r.info.path) for r in _set(root).roots if hasattr(r, "originals")]
+        roots_here = [r for r in _set(root).roots if r.is_local]
+        every_root = [Path(r.info.path) for r in _set(root).roots if r.is_local]
     except _ERRORS as e:
         return _fail(e)
     if remove is None:

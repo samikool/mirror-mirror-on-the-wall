@@ -74,6 +74,35 @@ def run(host: str, remote: list[str], *, input: bytes | None = None, timeout: fl
     return r.stdout
 
 
+def stream(host: str, remote: list[str], *, out, err, input: bytes | None = None) -> int:
+    """Run `remote` on `host`, each line of its stdout to `out(line)` and of
+    its stderr to `err(line)` as they come (from two threads); its exit code.
+    ssh failing (255) is an `SshError` in fixed words. Check the host first
+    (`check_remote_mmw`): ssh's own complaints would show as stderr lines."""
+    import threading
+    proc = subprocess.Popen(ssh_argv(host, remote), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL)
+
+    def pump_err() -> None:
+        for raw in proc.stderr:
+            err(raw.decode("utf-8", "replace").rstrip("\n"))
+    t = threading.Thread(target=pump_err, daemon=True)
+    t.start()
+    if input is not None:                  # small (a key file): written whole before reading
+        try:
+            proc.stdin.write(input)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+    for raw in proc.stdout:
+        out(raw.decode("utf-8", "replace").rstrip("\n"))
+    proc.wait()
+    t.join()
+    if proc.returncode == 255:
+        raise SshError(UNREACHABLE.format(host=host))
+    return proc.returncode
+
+
 def popen(host: str, remote: list[str]) -> subprocess.Popen:
     """`remote` on `host` with stdin and stdout as pipes (a stream); stderr is
     kept from the terminal and never shown."""

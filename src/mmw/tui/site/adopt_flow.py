@@ -45,9 +45,11 @@ def _run_adopt(root: str, c: AdoptChoice, dry_run: bool, said=None) -> tuple[int
                 last[0] = now
                 said(f"{where}: {seen[0]:,} files done ({fmt_size(seen[1])})")
         return tick
-    code = adopt(Path(c.path).expanduser(), Path(root), None, c.as_base or None,
+    from mmw.site.ssh import parse_location
+    far = parse_location(root)[0] == "ssh"         # the folder is on that host: never this one's ~
+    code = adopt(Path(c.path) if far else Path(c.path).expanduser(), Path(root), None, c.as_base or None,
                  Path(c.key).expanduser() if c.key else None, c.unverified, dry_run, True,
-                 say=lines.append, err=lines.append, hashing=hashing)
+                 say=lines.append, err=lines.append, hashing=hashing, said=said)
     return code, lines
 
 
@@ -58,16 +60,20 @@ class AdoptPage(Page):
     HELP = ("Takes over APT trees mmw didn't make: each is checked against its Release and\n"
             "indexes and linked into this mirror, its newest suite served. A suite this mirror\n"
             "already has joins it; a new one needs where it is served (deb.debian.org/debian).\n"
-            "Without a key, tick Adopt unverified — `mmw site check-signatures` checks later.")
+            "Without a key, tick Adopt unverified — `mmw site check-signatures` checks later.\n"
+            "A mirror over ssh adopts there: the folder is on its host, the key file on this one.")
 
     def __init__(self, root: str):
         super().__init__()
+        from mmw.site.ssh import parse_location
         self._root = root
+        self._host = parse_location(root)[1]       # a root over ssh: the folder is on its host
         self._looked: AdoptChoice | None = None
 
     def compose_body(self) -> ComposeResult:
         yield Form(
-            TextField("Folder", "", id="adopt-path", placeholder="where the trees are: /srv/www"),
+            TextField(f"Folder on {self._host}" if self._host else "Folder", "", id="adopt-path",
+                      placeholder="where the trees are: /srv/www"),
             TextField("Served at", "", id="adopt-as", placeholder="HOST/PATH, for a repository new here"),
             TextField("Key file", "", id="adopt-key", placeholder="upstream's public key (else this mirror's keys)"),
             ToggleField("Adopt unverified", False, id="adopt-unverified",

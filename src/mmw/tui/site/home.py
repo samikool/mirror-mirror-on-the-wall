@@ -1011,9 +1011,10 @@ class SiteHomePage(Page):
     def action_adopt(self) -> None:
         """Take over APT trees mmw didn't make (or a tree apply.py manages)."""
         from mmw.tui.site.adopt_flow import AdoptPage, AdoptRunPage
-        roots = [r for r in (self.app.mset.roots if self.app.mset else []) if r.is_local]
+        every = list(self.app.mset.roots if self.app.mset else [])
+        roots = [r for r in every if r.is_local] or every      # one over ssh adopts there, over ssh
         if not roots:
-            self.set_status("Adopt into a mirror on this machine — open or apply one first "
+            self.set_status("Adopt into a mirror — open or apply one first "
                             "(or convert an apply.py tree in place: mmw site adopt PATH).", "error")
             return
         root = str(roots[0].info.location)

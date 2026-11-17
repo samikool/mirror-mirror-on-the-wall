@@ -323,6 +323,13 @@ Found 3 trees of Debian bookworm:
   checked".
 - In the TUI: `A` on the mirror's page — Look shows what was found and
   checked, Adopt does it.
+- Trees on another machine: `mmw site adopt lnxp005:/srv/www …` (or a
+  plain path with `--root lnxp005:/data/mirror`) runs the adopt on that
+  host over ssh — it links into the store there, so the trees and the root
+  must be on one machine. Its output streams back; `--key FILE` is read
+  here and sent along. That host needs mmw installed (`mmw site open
+  HOST:/PATH --install mmw-<version>-<arch>.tar`). In the TUI, `A` on a
+  mirror over ssh does the same: the folder is on its host.
 
 ### A far side apply.py manages
 

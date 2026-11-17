@@ -1,5 +1,6 @@
 """`mmw site …` — mmw on the far side of the airgap. A mirror is a set of
 roots; this machine remembers where it has seen them (`mmw site open`)."""
+import re
 from pathlib import Path
 
 from mmw.commands.common import eprint
@@ -836,17 +837,125 @@ def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_loc
     return 0
 
 
+def _exists(path: Path) -> bool:
+    try:
+        disk_io.ops.stat(path)
+        return True
+    except OSError:
+        return False
+
+
+def _adopt_host(path: Path, root: Path | None, repo: str | None) -> tuple[str, str, str | None] | None:
+    """Where adopting `path` runs, when not here: (host, the folder there,
+    the root there or None for that host's own). A `HOST:/PATH` folder runs
+    on HOST; a plain one on the root over ssh that --root or --repo names, or
+    — when it isn't a folder here — the mirror's first root, when over ssh."""
+    from mmw.site import ssh
+    kind, host, far_path = ssh.parse_location(str(path))
+    root_kind, root_host, root_path = ssh.parse_location(str(root)) if root is not None else ("local", None, None)
+    if kind == "ssh":
+        if root is not None:
+            if root_kind != "ssh" or root_host != host:
+                raise ValueError(f"{path} is on {host}, but the root {root} isn't — adopting links the files "
+                                 "into the root's store, so both must be on one machine")
+            return host, far_path, root_path
+        if repo is not None:
+            r, _key = _set(None).root_for_repo(repo)
+            if r.is_local or r.host != host:
+                raise ValueError(f"{path} is on {host}, but {repo} is in {r.info.name} — adopting links the "
+                                 "files into the root's store, so both must be on one machine")
+            return host, far_path, r.path
+        try:
+            mine = [r for r in _set(None).roots if not r.is_local and r.host == host]
+        except _ERRORS:
+            mine = []                                   # no mirror opened here: the one on that host
+        return host, far_path, mine[0].path if mine else None
+    if root_kind == "ssh":
+        return root_host, str(path), root_path
+    if repo is not None:
+        r, _key = _set(root).root_for_repo(repo)
+        return None if r.is_local else (r.host, str(path), r.path)
+    if root is None and not _exists(path):
+        try:
+            first = _set(None).roots[0]
+        except (*_ERRORS, IndexError):
+            return None
+        if not first.is_local:
+            return first.host, str(path), first.path
+    return None
+
+
+_HASHED = re.compile(r"^\s+.+: [\d,]+ files read \(.+\)$")      # _hash_progress's lines
+
+
+def _adopt_over_ssh(host: str, far_path: str, far_root: str | None, repo, as_base, key, unverified: bool,
+                    dry_run: bool, yes: bool, break_lock: bool, say, err, said) -> int:
+    """`mmw site adopt` on `host`, its lines streamed here. Its terminal
+    isn't this one, so asking happens here: it looks (--dry-run), this side
+    asks, then it adopts (--yes). A key file here goes over ssh's stdin."""
+    import sys
+
+    from mmw.site import ssh
+    args = ["site", "adopt", far_path, *(["--root", far_root] if far_root else []),
+            *(["--repo", repo] if repo else []), *(["--as", as_base] if as_base else []),
+            *(["--key", "-"] if key is not None else []), *(["--unverified"] if unverified else []),
+            *(["--break-lock"] if break_lock else [])]
+    data = disk_io.ops.read_bytes(Path(key)) if key is not None else None
+
+    def to_err(line: str) -> None:
+        (said if said is not None and _HASHED.match(line) else err)(line.strip() if said else line)
+
+    def run(*extra: str) -> int:
+        return ssh.stream(host, ssh.mmw_argv(*args, *extra), out=say, err=to_err, input=data)
+    try:
+        ssh.check_remote_mmw(host)
+        say(f"On {host}:")
+        if dry_run or yes:
+            return run("--dry-run" if dry_run else "--yes")
+        if not sys.stdin.isatty():
+            err("pass --yes to adopt them (no terminal to ask on)")
+            return 1
+        code = run("--dry-run")
+        if code != 0:
+            return code
+        if input("Adopt them? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+        return run("--yes")
+    except _ERRORS as e:
+        return (err(str(e).strip("'\"")) or 1)
+
+
 def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base: str | None = None,
           key: Path | None = None, unverified: bool = False, dry_run: bool = False, yes: bool = False,
-          break_lock: bool = False, say=print, err=eprint, hashing=_hash_progress) -> int:
+          break_lock: bool = False, say=print, err=eprint, hashing=_hash_progress, said=None) -> int:
     """Take over the APT trees under `path`: report them by suite, check each,
     and adopt them — the trees themselves are never changed. `hashing(where)`:
-    a `(rel, size)` callback per file read (default: a line on stderr now and then)."""
+    a `(rel, size)` callback per file read (default: a line on stderr now and then).
+
+    Adopting links the files into a root's store, so it runs where the files
+    and the root are: a `[user@]host:/path`, or a root over ssh, runs `mmw
+    site adopt` on that host, its lines streamed back (`said(text)`: its
+    how-far lines, when given; else they go to `err`)."""
     import sys
     import tempfile
 
     from mmw.site.adopt import check_tree, find_apply_tree, find_trees, keyring_from, new_repo_key
     from mmw.site.versionref import day
+    try:
+        far = _adopt_host(Path(path), root, repo)
+    except _ERRORS as e:
+        return (err(str(e).strip("'\"")) or 1)
+    if far is not None:
+        return _adopt_over_ssh(*far, repo, as_base, key, unverified, dry_run, yes, break_lock, say, err, said)
+    if not _exists(Path(path)):
+        err(f"{path} doesn't exist on this machine — for a folder on another, give it as HOST:/PATH")
+        return 1
+    if str(key) == "-":                       # sent over ssh by the side that asked (see _adopt_over_ssh)
+        key_bytes = sys.stdin.buffer.read()
+    elif key is not None:
+        key_bytes = disk_io.ops.read_bytes(Path(key))
+    else:
+        key_bytes = None
     managed = find_apply_tree(Path(path))
     if managed is not None:
         return _adopt_apply(managed, root, dry_run, yes, break_lock, say, err, hashing)
@@ -896,7 +1005,7 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
             return 1
 
     with tempfile.TemporaryDirectory() as tmp:
-        keys = [disk_io.ops.read_bytes(Path(key))] if key is not None else target.network_keys()
+        keys = [key_bytes] if key_bytes is not None else target.network_keys()
         keyring = keyring_from(keys, Path(tmp) / "keys.gpg") if keys else None
         if keyring is None and not unverified:
             if not (sys.stdin.isatty() and not yes):

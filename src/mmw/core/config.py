@@ -1595,8 +1595,8 @@ def rename_network_state(mirror_dir: Path, old: str, new: str) -> list[str]:
     return problems
 
 
-def save(cfg: Config, directory: Path = Path(".")) -> Path:
-    path = config_path(directory)
+def _config_data(cfg: Config) -> dict:
+    """The validated data used by save and configuration previews."""
 
     sources_data = []
     for s in cfg.sources:
@@ -1667,19 +1667,35 @@ def save(cfg: Config, directory: Path = Path(".")) -> Path:
             f"refusing to write an unloadable {CONFIG_FILENAME}: {e}"
         ) from e
 
+    return data
+
+
+def dumps(cfg: Config) -> str:
+    """The same TOML as save, without writing a file."""
+    return tomli_w.dumps(_config_data(cfg))
+
+
+def save(cfg: Config, directory: Path = Path("."), *, overwrite: bool = True) -> Path:
+    path = config_path(directory)
+    data = _config_data(cfg)
+
     # Staged and renamed: written in place, a full disk or a kill mid-write
     # left a truncated mmw.toml — every command then refuses to start, and the
     # file is hand-edited, so there is often no other copy. The target is
     # resolved first so a symlinked mmw.toml is replaced at its real location
     # rather than turned into a regular file.
-    target = path.resolve() if disk_io.ops.is_symlink(path) else path
+    target = path.resolve() if overwrite and disk_io.ops.is_symlink(path) else path
     tmp = target.with_name(target.name + ".tmp")
     try:
         with disk_io.ops.open_file(tmp, "wb") as f:
             tomli_w.dump(data, f)
         if disk_io.ops.exists(target):
             disk_io.ops.chmod(tmp, disk_io.ops.stat(target).st_mode & 0o7777)
-        disk_io.ops.replace(tmp, target)
+        if overwrite:
+            disk_io.ops.replace(tmp, target)
+        else:
+            if not disk_io.ops.link_into(tmp, target):  # atomic no-clobber
+                raise FileExistsError(f"{target} exists")
     finally:
         disk_io.ops.unlink(tmp, missing_ok=True)
     return path

@@ -102,6 +102,61 @@ the stage directory on the pool's filesystem: elsewhere mmw warns and copies
 the files instead. It counts as sent once the directory is complete; delete
 it yourself when it has gone across.
 
+### Lost the connected side?
+
+A kept bundle records its network settings and the APT units it carried.
+You can rebuild `mmw.toml` without contacting the far side:
+
+```bash
+# Install mmw on the replacement connected side, then inspect the recovery.
+mmw init --from-bundle /media/kept/lab-20261101T120000Z.tar \
+  --mirror-dir /srv/mirror --dry-run
+
+# Write mmw.toml once you have reviewed the output.
+mmw init --from-bundle /media/kept/lab-20261101T120000Z.tar \
+  --mirror-dir /srv/mirror
+mmw sync --quiet
+mmw bundle -n lab --since 2026-11-01 --bundles /media/kept
+```
+
+Use the day or stamp of the last bundle that **arrived**, rather than a later
+one that was lost. Keep these bundles on the connected side; nothing needs
+to come back across the airgap.
+
+`--from-bundle PATH` is repeatable: supply each network's bundle to recover
+several networks. If several supplied bundles describe one network, its
+newest manifest wins. Both mmw 1.4 format-2 and current format-3 manifests
+work, including ledger `.manifest.jsonl` and legacy `.manifest.jsonl.zst`
+files. Recovery reads the tar's first manifest member; it does not unpack
+packages or recreate the pool.
+
+Recovery refuses to overwrite an existing `mmw.toml`, even with `--force`.
+`--dry-run` works when one exists and prints only TOML to stdout, with the
+recovery notes on stderr, so you can redirect the preview to another file.
+Review the restored publish and bundle destinations before using them.
+
+The manifest cannot recover your old mirror directory, global connection
+and disk settings, sources outside that network's selection, or networks
+never bundled. You choose `--mirror-dir` (default `./mirror`); other global
+settings use defaults. Recovered APT sources preserve recorded suites,
+components, architectures, key fields and flags. Only recorded selections
+can be recovered; an original “all upstream suites” choice becomes the
+explicit suites found in the bundle.
+
+VS Code, PyPI and apt-local sources need adding again. Their recorded units
+omit essential source settings: VS Code's dimensions and extension choices,
+PyPI's targets and requirements, and apt-local's folder and signing-key
+name. Recovery names each omitted source and what was not recorded, rather
+than constructing a source with guessed defaults.
+
+In the TUI, the first Setup screen has **Start from a bundle…**. Choose
+again to add another network's bundle. Choose the mirror directory as
+usual, then review the Sources step. **Review sources and networks…** opens
+an editable TOML preview with validation. Nothing is written until the
+wizard's final **Write config** step. Setup can finish with no sources,
+including when only network settings could be recovered; add the missing
+sources afterwards from Repositories or with `mmw add`.
+
 ### What a bundle carries
 
 A bundle carries **points**, not a jump from one snapshot to another. Every sync records a

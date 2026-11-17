@@ -401,3 +401,7 @@ _HistoryPane { height: 1fr; }
 #site-history { height: 1fr; min-height: 4; }
 #site-version-actions { dock: bottom; height: 1; }
 #site-version-actions Button { margin-left: 1; min-width: 0; width: auto; }
+
+/* Recovery review edits the same config Setup will save. */
+BundleConfigReviewPage #recovered-config { height: 24; margin-top: 1; }
+SetupPage #setup-bundle-start { height: auto; }

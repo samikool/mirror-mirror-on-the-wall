@@ -65,18 +65,27 @@ def test_setup_writes_the_config_and_continues_into_repositories(tmp_path):
     _run(tmp_path, check)
 
 
-def test_esc_in_the_first_add_asks_before_quitting_setup(tmp_path):
+def test_setup_can_finish_without_sources(tmp_path):
     async def check(app, pilot):
-        app.screen.query_one("#btn-wizard-next", Button).press()
+        page = app.screen
+        page.query_one("#mirror-dir", Input).value = str(tmp_path / "empty-pool")
+        page.query_one("#btn-wizard-next", Button).press()
         await _settle(pilot)
         assert isinstance(app.screen, AddSourcePage)
         await pilot.press("escape")
         await _settle(pilot)
-        assert isinstance(app.screen, ConfirmDialog)
-        await pilot.press("escape")                                  # go back
+        assert app.screen is page
+        assert page.step == 1
+        assert not config.config_path(tmp_path).exists()
+        page.query_one("#btn-wizard-next", Button).press()
         await _settle(pilot)
-        assert app.is_running and isinstance(app.screen, SetupPage)
-        assert app.screen.step == 1
+        assert page.step == 2
+        assert page.query("StepConfirm")
+        page.query_one("#btn-wizard-next", Button).press()
+        await until(pilot, lambda: app.cfg is not None and app.current_mode == "repositories")
+        saved = config.load(tmp_path)
+        assert saved.sources == [] and saved.networks == []
+        assert saved.settings.mirror_dir == (tmp_path / "empty-pool").resolve()
     _run(tmp_path, check)
 
 

@@ -42,7 +42,7 @@ codes — see [far-side.md](far-side.md#exit-codes).
 | [`mmw bundle`](#mmw-bundle) | Write a network's mirrors to a transferable bundle — between any two snapshots (see `mmw snapshot list`) |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
-| [`mmw init`](#mmw-init) | Setup wizard |
+| [`mmw init`](#mmw-init) | Setup wizard, or recover mmw.toml from kept bundles |
 | [`mmw installer`](#mmw-installer) | Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh` on the far side puts mmw on the path, offline |
 | [`mmw manage`](#mmw-manage) | Manage configured mirrors (add, remove) |
 | [`mmw move-database`](#mmw-move-database) | Move the pool database (settings.database) and point mmw.toml at it |
@@ -115,9 +115,9 @@ bundle went, to a new snapshot of now.
 | `--network`, `-n` |  | Bundle one network by name |
 | `--out`, `-o` |  | Write here instead of the network's bundle_dir. '-' streams the tar to stdout (needs -n). |
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
-| `--from` |  | Deprecated: bounds history from a snapshot (stamp, label or id), or 'none' for full. Use `--since DATE` or `--full`. |
-| `--since` |  | Send what the far side lacks as of DATE (end of day UTC or a full stamp), from a kept manifest or retained points. |
-| `--bundles` |  | Search this kept-bundle folder too (repeatable), alongside bundle_dir and the local ledger. |
+| `--from` |  | Deprecated: bounds history from a snapshot (stamp, label or id), or 'none' for full. Use --since DATE or --full. |
+| `--since` |  | Send what the far side lacks, as it was on DATE (a kept bundle's manifest, else this side's points) |
+| `--bundles` |  | Search kept bundles here too (repeatable) |
 | `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |
 | `--repo` |  | Only this repository (URL or name; repeatable). Needs -n. |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
@@ -149,12 +149,18 @@ Takes no options.
 
 ### `mmw init`
 
-Setup wizard. Launches manage if config already exists.
+Setup wizard, or recover mmw.toml from kept bundles.
+
+Without --from-bundle, launches manage if config already exists.
+Recovery never overwrites it; --dry-run prints the recovered TOML.
+Sources are optional: cancel Add sources, finish Setup, and add them later.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--mirror-dir` | `mirror` | Mirror storage directory |
 | `--max-connections` | `10` | Concurrent download connections |
+| `--from-bundle` |  | Recover mmw.toml from a kept bundle (repeatable) |
+| `--dry-run` |  | Print recovered TOML without writing (--from-bundle) |
 | `--force` |  | Re-initialize even if config exists |
 
 ### `mmw installer`
@@ -199,7 +205,7 @@ Remove orphaned pool packages not referenced by any mirror.
 |--------|---------|-------------|
 | `--dry-run` |  | Report what would be removed without deleting anything |
 | `--yes`, `-y` |  | Skip the confirmation prompt (implied when not a TTY) |
-| `--costs` |  | With --dry-run: what each keep_points choice would free, per network (reads the pool once per choice) |
+| `--costs` |  | Preview what each keep_points choice would free, per network (implies --dry-run; reads the pool once per choice) |
 
 ### `mmw publish`
 
@@ -270,9 +276,9 @@ mmw.
 | `--network`, `-n` |  | The network to stage *(required)* |
 | `--out`, `-o` |  | Directory to stage into instead of the network's bundle_dir |
 | `--allow-incomplete` |  | Stage even if the pool cannot serve everything the indexes promise. |
-| `--from` |  | Deprecated: bounds history from a snapshot, or 'none' for everything. Use `--since DATE` or `--full`. |
-| `--since` |  | Send what the far side lacks as of DATE, from a kept manifest or retained points. |
-| `--bundles` |  | Search this kept-bundle folder too (repeatable). |
+| `--from` |  | Deprecated: bounds history from a snapshot, or 'none' for everything. Use --since DATE or --full. |
+| `--since` |  | Send what the far side lacks as of DATE, from a kept manifest or retained points |
+| `--bundles` |  | Search kept bundles here too (repeatable) |
 | `--to` |  | Snapshot to bring it to. Default: a new snapshot of now. |
 | `--repo` |  | Only this repository (URL or name; repeatable). |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |

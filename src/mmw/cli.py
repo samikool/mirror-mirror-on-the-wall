@@ -184,10 +184,23 @@ def _open_app(cfg, cfg_dir, section: str = "repositories", **kwargs):
 def cmd_init(
     mirror_dir: Path = typer.Option(Path("./mirror"), help="Mirror storage directory"),
     max_connections: int = typer.Option(10, min=1, help="Concurrent download connections"),
+    from_bundle: list[Path] = typer.Option(None, "--from-bundle", help="Recover mmw.toml from a kept bundle (repeatable)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print recovered TOML without writing (--from-bundle)"),
     force: bool = typer.Option(False, "--force", help="Re-initialize even if config exists"),
 ):
-    """Setup wizard. Launches manage if config already exists."""
+    """Setup wizard, or recover mmw.toml from kept bundles.
+
+    Without --from-bundle, launches manage if config already exists.
+    Recovery never overwrites it; --dry-run prints the recovered TOML.
+    Sources are optional: cancel Add sources, finish Setup, and add them later.
+    """
     cfg_dir = _cfg_dir()
+    if from_bundle:
+        from mmw.commands.init_from_bundle import run
+        raise typer.Exit(run(cfg_dir, from_bundle, mirror_dir, dry_run=dry_run))
+    if dry_run:
+        typer.echo("--dry-run needs --from-bundle", err=True)
+        raise typer.Exit(1)
     cfg_path = config.config_path(cfg_dir)
     defaults = {"mirror_dir": mirror_dir, "max_connections": max_connections}
 
@@ -669,8 +682,8 @@ def cmd_bundle(
              "`apt install` on the far side, so you are told exactly what is missing.",
     ),
     from_ref: str = typer.Option(
-        None, "--from", help="Snapshot the far side is at (stamp, label or id), or 'none' "
-                             "for a full bundle. Default: where the last bundle went."),
+        None, "--from", help="Deprecated: bounds history from a snapshot (stamp, label or id), or 'none' "
+                             "for full. Use --since DATE or --full."),
     since: str = typer.Option(None, "--since", help="Send what the far side lacks, as it was on DATE "
                               "(a kept bundle's manifest, else this side's points)"),
     bundles: list[Path] = typer.Option(None, "--bundles", help="Search kept bundles here too (repeatable)"),
@@ -711,8 +724,8 @@ def cmd_stage(
         False, "--allow-incomplete",
         help="Stage even if the pool cannot serve everything the indexes promise."),
     from_ref: str = typer.Option(
-        None, "--from", help="Snapshot the far side is at (stamp, label or id), or 'none' "
-                             "for everything. Default: what was last sent of each repository."),
+        None, "--from", help="Deprecated: bounds history from a snapshot, or 'none' for everything. "
+                             "Use --since DATE or --full."),
     since: str = typer.Option(None, "--since", help="Send what the far side lacks as of DATE, "
                               "from a kept manifest or retained points"),
     bundles: list[Path] = typer.Option(None, "--bundles", help="Search kept bundles here too (repeatable)"),

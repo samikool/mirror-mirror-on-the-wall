@@ -115,7 +115,9 @@ bundle went, to a new snapshot of now.
 | `--network`, `-n` |  | Bundle one network by name |
 | `--out`, `-o` |  | Write here instead of the network's bundle_dir. '-' streams the tar to stdout (needs -n). |
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
-| `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for a full bundle. Default: where the last bundle went. |
+| `--from` |  | Deprecated: bounds history from a snapshot (stamp, label or id), or 'none' for full. Use `--since DATE` or `--full`. |
+| `--since` |  | Send what the far side lacks as of DATE (end of day UTC or a full stamp), from a kept manifest or retained points. |
+| `--bundles` |  | Search this kept-bundle folder too (repeatable), alongside bundle_dir and the local ledger. |
 | `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |
 | `--repo` |  | Only this repository (URL or name; repeatable). Needs -n. |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
@@ -268,7 +270,9 @@ mmw.
 | `--network`, `-n` |  | The network to stage *(required)* |
 | `--out`, `-o` |  | Directory to stage into instead of the network's bundle_dir |
 | `--allow-incomplete` |  | Stage even if the pool cannot serve everything the indexes promise. |
-| `--from` |  | Snapshot the far side is at (stamp, label or id), or 'none' for everything. Default: what was last sent of each repository. |
+| `--from` |  | Deprecated: bounds history from a snapshot, or 'none' for everything. Use `--since DATE` or `--full`. |
+| `--since` |  | Send what the far side lacks as of DATE, from a kept manifest or retained points. |
+| `--bundles` |  | Search this kept-bundle folder too (repeatable). |
 | `--to` |  | Snapshot to bring it to. Default: a new snapshot of now. |
 | `--repo` |  | Only this repository (URL or name; repeatable). |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |

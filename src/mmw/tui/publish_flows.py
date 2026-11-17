@@ -70,6 +70,8 @@ class PublishChoice:
 class BundleChoice:
     """What `b` bundles: from where the last bundle went (`from_last`), a
     snapshot, or nothing (None: full); to a new snapshot of now or a snapshot."""
+    since: str | None = None
+    kept_dir: Path | None = None
     from_last: bool = True
     from_ref: str | None = None
     to_ref: str = "now"
@@ -441,11 +443,15 @@ class PublishFlows:
 
     async def _execute_bundle(self, net: "config.NetworkConfig", view,
                               choice: BundleChoice | None = None) -> None:
-        from mmw.core.publisher.bundle import bundle_network, stage_network
+        from mmw.commands.bundle import transfer
+        from mmw.core.publisher.bundle import NothingToStandOn
 
         choice = choice or BundleChoice()
         ends = {"to_ref": choice.to_ref}
-        if not choice.from_last:
+        if choice.since is not None:
+            ends["since"] = choice.since
+            ends["kept_dirs"] = [choice.kept_dir] if choice.kept_dir is not None else None
+        elif not choice.from_last:
             ends["from_ref"] = choice.from_ref
         if choice.repos is not None:
             ends["repos"] = list(choice.repos)
@@ -453,15 +459,31 @@ class PublishFlows:
             ends["installer"] = True
         if choice.history is not None:
             ends["history"] = choice.history
-        verb = stage_network if choice.stage else bundle_network
+        ends["stage"] = choice.stage
         view.begin()
 
         def run(**more):
-            return verb(net, self.cfg(), self.cfg().settings.mirror_dir,
+            return transfer(net, self.cfg(), self.cfg().settings.mirror_dir,
                         progress=view.record, stop_event=view.stop_event,
                         mirror_start_callback=view.notify_mirror_start, **ends, **more)
         try:
             result = await asyncio.to_thread(run)
+        except NothingToStandOn as exc:
+            from mmw.tui.ui.dialog import ConfirmDialog
+            confirmed = await self.app.push_screen_wait(ConfirmDialog(
+                "No state found", escape(str(exc)) + "\nSend everything instead?",
+                confirm_label="Send everything", confirm_variant="primary"))
+            if not confirmed or view.stop_event.is_set():
+                view.finish_note("nothing transferred")
+                return
+            ends.pop("since", None)
+            ends.pop("kept_dirs", None)
+            ends["from_ref"] = None
+            try:
+                result = await asyncio.to_thread(run)
+            except Exception as retry_exc:
+                view.mark_error(str(retry_exc) or type(retry_exc).__name__)
+                return
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return

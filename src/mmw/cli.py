@@ -671,6 +671,9 @@ def cmd_bundle(
     from_ref: str = typer.Option(
         None, "--from", help="Snapshot the far side is at (stamp, label or id), or 'none' "
                              "for a full bundle. Default: where the last bundle went."),
+    since: str = typer.Option(None, "--since", help="Send what the far side lacks, as it was on DATE "
+                              "(a kept bundle's manifest, else this side's points)"),
+    bundles: list[Path] = typer.Option(None, "--bundles", help="Search kept bundles here too (repeatable)"),
     to_ref: str = typer.Option(
         None, "--to", help="Snapshot to bring it to (stamp, label or id). "
                            "Default: a new snapshot of now."),
@@ -695,7 +698,8 @@ def cmd_bundle(
     raise typer.Exit(run(_cfg_dir(), network=network, out=out,
                          allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
-                         installer=installer, runtime_wheel=runtime_wheel, history=history, full=full))
+                         installer=installer, runtime_wheel=runtime_wheel, history=history, full=full,
+                         since=since, kept=bundles))
 
 
 @app.command("stage")
@@ -709,6 +713,9 @@ def cmd_stage(
     from_ref: str = typer.Option(
         None, "--from", help="Snapshot the far side is at (stamp, label or id), or 'none' "
                              "for everything. Default: what was last sent of each repository."),
+    since: str = typer.Option(None, "--since", help="Send what the far side lacks as of DATE, "
+                              "from a kept manifest or retained points"),
+    bundles: list[Path] = typer.Option(None, "--bundles", help="Search kept bundles here too (repeatable)"),
     to_ref: str = typer.Option(
         None, "--to", help="Snapshot to bring it to. Default: a new snapshot of now."),
     repo: list[str] = typer.Option(
@@ -731,7 +738,8 @@ def cmd_stage(
     from mmw.commands.stage import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
-                         installer=installer, runtime_wheel=runtime_wheel, history=history, full=full))
+                         installer=installer, runtime_wheel=runtime_wheel, history=history, full=full,
+                         since=since, kept=bundles))
 
 
 @app.command("installer")

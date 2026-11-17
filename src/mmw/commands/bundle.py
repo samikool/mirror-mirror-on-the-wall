@@ -15,11 +15,15 @@ from mmw.core import disk_io
 from mmw.commands.common import eprint, interruptible, load_config_or_none, preflight_ok
 from mmw.core.format import fmt_size as _fmt_size
 
-# Imported at module level, not inside run(): tests monkeypatch this as a
-# module attribute (`bundle.bundle_network = ...`), and an import inside the
-# function body would bind a fresh reference to the real one every call,
-# silently defeating the patch.
-from mmw.core.publisher.bundle import bundle_network, stage_network
+def bundle_network(*args, **kwargs):
+    """Resolve the builder at call time for both frontends."""
+    from mmw.core.publisher.bundle import bundle_network as build
+    return build(*args, **kwargs)
+
+
+def stage_network(*args, **kwargs):
+    from mmw.core.publisher.bundle import stage_network as build
+    return build(*args, **kwargs)
 
 
 @interruptible
@@ -28,7 +32,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         allow_incomplete: bool = False, from_ref: str | None = None,
         to_ref: str | None = None, repos: list[str] | None = None, stage: bool = False,
         installer: bool = False, runtime_wheel: Path | None = None, history: bool | None = None,
-        full: bool = False) -> int:
+        full: bool = False, since: str | None = None, kept: list[Path] | None = None) -> int:
     """Bundle one or all configured networks. Returns a process exit code.
 
     `from_ref` / `to_ref` name snapshots (stamp, label or id) of the one
@@ -36,6 +40,11 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
     the last bundle went, to a new snapshot of now. `installer` writes mmw's
     installer beside an mmw network's bundle; `runtime_wheel` is the mmw
     wheel it ships."""
+    if from_ref is not None:
+        eprint("--from is deprecated — use --since DATE (a snapshot's date) or --full")
+    if since is not None and (full or from_ref is not None):
+        eprint("--since cannot be combined with --full or --from")
+        return 1
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
@@ -137,12 +146,15 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             # A stage warns before its long part; the runtime build takes
             # minutes the first time — both are said as they happen.
             picked["progress"] = progress
+            if since is not None:
+                picked["since"] = since
+                picked["kept_dirs"] = kept
             if stage:
-                result = stage_network(net, cfg, mirror_dir, out_dir=out,
-                                       from_ref=start, to_ref=to_ref or "now", **picked)
+                result = transfer(net, cfg, mirror_dir, out=out, stage=True,
+                                  from_ref=start, to_ref=to_ref or "now", **picked)
             else:
-                result = bundle_network(net, cfg, mirror_dir, out_path=out,
-                                        from_ref=start, to_ref=to_ref or "now", **picked)
+                result = transfer(net, cfg, mirror_dir, out=out,
+                                  from_ref=start, to_ref=to_ref or "now", **picked)
         except BrokenPipeError:
             _quiet_stdout()
             eprint("stream to stdout broke — nothing recorded; run the bundle again")
@@ -155,6 +167,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         span = (f"{result.previous} → {result.created}" if result.previous
                 else f"full → {result.created}")
         say(f"{net.name}  {span}  →  {'stdout' if streaming else result.out_path}")
+        if result.since_source:
+            say(f"  since {result.since_source}")
         say(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
         for r in result.repos:
             say(f"  {r.label}  " + ", ".join(f"{suite} {before or 'new'} → {to}" for suite, before, to in r.suites))
@@ -206,3 +220,16 @@ def _quiet_stdout() -> None:
         os.dup2(devnull, sys.stdout.fileno())
     except OSError:
         pass
+
+
+def transfer(net, cfg, mirror_dir, *, out=None, stage=False, **options):
+    """The shared command function for CLI and TUI transfers."""
+    if stage:
+        return stage_network(net, cfg, mirror_dir, out_dir=out, **options)
+    return bundle_network(net, cfg, mirror_dir, out_path=out, **options)
+
+
+def preview_since(net, mirror_dir, since, kept=None):
+    """The same baseline resolver as a transfer, without writing anything."""
+    from mmw.core.publisher.bundle import resolve_since
+    return resolve_since(net, mirror_dir, since, kept)

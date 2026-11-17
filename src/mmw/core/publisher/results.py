@@ -187,6 +187,7 @@ class BundleResult:
     network_name: str
     out_path: Path | None = None
     created: str = ""
+    since_source: str | None = None
     previous: str | None = None
     full: bool = False
     sent: int = 0

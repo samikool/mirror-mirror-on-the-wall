@@ -167,7 +167,8 @@ class BundlePickPage(Page):
     def compose_body(self) -> ComposeResult:
         froms = ([(escape(f"Where the last transfer went — {self._status.name(self._last)}"), "last")]
                  if self._last else [])
-        froms += [("Nothing — send everything", "none")]
+        froms += [("Nothing — send everything", "none"),
+                  ("A date — what the far side had then", "date")]
         froms += [(_describe(s), s.stamp) for s in self._status.snapshots]
         tos = [("A new snapshot of now", "now")] + [
             (_describe(s), s.stamp) for s in self._status.snapshots if s.complete]
@@ -175,6 +176,10 @@ class BundlePickPage(Page):
             ChoiceField("From", froms, froms[0][1], id="pick-from",
                         hint="The snapshot the far side is at. Sending everything also repairs a "
                              "far side of unknown state."),
+            TextField("Date", "", id="pick-since",
+                      hint="YYYY-MM-DD (end of day UTC) or YYYYMMDDTHHMMSSZ."),
+            PathField("Kept bundles", str(self._net.bundle_dir or ""), id="pick-kept",
+                      browse_title="Kept bundles", hint="Search here as well as the network's bundle folder and ledger."),
             ChoiceField("To", tos, "now", id="pick-to",
                         hint="Backwards is fine: the far side is brought to exactly that state."),
             *([ChoiceField("How", [("One .tar file (bundle)", "bundle"),
@@ -202,6 +207,7 @@ class BundlePickPage(Page):
         yield Button("Transfer", id="btn-pick-go", variant="primary", compact=True)
 
     def on_mount(self) -> None:
+        self._show_since()
         self._estimate_now()
         self.query_one("#btn-pick-go").focus()
         self._installer_size()
@@ -244,10 +250,48 @@ class BundlePickPage(Page):
         picked = tuple(k for k in self._repos if k in self.query_one("#pick-repos", SelectionList).selected)
         return None if len(picked) == len(self._repos) else picked
 
+    @on(Select.Changed, "#pick-from")
+    def _show_since(self) -> None:
+        show = self.query_one("#pick-from", Select).value == "date"
+        self.query_one("#field-pick-since").display = show
+        self.query_one("#field-pick-kept").display = show
+
+    @on(Input.Changed, "#pick-since")
+    @on(Input.Changed, "#pick-kept")
+    def _since_changed(self) -> None:
+        self._estimate_now()
+
+    @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-since-preview")
+    def _preview_since(self, date: str, kept: str) -> None:
+        from mmw.commands.bundle import preview_since
+        try:
+            _, _, source, skipped = preview_since(self._net, self._mirror_dir, date,
+                                                   [Path(kept).expanduser()] if kept else None)
+            text = f"since {source}"
+            if source.startswith("the points"):
+                text += " (no bundle that old was found)"
+            if skipped:
+                text += "\n" + "\n".join(skipped)
+        except ValueError as exc:
+            text = str(exc)
+        self.app.call_from_thread(self._since_previewed, date, kept, text)
+
+    def _since_previewed(self, date, kept, text) -> None:
+        values = self.query_one(Form).values()
+        if (values["pick-from"], values["pick-since"], values["pick-kept"]) == ("date", date, kept):
+            self._say(escape(text), "date")
+
     @on(SelectionList.SelectedChanged, "#pick-repos")
     @on(Select.Changed)
     def _estimate_now(self) -> None:
         start, dest = self._ends()
+        if start == "date":
+            values = self.query_one(Form).values()
+            if values["pick-since"].strip():
+                self._preview_since(values["pick-since"], values["pick-kept"])
+            else:
+                self._say("[dim]Enter the date the far side holds.[/]", start)
+            return
         start = self._last if start == "last" else start
         if self._picked_repos() is not None:
             self._say("[dim]What it sends is worked out per repository when it runs.[/]", start)
@@ -283,6 +327,14 @@ class BundlePickPage(Page):
     @on(Button.Pressed, "#btn-pick-go")
     def _go(self) -> None:
         start, dest = self._ends()
+        if start == "date":
+            from mmw.core.points import resolve_when
+            try:
+                resolve_when(self.query_one(Form).values()["pick-since"])
+            except ValueError as exc:
+                self.set_status(f"Date: {exc}", "error")
+                self.query_one("#pick-since", Input).focus()
+                return
         # mmw: from "last" is per repository, so the same snapshot can still
         # send what the last bundle left out — the run says if nothing is left.
         same = dest != "now" and (self._last if start == "last" else start) == dest
@@ -298,8 +350,10 @@ class BundlePickPage(Page):
         """What is chosen now."""
         start, dest = self._ends()
         values = self.query_one(Form).values()
-        return BundleChoice(from_last=start == "last",
-                            from_ref=None if start in ("last", "none") else start,
+        return BundleChoice(from_last=start in ("last", "date"),
+                            since=values["pick-since"].strip() if start == "date" else None,
+                            kept_dir=Path(values["pick-kept"]).expanduser() if values["pick-kept"] else None,
+                            from_ref=None if start in ("last", "none", "date") else start,
                             to_ref=dest, repos=self._picked_repos(),
                             stage=bool(self._repos) and values["pick-as"] == "stage",
                             installer=self._installer(),

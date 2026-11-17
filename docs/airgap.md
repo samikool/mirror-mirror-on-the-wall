@@ -56,7 +56,7 @@ It writes these next to each other in the network's `bundle_dir`:
 Useful flags:
 
 ```bash
-mmw bundle -n lab --from none         # send everything, not just the delta (or --full)
+mmw bundle -n lab --full              # send everything, not just the delta
 mmw bundle -n lab --out /media/usb    # write here instead of bundle_dir
 mmw bundle -n lab --allow-incomplete  # ship anyway, having been told what is missing
 mmw bundle -n lab --out -             # stream the tar to stdout (see below)
@@ -128,18 +128,46 @@ default. The summary names each suite's dates:
 
 No snapshot is taken: a snapshot is a label you add by hand
 (`mmw snapshot take`), and `--to <snapshot>` sends the points it holds.
-`--from <snapshot>` only bounds `--history`; what was sent decides which
-files travel. Force-deleting a snapshot never makes the next bundle full.
+`--from <snapshot>` is deprecated; it still only bounds `--history`. Use
+`--since DATE` (the snapshot’s date) or `--full` instead. Force-deleting a
+snapshot never makes the next bundle full.
 
 A bundle counts as sent once it is written: mmw cannot know whether it ever
 reached the far side. If one never arrived (the drive was lost, the stage
 directory deleted), the next bundle leaves out the files it carried. Send
-the repositories again with `--full` (with `--repo` for just one):
+what is missing with `--since` and the day of the last bundle that arrived:
 
 ```bash
-mmw bundle -n lab --full                     # every file again
-mmw bundle -n lab --repo 'Debian' --full     # one repository's
+mmw bundle -n lab --since 2026-11-01
+mmw bundle -n lab --since 20261101T120000Z --bundles /media/kept
+mmw bundle -n lab --since 2026-11-01 --history  # recover intermediate points too
 ```
+
+A day means its end in UTC; a full stamp selects an exact cutoff. mmw first
+looks for this network's newest kept manifest on or before that cutoff, in
+its `bundle_dir`, the local bundle ledger, and any extra `--bundles DIR`
+(repeatable). Only the first tar member is read. Unreadable bundles are named
+and skipped. Format 2 bundles from mmw 1.4 and current format 3 both work.
+
+If no manifest is old enough, mmw uses this network's retained points dated
+on or before the cutoff, the newest per track. The summary names the source;
+points are an assumption about what arrived, whereas a manifest records what
+was bundled. If neither exists, mmw refuses and offers `--full`.
+
+`--since` replaces the sent record for this bundle, including generated
+network files. With `--history`, retained points first seen after the cutoff
+travel even if previously marked sent. After success, the baseline and
+carried files count as sent, so the next plain bundle is a delta again.
+`--since` cannot be combined with `--from` or `--full`.
+
+This also works after rebuilding a lost connected-side pool: keep the last
+arrived bundle somewhere on the connected side, sync again, and use its date
+with `--bundles` pointing at that folder. Nothing needs to come back across
+the airgap. If no baseline remains, use `mmw bundle -n lab --full`.
+
+In the TUI, choose **A date** under **From**, enter the date and optionally
+choose a **Kept bundles** folder. The preview names the source; if no state
+can be found, the transfer offers to send everything instead.
 
 The far side checks every point it is given: a point whose files are missing
 is stored incomplete and not served — applying says which, with how many

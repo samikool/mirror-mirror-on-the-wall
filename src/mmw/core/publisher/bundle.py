@@ -110,6 +110,10 @@ def _far_nginx(settings: str, certs: bool, *, previous: bool = False) -> dict[st
     return recorded_nginx_files(settings, ROOT_PLACEHOLDER, tls_include=include, legacy=legacy)
 
 
+class NothingToStandOn(ValueError):
+    """No kept manifest or retained points support the requested baseline."""
+
+
 _LAST = object()        # from_ref default: where the last bundle went
 
 
@@ -162,6 +166,38 @@ def _free_target(network, name: str, out_path) -> Path:
     return target
 
 
+def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None):
+    """Read an explicit baseline, shared by transfer planning and its preview."""
+    from mmw.core.points import resolve_when
+    baseline, source, skipped = None, None, []
+    from mmw.core.publisher.kept import state_at
+    since = resolve_when(since_date)
+    dirs = [*([network.bundle_dir] if network.bundle_dir is not None else []),
+            ledger_dir(mirror_dir, network.name), *(kept_dirs or [])]
+    state = state_at(dirs, network.name, since, skipped=skipped)
+    if state is not None:
+        baseline = set(state.checksums)
+        source = f"{Path(state.where).name} (its manifest)"
+    else:
+        with Pool(mirror_dir, read_only=True) as pool:
+            selected = []
+            for track in pool.network_tracks(network.name):
+                eligible = [p for p in pool.network_points(network.name, track.id, stubs=True)
+                            if p.date <= since]
+                if eligible:
+                    selected.append(eligible[0])
+            if selected and all(p.held for p in selected):
+                baseline = {cs for p in selected for cs in pool.point_files(p.id).values()}
+                source = f"the points of {since_date}"
+        if baseline is None:
+            raise NothingToStandOn(
+                f"no state for {network.name} on {since_date}; searched "
+                f"{', '.join(map(str, dirs))} and this network's retained points"
+                + (f" ({'; '.join(skipped)})" if skipped else "")
+                + " — send everything with --full")
+    return since, baseline, source, skipped
+
+
 @holds_shared_pool_lock
 def bundle_network(
     network: NetworkConfig,
@@ -182,6 +218,8 @@ def bundle_network(
     fetcher=None,
     history: bool | None = None,
     full: bool = False,
+    since: str | None = None,
+    kept_dirs: list[Path] | None = None,
 ) -> BundleResult:
     """One bundle for the network's far side: each chosen repository's
     timeline points (newest, or with `history` every point since it was
@@ -194,6 +232,8 @@ def bundle_network(
     the mmw wheel to ship (default: this checkout's own build, or PyPI's
     for a release); `fetcher` does the downloads.
     """
+    if since is not None and (full or from_ref is not _LAST):
+        raise ValueError("--since cannot be combined with --full or --from")
     if installer:
         if is_stdout(out_path) and not stage:
             raise ValueError("a bundle on stdout has nowhere to put mmw's installer — "
@@ -204,13 +244,13 @@ def bundle_network(
                           mirror_start_callback=mirror_start_callback, from_ref=from_ref, to_ref=to_ref, stdout=stdout, repos=repos, stage=stage,
                           history=network.history if history is None else history,
                           full=full or from_ref is None, installer=installer,
-                          runtime_wheel=runtime_wheel, fetcher=fetcher)
+                          runtime_wheel=runtime_wheel, fetcher=fetcher, since_date=since, kept_dirs=kept_dirs)
 
 
 def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_path, progress, stop_event, *,
                    mirror_start_callback=None,
                    from_ref, to_ref: str, stdout, repos: list[str] | None, stage: bool, history: bool,
-                   full: bool, installer: bool, runtime_wheel, fetcher) -> BundleResult:
+                   full: bool, installer: bool, runtime_wheel, fetcher, since_date=None, kept_dirs=None) -> BundleResult:
     """An mmw network's bundle of timeline points: each chosen repository's
     current points (always listed — the far side retires what's missing),
     and with `history` every point first seen since the last bundle; a file
@@ -242,7 +282,13 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             since, since_by_repo = from_ref.stamp, {}
         elif from_ref is None:
             since, since_by_repo = None, {}
+    baseline, source, skipped = None, None, []
+    if since_date is not None:
+        since, baseline, source, skipped = resolve_since(network, mirror_dir, since_date, kept_dirs)
+        since_by_repo = {}
     result = BundleResult(network_name=network.name, created=stamp, previous=since, full=full)
+    result.since_source = source
+    result.warnings.extend(skipped)
     if to_ref == "now":
         bundle_output_path(network, "x", out_path)               # destination check
         report = pts.record_network_points(network, cfg, mirror_dir, stamp=stamp, stop_event=stop_event)
@@ -287,7 +333,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
                 for t in sorted({known[p].track for p in ids if p in known}):
                     for p in pool.network_points(network.name, t):
                         first = pool.network_point_stamp(network.name, p.id) or p.stamp
-                        if p.id not in ids and p.id not in sent_points and (start is None or first > start):
+                        if p.id not in ids and (since_date is not None or p.id not in sent_points) and (start is None or first > start):
                             ids.append(p.id)
                             known[p.id] = p
             listing[repo] = ids
@@ -308,7 +354,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         # Generated network files too: sent before, they don't go again.
         generated = dict(_far_nginx(settings, network.certs))
         gen_sums = {hashlib.sha256(d).hexdigest() for d in generated.values()}
-        sent = set() if full else pool.sent_checksums(network.name, every | gen_sums)
+        sent = baseline if baseline is not None else (set() if full else pool.sent_checksums(network.name, every | gen_sums))
         missing = sorted(c for c in every if c not in info)
         if missing:
             raise ValueError(f"{len(missing)} file(s) of {network.name}'s points are no longer in the pool "
@@ -411,7 +457,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     result.sent, result.sent_bytes = sink.sent, sink.sent_bytes
     with Pool(mirror_dir) as pool:
         listed = {pid for ids in listing.values() for pid in ids} | set(current.get(net_repo, []))
-        pool.record_sent(network.name, listed, sink.sent_checksums, stamp)
+        pool.record_sent(network.name, listed, sink.sent_checksums | (baseline or set()), stamp)
         pool.set_listed_tracks(network.name, listed_tracks)
         pool.record_bundle(network.name, since, stamp, str(target), sink.sent, sink.sent_bytes, 0,
                            kind="stage" if stage else "stream" if streaming else "bundle")
@@ -458,10 +504,12 @@ def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir
                   progress=None, stop_event=None, mirror_start_callback=None, *,
                   from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None,
                   installer: bool = False, runtime_wheel: Path | None = None, fetcher=None,
-                  history: bool | None = None, full: bool = False) -> BundleResult:
+                  history: bool | None = None, full: bool = False,
+                  since: str | None = None, kept_dirs: list[Path] | None = None) -> BundleResult:
     """`mmw stage`: the bundle `bundle_network` would write, laid out as a
     directory `{out_dir or bundle_dir}/{network}-{name}/` of hardlinks to the
     pool instead of a tar. For mmw networks only."""
     return bundle_network(network, cfg, mirror_dir, out_dir, progress, stop_event, mirror_start_callback,
                           from_ref=None if full else from_ref, to_ref=to_ref, repos=repos, stage=True,
-                          installer=installer, runtime_wheel=runtime_wheel, fetcher=fetcher, history=history)
+                          installer=installer, runtime_wheel=runtime_wheel, fetcher=fetcher, history=history,
+                          since=since, kept_dirs=kept_dirs)

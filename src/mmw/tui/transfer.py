@@ -327,7 +327,9 @@ class TransferView(Vertical):
                     + (f" — {counts}" if counts else "") + ".")
         out = getattr(self._result, "out_path", None)
         installers = getattr(self._result, "installers", None) or []
+        since = getattr(self._result, "since_source", None)
         return (f"{self.VERB_PAST} {name}" + (f" — {counts}" if counts else "")
+                + (f"; since {since}" if since else "")
                 + (f" → {out}" if out else "")
                 + "".join(f"; mmw installer → {p}" for p in installers) + ".")
 

@@ -141,7 +141,7 @@ class PublishPickPage(Page):
 
 
 class BundlePickPage(Page):
-    """Transfer: where the far side is (From) and where to bring it (To),
+    """Transfer retained points: the assumed baseline (From) and points to carry (To),
     with what that sends, as a bundle or (mmw) a stage. Dismisses with a `BundleChoice`, or None."""
 
     def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, mirror_dir: Path,
@@ -163,32 +163,33 @@ class BundlePickPage(Page):
         self._last = last
         # What "Include mmw installer" adds to the estimate (mmw far side).
         self._installer_note = "mmw installer"
+        self._preview_generation = 0
+        self._preview_timer = None
 
     def compose_body(self) -> ComposeResult:
         froms = ([(escape(f"Where the last transfer went — {self._status.name(self._last)}"), "last")]
                  if self._last else [])
         froms += [("Nothing — send everything", "none"),
                   ("A date — what the far side had then", "date")]
-        froms += [(_describe(s), s.stamp) for s in self._status.snapshots]
-        tos = [("A new snapshot of now", "now")] + [
-            (_describe(s), s.stamp) for s in self._status.snapshots if s.complete]
+        tos = [("Latest recorded points", "now"), ("A date — newest point by then, per suite", "date")]
         yield Form(
             ChoiceField("From", froms, froms[0][1], id="pick-from",
-                        hint="The snapshot the far side is at. Sending everything also repairs a "
-                             "far side of unknown state."),
+                        hint="Last transfer uses each repository's local record; arrival across the airgap is unknown."),
             TextField("Date", "", id="pick-since",
                       hint="YYYY-MM-DD (end of day UTC) or YYYYMMDDTHHMMSSZ."),
             PathField("Kept bundles", str(self._net.bundle_dir or ""), id="pick-kept",
                       browse_title="Kept bundles", hint="Search here as well as the network's bundle folder and ledger."),
             ChoiceField("To", tos, "now", id="pick-to",
-                        hint="Backwards is fine: the far side is brought to exactly that state."),
+                        hint="Points to carry. Older points are stored; rollback is an explicit site action."),
+            TextField("Through date", "", id="pick-until",
+                      hint="Newest retained point at or before this date, independently per suite."),
             *([ChoiceField("How", [("One .tar file (bundle)", "bundle"),
                                    ("A folder of hardlinks (stage)", "stage")],
                            "bundle", id="pick-as",
                            hint="A folder costs almost no disk; tar, rsync or copy it across yourself.")]
               if self._repos else []),
             ChoiceField("Points", [("Each suite's newest", "newest"),
-                                   ("Every point since the last transfer", "history")],
+                                   ("All retained points in the range", "history")],
                         "history" if self._net.history else "newest", id="pick-points",
                         hint="Every point gives the far side each sync's state, for old builds; "
                              "the newest is smaller."),
@@ -208,6 +209,7 @@ class BundlePickPage(Page):
 
     def on_mount(self) -> None:
         self._show_since()
+        self._show_until()
         self._estimate_now()
         self.query_one("#btn-pick-go").focus()
         self._installer_size()
@@ -219,6 +221,8 @@ class BundlePickPage(Page):
         self.app.call_from_thread(self._got_installer, note)
 
     def _got_installer(self, note: str) -> None:
+        if not self.is_mounted:
+            return
         self._installer_note = note
         self._estimate_now()
 
@@ -256,69 +260,66 @@ class BundlePickPage(Page):
         self.query_one("#field-pick-since").display = show
         self.query_one("#field-pick-kept").display = show
 
-    @on(Input.Changed, "#pick-since")
-    @on(Input.Changed, "#pick-kept")
-    def _since_changed(self) -> None:
-        self._estimate_now()
+    @on(Select.Changed, "#pick-to")
+    def _show_until(self) -> None:
+        self.query_one("#field-pick-until").display = self._ends()[1] == "date"
 
-    @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-since-preview")
-    def _preview_since(self, date: str, kept: str) -> None:
-        from mmw.commands.bundle import preview_since
-        try:
-            _, _, source, skipped = preview_since(self._net, self._mirror_dir, date,
-                                                   [Path(kept).expanduser()] if kept else None)
-            text = f"since {source}"
-            if source.startswith("the points"):
-                text += " (no bundle that old was found)"
-            if skipped:
-                text += "\n" + "\n".join(skipped)
-        except ValueError as exc:
-            text = str(exc)
-        self.app.call_from_thread(self._since_previewed, date, kept, text)
-
-    def _since_previewed(self, date, kept, text) -> None:
+    def _range_options(self):
         values = self.query_one(Form).values()
-        if (values["pick-from"], values["pick-since"], values["pick-kept"]) == ("date", date, kept):
-            self._say(escape(text), "date")
+        start, dest = self._ends()
+        return dict(since=values["pick-since"].strip() if start == "date" else None,
+                    until=values["pick-until"].strip() if dest == "date" else None,
+                    full=start == "none", history=values["pick-points"] == "history",
+                    repos=self._picked_repos(),
+                    kept_dirs=[Path(values["pick-kept"]).expanduser()] if values["pick-kept"] else None)
 
+    @on(Input.Changed, "#pick-since")
+    @on(Input.Changed, "#pick-until")
+    @on(Input.Changed, "#pick-kept")
     @on(SelectionList.SelectedChanged, "#pick-repos")
     @on(Select.Changed)
     def _estimate_now(self) -> None:
+        self._preview_generation += 1
+        gen = self._preview_generation
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
         start, dest = self._ends()
-        if start == "date":
-            values = self.query_one(Form).values()
-            if values["pick-since"].strip():
-                self._preview_since(values["pick-since"], values["pick-kept"])
-            else:
-                self._say("[dim]Enter the date the far side holds.[/]", start)
+        options = self._range_options()
+        if start == "date" and not options["since"]:
+            self._say("[dim]Enter the date the far side holds.[/]", start)
             return
-        start = self._last if start == "last" else start
-        if self._picked_repos() is not None:
-            self._say("[dim]What it sends is worked out per repository when it runs.[/]", start)
+        if dest == "date" and not options["until"]:
+            self._say("[dim]Enter the end date to see each suite's retained point.[/]", start)
             return
-        if dest == "now":
-            self._say("[dim]What it sends is worked out once the snapshot is taken.[/]", start)
-            return
-        if start == dest and not self._repos:
-            self.query_one("#pick-estimate", Label).update(
-                "[$mmw-warn]From and To are the same snapshot — nothing to send.[/]")
-            return
-        self._say("[dim]Estimating…[/]", start)
-        self._estimate(None if start == "none" else start, dest)
+        self._say("[dim]Reading retained points…[/]", start)
+        self._preview_timer = self.set_timer(.15, lambda: self._preview_range(gen, options))
 
-    @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-estimate")
-    def _estimate(self, start: str | None, dest: str) -> None:
-        ids = {s.stamp: s.id for s in self._status.snapshots}
-        with Pool(self._mirror_dir, read_only=True) as pool:
-            files, size = pool.snapshot_delta(ids.get(start) if start else None, ids[dest])
-        self.app.call_from_thread(self._estimated, start, dest, files, size)
+    @work(thread=True, exclusive=True, exit_on_error=False, group="bundle-range-preview")
+    def _preview_range(self, gen, options) -> None:
+        from mmw.commands.bundle import preview_transfer
+        from mmw.site.versionref import day
+        try:
+            plan = preview_transfer(self._net, self._mirror_dir, **options)
+            source = f"since {plan.source}" if options["since"] else plan.source
+            if plan.source.startswith("the points"):
+                source += " (no bundle that old was found)"
+            lines = [source]
+            for row in plan.rows:
+                label = (self._repos or {}).get(row.repo, row.repo)
+                available = (f"; kept {day(row.available[0])} to {day(row.available[-1])}"
+                             if row.available else "")
+                lines.append(f"{label} / {row.suite}: {day(row.from_date) if row.from_date else 'full'}"
+                             f" → {day(row.to_date)} · {row.points} point(s){available}")
+            lines.append(f"Sends about {plan.blobs:,} new blobs · {fmt_size(plan.bytes)}")
+            lines.extend(plan.warnings)
+            text = escape("\n".join(lines))
+        except Exception as exc:
+            text = escape(str(exc) or type(exc).__name__)
+        self.app.call_from_thread(self._range_previewed, gen, text)
 
-    def _estimated(self, start, dest, files: int, size: int) -> None:
-        now_start, now_dest = self._ends()
-        now_start = self._last if now_start == "last" else now_start
-        if (None if now_start == "none" else now_start, now_dest) != (start, dest):
-            return                                  # the choice moved on
-        self._say(f"Sends about [b]{files:,}[/] files · [b]{fmt_size(size)}[/]", start)
+    def _range_previewed(self, gen, text) -> None:
+        if gen == self._preview_generation and self.is_mounted:
+            self._say(text, self._ends()[0])
 
     @on(Button.Pressed, "#btn-pick-cancel")
     def _cancel(self) -> None:
@@ -327,20 +328,16 @@ class BundlePickPage(Page):
     @on(Button.Pressed, "#btn-pick-go")
     def _go(self) -> None:
         start, dest = self._ends()
-        if start == "date":
-            from mmw.core.points import resolve_when
+        from mmw.core.points import resolve_when
+        for selected, field in ((start, "pick-since"), (dest, "pick-until")):
+            if selected != "date":
+                continue
             try:
-                resolve_when(self.query_one(Form).values()["pick-since"])
+                resolve_when(self.query_one(Form).values()[field])
             except ValueError as exc:
                 self.set_status(f"Date: {exc}", "error")
-                self.query_one("#pick-since", Input).focus()
+                self.query_one(f"#{field}", Input).focus()
                 return
-        # mmw: from "last" is per repository, so the same snapshot can still
-        # send what the last bundle left out — the run says if nothing is left.
-        same = dest != "now" and (self._last if start == "last" else start) == dest
-        if same and not (self._repos and start == "last"):
-            self.set_status("From and To are the same snapshot — nothing to send.", "error")
-            return
         if self._picked_repos() == ():
             self.set_status("Tick at least one repository.", "error")
             return
@@ -354,7 +351,8 @@ class BundlePickPage(Page):
                             since=values["pick-since"].strip() if start == "date" else None,
                             kept_dir=Path(values["pick-kept"]).expanduser() if values["pick-kept"] else None,
                             from_ref=None if start in ("last", "none", "date") else start,
-                            to_ref=dest, repos=self._picked_repos(),
+                            until=values["pick-until"].strip() if dest == "date" else None,
+                            repos=self._picked_repos(),
                             stage=bool(self._repos) and values["pick-as"] == "stage",
                             installer=self._installer(),
                             history=(values["pick-points"] == "history") if "pick-points" in values else None)

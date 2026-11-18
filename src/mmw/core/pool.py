@@ -357,6 +357,13 @@ CREATE TABLE IF NOT EXISTS sent_points (
     network TEXT NOT NULL, point INTEGER NOT NULL, stamp TEXT NOT NULL,
     PRIMARY KEY (network, point)
 ) WITHOUT ROWID;
+-- Actual point-date endpoints of the last successful transfer per track.
+-- Bundle creation time is not a content cutoff for bounded transfers.
+CREATE TABLE IF NOT EXISTS transfer_targets (
+    network TEXT NOT NULL, repo TEXT NOT NULL, track INTEGER NOT NULL,
+    date TEXT NOT NULL, stamp TEXT NOT NULL,
+    PRIMARY KEY (network, track)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS sent_blobs (
     network TEXT NOT NULL, checksum TEXT NOT NULL,
     PRIMARY KEY (network, checksum)
@@ -392,7 +399,7 @@ _CHUNK = 900
 # forgotten with it (the points themselves are shared and stay).
 _POINT_NETWORK_TABLES = ("network_points", "network_repo_rows", "points_converted", "sent_points",
                          "sent_blobs", "sent_migrated", "network_recordings", "network_settings",
-                         "recordings_seeded", "recordings_seeded_at", "listed_tracks", "network_slices", "sent_slices", "network_slice_dates")
+                         "recordings_seeded", "recordings_seeded_at", "listed_tracks", "network_slices", "sent_slices", "network_slice_dates", "transfer_targets")
 
 # Reader tuning. This workload is **disk-bound**, not lock-bound: measured 1.4x
 # from these two pragmas alone, while *adding read connections made it worse*
@@ -2080,7 +2087,7 @@ class Pool:
                                    [(snapshot_id, p) for p in point_ids])
             self._conn.commit()
 
-    def record_sent(self, network: str, point_ids, checksums, stamp: str, *, slices=None) -> None:
+    def record_sent(self, network: str, point_ids, checksums, stamp: str, *, slices=None, targets=None) -> None:
         point_ids = list(point_ids)
         with self._lock:
             self._conn.executemany("INSERT OR IGNORE INTO sent_points (network, point, stamp) VALUES (?, ?, ?)",
@@ -2097,6 +2104,13 @@ class Pool:
                     [(network, p, digest) for p, digest in slices.items()])
             self._conn.executemany("INSERT OR IGNORE INTO sent_blobs (network, checksum) VALUES (?, ?)",
                                    [(network, c) for c in checksums])
+            if targets is not None:
+                repos = {repo for repo, _date in targets.values()}
+                self._conn.executemany("DELETE FROM transfer_targets WHERE network = ? AND repo = ?",
+                                       [(network, repo) for repo in repos])
+                self._conn.executemany("INSERT INTO transfer_targets VALUES (?, ?, ?, ?, ?)",
+                                       [(network, repo, track, date, stamp)
+                                        for track, (repo, date) in targets.items()])
             self._conn.commit()
 
     def network_slice(self, network: str, point_id: int) -> str | None:
@@ -2185,21 +2199,41 @@ class Pool:
                     out[r[0]] = PoolPoint(*r[:6], bool(r[6]), bool(r[7]))
         return out
 
-    def last_sent_by_repo(self, network: str) -> dict[str, str]:
-        """Per repository, the stamp of the last bundle that listed it
-        (records migrated from format-2 history carry no stamp)."""
+    def transfer_dates(self, network: str) -> dict[int, str]:
+        """Last explicit content endpoint per track, absent on older ledgers."""
         with self._read() as c:
-            return dict(c.execute(
+            try:
+                return dict(c.execute("SELECT track, date FROM transfer_targets WHERE network = ?",
+                                      (network,)).fetchall())
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    raise
+                return {}
+
+    def last_sent_by_repo(self, network: str) -> dict[str, str]:
+        """Per repository, the last successful transfer; older ledgers fall back
+        to the first-sent stamps of their newest sent points."""
+        with self._read() as c:
+            result = dict(c.execute(
                 "SELECT t.repo, MAX(s.stamp) FROM sent_points s JOIN points p ON p.id = s.point "
                 "JOIN tracks t ON t.id = p.track WHERE s.network = ? AND s.stamp != 'migrated' "
                 "GROUP BY t.repo", (network,)).fetchall())
+            try:
+                result.update(c.execute("SELECT repo, MAX(stamp) FROM transfer_targets "
+                                        "WHERE network = ? GROUP BY repo", (network,)).fetchall())
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    raise
+            return result
 
     def sent_dates_by_track(self, network: str) -> dict[int, str]:
-        """Per track, the newest date among the points `network` was sent."""
+        """Last transferred target date; older ledgers use the newest sent date."""
         with self._read() as c:
-            return dict(c.execute(
+            result = dict(c.execute(
                 "SELECT p.track, MAX(p.date) FROM sent_points s JOIN points p ON p.id = s.point "
                 "WHERE s.network = ? GROUP BY p.track", (network,)).fetchall())
+        result.update(self.transfer_dates(network))
+        return result
 
     def point_date(self, point_id: int) -> str:
         with self._read() as c:

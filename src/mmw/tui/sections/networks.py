@@ -198,7 +198,15 @@ class NetworksPage(Page):
             # Asked here, where the user is, before the section switches.
             from mmw.tui.snapshot_pages import BundlePickPage, PublishPickPage, load_status
             mirror_dir = self.app.cfg.settings.mirror_dir
-            status = await asyncio.to_thread(load_status, mirror_dir, net)
+            if verb == "bundle":
+                def read_status():
+                    from mmw.core.pool import Pool
+                    from mmw.core.snapshots import snapshot_status
+                    with Pool(mirror_dir, read_only=True) as pool:
+                        return snapshot_status(pool, net.name, net.root)
+                status = await asyncio.to_thread(read_status)
+            else:
+                status = await asyncio.to_thread(load_status, mirror_dir, net)
             repos, due = None, None
             if verb == "bundle":
                 from mmw.core.repos import network_repos

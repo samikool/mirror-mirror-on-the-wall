@@ -32,18 +32,24 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         allow_incomplete: bool = False, from_ref: str | None = None,
         to_ref: str | None = None, repos: list[str] | None = None, stage: bool = False,
         installer: bool = False, runtime_wheel: Path | None = None, history: bool | None = None,
-        full: bool = False, since: str | None = None, kept: list[Path] | None = None) -> int:
+        full: bool = False, since: str | None = None, kept: list[Path] | None = None, until: str | None = None, dry_run: bool = False) -> int:
     """Bundle one or all configured networks. Returns a process exit code.
 
     `from_ref` / `to_ref` name snapshots (stamp, label or id) of the one
     network `-n` names; `from_ref="none"` is a full bundle. Unset: from where
-    the last bundle went, to a new snapshot of now. `installer` writes mmw's
+    the last bundle listed each repository, to its latest recorded points. `installer` writes mmw's
     installer beside an mmw network's bundle; `runtime_wheel` is the mmw
     wheel it ships."""
     if from_ref is not None:
         eprint("--from is deprecated — use --since DATE (a snapshot's date) or --full")
     if since is not None and (full or from_ref is not None):
         eprint("--since cannot be combined with --full or --from")
+        return 1
+    if until is not None and to_ref is not None:
+        eprint("--until cannot be combined with --to")
+        return 1
+    if dry_run and (to_ref is not None or from_ref not in (None, "none")):
+        eprint("--dry-run previews points; use --since / --until instead of snapshot --from / --to")
         return 1
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
@@ -89,7 +95,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         # keep bundling the ones that ARE configured. `mmw publish` applies
         # the identical rule to `root`; the two used to disagree, each
         # claiming parity with the other.
-        if out is None and net.bundle_dir is None:
+        if not dry_run and out is None and net.bundle_dir is None:
             msg = (f"Network '{net.name}' has no bundle destination set "
                    f"(set bundle_dir in mmw.toml or pass --out)")
             if network:
@@ -105,6 +111,27 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             if keys is None:
                 return 1
 
+        if dry_run:
+            try:
+                plan = preview_transfer(net, mirror_dir, since=since, until=until,
+                                        full=full or from_ref == "none", history=history,
+                                        repos=keys, kept_dirs=kept)
+                from mmw.core.repos import repository_label
+                from mmw.site.versionref import day
+                say(f"{net.name}: {plan.source}")
+                for row in plan.rows:
+                    say(f"  {repository_label(row.repo, cfg)} / {row.suite}: "
+                        f"{day(row.from_date) if row.from_date else 'full'} → {day(row.to_date)} "
+                        f"· {row.points} point(s)"
+                        + (f"; kept {day(row.available[0])} to {day(row.available[-1])}" if row.available else ""))
+                say(f"  Sends about {plan.blobs:,} new blobs · {_fmt_size(plan.bytes)}")
+                for warning in plan.warnings:
+                    say(f"  {warning}")
+            except Exception as exc:
+                eprint(f"Network '{net.name}' failed: {exc}")
+                ok = False
+            continue
+
         # The same completeness gate `do_bundle` runs in the TUI, which the
         # headless door never had: a ref whose blob the pool lacks is
         # invisible to `pool.mirror_files()`, so it lands in neither the tar
@@ -112,7 +139,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         # as a 404 during `apt install` on the far side of an airgap.
         # Only "now" is checked here: an existing snapshot's own files are
         # checked by the bundle itself (refused if any left the pool).
-        if not to_ref and not preflight_ok("bundle", net, cfg, mirror_dir, allow_incomplete,
+        if not to_ref and until is None and not preflight_ok("bundle", net, cfg, mirror_dir, allow_incomplete,
                                               stdout_is_payload=streaming):
             ok = False
             continue
@@ -146,6 +173,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             # A stage warns before its long part; the runtime build takes
             # minutes the first time — both are said as they happen.
             picked["progress"] = progress
+            if until is not None:
+                picked["until"] = until
             if since is not None:
                 picked["since"] = since
                 picked["kept_dirs"] = kept
@@ -233,3 +262,9 @@ def preview_since(net, mirror_dir, since, kept=None):
     """The same baseline resolver as a transfer, without writing anything."""
     from mmw.core.publisher.bundle import resolve_since
     return resolve_since(net, mirror_dir, since, kept)
+
+
+def preview_transfer(net, mirror_dir, **options):
+    """Read-only range planning, shared by the TUI and CLI."""
+    from mmw.core.transfer_ranges import preview_transfer as preview
+    return preview(net, mirror_dir, **options)

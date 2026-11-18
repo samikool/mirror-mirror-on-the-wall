@@ -69,8 +69,9 @@ class PublishChoice:
 @dataclass(frozen=True)
 class BundleChoice:
     """What `b` bundles: from where the last bundle went (`from_last`), a
-    snapshot, or nothing (None: full); to a new snapshot of now or a snapshot."""
+    legacy snapshot, or nothing (None: full); to recorded points or a date."""
     since: str | None = None
+    until: str | None = None
     kept_dir: Path | None = None
     from_last: bool = True
     from_ref: str | None = None
@@ -330,7 +331,7 @@ class PublishFlows:
         choice = choice or BundleChoice()
 
         async def flow():
-            if choice.to_ref == "now":
+            if choice.to_ref == "now" and choice.until is None:
                 selected_mirrors = await asyncio.to_thread(self._selected_mirrors_for, net)
                 mirror_dir = self.cfg().settings.mirror_dir
                 verify_results, _, _ = await self._run_pre_publish(
@@ -448,6 +449,8 @@ class PublishFlows:
 
         choice = choice or BundleChoice()
         ends = {"to_ref": choice.to_ref}
+        if choice.until is not None:
+            ends["until"] = choice.until
         if choice.since is not None:
             ends["since"] = choice.since
             ends["kept_dirs"] = [choice.kept_dir] if choice.kept_dir is not None else None

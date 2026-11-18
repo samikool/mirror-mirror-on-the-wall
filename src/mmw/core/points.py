@@ -432,6 +432,8 @@ def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
     holds, and — once it has been bundled — every point it first saw after
     its repository was last bundled."""
     by_repo, fallback = history_since(pool, network.name)
+    cursors = pool.transfer_dates(network.name)
+    sent_points = pool.sent_point_ids(network.name) if cursors else set()
     current = {pid for ids in current_points(pool, network.name).values() for pid in ids}
     # Only a complete snapshot holds: a history-only one stopped holding its files.
     held_by_snapshots = {pid for s in pool.snapshots(network.name) if s.complete
@@ -451,7 +453,9 @@ def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
             seen = seen or first
             if (i == 0 or p.id in current or keep == "all" or (isinstance(keep, int) and i < keep)
                     or (cutoff is not None and seen >= cutoff)
-                    or p.id in held_by_snapshots or p.id in published or (last_sent is not None and first > last_sent)):
+                    or p.id in held_by_snapshots or p.id in published or (last_sent is not None and first > last_sent)
+                    or (t.id in cursors and p.id not in sent_points
+                        and (pool.network_slice_date(network.name, p.id) or p.date) > cursors[t.id])):
                 kept.add(p.id)
     return kept
 

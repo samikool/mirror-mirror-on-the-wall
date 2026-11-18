@@ -61,8 +61,14 @@ def _row_text(r, location: str) -> str:
     """A repository the bundle changes, and the root it lands in — on which
     machine, for one over ssh."""
     from mmw.tui.site.home import where
+    dates = {}
+    for suite, date in getattr(r, "point_dates", ()):
+        dates.setdefault(suite, []).append(_on(date, "?"))
+    ranges = "; ".join(f"{suite}: " + (min(ds) if min(ds) == max(ds) else f"{min(ds)} to {max(ds)}")
+                       for suite, ds in sorted(dates.items()))
+    detail = f" · {ranges}" if ranges else ""
     if getattr(r, "points", None) is not None:          # another far side's points (format 3)
-        return (f"{r.label}  +{r.points} point(s)  ·  {r.files_sent:,} files  "
+        return (f"{r.label}  +{r.points} point(s){detail}  ·  {r.files_sent:,} files  "
                 f"{fmt_size(r.bytes_sent)}  ·  {where(location)}")
     return (f"{r.label}  {_on(r.serving_date, 'new')} → {_on(r.to_date, '?')}  ·  {r.files_sent:,} files  "
             f"{fmt_size(r.bytes_sent)}  ·  {where(location)}")
@@ -72,8 +78,9 @@ class ApplyReviewPage(Page):
     """Step 1: every repository the bundle brings, ticked unless held."""
 
     TITLE = "Apply"
-    HELP = ("Ticked repositories switch to the version the bundle brings. Unticked ones —\n"
-            "and held ones — are stored and keep serving what they serve; forward them later.")
+    HELP = ("Import the listed points. Ticked repositories serve their newest complete points; pins stay in control.\n"
+            "Older points are stored; rollback and removing retained points are explicit site actions.\n"
+            "Unticked and held repositories store arrivals and keep serving their current points.")
 
     def __init__(self, plan, src: str):
         super().__init__()

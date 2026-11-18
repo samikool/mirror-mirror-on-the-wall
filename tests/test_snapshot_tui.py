@@ -109,44 +109,53 @@ def test_p_into_another_directory_needs_one(two_mirrors):  # noqa: F811
     _run(cfg, mirror_dir.parent, check)
 
 
-def test_b_bundles_between_two_snapshots_with_an_estimate(two_mirrors, tmp_path):  # noqa: F811
+def test_b_bundles_between_point_dates_with_an_estimate(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
+    from mmw.core import points, snapshots
+    from mmw.core.publisher.bundle import bundle_network
+    from test_site_apply_timeline import set_a
     cfg, net, mirror_dir = two_mirrors
     out = tmp_path / "usb"
-    cfg = cfg.model_copy(update={"networks": [net.model_copy(update={"bundle_dir": out})]})
-    s1 = take_snapshot(net, cfg, mirror_dir, label="before")
-    _move_on(mirror_dir)
-    s2 = take_snapshot(net, cfg, mirror_dir, label="after")
+    net = net.model_copy(update={"bundle_dir": out})
+    cfg = cfg.model_copy(update={"networks": [net]})
+    set_a(mirror_dir, 1)
+    monkeypatch.setattr(snapshots, "now_stamp", lambda: "20261101T120000Z")
+    bundle_network(net, cfg, mirror_dir, out_path=tmp_path / "first.tar")
+    set_a(mirror_dir, 2)
+    points.record_network_points(net, cfg, mirror_dir, stamp="20261102T120000Z")
+    monkeypatch.setattr(snapshots, "now_stamp", lambda: "20261102T120000Z")
 
     async def check(app, pilot):
         await pilot.press("t")
         await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage" and app.screen.query("#pick-from"))
-        app.screen.query_one("#pick-from", Select).value = s1.stamp
-        app.screen.query_one("#pick-to", Select).value = s2.stamp
-        # a2.deb, the new index and its by-hash link
-        await shows(pilot, lambda: app.screen.query_one("#pick-estimate").render(), "Sends about", "3 files")
+        assert app.screen.query_one("#pick-from", Select).value == "last"
+        app.screen.query_one("#pick-from", Select).value = "date"
+        app.screen.query_one("#pick-since", Input).value = "2026-11-01"
+        app.screen.query_one("#pick-to", Select).value = "date"
+        app.screen.query_one("#pick-until", Input).value = "2026-11-02"
+        app.screen.query_one("#pick-installer", Select).value = "no"
+        await shows(pilot, lambda: app.screen.query_one("#pick-estimate").render(), "Sends about", "new blobs")
         await confirm_picker(app, pilot, "BundlePickPage")
         await until(pilot, lambda: _finished(app))
         assert app.active_transfer.outcome == "ok", app.notes
     _run(cfg, mirror_dir.parent, check)
-    assert [p.name for p in out.glob("oak-*.tar*") if not p.name.endswith(".sha256")] == [
-        f"oak-{s1.stamp}-to-{s2.stamp}.tar"]
+    assert len(list(out.glob("*.tar"))) == 1
+    with Pool(mirror_dir, read_only=True) as pool:
+        assert pool.snapshots(net.name) == []
 
 
-def test_b_refuses_the_same_snapshot_at_both_ends(two_mirrors, tmp_path):  # noqa: F811
+def test_b_refuses_an_invalid_point_target_date(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, mirror_dir = two_mirrors
-    cfg = cfg.model_copy(update={"networks": [net.model_copy(
-        update={"bundle_dir": tmp_path / "usb"})]})
-    s1 = take_snapshot(net, cfg, mirror_dir)
+    cfg = cfg.model_copy(update={"networks": [net.model_copy(update={"bundle_dir": tmp_path / "usb"})]})
 
     async def check(app, pilot):
         await pilot.press("t")
         await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage"
-                    and app.screen.query("#pick-from") and app.screen.query("#btn-pick-go"))
-        app.screen.query_one("#pick-from", Select).value = s1.stamp
-        app.screen.query_one("#pick-to", Select).value = s1.stamp
+                    and app.screen.query("#pick-to") and app.screen.query("#btn-pick-go"))
+        app.screen.query_one("#pick-to", Select).value = "date"
+        app.screen.query_one("#pick-until", Input).value = "not-a-date"
         await pilot.pause()
         app.screen.query_one("#btn-pick-go").press()
-        await until(pilot, lambda: "same snapshot" in str(app.screen.query_one("#page-status").render()))
+        await until(pilot, lambda: "Date:" in str(app.screen.query_one("#page-status").render()))
         assert type(app.screen).__name__ == "BundlePickPage"
     _run(cfg, mirror_dir.parent, check)
 
@@ -335,6 +344,8 @@ def _mmw_net(two_mirrors, tmp_path):  # noqa: F811
 def test_bundle_pick_mmw_has_repos_and_stage(two_mirrors, tmp_path):  # noqa: F811
     from textual.widgets import SelectionList
     cfg, net, mirror_dir = _mmw_net(two_mirrors, tmp_path)
+    from mmw.core import points
+    points.record_network_points(net, cfg, mirror_dir)
     key_b = next(s.identity for s in cfg.sources if s.name == "b")
 
     async def check(app, pilot):
@@ -346,7 +357,7 @@ def test_bundle_pick_mmw_has_repos_and_stage(two_mirrors, tmp_path):  # noqa: F8
         repos.deselect(key_b)
         app.screen.query_one("#pick-as", Select).value = "stage"
         app.screen.query_one("#pick-installer", Select).value = "no"      # stage only: no installer build
-        await until(pilot, lambda: "per repository" in str(app.screen.query_one("#pick-estimate").render()))
+        await until(pilot, lambda: "new blobs" in str(app.screen.query_one("#pick-estimate").render()))
         await confirm_picker(app, pilot, "BundlePickPage")
         await until(pilot, lambda: _finished(app))
         assert app.active_transfer.outcome == "ok", app.notes

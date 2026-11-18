@@ -39,7 +39,7 @@ codes — see [far-side.md](far-side.md#exit-codes).
 | Command | What it does |
 |---------|--------------|
 | [`mmw add`](#mmw-add) | Add sources from a sources.list or deb822 .sources file — or the VS Code source |
-| [`mmw bundle`](#mmw-bundle) | Write a network's mirrors to a transferable bundle — between any two snapshots (see `mmw snapshot list`) |
+| [`mmw bundle`](#mmw-bundle) | Transfer recorded points: from each repository's last transfer to its latest recorded points |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
 | [`mmw init`](#mmw-init) | Setup wizard, or recover mmw.toml from kept bundles |
@@ -108,9 +108,8 @@ Everything is taken from the file — no discovery, no prompts:
 
 ### `mmw bundle`
 
-Write a network's mirrors to a transferable bundle — between any two
-snapshots (see `mmw snapshot list`). By default: from where the last
-bundle went, to a new snapshot of now.
+Transfer recorded points: from each repository's last transfer to its
+latest recorded points. Use --since / --until for earlier dates.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -119,8 +118,10 @@ bundle went, to a new snapshot of now.
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
 | `--from` |  | Deprecated: bounds history from a snapshot (stamp, label or id), or 'none' for full. Use --since DATE or --full. |
 | `--since` |  | Send what the far side lacks, as it was on DATE (a kept bundle's manifest, else this side's points) |
+| `--dry-run` |  | Preview retained point ranges and payload without writing a transfer. |
+| `--until` |  | Carry each suite's newest retained point at or before DATE; never requests a far-side rollback. |
 | `--bundles` |  | Search kept bundles here too (repeatable) |
-| `--to` |  | Snapshot to bring it to (stamp, label or id). Default: a new snapshot of now. |
+| `--to` |  | Snapshot to bring it to (stamp, label or id). Default: latest recorded points. |
 | `--repo` |  | Only this repository (URL or name; repeatable). Needs -n. |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
@@ -296,8 +297,10 @@ mmw.
 | `--allow-incomplete` |  | Stage even if the pool cannot serve everything the indexes promise. |
 | `--from` |  | Deprecated: bounds history from a snapshot, or 'none' for everything. Use --since DATE or --full. |
 | `--since` |  | Send what the far side lacks as of DATE, from a kept manifest or retained points |
+| `--dry-run` |  | Preview retained point ranges and payload without writing a transfer. |
+| `--until` |  | Carry each suite's newest retained point at or before DATE; never requests a far-side rollback. |
 | `--bundles` |  | Search kept bundles here too (repeatable) |
-| `--to` |  | Snapshot to bring it to. Default: a new snapshot of now. |
+| `--to` |  | Snapshot to bring it to. Default: latest recorded points. |
 | `--repo` |  | Only this repository (URL or name; repeatable). |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |

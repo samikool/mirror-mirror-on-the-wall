@@ -98,23 +98,42 @@ def test_snapshot_pick_modal(snap_compare):
     )
 
 
-def test_snapshot_bundle_picker(snap_compare, tmp_path):
+def _point_preview_demo(monkeypatch):
+    from mmw.commands import bundle
+    from mmw.core.transfer_ranges import RangeRow, TransferPreview
+    rows = tuple(RangeRow(repo, suite, start, end, count, (start, end))
+                 for repo, suite, start, end, count in (
+                     ("https://deb.debian.org/debian", "bookworm", "20261011T120000Z", "20261024T020000Z", 3),
+                     ("pypi", "files", "20261010T120000Z", "20261023T020000Z", 2),
+                     ("vscode", "files", "20261008T120000Z", "20261022T020000Z", 1)))
+    monkeypatch.setattr(bundle, "preview_transfer", lambda *args, **kw: TransferPreview(
+        rows, 1804, 21_000_000_000, "last transfer (local record)"))
+
+
+async def _transfer_preview_ready(pilot):
+    await until(pilot, lambda: pilot.app.screen.query("#pick-estimate")
+                and "new blobs" in str(pilot.app.screen.query_one("#pick-estimate").render()))
+
+
+def test_snapshot_bundle_picker(snap_compare, tmp_path, monkeypatch):
+    _point_preview_demo(monkeypatch)
     from mmw.tui.snapshot_pages import BundlePickPage
     from test_tui_sweep import snapshot_status_demo
 
     net = config.NetworkConfig(name="lab", select=[])
     assert snap_compare(_app(lambda: BundlePickPage(net, snapshot_status_demo(), tmp_path)),
-                        terminal_size=SNAP_SIZE)
+                        terminal_size=SNAP_SIZE, run_before=_transfer_preview_ready)
 
 
-def test_snapshot_bundle_picker_mmw(snap_compare, tmp_path):
+def test_snapshot_bundle_picker_mmw(snap_compare, tmp_path, monkeypatch):
+    _point_preview_demo(monkeypatch)
     from mmw.tui.snapshot_pages import BundlePickPage
     from test_tui_sweep import snapshot_status_demo
 
     net = config.NetworkConfig(name="lab", select=[])
     repos = {"https://deb.debian.org/debian": "debian", "pypi": "PyPI", "vscode": "VS Code"}
     assert snap_compare(_app(lambda: BundlePickPage(net, snapshot_status_demo(), tmp_path, repos=repos)),
-                        terminal_size=SNAP_SIZE)
+                        terminal_size=SNAP_SIZE, run_before=_transfer_preview_ready)
 
 
 def test_snapshot_publish_picker(snap_compare):

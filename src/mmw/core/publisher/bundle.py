@@ -231,6 +231,7 @@ def bundle_network(
     full: bool = False,
     since: str | None = None,
     kept_dirs: list[Path] | None = None,
+    until: str | None = None,
 ) -> BundleResult:
     """One bundle for the network's far side: each chosen repository's
     timeline points (newest, or with `history` every point since it was
@@ -243,6 +244,8 @@ def bundle_network(
     the mmw wheel to ship (default: this checkout's own build, or PyPI's
     for a release); `fetcher` does the downloads.
     """
+    if until is not None and to_ref != "now":
+        raise ValueError("--until cannot be combined with --to")
     if since is not None and (full or from_ref is not _LAST):
         raise ValueError("--since cannot be combined with --full or --from")
     if installer:
@@ -255,13 +258,13 @@ def bundle_network(
                           mirror_start_callback=mirror_start_callback, from_ref=from_ref, to_ref=to_ref, stdout=stdout, repos=repos, stage=stage,
                           history=network.history if history is None else history,
                           full=full or from_ref is None, installer=installer,
-                          runtime_wheel=runtime_wheel, fetcher=fetcher, since_date=since, kept_dirs=kept_dirs)
+                          runtime_wheel=runtime_wheel, fetcher=fetcher, since_date=since, kept_dirs=kept_dirs, until=until)
 
 
 def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_path, progress, stop_event, *,
                    mirror_start_callback=None,
                    from_ref, to_ref: str, stdout, repos: list[str] | None, stage: bool, history: bool,
-                   full: bool, installer: bool, runtime_wheel, fetcher, since_date=None, kept_dirs=None) -> BundleResult:
+                   full: bool, installer: bool, runtime_wheel, fetcher, since_date=None, kept_dirs=None, until=None) -> BundleResult:
     """An mmw network's bundle of timeline points: each chosen repository's
     current points (always listed — the far side retires what's missing),
     and with `history` every point first seen since the last bundle; a file
@@ -300,7 +303,15 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     result = BundleResult(network_name=network.name, created=stamp, previous=since, full=full)
     result.since_source = source
     result.warnings.extend(skipped)
-    if to_ref == "now":
+    if until is not None:
+        from mmw.core.points import resolve_when
+        resolve_when(until)  # Validate before reading or creating output.
+        with Pool(mirror_dir, read_only=True) as pool:
+            settings = pool.settings_at(network.name, "99999999T999999Z")
+            if not settings:
+                raise ValueError("No recorded points for this network — sync its repositories first.")
+            current = pts.current_points(pool, network.name)
+    elif to_ref == "now":
         bundle_output_path(network, "x", out_path)               # destination check
         report = pts.record_network_points(network, cfg, mirror_dir, stamp=stamp, stop_event=stop_event)
         result.warnings.extend(report.warnings)
@@ -337,25 +348,12 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         sent_points = {p for p in pool.sent_point_ids(network.name)
                        if pool.sent_slice(network.name, p) in (None, content_ident(files_for_settings(pool, p, settings)))}
         tracks = {t.id: t for t in pool.network_tracks(network.name)}
-        known = pool.points_of(pid for ids in current.values() for pid in ids)
-        listing: dict[str, list[int]] = {}
-        for repo in chosen:
-            ids = list(current[repo])
-            if history:
-                # Only the suites it has now: a suite gone stays gone.
-                start = since_by_repo.get(repo, since)
-                for t in sorted({known[p].track for p in ids if p in known}):
-                    for p in pool.network_points(network.name, t):
-                        first = pool.network_point_stamp(network.name, p.id) or p.stamp
-                        if p.id not in ids and (since_date is not None or p.id not in sent_points) and (start is None or first > start):
-                            ids.append(p.id)
-                            known[p.id] = p
-            listing[repo] = ids
-        stubs = [pid for ids in (*listing.values(), current.get(net_repo, [])) for pid in ids
-                 if pid in known and not known[pid].held]
-        if stubs:
-            raise ValueError(f"{len(stubs)} point(s) to list are no longer kept in the pool (retention "
-                             f"dropped their files) — bundle another snapshot, or sync and bundle now")
+        from mmw.core.transfer_ranges import point_date, select_range
+        current, listing, known = select_range(
+            pool, network.name, settings, current, until=until, history=history,
+            since=since, since_by_repo=since_by_repo if not full else {},
+            explicit_since=since_date is not None or from_ref not in (_LAST, None),
+            sent_points=sent_points if not full else (), repos=chosen, warnings=result.warnings)
         files = {pid: files_for_settings(pool, pid, settings) for ids in listing.values() for pid in ids}
         net_files: dict[str, str] = {}
         for pid in current.get(net_repo, []):
@@ -398,7 +396,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             suites = []
             for t in sorted({known[pid].track for pid in current[repo]}):
                 track = tracks.get(t) or pool.track_of_point(next(p for p in current[repo] if known[p].track == t))
-                now_pt = max(known[pid].date for pid in current[repo] if known[pid].track == t)
+                now_pt = max(point_date(pool, known[pid], settings) for pid in current[repo] if known[pid].track == t)
                 before = sent_dates.get(t)
                 suites.append((track.suite or (track.name.rsplit("/", 1)[-1] if track.name else "files"),
                                day(before) if before else None, day(now_pt)))
@@ -474,7 +472,9 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     with Pool(mirror_dir) as pool:
         listed = {pid for ids in listing.values() for pid in ids} | set(current.get(net_repo, []))
         pool.record_sent(network.name, listed, sink.sent_checksums | (baseline or set()), stamp,
-                         slices={pid: content_ident(f) for pid, f in files.items()})
+                         slices={pid: content_ident(f) for pid, f in files.items()},
+                         targets={known[pid].track: (repo, point_date(pool, known[pid], settings))
+                                  for repo in listing for pid in current[repo]})
         pool.set_listed_tracks(network.name, listed_tracks)
         pool.record_bundle(network.name, since, stamp, str(target), sink.sent, sink.sent_bytes, 0,
                            kind="stage" if stage else "stream" if streaming else "bundle")
@@ -522,11 +522,12 @@ def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir
                   from_ref=_LAST, to_ref: str = "now", repos: list[str] | None = None,
                   installer: bool = False, runtime_wheel: Path | None = None, fetcher=None,
                   history: bool | None = None, full: bool = False,
-                  since: str | None = None, kept_dirs: list[Path] | None = None) -> BundleResult:
+                  since: str | None = None, kept_dirs: list[Path] | None = None,
+                  until: str | None = None) -> BundleResult:
     """`mmw stage`: the bundle `bundle_network` would write, laid out as a
     directory `{out_dir or bundle_dir}/{network}-{name}/` of hardlinks to the
     pool instead of a tar. For mmw networks only."""
     return bundle_network(network, cfg, mirror_dir, out_dir, progress, stop_event, mirror_start_callback,
                           from_ref=None if full else from_ref, to_ref=to_ref, repos=repos, stage=True,
                           installer=installer, runtime_wheel=runtime_wheel, fetcher=fetcher, history=history,
-                          since=since, kept_dirs=kept_dirs)
+                          since=since, kept_dirs=kept_dirs, until=until)

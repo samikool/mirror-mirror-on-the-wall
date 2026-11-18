@@ -238,6 +238,42 @@ still use their existing network-owned history because their provider-wide
 publish layouts generate files across units; repository-owned recording for
 those layouts is deferred. The far side and bundle format are unchanged.
 
+### Choose a transfer range
+
+Transfer defaults to each repository's last successful local transfer through
+its latest recorded points. The TUI's From and To controls show the actual
+resolved dates per suite, retained date spans, point counts and an approximate
+payload. No snapshot is made. Choose an earlier From date to recover a lost
+transfer; choose an earlier To date to carry older retained points.
+
+```bash
+mmw bundle -n lab --until 2026-11-10 --dry-run
+mmw bundle -n lab --since 2026-11-01 --until 2026-11-10 --history
+mmw stage -n lab --until 2026-11-10 --full
+```
+
+A To date (`--until`) selects the newest retained point at or before that date,
+independently for every selected suite. Repositories need not share dates.
+A selected suite with no eligible point, or whose target was pruned, is named
+and refused; it is never silently dropped. History includes retained
+intermediate points through the end date and warns about pruned history.
+`--repo` limits the repositories; a partial transfer advances only their local
+transfer records. `--dry-run` uses the same range planner without writing a
+bundle or advancing those records. These options also work with `mmw stage`.
+Legacy snapshot `--to` remains available, but cannot be combined with `--until`.
+
+Date-targeted transfers use the network's latest recorded selection and
+configuration, with older repository content. They do not need to read or
+verify unrelated live refs. Sync after changing the network's selection or
+configuration to record it before choosing an older content target.
+
+The far-side review shows each arriving suite's date span. Importing an older
+point does **not** roll back a newer served point or remove retained points:
+the site serves its newest complete points unless held or pinned. Rollback and
+cleanup remain separate site actions; automatic cleanup runs only if explicitly
+enabled in the site's settings. A local transfer record confirms bundle
+creation, not that the drive arrived across the airgap.
+
 ### What a bundle carries
 
 A bundle carries **points**, not a jump from one snapshot to another. Every sync records a

@@ -710,10 +710,12 @@ def cmd_bundle(
                              "for full. Use --since DATE or --full."),
     since: str = typer.Option(None, "--since", help="Send what the far side lacks, as it was on DATE "
                               "(a kept bundle's manifest, else this side's points)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview retained point ranges and payload without writing a transfer."),
+    until: str = typer.Option(None, "--until", help="Carry each suite's newest retained point at or before DATE; never requests a far-side rollback."),
     bundles: list[Path] = typer.Option(None, "--bundles", help="Search kept bundles here too (repeatable)"),
     to_ref: str = typer.Option(
         None, "--to", help="Snapshot to bring it to (stamp, label or id). "
-                           "Default: a new snapshot of now."),
+                           "Default: latest recorded points."),
     repo: list[str] = typer.Option(
         None, "--repo", help="Only this repository (URL or name; repeatable). Needs -n."),
     installer: bool = typer.Option(
@@ -728,15 +730,14 @@ def cmd_bundle(
     full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not "
                                                     "(the same as --from none)."),
 ):
-    """Write a network's mirrors to a transferable bundle — between any two
-    snapshots (see `mmw snapshot list`). By default: from where the last
-    bundle went, to a new snapshot of now."""
+    """Transfer recorded points: from each repository's last transfer to its
+    latest recorded points. Use --since / --until for earlier dates."""
     from mmw.commands.bundle import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out,
                          allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
                          installer=installer, runtime_wheel=runtime_wheel, history=history, full=full,
-                         since=since, kept=bundles))
+                         since=since, kept=bundles, until=until, dry_run=dry_run))
 
 
 @app.command("stage")
@@ -752,9 +753,11 @@ def cmd_stage(
                              "Use --since DATE or --full."),
     since: str = typer.Option(None, "--since", help="Send what the far side lacks as of DATE, "
                               "from a kept manifest or retained points"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview retained point ranges and payload without writing a transfer."),
+    until: str = typer.Option(None, "--until", help="Carry each suite's newest retained point at or before DATE; never requests a far-side rollback."),
     bundles: list[Path] = typer.Option(None, "--bundles", help="Search kept bundles here too (repeatable)"),
     to_ref: str = typer.Option(
-        None, "--to", help="Snapshot to bring it to. Default: a new snapshot of now."),
+        None, "--to", help="Snapshot to bring it to. Default: latest recorded points."),
     repo: list[str] = typer.Option(
         None, "--repo", help="Only this repository (URL or name; repeatable)."),
     installer: bool = typer.Option(
@@ -776,7 +779,7 @@ def cmd_stage(
     raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
                          from_ref=from_ref, to_ref=to_ref, repos=repo or None,
                          installer=installer, runtime_wheel=runtime_wheel, history=history, full=full,
-                         since=since, kept=bundles))
+                         since=since, kept=bundles, until=until, dry_run=dry_run))
 
 
 @app.command("installer")

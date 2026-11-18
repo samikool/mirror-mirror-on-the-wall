@@ -261,7 +261,7 @@ def test_certs_button_exists_and_is_wired(tmp_path):
         app.notify = lambda m, **_: notes.append(m)
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            app.screen.query_one("#btn-net-certs", Button).press()
+            app.screen.action_certs()                     # under More… (c)
             await _settle(pilot)
 
     asyncio.run(scenario())

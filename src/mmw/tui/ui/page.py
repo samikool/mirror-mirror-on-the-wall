@@ -5,6 +5,7 @@ Sections are Textual modes, each with its own stack of Pages, so the breadcrumb
 is just the TITLEs of the current mode's stack and Esc is just `pop_screen` —
 except at a section's root, where there is nothing to go back to.
 """
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -15,6 +16,7 @@ from textual.widgets import Footer, Static
 
 from mmw.tui.ui.hit_test import LiveHitTest
 from mmw.tui.ui.sidebar import Sidebar
+from mmw.tui.ui.widgets import Button
 
 # Below this the sidebar becomes a one-row tab strip: at 80 columns an
 # 18-column sidebar leaves forms too little room for label + control.
@@ -27,6 +29,9 @@ class Page(LiveHitTest, Screen):
     TITLE = ""
     HELP = ""               # notes `?` shows under the page's keys (markup)
     SCROLLS = True          # False: the body is one 1fr list/tree, which must not scroll
+    # Actions the bar has no button for: listed under More… (with their keys),
+    # so nothing is reachable only by a key nobody can see.
+    MORE: tuple[str, ...] = ()
     subtitle = ""           # e.g. the URL a page is about; shown under the breadcrumb
     BINDINGS = [Binding("escape", "back", "Back")]
 
@@ -47,9 +52,41 @@ class Page(LiveHitTest, Screen):
                 with Horizontal(id="page-actions"):
                     yield Static("", id="page-status", markup=False)
                     yield from self.compose_actions()
+                    if self.MORE:
+                        yield Button("More…", id="btn-page-more", compact=True)
         # The page's verbs and `? Help` only: help lists every key (q, ^p…),
         # and a key pushed off the right edge at 80 columns helps nobody.
         yield Footer(show_command_palette=False)
+
+    def more_entries(self) -> list[tuple[str, str, str, bool]]:
+        """(action, label, key, available) for each of MORE, from the page's
+        own bindings — so the menu can never name a key that does something else."""
+        out = []
+        for action in self.MORE:
+            binding = next((b for b in self._bindings_for(action)), None)
+            label = binding.description if binding is not None else action.replace("_", " ").capitalize()
+            key = self.app.get_key_display(binding) if binding is not None else ""
+            out.append((action, label, key, self.check_action(action, ()) is not False))
+        return out
+
+    def _bindings_for(self, action: str):
+        for _key, active in self._bindings.key_to_bindings.items():
+            for b in active:
+                if b.action == action:
+                    yield b
+
+    @on(Button.Pressed, "#btn-page-more")
+    def _more_pressed(self, event) -> None:
+        event.stop()
+        self.action_more()
+
+    def action_more(self) -> None:
+        from mmw.tui.ui.dialog import MoreMenu
+
+        def picked(action: "str | None") -> None:
+            if action:
+                self.run_worker(self.run_action(action), exit_on_error=False)
+        self.app.push_screen(MoreMenu(self.TITLE or "This page", self.more_entries()), picked)
 
     def start_flow(self, flow) -> None:
         """Run `flow()` (an async action that may push pages) in a worker —

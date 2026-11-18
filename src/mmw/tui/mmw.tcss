@@ -122,6 +122,16 @@ ConfirmDialog #confirm-details Label { width: 1fr; }
 ConfirmDialog #confirm-bar { height: 1; align: right middle; }
 ConfirmDialog #confirm-bar Button { margin-left: 2; }
 
+/* ── MoreMenu ────────────────────────────────────────────────────────── */
+MoreMenu { align: center middle; }
+MoreMenu #more-box {
+    width: auto; min-width: 40; max-width: 80; height: auto;
+    border: round $primary; background: $surface; padding: 1 2;
+}
+MoreMenu #more-title { width: 1fr; color: $primary; text-style: bold; }
+MoreMenu #more-list { height: auto; max-height: 20; margin: 1 0; }
+MoreMenu #more-bar { height: 1; align: right middle; }
+
 /* ── HelpDialog ──────────────────────────────────────────────────────── */
 HelpDialog { align: center middle; }
 HelpDialog #help-box {

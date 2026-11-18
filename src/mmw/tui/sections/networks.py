@@ -42,12 +42,12 @@ class NetworksPage(Page):
         Binding("r", "verb('dry_run')", "Dry run"),
         Binding("p", "verb('publish')", "Publish"),
         Binding("t", "verb('bundle')", "Transfer"),
-        # Off the footer (it must fit 80 columns): a once-per-network job,
-        # still a button, and listed by ?.
-        Binding("c", "verb('certs')", "Certs", show=False),
+        # Off the footer and the bar (they must fit 80 columns): under More….
+        Binding("c", "certs", "Certs", show=False),
         Binding("n", "snapshots", "Snapshots"),
         Binding("k", "packages", "Packages", show=False),
     ]
+    MORE = ("certs", "packages")
 
     def __init__(self):
         super().__init__()
@@ -70,7 +70,6 @@ class NetworksPage(Page):
         yield Button("Publish", id="btn-net-publish", variant="primary", compact=True)
         yield Button("Transfer…", id="btn-net-bundle", compact=True)
         yield Button("Snapshots", id="btn-net-snapshots", compact=True)
-        yield Button("Certs", id="btn-net-certs", compact=True)
 
     async def on_mount(self) -> None:
         # A transfer finishing while this section is the one showing: re-read
@@ -239,8 +238,8 @@ class NetworksPage(Page):
     def _bundle_pressed(self) -> None:
         self.action_verb("bundle")
 
-    @on(Button.Pressed, "#btn-net-certs")
-    def _certs_pressed(self) -> None:
+    def action_certs(self) -> None:
+        """A once-per-network job: under More…, and `c`."""
         self.action_verb("certs")
 
     async def _add(self) -> None:

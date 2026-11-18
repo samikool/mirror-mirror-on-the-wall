@@ -176,7 +176,7 @@ apt repository whose path matches is compared with the snapshot on its
 Release `Origin`, `Label` and `Codename`. An Ubuntu archive and security
 repository can both match; each gets its own suites' points. `--repo`
 overrides the match. Without `--quiet` the TUI opens on **Add a past
-point**. In Sources, highlight a repository and press `t`.
+point**. In Sources, highlight a repository and choose **More… → Add a past point…** (or press `t`).
 
 The fetch uses each network's own selection of that repository, through
 the same code as a sync, so files already in the pool are not downloaded

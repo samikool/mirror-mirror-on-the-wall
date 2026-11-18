@@ -338,8 +338,9 @@ def test_buttons_reach_the_actions(env, tmp_path):  # noqa: F811
 
     async def check(app, pilot):
         await until(pilot, lambda: len(_rows(app, "site-repos")) == 2)
-        for b in ("apply", "add-root", "serve", "forward", "hold", "delete", "move", "certs", "tidy"):
-            assert app.screen.query(f"#btn-site-{b}"), b
+        for b in ("apply", "add-root", "serve", "forward", "hold", "delete", "move", "tidy", "page-more"):
+            assert app.screen.query(f"#btn-{'site-' if b != 'page-more' else ''}{b}"), b
+        assert "certs" in type(app.screen).MORE                    # under More…
         assert app.screen.query_one("#btn-site-apply").variant == "primary"
         app.screen.query_one("#btn-site-apply").press()
         await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage")

@@ -321,7 +321,7 @@ def test_networks_buttons_order_and_primary(tmp_path):
             await pilot.pause()
             ids = [b.id for b in app.screen.query(Button) if b.id and b.id.startswith("btn-net-")]
             assert ids == ["btn-net-add", "btn-net-edit", "btn-net-remove", "btn-net-dry-run",
-                           "btn-net-publish", "btn-net-bundle", "btn-net-snapshots", "btn-net-certs"]
+                           "btn-net-publish", "btn-net-bundle", "btn-net-snapshots"]
             variant = lambda i: app.screen.query_one(f"#{i}", Button).variant  # noqa: E731
             want = {"served": ("primary", "default"), "offline": ("default", "primary")}
             for i in (0, 1):

@@ -421,7 +421,7 @@ mmw site ca make --out /root/site-ca --name "Lab CA" [--encrypt]   # no CA yet
 mmw site certs                       # every root: key, request, certificate, HTTPS on
 ```
 
-In the TUI, **Certs** (**c**) signs the same way; with no CA on this
+In the TUI, **More… → Certs** (**c**) signs the same way; with no CA on this
 machine yet it offers to load the mirror's existing one (its `.crt` and
 `.key`) or make a new one, with an optional passphrase, first.
 

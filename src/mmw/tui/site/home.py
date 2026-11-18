@@ -87,7 +87,7 @@ class SiteHomePage(Page):
         Binding("b", "serve_bundle", "As of", show=False),
         Binding("x", "export", "Export"),
         Binding("m", "move", "Move"),
-        Binding("c", "certs", "Certs", show=False),         # its button is in the bar
+        Binding("c", "certs", "Certs", show=False),         # under More…
         Binding("t", "tidy", "Tidy", show=False),
         Binding("k", "packages", "Packages", show=False),
         Binding("K", "signing_keys", "Signing keys", show=False),
@@ -100,6 +100,8 @@ class SiteHomePage(Page):
         Binding("v", "verify", "Verify", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
+    MORE = ("certs", "adopt", "adopted", "clean_up", "combine", "packages", "signing_keys", "local_update",
+            "settings", "suite_keep", "check_signatures", "verify", "refresh")
 
     def __init__(self):
         super().__init__()
@@ -119,13 +121,12 @@ class SiteHomePage(Page):
         yield Button("Add root…", id="btn-site-add-root", compact=True)
         yield Button("As of…", id="btn-site-serve-bundle", compact=True)
         yield Button("Move…", id="btn-site-move", compact=True)
-        yield Button("Certs", id="btn-site-certs", compact=True)
         yield Button("Tidy", id="btn-site-tidy", compact=True)
 
     _BUTTONS = {"btn-site-apply": "apply", "btn-site-add-root": "add_root", "btn-site-serve-bundle": "serve_bundle",
                 "btn-site-serve": "serve",
                 "btn-site-forward": "forward", "btn-site-hold": "hold", "btn-site-delete": "delete",
-                "btn-site-move": "move", "btn-site-certs": "certs", "btn-site-tidy": "tidy"}
+                "btn-site-move": "move", "btn-site-tidy": "tidy"}
 
     def on_button_pressed(self, event) -> None:
         action = self._BUTTONS.get(event.button.id or "")

@@ -88,3 +88,45 @@ class HelpDialog(LiveHitTest, ModalScreen[None]):
     @on(Button.Pressed, "#btn-help-close")
     def _close(self) -> None:
         self.dismiss(None)
+
+
+class MoreMenu(LiveHitTest, ModalScreen["str | None"]):
+    """A page's extra actions — the ones its action bar has no room for —
+    each with its key. Picking one hands its action name back to the page.
+
+    Nothing in the TUI is reachable only by a hidden key: what doesn't fit
+    in the bar is listed here."""
+
+    BINDINGS = [Binding("escape", "close", "Close", show=False)]
+
+    def __init__(self, title: str, entries: list[tuple[str, str, str, bool]]):
+        """`entries`: (action, label, key, available)."""
+        super().__init__()
+        self._title = title
+        self._entries = entries
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import OptionList
+        from textual.widgets.option_list import Option
+        width = max((len(label) for _a, label, _k, _ok in self._entries), default=1)
+        with Vertical(id="more-box"):
+            yield Label(f"{self._title} — more", id="more-title", markup=False)
+            yield OptionList(*(Option(f"{escape(label):<{width}}  [dim]{escape(key)}[/]", id=action,
+                                      disabled=not ok)
+                               for action, label, key, ok in self._entries),
+                             id="more-list", compact=True)
+            with Horizontal(id="more-bar"):
+                yield Button("Close", id="btn-more-close", compact=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#more-list").focus()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-more-close")
+    def _close(self) -> None:
+        self.dismiss(None)
+
+    def on_option_list_option_selected(self, event) -> None:
+        self.dismiss(event.option.id)

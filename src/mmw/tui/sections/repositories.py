@@ -118,8 +118,9 @@ class RepositoriesPage(Page):
         Binding("f", "sources_file", "Sources file", show=False),
         Binding("k", "add_packages", "Add packages", show=False),
         Binding("c", "keep_costs", "Keep costs", show=False),
-        Binding("t", "past_point", "Past point", show=False),
+        Binding("t", "past_point", "Add a past point…", show=False),
     ]
+    MORE = ("add_packages", "sources_file", "past_point", "keep_costs")
 
     def __init__(self):
         super().__init__()

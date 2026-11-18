@@ -243,6 +243,12 @@ class SshRoot:
     def details(self) -> dict:
         return self._call("details")
 
+    def converted_notice(self):
+        return self._call("converted-notice")
+
+    def conversion_backups(self):
+        return self._call("conversion-backups")
+
     def tls_notes(self) -> list[str]:
         return self._call("tls-notes")
 

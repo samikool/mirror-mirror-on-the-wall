@@ -188,13 +188,31 @@ def ensure_state(db, store, repo: str, chosen: dict[int, int]) -> tuple[int, lis
     return vid, warnings
 
 
-def migrate(db, roots) -> bool:
+def _backup_control(db, roots):
+    """Each local control directory only — the stores are siblings, never copied."""
+    from mmw.core import disk_io
+    from mmw.site.home import root_home
+    homes = list(dict.fromkeys([db.home, *(root_home(r.path) for r in roots.all)]))
+    backups = []
+    for home in homes:
+        if not disk_io.ops.is_dir(home):
+            continue
+        target = home.with_name("site.before-timelines")
+        disk_io.ops.copy_tree_once(home, target, ignore=("lock", "site.db-journal"))
+        backups.append(str(target))
+    return backups
+
+
+def migrate(db, roots, *, backup=None) -> bool:
     """Give a site from before timelines its tracks and points: every kept
     version's files, oldest first, split and imported; a held repository
     pins each track to what it serves. Once."""
     if db.get_meta("timeline"):
         return False
-    for st in db.repo_states():
+    states = db.repo_states()
+    # A fresh empty root has nothing old to convert, so needs no old-database notice.
+    backups = (backup or _backup_control)(db, roots) if any(db.versions(st.repo) for st in states) else []
+    for st in states:
         store = roots.store(roots.of(st))
         for v in sorted(db.versions(st.repo), key=lambda v: v.number):
             rows = db.version_files(v.id)
@@ -207,5 +225,8 @@ def migrate(db, roots) -> bool:
                 for o in outcomes:
                     if o.point is not None and o.status != "conflict":
                         db.set_pin(db.point(o.point).track, o.point)
+    if backups:
+        import json
+        db.set_meta("timeline_conversion_notice", json.dumps(backups))
     db.set_meta("timeline", "1")
     return True

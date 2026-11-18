@@ -7,7 +7,7 @@ from mmw.commands.common import eprint
 from mmw.core import disk_io
 
 
-def _set(root: Path | None, break_lock: bool = False):
+def _set(root: Path | None, break_lock: bool = False, *, convert: bool = True):
     """The mirror: the set `root` belongs to, or the one this machine has opened."""
     from mmw.site import recents
     from mmw.site.mset import open_set, root_at
@@ -23,7 +23,31 @@ def _set(root: Path | None, break_lock: bool = False):
         for r in mset.roots:
             if r.break_lock():
                 eprint(f"removed the lock in {r.info.name}")
+    if convert:
+        from mmw.site import ops
+        ops.set_status(mset)
+        for notice in conversion_notices(mset):
+            eprint(notice)
     return mset
+
+
+def conversion_notices(mset) -> list[str]:
+    """The shared CLI/TUI door to the roots' one-time conversion messages."""
+    notices = []
+    for root in mset.roots:
+        take = getattr(root, "converted_notice", None)
+        notice = take() if take else None
+        if notice:
+            notices.append(f"{root.info.name}: {notice}")
+    return notices
+
+
+def removable_conversion_backups(mset) -> list[str]:
+    paths = []
+    for root in mset.roots:
+        get = getattr(root, "conversion_backups", None)
+        paths.extend(f"{root.info.name}: removable conversion backup: {path}" for path in (get() if get else []))
+    return paths
 
 
 def _repo(root: Path | None, repo: str, break_lock: bool = False):
@@ -43,7 +67,7 @@ def _ssh_error():
     return SshError
 
 
-_ERRORS = (ValueError, LookupError, FileNotFoundError, KeyError, _ssh_error())
+_ERRORS = (ValueError, LookupError, OSError, KeyError, _ssh_error())
 
 
 def _place(specs: list[str]) -> dict[str, str]:
@@ -68,7 +92,7 @@ def apply(src: str, root: list[str] | None = None, forward: list[str] | None = N
         place = _place(root or [])
         at = next((loc for loc in place.values() if root_at(loc) is not None), None)
         try:
-            mset = _set(at, break_lock)
+            mset = _set(at, break_lock, convert=not dry_run)
         except LookupError:
             mset = None                             # a first apply: every hostname is placed
         if src != "-" and _offer_far_update(src, mset):
@@ -172,6 +196,11 @@ def open_root(path: str, install: Path | None = None) -> int:
         eprint(f"no mirror at {path}")
         return 1
     recents.remember(str(path))
+    if found.info.set_id is not None:
+        try:
+            _set(Path(path))
+        except _ERRORS as e:
+            return _fail(e)
     print(f"opened {found.info.name} — a root of {found.info.network}")
     return 0
 
@@ -611,10 +640,13 @@ def tidy(root: Path | None = None, break_lock: bool = False) -> int:
     from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
-        done = ops.tidy_set(_set(root, break_lock))
+        mset = _set(root, break_lock)
+        done = ops.tidy_set(mset)
     except (LockHeld, *_ERRORS) as e:
         return _fail(e)
     print(f"cleared the old copies of: {', '.join(done)}" if done else "nothing to tidy")
+    for note in removable_conversion_backups(mset):
+        print(note)
     return 0
 
 

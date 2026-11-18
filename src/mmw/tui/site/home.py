@@ -248,12 +248,24 @@ class SiteHomePage(Page):
                 for p, _total in points:         # every bundle still kept here, for Serve bundle…
                     _stamp, label, count = bundles.get(p.stamp, (p.stamp, p.snap_label, 0))
                     bundles[p.stamp] = (p.stamp, label, count + 1)
+            from mmw.commands.site import conversion_notices
+            notices = conversion_notices(self.app.mset)
         except Exception as e:  # noqa: BLE001 — shown on the page
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
         self._last_apply = last
         self.app.call_from_thread(self._loaded, states, newest, done, root_of, kept,
                                   sorted(bundles.values(), reverse=True), kind, said)
+        if notices:
+            self.app.call_from_thread(self._converted, notices)
+
+    def _converted(self, notices) -> None:
+        if not self.is_attached:
+            return
+        from mmw.tui.ui.dialog import ConfirmDialog
+        self.app.push_screen(ConfirmDialog(
+            "Converted to timelines", _esc("\n".join(notices)),
+            confirm_label="OK", cancel_label="Close", confirm_variant="primary"))
 
     def _loaded(self, states, newest, done: str | None = None, root_of=None, kept=None, bundles=None,
                 kind: str = "ok", said: int | None = None) -> None:
@@ -1382,12 +1394,16 @@ class TidyRunPage(RunPage):
             progress("repo", repo=root.info.name)
             tidied += root.tidy(progress=lambda rel: progress("receive", bytes=1, name=rel))
             progress("finished", repo=root.info.name)
+        from mmw.commands.site import removable_conversion_backups
+        self._backups = removable_conversion_backups(self.app.mset)
         progress("done")
         return tidied
 
     def _done(self, tidied) -> None:
         text = (f"[b $success]✓ cleared the old copies of {_esc(and_list(tidied))}[/]" if tidied else
                 "nothing to tidy — no moved repository's old copy is left")
+        if getattr(self, "_backups", None):
+            text += "\n" + _esc("\n".join(self._backups))
         self.query_one("#run-done", Static).update(text)
         self.set_status("")
         self._finish()

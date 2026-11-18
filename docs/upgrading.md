@@ -43,15 +43,24 @@ Then:
 
 Install the new mmw there (`sh mmw-<version>/install.sh` from the installer
 file) on every machine that holds one of its roots: a root over ssh needs
-the same version. Converting is one-way, so first copy each root's
-`.mmw/site/` (its database and settings, small) somewhere safe. Then the
-first `mmw site` command that opens the mirror:
+the same version. Converting is one-way. On the first `mmw site` command
+that converts its old history, mmw:
 
+- **Backs up the control state first**, copying each root's `.mmw/site/`
+  to `.mmw/site.before-timelines/`. This keeps the database and settings,
+  never the store or the active lock. An existing backup is left alone.
+  A failed copy stops conversion so you can fix the problem and retry.
+- **Says once that it converted**, with the backup's path. The far-side TUI
+  shows the same notice when opening the mirror; no approval is needed.
 - **Splits every kept version into timelines**, once. A held repository is
   pinned to what it serves.
 - **Reads `keep_versions = N`** in its settings as `keep = N` with
   `auto_clean = true`, the same behaviour under the new names. See `mmw site
   settings`.
+
+`mmw site tidy` lists the conversion backup as removable, in the TUI too,
+but leaves it in place. Remove `.mmw/site.before-timelines/` yourself once
+you are satisfied with the converted mirror.
 
 Bundles made before the upgrade still apply. Applying one made for
 `apply.py` is refused with exit code 5: bundle again with the new mmw.

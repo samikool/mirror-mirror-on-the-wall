@@ -269,3 +269,21 @@ def hash_fh(fh, algo: str = "sha256", chunk: int = CHUNK) -> tuple[str, int]:
         h.update(data)
         n += len(data)
     return h.hexdigest(), n
+
+
+def copy_tree_once(src, dst, *, ignore=()) -> None:
+    """Publish a complete directory copy; never refresh an existing backup."""
+    import tempfile
+    dst = Path(dst)
+    if dst.exists() or dst.is_symlink():
+        if not dst.is_dir():
+            raise FileExistsError(f"backup path {dst} already exists and is not a directory")
+        return
+    with tempfile.TemporaryDirectory(prefix=f".{dst.name}-", dir=dst.parent) as tmp:
+        staged = Path(tmp) / "copy"
+        shutil.copytree(src, staged, symlinks=True, ignore=shutil.ignore_patterns(*ignore))
+        if dst.exists() or dst.is_symlink():
+            if not dst.is_dir():
+                raise FileExistsError(f"backup path {dst} already exists and is not a directory")
+        else:
+            staged.rename(dst)

@@ -527,6 +527,32 @@ def _ensure_migrated(home: Path) -> None:
         pass
 
 
+def converted_notice(home: Path) -> str | None:
+    """Take the pending conversion notice once, under the site's lock."""
+    from mmw.site.lock import LockHeld
+    import json
+    with SiteDB(home) as db:
+        if not db.get_meta("timeline") or not db.get_meta("timeline_conversion_notice"):
+            return None
+    try:
+        with SiteLock(home), SiteDB(home) as db:
+            raw = db.get_meta("timeline_conversion_notice")
+            if not raw:
+                return None
+            paths = json.loads(raw)
+            db.set_meta("timeline_conversion_notice", "")
+    except LockHeld:
+        return None
+    return ("converted to timelines (one-way) — the old database is kept in "
+            + ", ".join(paths) + "; remove it once you're satisfied")
+
+
+def conversion_backups(home: Path) -> list[str]:
+    """Control-state backups an operator may remove once satisfied."""
+    path = Path(home).with_name("site.before-timelines")
+    return [str(path)] if disk_io.ops.is_dir(path) else []
+
+
 def status(home: Path):
     """Every repository's state, by label."""
     _ensure_migrated(home)

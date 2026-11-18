@@ -322,6 +322,8 @@ _VERBS = {
     "keep-policy": _simple(lambda r, a, i: r.keep(a[0]) or {"ok": True}),
     "break-lock": _simple(_break_lock),
     "tidy": _simple(lambda r, a, i: r.tidy()),
+    "converted-notice": _simple(lambda r, a, i: r.converted_notice()),
+    "conversion-backups": _simple(lambda r, a, i: r.conversion_backups()),
     "tls-notes": _simple(lambda r, a, i: r.tls_notes()),
     "details": _simple(lambda r, a, i: r.details()),
     "deleted": _simple(lambda r, a, i: {"stamps": r.deleted(a[0])}),

@@ -36,6 +36,7 @@ def _two_suites(tmp_path, monkeypatch):
                         f"2026110{day}T120000Z", None, set())
         vid, _w = ensure_state(db, store, KEY, choose(db, store, KEY)[0])
         switch_in(db, roots, KEY, vid, held=False)
+        db.set_meta("timeline", "1")  # this fixture constructs modern points directly
     return home
 
 

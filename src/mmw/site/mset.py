@@ -45,6 +45,14 @@ class LocalRoot:
         from mmw.site.ops import status
         return status(self.home)
 
+    def converted_notice(self):
+        from mmw.site.ops import converted_notice
+        return converted_notice(self.home)
+
+    def conversion_backups(self):
+        from mmw.site.ops import conversion_backups
+        return conversion_backups(self.home)
+
     def newest(self, repo: str) -> int | None:
         from mmw.site.db import SiteDB
         with SiteDB(self.home) as db:

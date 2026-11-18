@@ -145,13 +145,15 @@ class RootApply:
         self._lock = SiteLock(self.home).__enter__()
         try:
             self.db = SiteDB(self.home).__enter__()
+            if not self.dry_run:
+                self.store.sweep_tmp()
+                migrate(self.db, self.roots)
+                resume_switches(self.db, self.roots)
         except BaseException:
+            if getattr(self, "db", None) is not None:
+                self.db.close()
             self._lock.__exit__(None, None, None)
             raise
-        if not self.dry_run:
-            self.store.sweep_tmp()
-            migrate(self.db, self.roots)
-            resume_switches(self.db, self.roots)
         return self
 
     def __exit__(self, *exc) -> None:

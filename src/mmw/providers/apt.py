@@ -641,18 +641,26 @@ class AptProvider(_AptCommon):
             if mf is None:
                 if parse is _parse_sources:
                     continue        # deb-src is optional; absence is not an error
-                # A suite listing can include a skeleton such as Debian's
-                # updates/. Only accept it when the Release names no files
+                # A suite listing can include a genuine empty skeleton. Only accept it when the Release names no files
                 # in that subtree AND the parent listing confirms it exists.
                 # A missing index in a populated component still fails.
                 releases = [f for f in files if f.is_release and f.content and not f.repo_path.endswith(".gpg")]
                 entries = _parse_release_files(releases[0].content.decode()) if releases else []
                 if entries and not any(path.startswith(component + "/") for _, path, _ in entries):
-                    from mmw.core.discover import _listed_dirs
+                    from mmw.core.discover import _listed_dirs, _listed_links, is_suite_alias
                     parent, _, name = component.rpartition("/")
                     listing_url = f"{base}/dists/{mirror_config.suite}/" + (parent + "/" if parent else "")
                     listing = client.get(listing_url)
-                    if listing.status_code == 200 and name in _listed_dirs(listing.text):
+                    listed_empty = listing.status_code == 200 and name in _listed_dirs(listing.text)
+                    # Older pools can contain a suite alias. Snapshot's index
+                    # renders symlinks without '/', so require both a listed
+                    # link and byte-identical suite metadata before accepting it.
+                    listed_alias = (not listed_empty and listing.status_code == 200
+                                    and name in _listed_links(listing.text)
+                                    and is_suite_alias(
+                                        client, base, mirror_config.suite, component,
+                                        releases[0].repo_path.rsplit("/", 1)[-1], releases[0].content))
+                    if listed_empty or listed_alias:
                         if status_callback:
                             status_callback(f"{component}: empty skeleton (metadata only)")
                         return [], files

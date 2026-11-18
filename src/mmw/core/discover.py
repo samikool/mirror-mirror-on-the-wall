@@ -141,7 +141,39 @@ def list_suites(url: str) -> list[str]:
 def list_components(url: str, suite: str) -> list[str]:
     """Component directories under dists/{suite}/."""
     dirs = _list_dirs(f"{url.rstrip('/')}/dists/{suite}/")
-    return [d for d in dirs if not _APT_ARCH_DIR.match(d) and d != "by-hash"]
+    components = [d for d in dirs if not _APT_ARCH_DIR.match(d) and d != "by-hash"]
+    if not components:
+        return components
+    # A directory can be an alias to the suite itself (Debian security's
+    # updates -> .). Headers may advertise legacy names, so use the index
+    # paths and prove an alias by comparing the actual Release bytes.
+    from mmw.providers.apt import _parse_release_files
+    try:
+        with retrying_client(timeout=10, follow_redirects=True) as client:
+            for name in ("InRelease", "Release"):
+                response = client.get(f"{url.rstrip('/')}/dists/{suite}/{name}")
+                if response.status_code != 200 or not _looks_like(name, response.content):
+                    continue
+                entries = _parse_release_files(response.text)
+                if entries:
+                    return [c for c in components
+                            if any(path.startswith(c + "/") for _, path, _ in entries)
+                            or not is_suite_alias(client, url, suite, c, name, response.content)]
+                break
+    except Exception:
+        pass  # An unavailable Release must not hide genuine components.
+    return components
+
+
+def is_suite_alias(client, url: str, suite: str, component: str,
+                   release_name: str, release: bytes) -> bool:
+    """Prove a listed directory serves the suite's own Release unchanged."""
+    try:
+        response = client.get(
+            f"{url.rstrip('/')}/dists/{suite}/{component}/{release_name}")
+        return response.status_code == 200 and response.content == release
+    except Exception:
+        return False
 
 
 def list_arches(url: str, suite: str, component: str) -> list[str]:
@@ -219,13 +251,19 @@ def _listed_dirs(html: str) -> list[str]:
     repository" (`detect_repository`'s `candidates` field, above).
     """
     names = []
-    for href in re.findall(r'''href=["']([^"']+)["']''', html):
-        if not href.endswith("/") or "://" in href or href.startswith(("/", "?", "#", "..")):
+    for href in _listed_links(html):
+        if not href.endswith("/"):
             continue
         name = href.rstrip("/")
         if name and name not in names:
             names.append(name)
     return names
+
+
+def _listed_links(html: str) -> list[str]:
+    """Local relative links, including snapshot autoindex symlinks without /."""
+    return [href for href in re.findall(r'''href=["']([^"']+)["']''', html)
+            if "://" not in href and not href.startswith(("/", "?", "#", ".."))]
 
 
 def probe_arch_placeholder(url_template: str, placeholder: str) -> list[tuple[str, DetectResult]]:

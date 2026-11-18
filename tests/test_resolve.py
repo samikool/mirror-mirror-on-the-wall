@@ -90,8 +90,12 @@ def test_only_the_open_dimension_is_listed(upstream):
 
 
 def test_arches_come_from_listing_not_the_release_file(upstream):
-    """binary-all is excluded, and the Release file is never consulted."""
-    r = resolve.resolve_source(SourceConfig(url=URL))
+    """Architecture-only discovery never consults Release or includes binary-all.
+
+    Component discovery may read Release to identify suite aliases; keep that
+    independent concern out of this architecture-specific assertion.
+    """
+    r = resolve.resolve_source(SourceConfig(url=URL, components=["main", "universe"]))
     assert "all" not in r.source.arches
     assert not any("InRelease" in u or "/Release" in u for u in upstream)
 

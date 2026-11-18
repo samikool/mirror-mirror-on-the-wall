@@ -17,6 +17,9 @@ Built on the same `SourceDraft` every other add-a-repository door uses
 and the "empty means all" rule are the same code as everywhere else — not a
 second implementation that could drift from it.
 """
+import asyncio
+from copy import deepcopy
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.markup import escape
@@ -61,6 +64,7 @@ class EditSourcePage(Page):
         self._suites_started_empty = not source.suites
         # A stale probe must not clobber a selection the user has moved past.
         self._probe_gen = 0
+        self._picker_busy = False
 
     def compose_body(self) -> ComposeResult:
         s = self._source
@@ -122,14 +126,50 @@ class EditSourcePage(Page):
 
     @work
     async def _choose_dimension(self, dim: str) -> None:
-        picked = await self.app.push_screen_wait(PickPage(
-            f"Choose {_DIM_TITLES[dim]}", self._draft.url,
-            self._draft.available[dim], self._draft.chosen[dim],
-        ))
-        if picked is None:
-            return                                  # cancelled: leave it alone
-        self._draft.chosen[dim] = picked
-        self._refresh_summaries()
+        if self._picker_busy or self.query_one("#btn-probe", Button).disabled:
+            return
+        self._picker_busy = True
+        try:
+            # An empty configured dimension means all, not an empty offer.
+            # Load its choices on demand, keeping the event loop responsive.
+            if not self._draft.available[dim]:
+                draft = deepcopy(self._draft)
+                identity = (draft.url, draft.provider)
+                self.query_one("#btn-probe", Button).disabled = True
+                self._probe_summary("[dim]Loading choices…[/]")
+                try:
+                    suites = draft.chosen["suites"]
+                    if dim != "suites" and suites:
+                        await asyncio.to_thread(draft.probe_suite, suites[0])
+                    else:
+                        await asyncio.to_thread(draft.probe)
+                except Exception as error:
+                    if self.is_mounted:
+                        self._on_probe_failed(error, self._probe_gen)
+                    return
+                finally:
+                    if self.is_mounted:
+                        self.query_one("#btn-probe", Button).disabled = False
+                if not self.is_mounted or identity != (self._draft.url, self._draft.provider):
+                    return
+                if not draft.available[dim]:
+                    self._probe_summary(f"[$mmw-error]No {_DIM_TITLES[dim]} found — try Probe[/]")
+                    return
+                # Merge only the requested dimension: opening a picker must
+                # not change unrelated selections, keys or other form edits.
+                self._draft.set_dimension(dim, draft.available[dim], draft.chosen[dim],
+                                          enumerated=draft.enumerated[dim])
+                self._probe_summary("[$mmw-ok]✓ choices loaded[/]")
+                self._refresh_summaries()
+            picked = await self.app.push_screen_wait(PickPage(
+                f"Choose {_DIM_TITLES[dim]}", self._draft.url,
+                self._draft.available[dim], self._draft.chosen[dim],
+            ))
+            if picked is not None:
+                self._draft.chosen[dim] = picked
+                self._refresh_summaries()
+        finally:
+            self._picker_busy = False
 
     @on(Button.Pressed, "#btn-suites")
     def _pick_suites(self, event: "Button.Pressed") -> None:

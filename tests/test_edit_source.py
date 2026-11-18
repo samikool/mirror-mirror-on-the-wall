@@ -2,9 +2,8 @@
 a selection through the TUI (`config.merge_sources()`:
 merging is union-only by design, so re-adding can only ever widen).
 
-Driven headlessly with a Textual pilot; no network — the pickers are seeded
-straight from the source's own stored dimensions, so nothing here needs to
-probe a repository.
+Driven headlessly with a Textual pilot. Explicit selections seed the
+pickers; all-components sources load their choices using mocked discovery.
 """
 import asyncio
 
@@ -362,3 +361,75 @@ def test_repository_retention_fields_use_shared_command():
             assert app.result.keep_points == 10
             assert app.result.keep_suites == {'trixie': 'all'}
     asyncio.run(scenario())
+
+
+def test_choose_all_components_loads_choices_without_manual_probe(monkeypatch):
+    from mmw.core import discover
+    monkeypatch.setattr(discover, 'list_components', lambda *args: ['main', 'contrib', 'extra'])
+    monkeypatch.setattr(discover, 'list_arches', lambda *args: ['amd64', 'arm64'])
+
+    async def scenario():
+        app = _host_app(EditSourcePage(_source(components=[])))
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _settle(pilot)
+            app.screen.query_one('#btn-components', Button).press()
+            await _settle(pilot)
+            choices = app.screen.query_one('#pick-list', SelectionList)
+            assert choices.option_count == 3
+            choices.deselect('extra')
+            app.screen.query_one('#btn-done', Button).press()
+            await _settle(pilot)
+            app.screen.query_one('#btn-save-source', Button).press()
+            await _settle(pilot)
+        return app.result
+
+    result = asyncio.run(scenario())
+    assert result.components == ['main', 'contrib']
+    assert result.arches == ['amd64', 'arm64']
+    assert result.suites == ['bookworm', 'trixie']
+
+
+def test_cancel_loaded_component_picker_preserves_all(monkeypatch):
+    from mmw.core import discover
+    monkeypatch.setattr(discover, 'list_components', lambda *args: ['main', 'contrib'])
+    monkeypatch.setattr(discover, 'list_arches', lambda *args: ['amd64'])
+
+    async def scenario():
+        app = _host_app(EditSourcePage(_source(components=[])))
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _settle(pilot)
+            app.screen.query_one('#btn-components', Button).press()
+            await _settle(pilot)
+            app.screen.query_one('#pick-list', SelectionList).deselect('contrib')
+            app.screen.query_one('#btn-cancel', Button).press()
+            await _settle(pilot)
+            app.screen.query_one('#btn-save-source', Button).press()
+            await _settle(pilot)
+        return app.result
+
+    assert asyncio.run(scenario()).components == []
+
+
+def test_failed_choice_loading_keeps_editor_usable(monkeypatch):
+    from mmw.core import discover
+
+    def fail(*args):
+        raise RuntimeError('offline')
+
+    monkeypatch.setattr(discover, 'list_components', fail)
+
+    async def scenario():
+        page = EditSourcePage(_source(components=[]))
+        app = _host_app(page)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _settle(pilot)
+            page.query_one('#btn-components', Button).press()
+            await _settle(pilot)
+            assert app.screen is page
+            assert not page.query_one('#btn-probe', Button).disabled
+            assert 'offline' in str(page.query_one('#probe-status').render())
+            page.query_one('#btn-save-source', Button).press()
+            await _settle(pilot)
+        return app.result
+
+    assert asyncio.run(scenario()).components == []

@@ -101,7 +101,9 @@ class RepositoriesPage(Page):
             "k adds your own .debs — to a folder repository, or to an upstream mirror per network;\n"
             "f shows a folder repository's sources file for clients.\n"
             "Prune drops packages no index references; wipe deletes every downloaded byte;\n"
-            "c says what each network's keep_points choice would free.")
+            "c says what each network's keep_points choice would free.\n"
+            "t adds a past point: a Debian or Ubuntu repository as it was on a date, from its "
+            "snapshot archive.")
     BINDINGS = [
         Binding("space", "tick", "Tick"),
         Binding("ctrl+a", "tick_all", "Tick all"),
@@ -116,6 +118,7 @@ class RepositoriesPage(Page):
         Binding("f", "sources_file", "Sources file", show=False),
         Binding("k", "add_packages", "Add packages", show=False),
         Binding("c", "keep_costs", "Keep costs", show=False),
+        Binding("t", "past_point", "Past point", show=False),
     ]
 
     def __init__(self):
@@ -539,6 +542,21 @@ class RepositoriesPage(Page):
             return
         await self._after_write()
         self.set_status("Pool wiped. The next sync rebuilds it.", "ok")
+
+    # ── past point ───────────────────────────────────────────────────────────
+
+    def action_past_point(self) -> None:
+        """Add a past point to the highlighted repository — or say why it can't."""
+        from mmw.commands.past_points import has_archive
+        from mmw.core.past_points import NoArchive
+        src = self._highlighted_source()
+        if src is None:
+            self.notify("Highlight a Debian or Ubuntu repository first.", severity="warning")
+            return
+        if getattr(src, "provider", "apt") != "apt" or not has_archive(src.identity):
+            self.notify(str(NoArchive(src.name)), severity="warning", timeout=10)
+            return
+        self._start(lambda: self.app.open_past_point(repo=src.identity))
 
     # ── sync ─────────────────────────────────────────────────────────────────
 

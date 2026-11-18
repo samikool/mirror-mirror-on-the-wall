@@ -61,18 +61,21 @@ class SyncSection(Page):
 
     async def start(self, cfg: config.Config, mirrors: list[config.MirrorConfig], *,
                     dry_run: bool = False, resolution_gen: int | None = None,
-                    retry_failed: bool = False) -> None:
-        """Mount a new session. The caller has already refused a second one."""
+                    retry_failed: bool = False, past=None) -> None:
+        """Mount a new session. The caller has already refused a second one.
+        `past`: a past-point run (`commands.past_points.PastRun`)."""
         if self.view is not None:
             await self.view.remove()          # a finished session's cards
         if resolution_gen is not None and resolution_gen != self.app._resolve_gen:
             return
-        self.view = SyncView(cfg, mirrors, dry_run, retry_failed=retry_failed)
+        self.view = SyncView(cfg, mirrors, dry_run, retry_failed=retry_failed, past=past)
         self.query_one("#sync-idle").display = False
         await self.query_one("#page-body").mount(self.view)
         self.query_one("#btn-sync-stop", Button).disabled = False
         self.refresh_bindings()                 # x Stop, while it runs
         what = "Retrying missing files in" if retry_failed else "Dry run of" if dry_run else "Syncing"
+        if past is not None:
+            what = f"Fetching a past point from {past.host}:"
         self.set_status(f"{what} {len(mirrors)} mirror{'s' if len(mirrors) != 1 else ''}…")
         self.view.query_one("#cards").focus()
 
@@ -86,6 +89,11 @@ class SyncSection(Page):
             summary += " Sources failed to resolve; sync is incomplete."
         failed = self.resolution_errors or getattr(event.view, "item_failures", 0)
         self.set_status(summary, "error" if failed else "info" if stopped else "ok")
+
+    @on(SyncView.PastRecorded)
+    def _past_recorded(self, event: SyncView.PastRecorded) -> None:
+        if event.view is self.view:
+            self.set_status(event.text, "ok" if event.ok else "error")
 
     @on(Button.Pressed, "#btn-sync-stop")
     def _stop_pressed(self) -> None:

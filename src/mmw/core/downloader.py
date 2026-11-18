@@ -110,6 +110,9 @@ class MirrorSummary:
     items: "ItemCounts | None" = None  # logical counts; file accounting above stays authoritative
     reconcile_seconds: float = 0.0
     timings: dict[str, float] = field(default_factory=dict)
+    # (checksum, repo_path, kind) for every file this sync wanted — what the
+    # reconcile commits, or what a caller records itself with commit_refs=False.
+    entries: list[tuple[str, str, str]] = field(default_factory=list)
 
     def timing_summary(self) -> str:
         return fmt_timings(self.timings)
@@ -662,6 +665,7 @@ async def download_mirror(
     finish_callback: Callable[[], None] | None = None,
     repair_metadata: dict[str, str] | str | None = None,
     track_failures: bool = False,
+    commit_refs: bool = True,
 ) -> MirrorSummary:
     """Sync one mirror into the pool: blobs + a desired-state refs snapshot.
 
@@ -671,6 +675,9 @@ async def download_mirror(
 
     With repair_metadata, only add recovered package refs against that saved
     VS Code witness. Existing refs and metadata remain untouched.
+
+    With commit_refs=False the blobs land in the pool but no refs change at
+    all; `summary.entries` holds what would have been committed.
     """
     if repair_metadata is not None and metadata:
         raise ValueError("a repair cannot replace metadata")
@@ -1134,12 +1141,13 @@ async def download_mirror(
         if stop_event is not None and stop_event.is_set() and not dry_run:
             summary.stopped = True
             summary.metadata_ok = False
+        summary.entries = pkg_entries + meta_entries
         # ── Phase 4: reconcile — the atomic commit ────────────────────────────
-        if not dry_run and summary.metadata_ok and not summary.stopped:
+        if not dry_run and commit_refs and summary.metadata_ok and not summary.stopped:
             reconcile_started = time.perf_counter()
             if phase_callback:
                 phase_callback("Saving pool references to the database...")
-            entries = pkg_entries + meta_entries
+            entries = summary.entries
             # Prefer the pool's writer thread: this is a single ~2.3 s
             # transaction, and running it on an executor thread parks one of the
             # 32 threads that also stream downloads. Awaiting a future costs no

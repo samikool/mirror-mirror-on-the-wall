@@ -261,11 +261,16 @@ async def sync_mirror(
     keys: KeySyncCoordinator | None = None,
     items_session: ItemProgressSession | None = None,
     downloads: DownloadCoordinator | None = None,
+    commit_refs: bool = True,
 ) -> MirrorSummary:
     """Full pipeline for one mirror: fetch index → download → metadata → GPG keys.
 
     Raises on index-fetch failure (the mirror can't be synced at all);
     everything after that is reported through the returned MirrorSummary.
+
+    With commit_refs=False (a past state, from an archive) the files land in
+    the pool and nothing else changes: no history is carried, the mirror's
+    record and refs stay as they are, and `summary.entries` says what came.
     """
     events = events or SyncEvents()
     provider = get_provider(mirror.provider)
@@ -274,7 +279,8 @@ async def sync_mirror(
     if events.phase:
         events.phase("Fetching metadata...")
     from mmw.core.history import UnitHistory
-    history = await loop.run_in_executor(executor, UnitHistory, pool, mirror.name)
+    history = (await loop.run_in_executor(executor, UnitHistory, pool, mirror.name)
+               if commit_refs else None)
     packages, metadata = await loop.run_in_executor(
         executor,
         lambda: fetch_all_threaded(provider, mirror, status_callback=events.phase,
@@ -306,7 +312,8 @@ async def sync_mirror(
 
     # The pool is the authority on what exists; remember what this mirror is so
     # publish can reconstruct it offline without re-resolving architectures.
-    await loop.run_in_executor(executor, pool.record_mirror, mirror)
+    if commit_refs:
+        await loop.run_in_executor(executor, pool.record_mirror, mirror)
 
     summary = await download_mirror(
         packages=packages,
@@ -326,7 +333,8 @@ async def sync_mirror(
         file_progress=tracker.complete,
         downloads=downloads,
         finish_callback=events.download_finished,
-        track_failures=provider.retries_failures,
+        track_failures=provider.retries_failures and commit_refs,
+        commit_refs=commit_refs,
     )
     summary.items = tracker.counts
 

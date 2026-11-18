@@ -157,6 +157,42 @@ wizard's final **Write config** step. Setup can finish with no sources,
 including when only network settings could be recovered; add the missing
 sources afterwards from Repositories or with `mmw add`.
 
+### A past state from Debian's or Ubuntu's archive
+
+When no kept bundle covers the day you need, or a build must be reproduced
+against the archive as it was, mmw can record a Debian or Ubuntu
+repository's past state as points, from
+[snapshot.debian.org](https://snapshot.debian.org) or
+[snapshot.ubuntu.com](https://snapshot.ubuntu.com):
+
+```bash
+mmw sync --quiet --as-of 2026-10-15 --repo Debian     # its state at the end of that day
+mmw sync --quiet --from-url https://snapshot.ubuntu.com/ubuntu/20261015T013713Z/
+```
+
+A date needs `--repo` (a name or URL); the archive follows from the
+repository's Release. A snapshot URL finds its repositories itself: each
+apt repository whose path matches is compared with the snapshot on its
+Release `Origin`, `Label` and `Codename`. An Ubuntu archive and security
+repository can both match; each gets its own suites' points. `--repo`
+overrides the match. Without `--quiet` the TUI opens on **Add a past
+point**. In Sources, highlight a repository and press `t`.
+
+The fetch uses each network's own selection of that repository, through
+the same code as a sync, so files already in the pool are not downloaded
+again. Points are dated by their Releases, and what each network is on now
+does not change: a later `mmw bundle --history` carries them to the far
+side. Nothing is recorded unless every file arrived; a re-run fetches only
+what is missing.
+
+- snapshot.ubuntu.com starts on 2023-03-01, and its ports archive (arm64 and
+  the other non-x86 architectures) is not public.
+- Third-party repositories have no archive.
+- A network with its own debs layered over the repository is skipped and
+  named; layered repositories aren't supported yet.
+- A past Release whose `Valid-Until` has passed is flagged: clients need
+  `Check-Valid-Until=false` (see [§7](#7-valid-until)).
+
 ### What a bundle carries
 
 A bundle carries **points**, not a jump from one snapshot to another. Every sync records a

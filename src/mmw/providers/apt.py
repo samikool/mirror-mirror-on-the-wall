@@ -329,7 +329,7 @@ class AptFlatProvider(_AptCommon):
         enumeration were keyed off the HEAD result alone. When no usable
         metadata entry exists, this drops back to the GET loop unchanged.
         """
-        base = mirror_config.source_url.rstrip("/")
+        base = mirror_config.fetch_url().rstrip("/")
         files = self.fetch_metadata(mirror_config, client)
 
         by_path = {f.repo_path: f for f in files}
@@ -359,7 +359,7 @@ class AptFlatProvider(_AptCommon):
         return self.fetch_packages(mirror_config, client, status_callback), files
 
     def fetch_packages(self, mirror_config, client: httpx.Client, status_callback=None) -> list[PackageInfo]:
-        base = mirror_config.source_url.rstrip("/")
+        base = mirror_config.fetch_url().rstrip("/")
         for suffix in (".xz", ".gz", ""):
             try:
                 url = f"{base}/Packages{suffix}"
@@ -383,7 +383,7 @@ class AptFlatProvider(_AptCommon):
         the Release now and verifying each index against it keeps the pair
         from one snapshot; a repository with no Release is unchanged.
         """
-        base = mirror_config.source_url.rstrip("/")
+        base = mirror_config.fetch_url().rstrip("/")
         files: list[MetadataFile] = []
         listed: dict[str, str] = {}
         for name in ("InRelease", "Release", "Release.gpg"):
@@ -621,7 +621,7 @@ class AptProvider(_AptCommon):
         mirror that is already far larger, so it is the cheaper half of what a
         sync holds.
         """
-        base = mirror_config.source_url.rstrip("/")
+        base = mirror_config.fetch_url().rstrip("/")
         component = mirror_config.component or "main"
         arch = mirror_config.arch
 
@@ -674,7 +674,7 @@ class AptProvider(_AptCommon):
         return packages, files
 
     def fetch_packages(self, mirror_config, client: httpx.Client, status_callback=None) -> list[PackageInfo]:
-        base = mirror_config.source_url.rstrip("/")
+        base = mirror_config.fetch_url().rstrip("/")
         suite = mirror_config.suite
         component = mirror_config.component or "main"
         arch = mirror_config.arch
@@ -689,7 +689,7 @@ class AptProvider(_AptCommon):
         return packages
 
     def fetch_metadata(self, mirror_config, client: httpx.Client) -> list[MetadataFile]:
-        base = mirror_config.source_url.rstrip("/")
+        base = mirror_config.fetch_url().rstrip("/")
         suite = mirror_config.suite
         component = mirror_config.component or "main"
         arch = mirror_config.arch

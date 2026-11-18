@@ -261,10 +261,34 @@ def cmd_sync(
         help="Sample every thread's stack and CPU use; write a report on exit. "
              "In-process, so it needs no ptrace/root.",
     ),
+    as_of: str = typer.Option(None, "--as-of", metavar="DATE",
+                              help="Add a past point: --repo's state on DATE, from its snapshot archive"),
+    from_url: str = typer.Option(None, "--from-url", metavar="URL",
+                                 help="Add a past point from a snapshot.debian.org / snapshot.ubuntu.com URL"),
+    repo: str = typer.Option(None, "--repo", metavar="NAME",
+                             help="The repository for --as-of (or to override --from-url's match)"),
 ):
-    """Sync configured mirrors. Use --quiet for cron jobs."""
+    """Sync configured mirrors. Use --quiet for cron jobs.
+
+    --as-of / --from-url record a Debian or Ubuntu repository's past state
+    as points, from its snapshot archive; what the network is on now is
+    untouched.
+    """
     cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
+
+    if as_of or from_url or repo:
+        if dry_run or profile:
+            typer.echo("--as-of / --from-url don't take --dry-run or --profile", err=True)
+            raise typer.Exit(2)
+        if not (as_of or from_url):
+            typer.echo("--repo goes with --as-of DATE or --from-url URL", err=True)
+            raise typer.Exit(2)
+        if quiet:
+            from mmw.commands.past_points import run
+            raise typer.Exit(run(cfg_dir, as_of=as_of, from_url=from_url, repo=repo))
+        _run_tui(_open_app(cfg, cfg_dir, "repositories", start_past=(as_of, from_url, repo)))
+        return
 
     # `raise typer.Exit(run(...))`, not a bare `run()`: both return a process
     # exit code and dropping it made `mmw sync --quiet` exit 0 no matter what

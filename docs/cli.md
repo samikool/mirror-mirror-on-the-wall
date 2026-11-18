@@ -290,11 +290,18 @@ mmw.
 
 Sync configured mirrors. Use --quiet for cron jobs.
 
+--as-of / --from-url record a Debian or Ubuntu repository's past state
+as points, from its snapshot archive; what the network is on now is
+untouched.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--quiet`, `-q` |  | No TUI — plain output for cron/headless use |
 | `--dry-run` |  | Show what would be downloaded without fetching |
 | `--profile` |  | Sample every thread's stack and CPU use; write a report on exit. In-process, so it needs no ptrace/root. |
+| `--as-of` |  | Add a past point: --repo's state on DATE, from its snapshot archive |
+| `--from-url` |  | Add a past point from a snapshot.debian.org / snapshot.ubuntu.com URL |
+| `--repo` |  | The repository for --as-of (or to override --from-url's match) |
 
 ### `mmw update`
 

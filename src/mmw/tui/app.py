@@ -42,7 +42,8 @@ class MmwApp(UpdateOffers, ThemedApp):
                  initial_section: str = "repositories", mirror_dir: Path | None = None,
                  max_connections: int | None = None,
                  start_sync_with: "tuple[list[config.MirrorConfig], bool] | None" = None,
-                 start_sync_selection: "tuple[object, bool] | None" = None):
+                 start_sync_selection: "tuple[object, bool] | None" = None,
+                 start_past: "tuple[str | None, str | None, str | None] | None" = None):
         if initial_section not in (*SECTION_MODES, "setup"):
             raise ValueError(f"unknown section {initial_section!r} "
                              f"(one of: {', '.join(SECTION_MODES)})")
@@ -53,6 +54,9 @@ class MmwApp(UpdateOffers, ThemedApp):
         # whether it is a dry run. Started once the Sync section is showing.
         self._start_sync_with = start_sync_with
         self._start_sync_selection = start_sync_selection
+        # `mmw sync --as-of/--from-url` without --quiet: (as_of, from_url, repo),
+        # opened on the Add a past point page, already looking.
+        self._start_past = start_past
         self._resolving = False
         self._resolve_gen = 0
         self._resolve_stop: threading.Event | None = None
@@ -84,6 +88,8 @@ class MmwApp(UpdateOffers, ThemedApp):
         elif self._start_sync_selection is not None and self.cfg is not None:
             selection, dry_run = self._start_sync_selection
             self.run_worker(self.start_sync(selection, dry_run=dry_run), group="source-resolution")
+        elif self._start_past is not None and self.cfg is not None:
+            await self.open_past_point(*self._start_past)
         for note in self._startup_notes:
             self.notify(note, severity="warning", timeout=10)
         # Subscribed only now: the theme applied in __init__ — including a
@@ -314,6 +320,44 @@ class MmwApp(UpdateOffers, ThemedApp):
             return
         finally:
             self._resolving = False
+
+    async def open_past_point(self, as_of: str | None = None, from_url: str | None = None,
+                              repo: str | None = None) -> None:
+        """The Add a past point page, for `repo` (a key or a name) or any."""
+        from mmw.tui.past_points import PastPointPage
+        key, label = repo, ""
+        if repo is not None:
+            from mmw.commands.past_points import apt_repos, resolve_repo
+            from mmw.core.repos import repository_label
+            try:
+                repos = await asyncio.to_thread(apt_repos, self.cfg, self.cfg.settings.mirror_dir)
+                key = resolve_repo(self.cfg, repos, repo)
+                label = repository_label(key, self.cfg)
+            except LookupError as e:
+                self.notify(str(e), severity="error", timeout=10)
+                return
+        await self.push_screen(PastPointPage(key, as_of or from_url or "", label=label))
+
+    async def start_past(self, targets) -> None:
+        """Fetch `targets`' past states on the Sync page, then record them."""
+        from mmw.commands.past_points import plan_run
+        if self._resolving or (self.active_sync is not None and (self.active_sync.running
+                                                                 or self.active_sync.draining)):
+            self.notify("A sync is running — add the past point when it has finished.",
+                        severity="warning")
+            return
+        try:
+            run = await asyncio.to_thread(plan_run, self.cfg, self.cfg.settings.mirror_dir, targets)
+        except LookupError as e:
+            self.notify(str(e), severity="error", timeout=10)
+            return
+        for note in run.skipped:
+            self.notify(f"Skipped: {note}", severity="warning", timeout=10)
+        mirrors = run.mirrors()
+        if not mirrors:
+            return
+        await self.switch_mode("sync")
+        await self.screen.start(self.cfg, mirrors, past=run)
 
     def _sync_label(self) -> None:
         """The sidebar's Sync and Publish links carry progress while they run."""

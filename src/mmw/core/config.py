@@ -222,6 +222,9 @@ class MirrorConfig(_StrictModel):
     label: str = ""     # keys/{label}/ grouping only — never identity
     dims: dict[str, str] = {}
     options: dict[str, Any] = {}
+    # Where to fetch from instead of `source_url` (an archive's dated copy of
+    # it). Never recorded, written or compared: the unit stays the same unit.
+    fetch_base: str = Field("", exclude=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -370,6 +373,10 @@ class MirrorConfig(_StrictModel):
         update.setdefault("dims", dims)
         update.setdefault("options", options)
         return super().model_copy(update=update, deep=deep)
+
+    def fetch_url(self) -> str:
+        """The base URL requests go to: `fetch_base` when set, else `source_url`."""
+        return self.fetch_base or self.source_url
 
     def legacy_dict(self) -> dict:
         """This unit in the pre-seam field set (`arch`, `suite`, …, flat).

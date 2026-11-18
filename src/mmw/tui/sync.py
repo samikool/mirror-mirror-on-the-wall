@@ -567,15 +567,30 @@ class SyncView(Vertical):
     `mmw sync`. Posts `Completed` when every card is done.
     """
 
+    class PastRecorded(Message):
+        """A past-point session's outcome, once its points are recorded (or not)."""
+        def __init__(self, view: "SyncView", text: str, ok: bool):
+            super().__init__()
+            self.view, self.text, self.ok = view, text, ok
+
     class Completed(Message):
         def __init__(self, view: "SyncView"):
             self.view = view
             super().__init__()
 
     def __init__(self, cfg: config.Config, mirrors: list[config.MirrorConfig] | None = None,
-                 dry_run: bool = False, *, retry_failed: bool = False):
+                 dry_run: bool = False, *, retry_failed: bool = False, past=None):
+        """`past`: a `commands.past_points.PastRun` — fetch each mirror (its
+        units, fetching from an archive) without touching refs, then record
+        what came as points. The pool's shared lock is held from opening to
+        recording: until then the downloaded files look like orphans."""
         super().__init__(id="sync-view")
         self._cfg = cfg
+        self._past = past
+        self._past_entries: dict[str, list] = {}
+        self._past_failures: list[str] = []
+        self._past_counts = [0, 0]              # fetched, already in the pool
+        self._past_locked = False
         self._mirrors = sorted(mirrors if mirrors is not None else cfg.mirrors,
                                key=lambda m: m.name.lower())
         self._pool: Pool | None = None
@@ -640,12 +655,11 @@ class SyncView(Vertical):
         # Everything here is allocation, not I/O: the executor creates its
         # threads lazily, the semaphore is an object, and KeySyncCoordinator
         # just holds a path and a lock.
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=self._cfg.settings.max_connections
-        )
+        connections = self._connections
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=connections)
         # Shared across all download_mirror calls: at most max_connections
         # package downloads in flight globally, competed for fairly.
-        self._sem = asyncio.Semaphore(self._cfg.settings.max_connections)
+        self._sem = asyncio.Semaphore(connections)
         self._keys_coord = KeySyncCoordinator(self._cfg.settings.mirror_dir)
         self._ticker = self.set_interval(1 / 60, self._tick)
         # Opening the pool is disk work (mkdir, SQLite connect, schema script,
@@ -657,12 +671,23 @@ class SyncView(Vertical):
         except Exception:
             pass
 
+    @property
+    def _connections(self) -> int:
+        """An archive's own (few: shared public services), else the setting."""
+        if self._past is not None:
+            return min(self._past.connections, self._cfg.settings.max_connections)
+        return self._cfg.settings.max_connections
+
     @work(exit_on_error=False)
     async def _open_pool_and_start(self) -> None:
         mirror_dir = self._cfg.settings.mirror_dir
 
         def _open() -> Pool:
             disk_io.ops.mkdir(mirror_dir, parents=True, exist_ok=True)
+            if self._past is not None:
+                from mmw.core.pool import acquire_sync_lock
+                acquire_sync_lock(mirror_dir)
+                self._past_locked = True
             from mmw.core.db_warm import warm_for_job
             warmed = warm_for_job(mirror_dir)
             if warmed.status in ("warmed", "too-big"):
@@ -873,8 +898,29 @@ class SyncView(Vertical):
             pass                # unmounted while finishing (the app is exiting)
         self.post_message(self.Completed(self))
         self._finish_ticking()
-        if not (self._dry_run or self._retry_failed or self._stop_event.is_set()):
+        if self._past is not None:
+            self._record_past()
+        elif not (self._dry_run or self._retry_failed or self._stop_event.is_set()):
             self._record_points()
+
+    @work(thread=True, exit_on_error=False, group="sync-points")
+    def _record_past(self) -> None:
+        """Record what the archive gave, if it gave all of it — always ending
+        with the lock released and the outcome said."""
+        from mmw.commands.past_points import record_run
+        try:
+            text, ok = record_run(self._cfg, self._past, self._past_entries, self._past_failures,
+                                  self._past_counts, stopped=self._stop_event.is_set())
+        except Exception as e:  # noqa: BLE001 — said, never a crash
+            text, ok = f"Nothing recorded: {e}", False
+        finally:
+            if self._past_locked:
+                from mmw.core.pool import release_sync_lock
+                self._past_locked = False
+                release_sync_lock()
+        self.post_message(self.PastRecorded(self, text, ok))
+        self.app.call_from_thread(self.notify, text, title="Past points",
+                                  severity="information" if ok else "error", timeout=15)
 
     @work(thread=True, exit_on_error=False, group="sync-points")
     def _record_points(self) -> None:
@@ -913,6 +959,9 @@ class SyncView(Vertical):
 
     def summary(self) -> str:
         """One line for the hosting page once every mirror is done."""
+        if self._past is not None:
+            done, total = self.progress()
+            return f"Fetched {done}/{total} from {self._past.host} — recording the points…"
         if not self._dry_run:
             done, total = self.progress()
             if self._stop_event.is_set():
@@ -985,10 +1034,12 @@ class SyncView(Vertical):
             runner = retry_failed_mirror if self._retry_failed else sync_mirror
             extra = {} if self._retry_failed else {
                 "mirror_dir": self._cfg.settings.mirror_dir, "keys": self._keys_coord}
+            if self._past is not None:
+                extra = {"mirror_dir": self._cfg.settings.mirror_dir, "commit_refs": False}
             summary = await runner(
                 mirror,
                 pool=self._pool,
-                max_connections=self._cfg.settings.max_connections,
+                max_connections=self._connections,
                 executor=self._executor,
                 events=events,
                 sem=self._sem,
@@ -998,9 +1049,20 @@ class SyncView(Vertical):
                 **extra,
             )
         except Exception as e:
+            if self._past is not None:
+                self._past_failures.append(f"{mirror.fetch_base}: {mirror.suite}: {e}")
             self.post_message(MirrorError(mirror.name, str(e) or type(e).__name__))
             return
 
+        if self._past is not None:
+            from mmw.core.past_points import fetch_failure
+            why = fetch_failure(mirror.fetch_base, summary)
+            if why:
+                self._past_failures.append(why)
+            else:
+                self._past_entries[mirror.name] = summary.entries
+                self._past_counts[0] += summary.downloaded
+                self._past_counts[1] += summary.pooled
         if summary.key_errors and card:
             for f in summary.key_errors:
                 card._log_history.append(f"  [$mmw-warn]⚠ GPG key: {escape(f)}[/]")

@@ -1,0 +1,71 @@
+"""Repository settings preserve history even when no network selects it."""
+import pytest
+
+from mmw.core import config, points
+from mmw.core.pool import Pool
+from mmw.site.tracks import PointDraft
+
+
+def seeded(tmp_path):
+    src = config.SourceConfig(url='https://apt.test/debian', keep_points=2)
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path), sources=[src])
+    with Pool(tmp_path) as pool:
+        for day in range(1, 6):
+            draft = PointDraft('apt.test/debian/dists/stable', f'release:{day}', f'2026110{day}T000000Z',
+                               {'Suite': 'stable'}, {'path': f'blob{day}'})
+            pool.record_point(src.identity, draft, f'2026110{day}T120000Z')
+    return cfg
+
+
+def test_repository_retention_without_networks(tmp_path):
+    cfg = seeded(tmp_path)
+    with Pool(tmp_path) as pool:
+        gone = points.retention_plan(pool, [], cfg=cfg)
+        assert len(gone) == 3
+        assert points.apply_retention(pool, [], cfg=cfg) == 3
+        assert len(pool.repository_points(cfg.sources[0].identity)) == 2
+
+
+def test_repository_default_and_network_rules_are_additive(tmp_path):
+    cfg = seeded(tmp_path)
+    cfg.sources[0].keep_points = None
+    with Pool(tmp_path) as pool:
+        assert len(points.retention_plan(pool, [], cfg=cfg)) == 2
+        net = config.NetworkConfig(name='all', keep_points='all')
+        for p in pool.repository_points(cfg.sources[0].identity):
+            pool.link_network_point(net.name, p.id, p.stamp)
+        assert points.retention_plan(pool, [net], cfg=cfg) == []
+
+
+def test_keep_settings_roundtrip(tmp_path):
+    cfg = seeded(tmp_path)
+    cfg.settings.keep_points = 4
+    cfg.sources[0].keep_suites = {'stable': 'all'}
+    config.save(cfg, tmp_path)
+    loaded = config.load(tmp_path)
+    assert loaded.settings.keep_points == 4
+    assert loaded.sources[0].keep_points == 2
+    assert loaded.sources[0].keep_suites == {'stable': 'all'}
+    with Pool(tmp_path) as pool:
+        assert points.retention_plan(pool, [], cfg=loaded) == []
+
+
+@pytest.mark.parametrize('value', [-1, True, 'bogus'])
+def test_bad_repository_keep_rejected(value):
+    with pytest.raises(ValueError):
+        config.SourceConfig(url='https://apt.test/debian', keep_points=value)
+    with pytest.raises(ValueError):
+        config.Settings(mirror_dir='mirror', keep_points=value)
+
+
+def test_keep_cli_and_costs_without_network(tmp_path):
+    from typer.testing import CliRunner
+    from mmw.cli import app
+    cfg = seeded(tmp_path)
+    config.save(cfg, tmp_path)
+    r = CliRunner().invoke(app, ['--config', str(tmp_path), 'keep', 'all', '--repo', cfg.sources[0].name])
+    assert r.exit_code == 0, r.output
+    assert config.load(tmp_path).sources[0].keep_points == 'all'
+    r = CliRunner().invoke(app, ['--config', str(tmp_path), 'prune', '--costs'])
+    assert r.exit_code == 0, r.output
+    assert 'repository' in r.output.lower() and cfg.sources[0].name in r.output

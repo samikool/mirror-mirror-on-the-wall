@@ -108,7 +108,7 @@ def test_the_cli_sync_records_points_for_what_synced(tmp_path, monkeypatch):
         [replace(package("asset", "https://one.test/asset", known=False), repo_path="one/asset")], []))
     seen = []
     monkeypatch.setattr(points, "record_points_after_sync",
-                        lambda cfg, md, synced, say=print: seen.append(synced) or [])
+                        lambda cfg, md, synced, say=print, **kwargs: seen.append(synced) or [])
     cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "mirror"))
     assert asyncio.run(command._mirror_all(cfg)) == 0
     assert seen == [{"https://one.test/apt"}]
@@ -132,7 +132,7 @@ def test_ctrl_c_while_recording_points_keeps_the_sync(tmp_path, monkeypatch, cap
     monkeypatch.setattr(sync_engine, "fetch_all_threaded", lambda provider, unit, **kwargs: (
         [replace(package("asset", "https://one.test/asset", known=False), repo_path="one/asset")], []))
 
-    def interrupted(cfg, md, synced, say=print):
+    def interrupted(cfg, md, synced, say=print, **kwargs):
         import os
         import signal
         import time

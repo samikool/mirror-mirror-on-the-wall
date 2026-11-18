@@ -258,3 +258,11 @@ def test_revert_restores_disk_settings(tmp_path):
         await _settle(pilot)
         assert app.screen.query_one("#settings-disk-readahead", Input).value == "16"
     _run(tmp_path, check)
+
+
+def test_repository_history_default_can_be_saved(tmp_path):
+    async def check(app, pilot):
+        app.screen.query_one('#settings-keep-points', Input).value = '10'
+        await _save(app, pilot)
+        assert config.load(tmp_path).settings.keep_points == 10
+    _run(tmp_path, check)

@@ -225,8 +225,7 @@ class PastPointsReport:
 
 @dataclass
 class PastPlan:
-    """What recording `repo`'s past means here: each network that selects it
-    (without a layer on it) and its units, and the units to fetch once."""
+    """All configured units of `repo` to fetch, and networks to link without layers."""
     repo: str
     label: str
     networks: list[tuple[object, list[MirrorConfig]]]
@@ -296,9 +295,12 @@ def plan_past_points(cfg, mirror_dir, repo_key: str) -> PastPlan:
                            "support layered repositories yet")
             continue
         networks.append((network, units))
-    if not networks and not skipped:
-        raise LookupError(f"no network publishes {label}, so there is no past of it to record")
-    wanted = {u.name: u for _n, units in networks for u in units}
+    from mmw.core.resolve import available_mirrors
+    wanted = {(u.source, tuple(sorted(u.dims.items()))): u
+              for u in [*available_mirrors(cfg, mirror_dir), *cfg.mirrors]
+              if repository_key(u) == repo_key and u.provider == "apt"}
+    if not wanted:
+        raise LookupError(f"no configured APT units for {label}")
     return PastPlan(repo_key, label, networks, sorted(wanted.values(), key=lambda u: u.name), skipped)
 
 
@@ -364,54 +366,47 @@ def record_past_points(cfg, pool, plan: PastPlan, entries: dict[str, list[tuple[
     Points are dated by their Releases and first seen now; nothing a sync
     owns changes (refs, recordings, the mirror record). A point a network
     already has is not linked again — that would make it look served now."""
-    import json
     from datetime import datetime, timezone
 
     from mmw.core import disk_io
-    from mmw.core.points import _say, split_repo
-    from mmw.core.publisher.links import publish_group
+    from mmw.core.points import _say
     from mmw.core.publisher.manifest import now_stamp
-    from mmw.core.snapshots import RecordingSink
 
     now = now or now_stamp()
     report = PastPointsReport(skipped=list(plan.skipped), warnings=list(plan.notes))
     pool.flush_writes()                         # downloaded rows, before they are read back
     when = datetime.now(timezone.utc)
-    for network, units in plan.networks:
-        sink, fetched = RecordingSink(pool), _FetchedRefs(pool, entries)
-        groups: dict[str, list[MirrorConfig]] = {}
-        for unit in units:
-            groups.setdefault(unit.mirror_base, []).append(unit)
-        for members in groups.values():
-            laid = publish_group(members, sink, fetched, prune=False)
-            if laid.errors:
-                raise PastPointsFailed(f"{network.name}: " + "; ".join(laid.errors[:5]))
-        settings = json.dumps({"repos": {plan.repo: sorted(groups, key=len, reverse=True)}})
-        for draft in split_repo(pool, plan.repo, sink.rows, settings, now):
-            pid, new = pool.record_point(plan.repo, draft, now)
+    from mmw.core.repository_points import record_repository, selected_point_files, cache_slice
+    fetched = _FetchedRefs(pool, entries)
+    for pid, new, draft in record_repository(pool, plan.repo, plan.units, cfg.settings.mirror_dir, now, refs=fetched):
+        for network, units in plan.networks:
+            files = selected_point_files(pool, pid, units)
+            if not files:
+                continue
             if pool.network_point_last_seen(network.name, pid) is None:
                 pool.link_network_point(network.name, pid, now)
-            said = _say(plan.repo, draft, cfg)
-            if new and said not in report.added:
-                report.added.append(said)
-            elif not new and said not in report.added and said not in report.already:
-                report.already.append(said)
-            release = next((draft.files[f"{draft.track}/{n}"] for n in ("Release", "InRelease")
-                            if f"{draft.track}/{n}" in draft.files), None)
-            blob = pool.blob_file(release) if release else None
-            if _valid_until_passed(disk_io.ops.read_bytes(blob) if blob is not None else None, when):
-                warning = (f"{said.removeprefix(plan.label + ' ')}: Valid-Until passed — clients need "
-                           "Check-Valid-Until=false")
-                if warning not in report.warnings:
-                    report.warnings.append(warning)
+            cache_slice(pool, network.name, pid, files, units)
+        said = _say(plan.repo, draft, cfg)
+        if new and said not in report.added:
+            report.added.append(said)
+        elif not new and said not in report.added and said not in report.already:
+            report.already.append(said)
+        release = next((draft.files[f"{draft.track}/{n}"] for n in ("Release", "InRelease")
+                        if f"{draft.track}/{n}" in draft.files), None)
+        blob = pool.blob_file(release) if release else None
+        if _valid_until_passed(disk_io.ops.read_bytes(blob) if blob is not None else None, when):
+            warning = (f"{said.removeprefix(plan.label + ' ')}: Valid-Until passed — clients need "
+                       "Check-Valid-Until=false")
+            if warning not in report.warnings:
+                report.warnings.append(warning)
     return report
 
 
 def add_past_points(cfg, mirror_dir, repo_key: str, archive: Archive, name: str, stamp: str, *,
                     base: str | None = None, events=None, stop_event=None,
                     now: str | None = None, status=None) -> PastPointsReport:
-    """Record `repo_key`'s state in `archive` at `stamp` as points of every
-    network that selects it — fetched with each network's own units through
+    """Record `repo_key`'s state in `archive` at `stamp` as repository points,
+    linked to selecting networks — fetched with all configured units through
     the sync's own code, every URL taken from the archive (`base`, default
     the archive's), identity the repository's own, so files the pool has are
     never fetched again. Any failure raises PastPointsFailed (or
@@ -425,9 +420,9 @@ def add_past_points(cfg, mirror_dir, repo_key: str, archive: Archive, name: str,
     archive.check(name)
     base = (base or archive.base(name, stamp)).rstrip("/")
     plan = plan_past_points(cfg, mirror_dir, repo_key)
-    if plan.networks:
+    if plan.units:
         plan = skip_missing_suites(plan, base, stamp, status=status)
-    if not plan.networks:
+    if not plan.units:
         return PastPointsReport(skipped=list(plan.skipped), warnings=list(plan.notes))
     entries: dict[str, list[tuple[str, str, str]]] = {}
     fetched = in_pool = 0

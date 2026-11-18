@@ -16,6 +16,9 @@ TUI = Path(__file__).resolve().parent.parent / "src" / "mmw" / "tui"
 
 # field -> (file under src/mmw/tui, a widget id or code marker that edits it)
 EDITORS = {
+    ("Settings", "keep_points"): ("sections/settings.py", "settings-keep-points"),
+    ("SourceConfig", "keep_points"): ("source_screens.py", "edit-source-keep-points"),
+    ("SourceConfig", "keep_suites"): ("source_screens.py", "edit-source-keep-suites"),
     ("Settings", "mirror_dir"): ("sections/settings.py", "settings-mirror-dir"),
     ("Settings", "max_connections"): ("sections/settings.py", "settings-max-connections"),
     ("Settings", "theme"): ("sections/settings.py", "settings-theme"),

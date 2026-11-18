@@ -94,7 +94,7 @@ def test_prune_command_runs_retention_first(two_mirrors, monkeypatch, tmp_path, 
         _seed(pool, range(1, 6), network=net.name)
     monkeypatch.setattr(prune, "load_config_or_none", lambda d: cfg)
     prune.run(tmp_path, dry_run=True)
-    assert "2 old point(s) no network keeps (keep_points) would be dropped" in capsys.readouterr().out
+    assert "2 old point(s) no retention rule keeps (keep_points) would be dropped" in capsys.readouterr().out
     with Pool(md, read_only=True) as pool:
         assert len(pool.network_points(net.name)) == 5                # a dry run drops nothing
     prune.run(tmp_path, yes=True)

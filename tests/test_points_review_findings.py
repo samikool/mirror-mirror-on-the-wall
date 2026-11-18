@@ -169,7 +169,7 @@ def test_the_tui_sync_records_points(two_mirrors, monkeypatch):  # noqa: F811
     set_a(md, 1)
     seen = []
     monkeypatch.setattr(points, "record_points_after_sync",
-                        lambda c, m, synced, say=print: seen.append(synced) or say("oak: new point(s) — a"))
+                        lambda c, m, synced, say=print, **kwargs: seen.append(synced) or say("oak: new point(s) — a"))
     mirrors = [config.MirrorConfig(name="m", provider="apt-flat", source="S", source_url="https://x/")]
     assert points_notice(cfg, mirrors) == "oak: new point(s) — a" and seen == [{"S"}]
 
@@ -275,5 +275,7 @@ def test_the_tuis_prune_preview_and_keep_costs(two_mirrors):  # noqa: F811
     keep1 = cfg.model_copy(update={"networks": [net.model_copy(update={"keep_points": 1})]})
     dropping, files, size = repositories.prune_preview(keep1)
     assert dropping == 1 and files >= 1 and size > 0
-    (rows,) = repositories.keep_costs(cfg).values()
-    assert {c for c, _n, _b in rows} >= {1, 3, 10, "all"}
+    table = repositories.keep_costs(cfg)
+    assert set(table) == {net.name, *(f"repository {s.name}" for s in cfg.sources)}
+    for rows in table.values():
+        assert {c for c, _n, _b in rows} >= {1, 3, 10, "all"}

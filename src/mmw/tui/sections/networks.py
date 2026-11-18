@@ -46,8 +46,9 @@ class NetworksPage(Page):
         Binding("c", "certs", "Certs", show=False),
         Binding("n", "snapshots", "Snapshots"),
         Binding("k", "packages", "Packages", show=False),
+        Binding("h", "earlier_points", "Include earlier points…", show=False),
     ]
-    MORE = ("certs", "packages")
+    MORE = ("certs", "packages", "earlier_points")
 
     def __init__(self):
         super().__init__()
@@ -136,6 +137,14 @@ class NetworksPage(Page):
         self._show_detail()
 
     # ── actions ──────────────────────────────────────────────────────────────
+
+    def action_earlier_points(self) -> None:
+        from mmw.tui.network_history import NetworkHistoryPage
+        net = self.highlighted()
+        if net is None:
+            self.notify("Select a network first.", severity="warning")
+            return
+        self.app.push_screen(NetworkHistoryPage(net.name))
 
     def action_add(self) -> None:
         self.start_flow(self._add)

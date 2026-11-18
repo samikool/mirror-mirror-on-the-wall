@@ -156,6 +156,9 @@ class MmwApp(UpdateOffers, ThemedApp):
     async def _write_settings(self, **changes: object) -> None:
         """Caller holds `_save_lock`."""
         def change(c: config.Config) -> config.Config:
+            if "keep_points" in changes:
+                from mmw.commands.retention import configure
+                c = configure(c, keep=changes.pop("keep_points"))
             settings = c.settings
             if "mirror_dir" in changes and "database" not in changes:
                 settings = settings.with_mirror_dir(changes.pop("mirror_dir"))

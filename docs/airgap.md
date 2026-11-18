@@ -178,9 +178,9 @@ repository can both match; each gets its own suites' points. `--repo`
 overrides the match. Without `--quiet` the TUI opens on **Add a past
 point**. In Sources, highlight a repository and choose **More… → Add a past point…** (or press `t`).
 
-The fetch uses each network's own selection of that repository, through
-the same code as a sync, so files already in the pool are not downloaded
-again. Points are dated by their Releases, and what each network is on now
+The fetch uses all configured units of that repository, through the same
+code as a sync, so files already in the pool are not downloaded again.
+No network is required: history belongs to the repository. Points are dated by their Releases, and what each network is on now
 does not change: a later `mmw bundle --history` carries them to the far
 side. Nothing is recorded unless every file arrived; a re-run fetches only
 what is missing.
@@ -194,6 +194,49 @@ what is missing.
   named; layered repositories aren't supported yet.
 - A past Release whose `Valid-Until` has passed is flagged: clients need
   `Check-Valid-Until=false` (see [§7](#7-valid-until)).
+
+### Repository history and new networks
+
+Every successful APT sync records the repository's accumulated state per
+suite, even without a network. Architectures may sync separately: a point
+retains each unit's last successfully synced files and its own Release metadata. Networks
+select their slice; an update to an unselected unit does not create another
+network point or transfer unchanged files. If a failed sync left current
+refs different from the last complete recorded state, a live bundle asks
+for a complete sync rather than silently sending a different tree.
+
+A new network starts with the current points. Include retained earlier
+points explicitly when you want its earlier history:
+
+```bash
+mmw network history -n lab --since 2026-10-01 --dry-run
+mmw network history -n lab --since 2026-10-01
+mmw network history -n lab --repo Debian       # all retained points for Debian
+```
+
+In Networks, select the network, then **More… → Include earlier points…**.
+Choose a date and repositories (blank means all), Look, then Add. This does
+not change current serving. The next `mmw bundle -n lab --history` carries
+the included points. Points whose files were already pruned cannot be added.
+Networks with a layer keep their existing rewritten history; earlier
+upstream points are skipped and named for those networks.
+
+Repository retention defaults to `[settings] keep_points = 3` per suite.
+Override `keep_points` and `keep_suites` on a source; network rules also keep
+points. Use Settings or the source's History fields, or:
+
+```bash
+mmw keep 10
+mmw keep all --repo Debian
+mmw keep 90d --repo Debian --suite bookworm
+mmw keep default --repo Debian                # inherit Settings again
+mmw prune --costs                            # repository and network costs
+```
+
+Existing history is kept as legacy slices during upgrade. VS Code and PyPI
+still use their existing network-owned history because their provider-wide
+publish layouts generate files across units; repository-owned recording for
+those layouts is deferred. The far side and bundle format are unchanged.
 
 ### What a bundle carries
 

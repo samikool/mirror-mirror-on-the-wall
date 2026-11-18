@@ -180,14 +180,25 @@ def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None):
         source = f"{Path(state.where).name} (its manifest)"
     else:
         with Pool(mirror_dir, read_only=True) as pool:
+            from mmw.core.repository_points import files_for_settings, wire_draft
+            settings = pool.settings_at(network.name, since) or pool.settings_at(network.name, "99999999T999999Z") or "{}"
             selected = []
             for track in pool.network_tracks(network.name):
-                eligible = [p for p in pool.network_points(network.name, track.id, stubs=True)
-                            if p.date <= since]
+                eligible = []
+                for p in pool.network_points(network.name, track.id, stubs=True):
+                    if p.legacy:
+                        date = p.date
+                    elif p.held:
+                        files = files_for_settings(pool, p.id, settings)
+                        date = wire_draft(pool, p.id, files, settings, p.stamp).date if files else None
+                    else:
+                        date = pool.network_slice_date(network.name, p.id)
+                    if date is not None and date <= since:
+                        eligible.append((date, p.stamp, p.ident, p))
                 if eligible:
-                    selected.append(eligible[0])
+                    selected.append(max(eligible, key=lambda item: item[:3])[3])
             if selected and all(p.held for p in selected):
-                baseline = {cs for p in selected for cs in pool.point_files(p.id).values()}
+                baseline = {cs for p in selected for cs in files_for_settings(pool, p.id, settings).values()}
                 source = f"the points of {since_date}"
         if baseline is None:
             raise NothingToStandOn(
@@ -321,7 +332,10 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     net_repo = f"network:{network.name}"
 
     with Pool(mirror_dir, read_only=True) as pool:
-        sent_points = pool.sent_point_ids(network.name)
+        from mmw.core.repository_points import files_for_settings
+        from mmw.site.tracks import content_ident
+        sent_points = {p for p in pool.sent_point_ids(network.name)
+                       if pool.sent_slice(network.name, p) in (None, content_ident(files_for_settings(pool, p, settings)))}
         tracks = {t.id: t for t in pool.network_tracks(network.name)}
         known = pool.points_of(pid for ids in current.values() for pid in ids)
         listing: dict[str, list[int]] = {}
@@ -342,7 +356,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         if stubs:
             raise ValueError(f"{len(stubs)} point(s) to list are no longer kept in the pool (retention "
                              f"dropped their files) — bundle another snapshot, or sync and bundle now")
-        files = {pid: pool.point_files(pid) for ids in listing.values() for pid in ids}
+        files = {pid: files_for_settings(pool, pid, settings) for ids in listing.values() for pid in ids}
         net_files: dict[str, str] = {}
         for pid in current.get(net_repo, []):
             net_files.update(pool.point_files(pid))
@@ -374,10 +388,12 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             for pid in ids:
                 p = known[pid]
                 t = tracks.get(p.track) or pool.track_of_point(pid)
-                entries.append({"track": t.name, "ident": p.ident, "date": p.date,
+                from mmw.core.repository_points import wire_draft
+                wire = wire_draft(pool, pid, files[pid], settings, p.stamp)
+                entries.append({"track": t.name, "ident": wire.ident, "date": wire.date,
                                 "stamp": pool.network_point_stamp(network.name, pid) or p.stamp,
                                 "snap_label": None,
-                                "fields": {k: v for k, v in (("Suite", t.suite), ("Codename", t.codename)) if v}})
+                                "fields": {k: v for k, v in wire.fields.items() if k in ("Suite", "Codename")}})
             header_points[repo] = {"label": label, "bases": repo_bases.get(repo, []), "points": entries}
             suites = []
             for t in sorted({known[pid].track for pid in current[repo]}):
@@ -457,7 +473,8 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     result.sent, result.sent_bytes = sink.sent, sink.sent_bytes
     with Pool(mirror_dir) as pool:
         listed = {pid for ids in listing.values() for pid in ids} | set(current.get(net_repo, []))
-        pool.record_sent(network.name, listed, sink.sent_checksums | (baseline or set()), stamp)
+        pool.record_sent(network.name, listed, sink.sent_checksums | (baseline or set()), stamp,
+                         slices={pid: content_ident(f) for pid, f in files.items()})
         pool.set_listed_tracks(network.name, listed_tracks)
         pool.record_bundle(network.name, since, stamp, str(target), sink.sent, sink.sent_bytes, 0,
                            kind="stage" if stage else "stream" if streaming else "bundle")

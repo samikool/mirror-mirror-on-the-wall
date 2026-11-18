@@ -44,31 +44,26 @@ def _fetch(url: str) -> bytes | None:
 
 
 def apt_repos(cfg, mirror_dir) -> dict[str, list[MirrorConfig]]:
-    """Every apt repository a network publishes → its units (all networks')."""
+    """Every configured APT repository → all its configured and pooled units."""
     from mmw.core.repos import repository_key
-    from mmw.core.resolve import network_mirrors
+    from mmw.core.resolve import available_mirrors
     out: dict[str, dict[str, MirrorConfig]] = {}
-    for network in cfg.networks:
-        for m in network_mirrors(network, cfg, mirror_dir):
-            if m.provider == "apt":
-                out.setdefault(repository_key(m), {})[m.name] = m
+    for m in [*cfg.mirrors, *available_mirrors(cfg, mirror_dir)]:
+        if m.provider == "apt":
+            out.setdefault(repository_key(m), {})[m.name] = m
     return {k: sorted(v.values(), key=lambda u: u.name) for k, v in sorted(out.items())}
 
 
 def resolve_repo(cfg, repos: dict[str, list[MirrorConfig]], ref: str) -> str:
     """The key of the apt repository `ref` names (its key or its name)."""
     from mmw.core.repos import repository_label, resolve_repo_refs
-    configured = next((s for s in cfg.sources if ref in (s.identity, s.name)), None)
-    if configured is not None and configured.identity not in repos:
-        raise LookupError(f"no network publishes {configured.name}, so there is no past of it to "
-                          "record — add it to a network first")
     names = {k: repository_label(k, cfg) for k in repos}
     try:
         return resolve_repo_refs([ref], names)[0]
     except LookupError as e:
         if "ambiguous" in str(e):
             raise
-        raise LookupError(f"unknown repository {ref!r} — the apt repositories networks publish: "
+        raise LookupError(f"unknown repository {ref!r} — the configured apt repositories: "
                           + ", ".join(sorted(names.values(), key=str.lower))) from None
 
 
@@ -97,7 +92,7 @@ def look(cfg, mirror_dir, *, as_of: str | None = None, from_url: str | None = No
         raise ValueError("give a date (--as-of) or a snapshot URL (--from-url), not both")
     repos = apt_repos(cfg, mirror_dir)
     if not repos:
-        raise LookupError("no network publishes an apt repository")
+        raise LookupError("no APT repository is configured")
     key = resolve_repo(cfg, repos, repo) if repo else None
     if from_url:
         archive, name, stamp = pp.parse_archive_url(from_url)
@@ -182,7 +177,7 @@ def plan_run(cfg, mirror_dir, targets: list[Target], *, status=None) -> PastRun:
     runs = []
     for t in targets:
         plan = pp.plan_past_points(cfg, mirror_dir, t.repo)
-        if plan.networks:
+        if plan.units:
             plan = pp.skip_missing_suites(plan, t.base, t.stamp, status=status)
         runs.append((t, plan))
     return PastRun(runs)
@@ -201,7 +196,7 @@ def record_run(cfg, run: PastRun, entries: dict, failures: list[str], counts: li
     lines: list[str] = []
     with Pool(cfg.settings.mirror_dir) as pool:
         for target, plan in run.runs:
-            if not plan.networks:
+            if not plan.units:
                 lines += [f"Skipped: {s}" for s in plan.skipped] + [f"⚠ {n}" for n in plan.notes]
                 continue
             mine = {u.name: entries[u.name] for u in plan.units if u.name in entries}

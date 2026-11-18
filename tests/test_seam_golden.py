@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import tarfile
+
+import pytest
 from pathlib import Path
 
 from mmw.core import config, upstream
@@ -112,11 +114,21 @@ RETIRED = ("apply.py", "sign.py", "make-ca.py")
 REWRITTEN = {"nginx/README.md": "a39c33d08f24"}
 
 
-def test_seam_publish_and_bundle_are_unchanged(tmp_path, monkeypatch):
+@pytest.mark.parametrize("repository_history", [False, True])
+def test_seam_publish_and_bundle_are_unchanged(tmp_path, monkeypatch, repository_history):
     # The golden was taken with no Docker image at hand: keep it that way,
     # whatever this machine has cached.
     from mmw.core.publisher import nginx_container
     monkeypatch.setattr(nginx_container, "DOCKER", str(tmp_path / "no-docker"))
+    if repository_history:
+        from mmw.core.points import record_points_after_sync
+        original = bundle_network
+
+        def after_sync(network, cfg, mirror_dir, *args, **kwargs):
+            record_points_after_sync(cfg.model_copy(update={"networks": [network]}), mirror_dir,
+                                     {s.identity for s in cfg.sources}, say=lambda _: None)
+            return original(network, cfg, mirror_dir, *args, **kwargs)
+        monkeypatch.setattr(__import__(__name__), "bundle_network", after_sync)
     actual = _capture(tmp_path)
     # The fixture must keep exercising every path the refactor moves.
     pub = actual["published"]

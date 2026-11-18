@@ -44,8 +44,10 @@ codes — see [far-side.md](far-side.md#exit-codes).
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
 | [`mmw init`](#mmw-init) | Setup wizard, or recover mmw.toml from kept bundles |
 | [`mmw installer`](#mmw-installer) | Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh` on the far side puts mmw on the path, offline |
+| [`mmw keep`](#mmw-keep) | Set repository history retention, independently of networks |
 | [`mmw manage`](#mmw-manage) | Manage configured mirrors (add, remove) |
 | [`mmw move-database`](#mmw-move-database) | Move the pool database (settings.database) and point mmw.toml at it |
+| [`mmw network`](#mmw-network) | Manage a network's repository history |
 | [`mmw packages`](#mmw-packages) | Your own .debs: into a folder repository, or into an upstream mirror as one network serves it |
 | [`mmw prune`](#mmw-prune) | Remove orphaned pool packages not referenced by any mirror |
 | [`mmw publish`](#mmw-publish) | Publish mirrors to network targets |
@@ -174,6 +176,16 @@ on the far side puts mmw on the path, offline.
 | `--network`, `-n` |  | Take the architectures and Python from this network's runtime_arches and runtime_python |
 | `--runtime-wheel` |  | The mmw wheel to ship (default: this checkout's own build, or PyPI's for a release). |
 
+### `mmw keep`
+
+Set repository history retention, independently of networks.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `VALUE` |  | Points to keep: a count, all, an age such as 90d, or default (--repo) *(required)* |
+| `--repo` |  | Repository name or URL; omitted sets the global default |
+| `--suite` |  | Override this suite of --repo |
+
 ### `mmw manage`
 
 Manage configured mirrors (add, remove).
@@ -191,6 +203,12 @@ Move the pool database (settings.database) and point mmw.toml at it.
 |--------|---------|-------------|
 | `PATH` |  | New path for the pool database file, e.g. on a fast disk *(required)* |
 
+### `mmw network`
+
+Manage a network's repository history.
+
+Takes no options.
+
 ### `mmw packages`
 
 Your own .debs: into a folder repository, or into an upstream mirror as one network serves it.
@@ -205,7 +223,7 @@ Remove orphaned pool packages not referenced by any mirror.
 |--------|---------|-------------|
 | `--dry-run` |  | Report what would be removed without deleting anything |
 | `--yes`, `-y` |  | Skip the confirmation prompt (implied when not a TTY) |
-| `--costs` |  | Preview what each keep_points choice would free, per network (implies --dry-run; reads the pool once per choice) |
+| `--costs` |  | Preview what each keep_points choice would free, per network and repository (implies --dry-run; reads the pool once per choice) |
 
 ### `mmw publish`
 

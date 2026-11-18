@@ -1,9 +1,8 @@
-"""Every sync is a point: after a sync, each network's tree (as a snapshot
-would record it) split per repository and per Release into points.
+"""Repository history after successful syncs, with network-selected views.
 
-A point is one Release of one repository with one file set, stored once and
-linked to every network that saw it. A suite that didn't change adds
-nothing; files no repository claims are the network's own `network` track.
+Repository points freeze accumulated per-unit state. Network recordings link
+unchanged slices to their existing point; legacy and layered views retain
+the network walk. Publishing and bundling never create repository states.
 """
 from __future__ import annotations
 
@@ -95,7 +94,7 @@ def convert_snapshots(pool: Pool, network: str, warnings: list[str] | None = Non
             continue
         ids = []
         for repo, draft in drafts:
-            pid, _new = pool.record_point(repo, draft, snap.stamp)
+            pid, _new = pool.record_point(repo, draft, snap.stamp, legacy=True)
             pool.link_network_point(network, pid, snap.stamp)
             ids.append(pid)
         pool.link_snapshot_points(snap.id, ids)
@@ -138,7 +137,7 @@ def seed_recordings(pool: Pool, network: str, now: str | None = None) -> int:
 
 
 def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, *, stamp: str | None = None,
-                          progress=None, stop_event=None) -> PointsReport:
+                          progress=None, stop_event=None, after_sync: bool = False) -> PointsReport:
     """Walk `network` and record its points; the ones new to it are said."""
     from mmw.core.publisher.manifest import now_stamp
     stamp = stamp or now_stamp()
@@ -146,8 +145,28 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
     with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
         convert_snapshots(pool, network.name, report.warnings)   # their points first, at their own stamps
         seed_recordings(pool, network.name)
+        from mmw.core.repository_points import (
+            current_repository_points, selected_point_files, current_ref_projection, shared_files,
+        )
+        from mmw.core.resolve import network_mirrors
+        selected = network_mirrors(network, cfg, mirror_dir)
+        repository_files = {}
+        for repo in {u.source for u in selected}:
+            candidates = current_repository_points(pool, repo)
+            if not candidates or network.layer_for(repo) is not None:
+                continue
+            projection = {path: cs for pid in candidates
+                          for path, cs in selected_point_files(pool, pid, selected).items()}
+            actual = current_ref_projection(pool, [u for u in selected if u.source == repo], shared_files(pool, candidates))
+            if projection != actual:
+                note = f"{repo}: current files need a complete sync before bundling; retaining the last recorded state"
+                if not after_sync:
+                    raise ValueError(note)
+                report.warnings.append(note)
+            repository_files[repo] = projection
+        walk_options = {"repository_files": repository_files} if repository_files else {}
         rows, settings, warnings = walk_tree(network, cfg, mirror_dir, pool, progress=progress,
-                                             stop_event=stop_event)
+                                             stop_event=stop_event, **walk_options)
         report.warnings += warnings
         report.settings = settings
         from mmw.site.tracks import content_ident
@@ -158,8 +177,46 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
         for repo, ids in recorded.items():
             if ids and repo not in repos_now:
                 pool.record_recording(network.name, repo, stamp, [])
+        from mmw.core.repository_points import current_repository_points, selected_point_files, files_for_settings
+        from mmw.core.resolve import network_mirrors
+        selected = network_mirrors(network, cfg, mirror_dir)
         for repo, mine in sorted(repos_now.items()):
             digest = content_ident(mine)
+            candidates = current_repository_points(pool, repo)
+            if candidates and network.layer_for(repo) is None:
+                slices = {pid: selected_point_files(pool, pid, selected) for pid in candidates}
+                projection = {path: cs for files in slices.values() for path, cs in files.items()}
+                if projection != mine:
+                    note = f"{repo}: current files need a complete sync before bundling; retaining the last recorded state"
+                    if not after_sync:
+                        raise ValueError(note)
+                    report.warnings.append(note)
+                if after_sync and not any(slices.values()):
+                    continue
+                previous = pool.repo_rows(network.name, repo)
+                previous_points = pool.points_of(previous[1] if previous else [])
+                for pid, files in list(slices.items()):
+                    if not files:
+                        continue
+                    point = pool.points_of([pid])[pid]
+                    unchanged = next((old.id for old in previous_points.values() if old.held and old.track == point.track
+                                      and files_for_settings(pool, old.id, settings) == files), None)
+                    if unchanged is not None and unchanged != pid:
+                        del slices[pid]
+                        slices[unchanged] = files
+                ids = [pid for pid, files in slices.items() if files]
+                for pid in ids:
+                    from mmw.core.repository_points import wire_draft
+                    wire = wire_draft(pool, pid, slices[pid], settings, stamp)
+                    if pool.link_network_point(network.name, pid, stamp):
+                        report.new.append(_say(repo, wire, cfg))
+                    pool.set_network_slice(network.name, pid, content_ident(slices[pid]), date=wire.date)
+                pool.set_repo_rows(network.name, repo, content_ident({p: c for f in slices.values() for p, c in f.items()}), ids)
+                if sorted(recorded.get(repo) or []) != sorted(ids):
+                    pool.record_recording(network.name, repo, stamp, ids)
+                continue
+            if after_sync and not repo.startswith("network:") and any(u.source == repo for u in selected) and network.layer_for(repo) is None:
+                continue                       # this track has never completed a sync
             last = pool.repo_rows(network.name, repo)
             if last is not None and last[0] == digest:
                 # Unchanged since the last recording: its points are seen again, nothing is split.
@@ -170,8 +227,9 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
                 continue
             ids = []
             for draft in split_repo(pool, repo, mine, settings, stamp):
-                pid, _new = pool.record_point(repo, draft, stamp)
+                pid, _new = pool.record_point(repo, draft, stamp, legacy=True)
                 ids.append(pid)
+                pool.set_network_slice(network.name, pid, content_ident(draft.files))
                 if pool.link_network_point(network.name, pid, stamp) and not repo.startswith("network:"):
                     report.new.append(_say(repo, draft, cfg))
             pool.set_repo_rows(network.name, repo, digest, ids)
@@ -182,17 +240,60 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
 
 
 def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[str],
-                             say=print) -> list[PointsReport]:
+                             say=print, *, outcomes=None, attempted=None) -> list[PointsReport]:
     """Record the points of every network that selects a source that just
     synced. A network whose walk fails is said and skipped: a sync never
     fails for its points."""
     from mmw.core.resolve import network_mirrors
+    from mmw.core.resolve import available_mirrors
+    from mmw.core.repos import repository_key
+    from mmw.core.repository_points import record_repository, set_current_repository_points, accumulated_refs
+    from mmw.core.publisher.manifest import now_stamp
+    units = list({u.name: u for u in [*cfg.mirrors, *available_mirrors(cfg, mirror_dir),
+                                    *(attempted or [])]}.values())
+    by_repo_units = {}
+    for unit in units:
+        if unit.source in synced_sources and unit.provider in ("apt", "apt-flat", "apt-local"):
+            by_repo_units.setdefault(repository_key(unit), []).append(unit)
+    successes = {o.mirror for o in outcomes if o.ok} if outcomes is not None else None
+    stamp = now_stamp()
+    try:
+        with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
+            requested_all = [u for u in (attempted or units)
+                             if outcomes is not None and (attempted is not None or any(o.mirror == u.name for o in outcomes))]
+            pool.record_unit_outcomes((repository_key(u), u.dims, u.name in successes) for u in requested_all)
+            for repo, mine in by_repo_units.items():
+                try:
+                    view, mine = accumulated_refs(pool, repo, mine, successes)
+                except Exception as e:  # noqa: BLE001 — report history failure without failing the sync
+                    say(f"  ⚠ {repo}: repository points not recorded: {e}")
+                    continue
+                if not mine:
+                    continue
+                complete = None
+                if successes is not None:
+                    requested = [u for u in (attempted or units) if repository_key(u) == repo
+                                 and (attempted is not None or any(o.mirror == u.name for o in outcomes))]
+                    complete = {u.suite for u in mine
+                                if all(v.name in successes for v in requested if v.suite == u.suite)}
+                    if not complete:
+                        continue
+                try:
+                    recorded = record_repository(pool, repo, mine, mirror_dir, stamp, refs=None if view is pool else view, complete_suites=complete)
+                    set_current_repository_points(pool, repo, recorded, replace=complete is None or len(complete) == len({u.suite for u in mine}))
+                    new = [_say(repo, d, cfg) for _, created, d in recorded if created]
+                    if new:
+                        say("New repository point(s) — " + ", ".join(new))
+                except Exception as e:  # noqa: BLE001 — history cannot fail the sync
+                    say(f"  ⚠ {repo}: repository points not recorded: {e}")
+    except Exception as e:  # noqa: BLE001 — recording cannot turn a finished sync into a failure
+        say(f"  ⚠ repository points not recorded: {e}")
     reports = []
     for network in cfg.networks:
         try:
             if not any(m.source in synced_sources for m in network_mirrors(network, cfg, mirror_dir)):
                 continue
-            report = record_network_points(network, cfg, mirror_dir)
+            report = record_network_points(network, cfg, mirror_dir, after_sync=True)
         except Exception as e:  # noqa: BLE001 — said, and the sync goes on
             report = PointsReport(network.name, warnings=[f"points not recorded: {e}"])
         for w in report.warnings:
@@ -287,9 +388,11 @@ def moment_rows(pool: Pool, network: str, stamp: str):
         raise ValueError(f"{len(stubs)} point(s) {network} had on {day(stamp)} are no longer kept "
                          f"(retention dropped their files) — raise keep_points on {network} to keep "
                          "older dates, or publish a later one")
+    from mmw.core.repository_points import files_for_settings
+    settings = pool.settings_at(network, stamp) or "{}"
     files: dict[str, str] = {}
     for pid in ids:
-        files.update(pool.point_files(pid))
+        files.update(files_for_settings(pool, pid, settings))
     info = pool.blob_info(files.values())
     missing = sorted({c for c in files.values() if c not in info})
     if missing:
@@ -335,7 +438,7 @@ def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
                          for pid in pool.snapshot_point_ids(s.id)}
     published = {pid for p in pool.published(network.name) if p.target.startswith(AS_OF)
                  for ids in pool.points_at(network.name, p.target[len(AS_OF):]).values() for pid in ids}
-    kept: set[int] = set()
+    kept: set[int] = held_by_snapshots | published
     stamps = pool.network_point_stamps(network.name)
     for t in pool.network_tracks(network.name):
         keep = keep_for(network, t)
@@ -353,7 +456,7 @@ def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
     return kept
 
 
-def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None = None) -> list[int]:
+def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None = None, cfg: Config | None = None) -> list[int]:
     """The held points no configured network keeps any more (none dropped)."""
     from mmw.core.publisher.manifest import now_stamp
     now = now or now_stamp()
@@ -361,12 +464,35 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
     for n in networks:
         kept |= _kept_by(pool, n, now)
     # Every held point any network saw: one only a removed network saw is kept by none.
-    return sorted(set(pool.linked_held_points()) - kept)
+    candidates = set(pool.linked_held_points())
+    if cfg is not None:
+        from types import SimpleNamespace
+        from mmw.core.repository_points import current_repository_points
+        by_repo_track = {}
+        for p in pool.repository_points():
+            candidates.add(p.id)
+            track = pool.track_of_point(p.id)
+            by_repo_track.setdefault((track.repo, p.track), []).append(p)
+        for (repo, _), ps in by_repo_track.items():
+            source = next((s for s in cfg.sources if s.identity == repo), None)
+            if source is None:
+                continue
+            own = getattr(source, "keep_points", None)
+            rule = SimpleNamespace(keep_points=cfg.settings.keep_points if own is None else own,
+                                   keep_suites=getattr(source, "keep_suites", {}))
+            keep = keep_for(rule, pool.track_of_point(ps[0].id))
+            cutoff = _cutoff(now, int(keep[:-1])) if isinstance(keep, str) and keep != "all" else None
+            current = set(current_repository_points(pool, repo))
+            for i, p in enumerate(ps):
+                if (i == 0 or p.id in current or keep == "all" or (isinstance(keep, int) and i < keep)
+                        or (cutoff is not None and p.stamp >= cutoff)):
+                    kept.add(p.id)
+    return sorted(candidates - kept)
 
 
-def apply_retention(pool: Pool, networks: list[NetworkConfig], *, now: str | None = None) -> int:
+def apply_retention(pool: Pool, networks: list[NetworkConfig], *, now: str | None = None, cfg: Config | None = None) -> int:
     """Stub every point `retention_plan` names; how many."""
-    gone = retention_plan(pool, networks, now=now)
+    gone = retention_plan(pool, networks, now=now, cfg=cfg)
     for pid in gone:
         pool.stub_point(pid)
     return len(gone)

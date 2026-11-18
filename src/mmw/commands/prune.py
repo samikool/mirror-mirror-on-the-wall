@@ -64,7 +64,7 @@ def costs_of_keeping(cfg, mirror_dir: Path, presets=(1, 3, 10, "all")) -> dict[s
         def frees(net, choice) -> tuple[int, int]:
             nets = [n.model_copy(update={"keep_points": choice}) if n.name == net.name else n
                     for n in cfg.networks]
-            plan = points.retention_plan(pool, nets)
+            plan = points.retention_plan(pool, nets, cfg=cfg)
             return len(plan), pool.prune_preview(configured, dropped, plan)[1]
         for net in cfg.networks:
             n_all, base = frees(net, "all")
@@ -73,6 +73,23 @@ def costs_of_keeping(cfg, mirror_dir: Path, presets=(1, 3, 10, "all")) -> dict[s
                 n, size = (n_all, base) if choice == "all" else frees(net, choice)
                 rows.append((choice, n - n_all, size - base))
             out[net.name] = rows
+        for source in cfg.sources:
+            if not hasattr(source, "keep_points"):
+                continue
+            own = source.keep_points if source.keep_points is not None else cfg.settings.keep_points
+
+            def repo_frees(choice):
+                selected = cfg.model_copy(update={"sources": [
+                    s.model_copy(update={"keep_points": choice}) if s.identity == source.identity else s
+                    for s in cfg.sources]})
+                plan = points.retention_plan(pool, cfg.networks, cfg=selected)
+                return len(plan), pool.prune_preview(configured, dropped, plan)[1]
+            n_all, base = repo_frees("all")
+            rows = []
+            for choice in dict.fromkeys([*presets, own]):
+                n, size = (n_all, base) if choice == "all" else repo_frees(choice)
+                rows.append((choice, n - n_all, size - base))
+            out[f"repository {source.name}"] = rows
     return out
 
 
@@ -105,7 +122,7 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
     from mmw.core.pool import Pool
     try:
         with Pool(mirror_dir, read_only=True) as pool:
-            releasing = points.retention_plan(pool, cfg.networks)
+            releasing = points.retention_plan(pool, cfg.networks, cfg=cfg)
     except sqlite3.OperationalError:
         releasing = []                          # a pool from before points: none to drop
     except (OSError, sqlite3.Error) as e:
@@ -125,7 +142,7 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
               f"(a suite, component or arch was removed): "
               f"{', '.join(dropped[:5])}{' …' if len(dropped) > 5 else ''}")
     if dropping:
-        print(f"  {dropping:,} old point(s) no network keeps (keep_points) "
+        print(f"  {dropping:,} old point(s) no retention rule keeps (keep_points) "
               f"{'would be' if dry_run else 'will be'} dropped — their files freed with the rest")
     if dry_run and costs:
         try:
@@ -137,10 +154,10 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
             eprint(f"Cannot read the pool in {mirror_dir}: {e}")
             return 1
         if table:
-            print("  What each network's keep_points choice frees, against keeping all "
-                  "(the other networks as set):")
+            print("  What each network and repository keep_points choice frees, against keeping all "
+                  "(the other retention rules as set):")
         for name, rows in table.items():
-            net = next(n for n in cfg.networks if n.name == name)
+            net = settings_for_costs(cfg)[name]
             said = " · ".join(f"{c}: {_fmt_size(b)}" + (" (now)" if c == net.keep_points else "")
                               for c, _n, b in rows)
             print(f"    {name}  {said}")
@@ -177,7 +194,7 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
         removed, freed = pool.prune_orphans(
             configured, dropped,
             progress=lambda done, total: print(f"  {done:,} of {total:,} blobs removed…", flush=True),
-            before=lambda locked: points.apply_retention(locked, cfg.networks))
+            before=lambda locked: points.apply_retention(locked, cfg.networks, cfg=cfg))
     except PoolBusy as e:
         # A sync is running. Until a mirror's refs are reconciled at the end of
         # its run, every blob it has downloaded is `packages − refs` — i.e.
@@ -193,3 +210,12 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
     else:
         print(f"Removed {removed:,} orphaned package(s), freed {_fmt_size(freed)}.")
     return 0
+
+
+def settings_for_costs(cfg):
+    """Labels and effective rules shared by CLI and TUI cost presentations."""
+    from types import SimpleNamespace
+    return {**{n.name: n for n in cfg.networks},
+            **{f"repository {s.name}": SimpleNamespace(
+                keep_points=s.keep_points if s.keep_points is not None else cfg.settings.keep_points,
+                keep_suites=s.keep_suites) for s in cfg.sources if hasattr(s, "keep_points")}}

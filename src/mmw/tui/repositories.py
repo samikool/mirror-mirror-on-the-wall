@@ -263,7 +263,7 @@ def prune_preview(cfg: "config.Config") -> tuple[int, int, int]:
                          "the prune refuses until there are some")
     with pool_mod.Pool(cfg.settings.mirror_dir, read_only=True) as pool:
         try:
-            releasing = points.retention_plan(pool, cfg.networks)
+            releasing = points.retention_plan(pool, cfg.networks, cfg=cfg)
         except sqlite3.OperationalError:
             releasing = []                          # a pool from before points: none to drop
         dropped = uncovered_mirror_names(cfg, pool)
@@ -292,7 +292,7 @@ def prune_pool(cfg: "config.Config", progress=None) -> tuple[int, int]:
         # own lock (never while a sync runs), so their files free now.
         return pool.prune_orphans([s.identity for s in cfg.sources],
                                   uncovered_mirror_names(cfg, pool), progress=progress,
-                                  before=lambda locked: apply_retention(locked, cfg.networks))
+                                  before=lambda locked: apply_retention(locked, cfg.networks, cfg=cfg))
     finally:
         pool.close()
 
@@ -373,6 +373,8 @@ def edited_source(draft, *, original: config.SourceConfig, url: str, name: str, 
     # `SourceDraft.to_source()` has no field for these, so they are
     # stamped back on. Dropping them would silently switch off dist-upgrade
     # support or a key-URL fetch on every edit.
+    source.keep_points = original.keep_points
+    source.keep_suites = dict(original.keep_suites)
     source.dist_upgrade = dist_upgrade
     source.gpg_key_url = key_url or None
     source.suite_overrides = overrides

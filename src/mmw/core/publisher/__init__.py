@@ -484,6 +484,7 @@ def walk_network(
     progress=None,
     stop_event=None,
     mirror_start_callback=None,
+    repository_files=None,
 ) -> list:
     """Lay a network's complete tree into `sink` from `pool`: every group,
     dist-upgrade, nginx (only with `nginx_root`; snapshots record its settings
@@ -529,7 +530,21 @@ def walk_network(
                 lambda off: lambda name, i, n, **kw: mirror_start_callback(
                     name, off + i, off + n, **kw)
             )(started)
-        group_results, bases = provider.publish(ctx, mine)
+        from mmw.core.repos import repository_key
+        supplied = repository_files or {}
+        deferred = [u for u in mine if repository_key(u) in supplied]
+        walked = [u for u in mine if repository_key(u) not in supplied]
+        group_results, bases = provider.publish(ctx, walked) if walked else ([], set())
+        for repo in sorted({repository_key(u) for u in deferred}):
+            files = supplied[repo]
+            info = pool.blob_info(files.values())
+            if set(files.values()) - set(info):
+                raise ValueError(f"{repo}: recorded files are no longer in the pool — verify or sync again")
+            link = getattr(sink, 'link_pooled', sink.link)
+            for path, cs in files.items():
+                src, size = info[cs]
+                link(src, path, size, cs, 'pkg')
+        bases |= {u.mirror_base for u in deferred}
         started += len(group_results)
         result.mirrors.extend(group_results)
         all_bases |= bases

@@ -237,7 +237,7 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
         main = threading.current_thread() is threading.main_thread()
         previous = signal.signal(signal.SIGINT, signal.default_int_handler) if main else None
         try:
-            record_points_after_sync(cfg, mirror_dir, synced, say=typer.echo)
+            record_points_after_sync(cfg, mirror_dir, synced, say=typer.echo, outcomes=summaries, attempted=mirrors)
         except KeyboardInterrupt:            # the sync itself finished: it stays a sync that worked
             typer.echo("\n  Interrupted while recording points — the sync is complete; "
                        "the next sync records them.", err=True)

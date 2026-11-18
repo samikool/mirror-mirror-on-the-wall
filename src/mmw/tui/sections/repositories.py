@@ -101,7 +101,7 @@ class RepositoriesPage(Page):
             "k adds your own .debs — to a folder repository, or to an upstream mirror per network;\n"
             "f shows a folder repository's sources file for clients.\n"
             "Prune drops packages no index references; wipe deletes every downloaded byte;\n"
-            "c says what each network's keep_points choice would free.\n"
+            "c previews network and repository keep_points costs.\n"
             "t adds a past point: a Debian or Ubuntu repository as it was on a date, from its "
             "snapshot archive.")
     BINDINGS = [
@@ -446,7 +446,7 @@ class RepositoriesPage(Page):
         self._start(self._keep_costs)
 
     async def _keep_costs(self) -> None:
-        """What each keep_points choice would free, per network."""
+        """What each network or repository keep_points choice would free."""
         self.set_status("Working out what each keep_points choice frees (a pool read per choice)…")
         try:
             table = await asyncio.to_thread(repositories.keep_costs, self.app.cfg)
@@ -454,9 +454,10 @@ class RepositoriesPage(Page):
             self.set_status(f"Can't say yet: {e}", "warning")
             return
         if not table:
-            self.set_status("No network keeps points yet.")
+            self.set_status("No repository or network keeps points yet.")
             return
-        nets = {n.name: n for n in self.app.cfg.networks}
+        from mmw.commands.prune import settings_for_costs
+        nets = settings_for_costs(self.app.cfg)
         lines = []
         for name, rows in table.items():
             now = nets[name].keep_points if name in nets else None
@@ -465,8 +466,8 @@ class RepositoriesPage(Page):
         self.set_status("")
         await self.app.push_screen_wait(ConfirmDialog(
             "What each keep_points choice frees",
-            "\n".join(lines) + "\nAgainst keeping every point, the other networks as set. "
-                                 "Change it on the network (Keep points).", "Close"))
+            "\n".join(lines) + "\nAgainst keeping every point, the other retention rules as set. "
+                                 "Change it in Settings, the repository, or the network (Keep points).", "Close"))
 
     @on(Button.Pressed, "#btn-wipe-pool")
     def _wipe_pressed(self) -> None:
@@ -482,7 +483,7 @@ class RepositoriesPage(Page):
         else:
             self.set_status("")
         what = (f"It removes {files:,} file(s), freeing {fmt_size(size)}"
-                + (f" — {dropping:,} old point(s) past their network's keep_points go first." if dropping else ".")
+                + (f" — {dropping:,} old point(s) past their retention rules go first." if dropping else ".")
                 if files or dropping else "Nothing is orphaned now.")
         if not await self.app.push_screen_wait(ConfirmDialog(
                 "Prune the package pool",

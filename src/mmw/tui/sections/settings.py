@@ -62,6 +62,10 @@ class SettingsPage(Page):
                 id="settings-disk-readahead", integer_min=0,
                 hint="Files opened ahead of a bundle or hash stream. 0 turns it off.",
             ),
+            TextField(
+                "Repository points to keep", str(s.keep_points), id="settings-keep-points",
+                hint="Default history per repository suite, even without a network: a count, all, or 90d.",
+            ),
             ToggleField(
                 "Check for mmw updates", s.update_check, id="settings-update-check",
                 hint="On every start, ask PyPI for a newer mmw and offer it. "
@@ -103,6 +107,7 @@ class SettingsPage(Page):
         self.query_one("#settings-max-connections", Input).value = str(s.max_connections)
         for key in ("disk_write_threads", "disk_read_threads", "disk_readahead"):
             self.query_one(f"#settings-{key.replace('_', '-')}", Input).value = str(getattr(s, key))
+        self.query_one("#settings-keep-points", Input).value = str(s.keep_points)
         self.set_status("Reverted to the saved values.")
 
     @on(Button.Pressed, "#btn-settings-save")
@@ -120,6 +125,7 @@ class SettingsPage(Page):
             await self.app.save_settings(
                 mirror_dir=mirror_dir,
                 max_connections=v["settings-max-connections"],
+                keep_points=v["settings-keep-points"],
                 disk_write_threads=v["settings-disk-write-threads"],
                 disk_read_threads=v["settings-disk-read-threads"],
                 disk_readahead=v["settings-disk-readahead"],

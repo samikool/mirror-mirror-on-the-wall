@@ -25,6 +25,7 @@ from textual.widgets import Checkbox, Input, Select, TextArea
 from mmw.core import config
 from mmw.core.draft import DIMENSIONS, SourceDraft
 from mmw.tui.key_modal import KeyPage, apply_key, key_summary
+from mmw.tui.network_screens import format_keep_suites, parse_keep_suites
 from mmw.tui.pick import PickPage
 from mmw.tui.repositories import edited_source, format_overrides, parse_overrides  # noqa: F401
 from mmw.tui.ui.form import (
@@ -85,6 +86,11 @@ class EditSourcePage(Page):
                         hint="Also mirror source packages."),
             ToggleField("dist-upgrade", s.dist_upgrade, id="du-switch",
                         hint="Enable Ubuntu dist-upgrade support for this repository."),
+            Heading("History"),
+            TextField("Points to keep", str(s.keep_points) if s.keep_points is not None else "",
+                      id="edit-source-keep-points", hint="Blank uses Settings; a count, all, or 90d."),
+            TextField("Keep per suite", format_keep_suites(s.keep_suites), id="edit-source-keep-suites",
+                      hint="Overrides such as bookworm=all sid=1."),
             Heading("Signing key"),
             ActionField("Key", "", "Key…", id="btn-key", summary_id="key-status"),
             TextField("Key URL", s.gpg_key_url or "", id="edit-source-key-url",
@@ -261,5 +267,15 @@ class EditSourcePage(Page):
             self.notify(message, severity="warning")
             if focus:
                 self.query_one(f"#{focus}").focus()
+            return
+        try:
+            from mmw.commands.retention import configure
+            cfg = config.Config(settings=config.Settings(mirror_dir="."), sources=[source])
+            changed = configure(cfg, repo=source.identity,
+                                keep=q("#edit-source-keep-points", Input).value.strip() or None,
+                                suites=parse_keep_suites(q("#edit-source-keep-suites", Input).value))
+            source = changed.sources[0]
+        except (ValueError, LookupError) as e:
+            self.set_status(str(e), "error")
             return
         self.dismiss(source)

@@ -294,8 +294,40 @@ CREATE TABLE IF NOT EXISTS tracks (
 CREATE TABLE IF NOT EXISTS points (
     id INTEGER PRIMARY KEY, track INTEGER NOT NULL, ident TEXT NOT NULL, files TEXT NOT NULL,
     date TEXT NOT NULL, stamp TEXT NOT NULL, held INTEGER NOT NULL DEFAULT 1,
-    UNIQUE (track, ident, files)
+    legacy INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (track, ident, files, legacy)
 );
+CREATE TABLE IF NOT EXISTS units (
+    id INTEGER PRIMARY KEY, repo TEXT NOT NULL, dims TEXT NOT NULL,
+    UNIQUE (repo, dims)
+);
+CREATE TABLE IF NOT EXISTS point_units (
+    point INTEGER NOT NULL, unit INTEGER NOT NULL, path INTEGER NOT NULL,
+    PRIMARY KEY (point, unit, path)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS point_unit_files (
+    point INTEGER NOT NULL, unit INTEGER NOT NULL, path INTEGER NOT NULL, blob INTEGER NOT NULL,
+    kind TEXT NOT NULL, hashed INTEGER NOT NULL,
+    PRIMARY KEY (point, unit, path)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_point_unit_files_blob ON point_unit_files(blob, point);
+CREATE TABLE IF NOT EXISTS network_slices (
+    network TEXT NOT NULL, point INTEGER NOT NULL, files TEXT NOT NULL,
+    PRIMARY KEY (network, point)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS network_slice_dates (
+    network TEXT NOT NULL, point INTEGER NOT NULL, date TEXT NOT NULL,
+    PRIMARY KEY (network, point)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS sent_slices (
+    network TEXT NOT NULL, point INTEGER NOT NULL, files TEXT NOT NULL,
+    PRIMARY KEY (network, point)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS repository_failed_units (
+    repo TEXT NOT NULL, dims TEXT NOT NULL, PRIMARY KEY(repo, dims)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS repository_current (repo TEXT PRIMARY KEY, points TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS repo_points_migrated (done INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS point_files (
     point INTEGER NOT NULL, path INTEGER NOT NULL, blob INTEGER NOT NULL,
     PRIMARY KEY (point, path)
@@ -360,7 +392,7 @@ _CHUNK = 900
 # forgotten with it (the points themselves are shared and stay).
 _POINT_NETWORK_TABLES = ("network_points", "network_repo_rows", "points_converted", "sent_points",
                          "sent_blobs", "sent_migrated", "network_recordings", "network_settings",
-                         "recordings_seeded", "recordings_seeded_at", "listed_tracks")
+                         "recordings_seeded", "recordings_seeded_at", "listed_tracks", "network_slices", "sent_slices", "network_slice_dates")
 
 # Reader tuning. This workload is **disk-bound**, not lock-bound: measured 1.4x
 # from these two pragmas alone, while *adding read connections made it worse*
@@ -787,6 +819,7 @@ class PoolPoint:
     date: str
     stamp: str          # when it was first recorded
     held: bool
+    legacy: bool = False
 
 
 @dataclass(frozen=True)
@@ -851,9 +884,9 @@ def _delete_snapshot_rows(conn: sqlite3.Connection, ids: list[int]) -> None:
     # builds its lookup once.
     # Timeline points share these tables: what a point lists stays.
     conn.execute("DELETE FROM snapshot_blobs WHERE id NOT IN "
-                 "(SELECT blob FROM snapshot_files UNION SELECT blob FROM point_files)")
+                 "(SELECT blob FROM snapshot_files UNION SELECT blob FROM point_files UNION SELECT blob FROM point_unit_files)")
     conn.execute("DELETE FROM snapshot_paths WHERE id NOT IN "
-                 "(SELECT path FROM snapshot_files UNION SELECT path FROM point_files)")
+                 "(SELECT path FROM snapshot_files UNION SELECT path FROM point_files UNION SELECT path FROM point_unit_files)")
 
 
 def _replace_retry_plan(conn, mirror_name, failures, source):
@@ -912,6 +945,7 @@ class Pool:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(SCHEMA)
+            self._migrate_repository_points()
             # Pre-kind databases: CREATE TABLE IF NOT EXISTS won't add the
             # column, so patch it in (instant in SQLite; keeps existing pools usable).
             if "last_seen" not in {r[1] for r in self._conn.execute("PRAGMA table_info(network_points)")}:
@@ -1015,6 +1049,9 @@ class Pool:
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
         self._has_layer_rows = self._has_table("layer_rows")
         self._has_point_files = self._has_table("point_files")
+        self._has_point_unit_files = self._has_table("point_unit_files")
+        self._point_legacy_sql = "p.legacy" if "legacy" in {
+            r[1] for r in self._conn.execute("PRAGMA table_info(points)")} else "1"
         self._has_download_sources = self._has_table("download_sources")
         self._has_retry_state = self._has_table("retry_state")
         # SQLite's planner prefers the checksum primary key (one row, but a
@@ -1023,6 +1060,105 @@ class Pool:
         # has none until a writable open builds it.
         self._packages_by = (" INDEXED BY idx_packages_cover"
                              if self._has_index("idx_packages_cover") else "")
+
+    def _migrate_repository_points(self) -> None:
+        with self._lock:
+            c = self._conn
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                if not c.execute("SELECT 1 FROM repo_points_migrated").fetchone():
+                    cols = {r[1] for r in c.execute("PRAGMA table_info(points)")}
+                    if "legacy" not in cols:
+                        c.execute("CREATE TABLE _repo_points (id INTEGER PRIMARY KEY, track INTEGER NOT NULL, "
+                                  "ident TEXT NOT NULL, files TEXT NOT NULL, date TEXT NOT NULL, "
+                                  "stamp TEXT NOT NULL, held INTEGER NOT NULL DEFAULT 1, "
+                                  "legacy INTEGER NOT NULL DEFAULT 0, UNIQUE(track, ident, files, legacy))")
+                        c.execute("INSERT INTO _repo_points SELECT *, 1 FROM points")
+                        c.execute("DROP TABLE points")
+                        c.execute("ALTER TABLE _repo_points RENAME TO points")
+                    else:
+                        c.execute("UPDATE points SET legacy = 1")
+                    c.execute("INSERT OR IGNORE INTO network_slices SELECT n.network, n.point, p.files "
+                              "FROM network_points n JOIN points p ON p.id = n.point")
+                    c.execute("INSERT OR IGNORE INTO sent_slices SELECT n.network, n.point, p.files "
+                              "FROM sent_points n JOIN points p ON p.id = n.point")
+                    c.execute("INSERT INTO repo_points_migrated VALUES (1)")
+                c.commit()
+            except BaseException:
+                c.rollback()
+                raise
+
+    def record_point_units(self, point_id: int, repo: str, memberships) -> None:
+        """Attach canonical unit coordinates to paths already held by this point.
+
+        Empty dims denote track-wide files, stored with the reserved unit 0.
+        Repeated calls add membership without changing the immutable file set.
+        """
+        with self._lock:
+            try:
+                for dims, paths in memberships:
+                    uid = 0
+                    if dims:
+                        raw = json.dumps(dims, sort_keys=True, separators=(",", ":"))
+                        self._conn.execute("INSERT OR IGNORE INTO units (repo, dims) VALUES (?, ?)", (repo, raw))
+                        uid = self._conn.execute("SELECT id FROM units WHERE repo = ? AND dims = ?",
+                                                 (repo, raw)).fetchone()[0]
+                    self._conn.executemany(
+                        "INSERT OR IGNORE INTO point_units SELECT ?, ?, p.id FROM snapshot_paths p "
+                        "JOIN point_files f ON f.path = p.id WHERE f.point = ? AND p.path = ?",
+                        [(point_id, uid, point_id, path) for path in paths])
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def record_unit_outcomes(self, outcomes) -> None:
+        """Remember known failed units even before the first repository point."""
+        with self._lock:
+            for repo, dims, ok in outcomes:
+                raw = json.dumps(dims, sort_keys=True, separators=(",", ":"))
+                if ok:
+                    self._conn.execute("DELETE FROM repository_failed_units WHERE repo = ? AND dims = ?", (repo, raw))
+                else:
+                    self._conn.execute("INSERT OR IGNORE INTO repository_failed_units VALUES (?, ?)", (repo, raw))
+            self._conn.commit()
+
+    def failed_units(self, repo: str) -> set[str]:
+        with self._read() as c:
+            return {r[0] for r in c.execute("SELECT dims FROM repository_failed_units WHERE repo = ?", (repo,))}
+
+    def record_unit_files(self, point_id: int, repo: str, memberships) -> None:
+        """Freeze per-unit canonical rows, including conflicting path variants."""
+        with self._lock:
+            c = self._conn
+            try:
+                for dims, files in memberships:
+                    uid = 0
+                    if dims is not None:
+                        raw = json.dumps(dims, sort_keys=True, separators=(",", ":"))
+                        c.execute("INSERT OR IGNORE INTO units (repo, dims) VALUES (?, ?)", (repo, raw))
+                        uid = c.execute("SELECT id FROM units WHERE repo = ? AND dims = ?", (repo, raw)).fetchone()[0]
+                    c.executemany("INSERT OR IGNORE INTO snapshot_paths (path) VALUES (?)", [(p,) for p in files])
+                    c.executemany("INSERT OR IGNORE INTO snapshot_blobs (checksum) VALUES (?)", [(v[0],) for v in files.values()])
+                    c.executemany(
+                        "INSERT OR IGNORE INTO point_unit_files SELECT ?, ?, p.id, b.id, ?, ? "
+                        "FROM snapshot_paths p, snapshot_blobs b WHERE p.path = ? AND b.checksum = ?",
+                        [(point_id, uid, kind, int(hashed), path, cs) for path, (cs, kind, hashed) in files.items()])
+                c.commit()
+            except BaseException:
+                c.rollback()
+                raise
+
+    def repository_points(self, repo: str | None = None, *, stubs: bool = False) -> list[PoolPoint]:
+        if self._point_legacy_sql == "1":
+            return []
+        where, args = (" AND t.repo = ?", (repo,)) if repo is not None else ("", ())
+        with self._read() as c:
+            rows = c.execute("SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, p.legacy "
+                             "FROM points p JOIN tracks t ON t.id = p.track WHERE p.legacy = 0" + where
+                             + ("" if stubs else " AND p.held = 1")
+                             + " ORDER BY p.date DESC, p.stamp DESC, p.id DESC", args).fetchall()
+        return [PoolPoint(*r[:6], bool(r[6]), bool(r[7])) for r in rows]
 
     @property
     def _tmp_dir(self) -> Path:
@@ -1380,6 +1516,10 @@ class Pool:
                 self._conn.rollback()
                 raise
 
+    def has_refs(self, mirror_name: str) -> bool:
+        with self._read() as c:
+            return c.execute("SELECT 1 FROM refs WHERE mirror_name = ? LIMIT 1", (mirror_name,)).fetchone() is not None
+
     def has_index_refs(self, mirror_name: str) -> bool:
         """Does this mirror currently have any index or release refs?
 
@@ -1721,7 +1861,7 @@ class Pool:
 
     # ── timeline points ──────────────────────────────────────────────────────
 
-    def record_point(self, repo: str, draft, stamp: str) -> tuple[int, bool]:
+    def record_point(self, repo: str, draft, stamp: str, *, legacy: bool = False) -> tuple[int, bool]:
         """`draft` (a `mmw.site.tracks.PointDraft`) as a point of `repo`:
         (its id, whether it is new). The same Release with the same files
         is the same point; with other files (another selection), another."""
@@ -1737,8 +1877,8 @@ class Pool:
                           (repo, draft.track, draft.fields.get("Suite"), draft.fields.get("Codename")))
                 tid = c.execute("SELECT id FROM tracks WHERE repo = ? AND name = ?",
                                 (repo, draft.track)).fetchone()[0]
-                row = c.execute("SELECT id, held FROM points WHERE track = ? AND ident = ? AND files = ?",
-                                (tid, draft.ident, files)).fetchone()
+                row = c.execute("SELECT id, held FROM points WHERE track = ? AND ident = ? AND files = ? AND legacy = ?",
+                                (tid, draft.ident, files, int(legacy))).fetchone()
                 if row is not None and row[1]:
                     c.commit()
                     return row[0], False
@@ -1746,8 +1886,8 @@ class Pool:
                     pid = row[0]
                     c.execute("UPDATE points SET held = 1 WHERE id = ?", (pid,))
                 else:
-                    pid = c.execute("INSERT INTO points (track, ident, files, date, stamp) VALUES (?, ?, ?, ?, ?)",
-                                    (tid, draft.ident, files, draft.date, stamp)).lastrowid
+                    pid = c.execute("INSERT INTO points (track, ident, files, date, stamp, legacy) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (tid, draft.ident, files, draft.date, stamp, int(legacy))).lastrowid
                 c.execute("CREATE TEMP TABLE IF NOT EXISTS _point_in (path TEXT PRIMARY KEY, checksum TEXT NOT NULL)")
                 c.execute("DELETE FROM _point_in")
                 c.executemany("INSERT OR REPLACE INTO _point_in VALUES (?, ?)", list(draft.files.items()))
@@ -1906,11 +2046,11 @@ class Pool:
         args = (network, track_id) if track_id is not None else (network,)
         with self._read() as c:
             rows = c.execute(
-                "SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held FROM points p "
+                f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_legacy_sql} FROM points p "
                 "JOIN network_points n ON n.point = p.id WHERE n.network = ?" + where
                 + ("" if stubs else " AND p.held = 1")
                 + " ORDER BY p.date DESC, p.stamp DESC, p.ident DESC", args).fetchall()
-        return [PoolPoint(*r[:6], bool(r[6])) for r in rows]
+        return [PoolPoint(*r[:6], bool(r[6]), bool(r[7])) for r in rows]
 
     def network_point_stamp(self, network: str, point_id: int) -> str | None:
         with self._read() as c:
@@ -1930,6 +2070,8 @@ class Pool:
         with self._lock:
             self._conn.execute("UPDATE points SET held = 0 WHERE id = ?", (point_id,))
             self._conn.execute("DELETE FROM point_files WHERE point = ?", (point_id,))
+            self._conn.execute("DELETE FROM point_units WHERE point = ?", (point_id,))
+            self._conn.execute("DELETE FROM point_unit_files WHERE point = ?", (point_id,))
             self._conn.commit()
 
     def link_snapshot_points(self, snapshot_id: int, point_ids: list[int]) -> None:
@@ -1938,13 +2080,57 @@ class Pool:
                                    [(snapshot_id, p) for p in point_ids])
             self._conn.commit()
 
-    def record_sent(self, network: str, point_ids, checksums, stamp: str) -> None:
+    def record_sent(self, network: str, point_ids, checksums, stamp: str, *, slices=None) -> None:
+        point_ids = list(point_ids)
         with self._lock:
             self._conn.executemany("INSERT OR IGNORE INTO sent_points (network, point, stamp) VALUES (?, ?, ?)",
                                    [(network, p, stamp) for p in point_ids])
+            self._conn.executemany(
+                "INSERT INTO sent_slices SELECT network, point, files FROM network_slices "
+                "WHERE network = ? AND point = ? "
+                "ON CONFLICT(network, point) DO UPDATE SET files = excluded.files",
+                [(network, p) for p in point_ids])
+            if slices is not None:
+                self._conn.executemany(
+                    "INSERT INTO sent_slices VALUES (?, ?, ?) ON CONFLICT(network, point) "
+                    "DO UPDATE SET files = excluded.files",
+                    [(network, p, digest) for p, digest in slices.items()])
             self._conn.executemany("INSERT OR IGNORE INTO sent_blobs (network, checksum) VALUES (?, ?)",
                                    [(network, c) for c in checksums])
             self._conn.commit()
+
+    def network_slice(self, network: str, point_id: int) -> str | None:
+        return self._slice_digest("network_slices", network, point_id)
+
+    def sent_slice(self, network: str, point_id: int) -> str | None:
+        return self._slice_digest("sent_slices", network, point_id)
+
+    def _slice_digest(self, table: str, network: str, point_id: int) -> str | None:
+        if not self._has_table(table):
+            return None
+        with self._read() as c:
+            row = c.execute(f"SELECT files FROM {table} WHERE network = ? AND point = ?",
+                            (network, point_id)).fetchone()
+        return row[0] if row else None
+
+    def set_network_slice(self, network: str, point_id: int, digest: str, *, date=None) -> None:
+        with self._lock:
+            self._conn.execute("INSERT INTO network_slices VALUES (?, ?, ?) "
+                               "ON CONFLICT(network, point) DO UPDATE SET files = excluded.files",
+                               (network, point_id, digest))
+            if date is not None:
+                self._conn.execute("INSERT INTO network_slice_dates VALUES (?, ?, ?) "
+                                   "ON CONFLICT(network, point) DO UPDATE SET date = excluded.date",
+                                   (network, point_id, date))
+            self._conn.commit()
+
+    def network_slice_date(self, network: str, point_id: int) -> str | None:
+        if not self._has_table("network_slice_dates"):
+            return None
+        with self._read() as c:
+            row = c.execute("SELECT date FROM network_slice_dates WHERE network = ? AND point = ?",
+                            (network, point_id)).fetchone()
+        return row[0] if row else None
 
     def sent_point_ids(self, network: str) -> set[int]:
         with self._read() as c:
@@ -1994,9 +2180,9 @@ class Pool:
         with self._read() as c:
             for i in range(0, len(wanted), 500):
                 chunk = wanted[i:i + 500]
-                for r in c.execute("SELECT id, track, ident, files, date, stamp, held FROM points "
-                                   f"WHERE id IN ({','.join('?' * len(chunk))})", chunk):
-                    out[r[0]] = PoolPoint(*r[:6], bool(r[6]))
+                for r in c.execute(f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_legacy_sql} FROM points p "
+                                   f"WHERE p.id IN ({','.join('?' * len(chunk))})", chunk):
+                    out[r[0]] = PoolPoint(*r[:6], bool(r[6]), bool(r[7]))
         return out
 
     def last_sent_by_repo(self, network: str) -> dict[str, str]:
@@ -2498,8 +2684,10 @@ class Pool:
         layered = ("AND NOT EXISTS (SELECT 1 FROM layer_rows l WHERE l.checksum = packages.checksum)"
                    if self._has_layer_rows else "")
         # A held timeline point keeps its files (superseded packages included).
+        point_rows = ("(SELECT point, blob FROM point_files UNION ALL SELECT point, blob FROM point_unit_files)"
+                      if self._has_point_unit_files else "point_files")
         pointed = ("AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b "
-                   "JOIN point_files f ON f.blob = b.id JOIN points p ON p.id = f.point "
+                   f"JOIN {point_rows} f ON f.blob = b.id JOIN points p ON p.id = f.point "
                    "WHERE b.checksum = packages.checksum AND p.held = 1"
                    + (" AND p.id NOT IN (SELECT value FROM json_each(?))" if released else "") + ")"
                    if self._has_point_files and self._has_snapshot_blobs else "")

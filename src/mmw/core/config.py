@@ -433,7 +433,19 @@ class SourceConfig(_StrictModel):
     gpg_key: str | None = None        # armoured key material
     gpg_key_name: str | None = None   # filename stem for the emitted key files
     extra_files: list[str] = []       # upstream URLs mirrored at their own path
+    keep_points: int | str | None = None
+    keep_suites: dict[str, int | str] = {}
     dist_upgrade: bool = False        # mirror changelogs.ubuntu.com meta-release too
+
+    @field_validator("keep_points", mode="before")
+    @classmethod
+    def _keep_points(cls, value):
+        return None if value is None else check_keep(value, "keep_points")
+
+    @field_validator("keep_suites", mode="before")
+    @classmethod
+    def _keep_suites(cls, value):
+        return NetworkConfig._valid_keep_suites(value)
 
     @model_validator(mode="after")
     def _upstream_urls_have_a_path(self):
@@ -852,6 +864,12 @@ DEFAULT_THEME = "mmw"
 
 class Settings(_StrictModel):
     mirror_dir: Path
+    keep_points: int | str = 3
+
+    @field_validator("keep_points", mode="before")
+    @classmethod
+    def _keep_points(cls, value):
+        return check_keep(value, "keep_points")
     # At least one: 0 built an `asyncio.Semaphore(0)` every download waited on
     # forever, and a `ThreadPoolExecutor(0)` that refused to start.
     max_connections: int = Field(default=os.cpu_count() or 10, ge=1)
@@ -1560,6 +1578,10 @@ def _apt_source_to_dict(s: SourceConfig) -> dict:
         d["gpg_key_name"] = s.gpg_key_name
     if s.extra_files:
         d["extra_files"] = s.extra_files
+    if s.keep_points is not None:
+        d["keep_points"] = s.keep_points
+    if s.keep_suites:
+        d["keep_suites"] = dict(s.keep_suites)
     if s.dist_upgrade:
         d["dist_upgrade"] = True
     return d
@@ -1646,6 +1668,7 @@ def _config_data(cfg: Config) -> dict:
             "mirror_dir": str(cfg.settings.mirror_dir),
             "database": str(cfg.settings.database),
             "max_connections": cfg.settings.max_connections,
+            **({"keep_points": cfg.settings.keep_points} if cfg.settings.keep_points != 3 else {}),
             # Omitted at the default, like the network flags above: a
             # hand-edited file should only say what was actually chosen.
             **({"theme": cfg.settings.theme}

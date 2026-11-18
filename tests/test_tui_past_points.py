@@ -31,13 +31,16 @@ def _found(app):
     return lambda: str(app.screen.query_one("#past-found", Static).render())
 
 
-def test_add_a_past_point_from_repositories(setup):
+@pytest.mark.parametrize("with_network", [True, False])
+def test_add_a_past_point_from_repositories(setup, with_network):
     from mmw.tui.app import MmwApp
     from mmw.tui.past_points import PastPointPage
     from mmw.tui.ui.widgets import Button
 
+    cfg = setup.cfg() if with_network else setup.cfg().model_copy(update={"networks": []})
+
     async def scenario():
-        app = MmwApp(setup.cfg(), setup.tmp, initial_section="repositories")
+        app = MmwApp(cfg, setup.tmp, initial_section="repositories")
         async with app.run_test(size=(120, 40)) as pilot:
             await settle(pilot)
             await pilot.press("t")
@@ -56,7 +59,8 @@ def test_add_a_past_point_from_repositories(setup):
                         "Added: ", "jammy 2022-04-01")
             assert not app.active_sync._past_locked
     asyncio.run(scenario())
-    assert "20220401" in _past_dates(setup)
+    with Pool(setup.mirror_dir) as pool:
+        assert any(p.date.startswith("20220401") for p in pool.repository_points(setup.repo))
 
 
 def test_editing_the_date_needs_another_look(setup):

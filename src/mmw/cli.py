@@ -655,7 +655,7 @@ def cmd_prune(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the confirmation prompt (implied when not a TTY)"),
     costs: bool = typer.Option(
-        False, "--costs", help="Preview what each keep_points choice would free, per network "
+        False, "--costs", help="Preview what each keep_points choice would free, per network and repository "
                                "(implies --dry-run; reads the pool once per choice)"),
 ):
     """Remove orphaned pool packages not referenced by any mirror."""
@@ -1380,3 +1380,29 @@ def cmd_verify(
     from mmw.commands.verify import run
     raise typer.Exit(run(_cfg_dir(), network=network, stat_blobs=stat_blobs,
                          hash_blobs=hash_blobs, repair=repair))
+
+
+@app.command("keep")
+def cmd_keep(
+    value: str = typer.Argument(..., help="Points to keep: a count, all, an age such as 90d, or default (--repo)"),
+    repo: str = typer.Option(None, "--repo", help="Repository name or URL; omitted sets the global default"),
+    suite: str = typer.Option(None, "--suite", help="Override this suite of --repo"),
+):
+    """Set repository history retention, independently of networks."""
+    from mmw.commands.retention import run
+    raise typer.Exit(run(_cfg_dir(), value, repo, suite))
+
+network_app = typer.Typer(help="Manage a network's repository history.", no_args_is_help=True)
+app.add_typer(network_app, name="network")
+
+
+@network_app.command("history")
+def cmd_network_history(
+    network: str = typer.Option(..., "--network", "-n", help="Network to include earlier points in"),
+    since: str = typer.Option(None, "--since", help="Include points dated on or after this date; omitted means all retained"),
+    repo: list[str] = typer.Option(None, "--repo", help="Limit to a repository name or URL (repeatable)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Look at what would be included without adding it"),
+):
+    """Include retained earlier points; current serving stays as it is."""
+    from mmw.commands.network_history import run
+    raise typer.Exit(run(_cfg_dir(), network, since, repo, dry_run))

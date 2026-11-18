@@ -88,7 +88,7 @@ def _free_stamp(pool: Pool, network: str) -> str:
 
 
 def walk_tree(network: NetworkConfig, cfg: Config, mirror_dir: Path, pool: Pool, *,
-              progress=None, stop_event=None) -> tuple[dict[str, str], str, list[str]]:
+              progress=None, stop_event=None, repository_files=None) -> tuple[dict[str, str], str, list[str]]:
     """`network`'s complete tree as served — layers applied, generated nginx
     left out — as (path → checksum, its settings JSON, warnings). Keys and
     upstream files are frozen into the pool on the way. The caller holds the
@@ -101,7 +101,8 @@ def walk_tree(network: NetworkConfig, cfg: Config, mirror_dir: Path, pool: Pool,
     from mmw.core.publisher import walk_network
     mirrors = walk_network(network, cfg, mirror_dir, sink, pool, result,
                            nginx_root=None, prune=False,
-                           progress=progress, stop_event=stop_event)
+                           progress=progress, stop_event=stop_event,
+                           **({"repository_files": repository_files} if repository_files else {}))
     warnings = [*result.dist_upgrade_warnings, *result.warnings]      # reported, never dropped
     if stop_event is not None and stop_event.is_set():
         raise InterruptedError("snapshot stopped — nothing was recorded")
@@ -159,13 +160,23 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
                                    rows=rows, settings=settings)
         pool.record_repo_versions(sid, network.name, stamp,
                                   repo_digests(rows, recorded_repos(settings)))
-        # Its points, as a sync would record them, listed for the snapshot.
-        from mmw.core.points import split_rows
+        # Label the repository points whose slices were actually walked.
+        # Before its first repository sync (or for layers/provider layouts),
+        # preserve the exact walk as a legacy network-owned point.
+        from mmw.core.points import by_repo, split_repo
+        from mmw.core.repository_points import current_repository_points, files_for_settings
         ids = []
-        for repo, draft in split_rows(pool, rows_map, settings, network.name, stamp):
-            pid, _new = pool.record_point(repo, draft, stamp)
-            pool.link_network_point(network.name, pid, stamp)
-            ids.append(pid)
+        for repo, mine in by_repo(rows_map, settings, network.name).items():
+            candidates = pool.recorded_repos(network.name).get(repo) or current_repository_points(pool, repo)
+            slices = {pid: files_for_settings(pool, pid, settings) for pid in candidates}
+            selected = [pid for pid, files in slices.items() if files]
+            if selected and {p: c for files in slices.values() for p, c in files.items()} == mine:
+                ids.extend(selected)
+            else:
+                for draft in split_repo(pool, repo, mine, settings, stamp):
+                    pid, _new = pool.record_point(repo, draft, stamp, legacy=True)
+                    pool.link_network_point(network.name, pid, stamp)
+                    ids.append(pid)
         pool.link_snapshot_points(sid, ids)
         return next(s for s in pool.snapshots(network.name) if s.id == sid)
 

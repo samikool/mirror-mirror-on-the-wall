@@ -588,6 +588,7 @@ class SyncView(Vertical):
         self._cfg = cfg
         self._past = past
         self._past_entries: dict[str, list] = {}
+        self._point_summaries = []
         self._past_failures: list[str] = []
         self._past_counts = [0, 0]              # fetched, already in the pool
         self._past_locked = False
@@ -926,7 +927,7 @@ class SyncView(Vertical):
     def _record_points(self) -> None:
         """Every sync is a point: each network using what synced records its
         own — said as a notice, never failing the sync."""
-        notice = points_notice(self._cfg, self._mirrors)
+        notice = points_notice(self._cfg, self._mirrors, outcomes=self._point_summaries)
         if notice:
             self.app.call_from_thread(self.notify, notice, title="Points")
 
@@ -1063,6 +1064,7 @@ class SyncView(Vertical):
                 self._past_entries[mirror.name] = summary.entries
                 self._past_counts[0] += summary.downloaded
                 self._past_counts[1] += summary.pooled
+        self._point_summaries.append(summary)
         if summary.key_errors and card:
             for f in summary.key_errors:
                 card._log_history.append(f"  [$mmw-warn]⚠ GPG key: {escape(f)}[/]")
@@ -1083,14 +1085,14 @@ class SyncView(Vertical):
         ))
 
 
-def points_notice(cfg, mirrors) -> str | None:
+def points_notice(cfg, mirrors, *, outcomes=None) -> str | None:
     """Record each network's points after a TUI sync of `mirrors`: what it
     says (new points, warnings), or None. Never raises."""
     from mmw.core import points
     lines: list[str] = []
     try:
         points.record_points_after_sync(cfg, cfg.settings.mirror_dir, {m.source for m in mirrors},
-                                        say=lines.append)
+                                        say=lines.append, outcomes=outcomes, attempted=mirrors)
     except Exception as e:  # noqa: BLE001 — a notice, not a failure
         lines.append(f"points not recorded: {e}")
     return "\n".join(lines) or None

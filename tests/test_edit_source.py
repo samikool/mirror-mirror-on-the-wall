@@ -346,3 +346,19 @@ def test_edit_source_page_fields_are_one_row_and_name_clash_is_refused_in_place(
             assert app.focused.id == "edit-source-name"
             assert result == []
     asyncio.run(go())
+
+
+def test_repository_retention_fields_use_shared_command():
+    page = EditSourcePage(_source(keep_points=4, keep_suites={'bookworm': 'all'}))
+    app = _host_app(page)
+
+    async def scenario():
+        async with app.run_test(size=(120, 45)) as pilot:
+            await _settle(pilot)
+            page.query_one('#edit-source-keep-points', Input).value = '10'
+            page.query_one('#edit-source-keep-suites', Input).value = 'trixie=all'
+            page.query_one('#btn-save-source', Button).press()
+            await _settle(pilot)
+            assert app.result.keep_points == 10
+            assert app.result.keep_suites == {'trixie': 'all'}
+    asyncio.run(scenario())

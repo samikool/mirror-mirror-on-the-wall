@@ -34,7 +34,7 @@ def lab(tmp_path):
     lab.cfg = cfg
     lab.units = sync_upstream(cfg(), src)
     lab.repo = repository_key(lab.units[0])
-    lab.recorded = points.record_network_points(cfg().networks[0], cfg(), lab.mirror_dir)
+    lab.recorded = points.record_points_after_sync(cfg(), lab.mirror_dir, {lab.repo}, say=lambda _: None)[0]
 
     def older(*debs, valid_until=None):
         """Upstream swapped for an older tree (the archive as it was); a deb
@@ -230,3 +230,12 @@ def test_only_a_404_means_not_there(two_suites):
     assert {u.suite for u in kept.units} == {"jammy"}
     assert {u.suite for _n, us in kept.networks for u in us} == {"jammy"}
     assert skip_missing_suites(plan, up.url, "x", status=lambda url: 200) is plan
+
+
+def test_past_points_record_repository_without_a_network(lab):
+    cfg = lab.cfg().model_copy(update={'networks': []})
+    lab.older(('hello', '2.9-1'))
+    report = lab.past(cfg)
+    assert len(report.added) == 1
+    with Pool(lab.mirror_dir) as pool:
+        assert len(pool.repository_points(lab.repo)) == 2

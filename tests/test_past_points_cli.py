@@ -92,16 +92,12 @@ def test_without_quiet_opens_the_tui_page(setup, monkeypatch):
 
 
 def test_a_source_no_network_publishes(setup):
-    other = config.SourceConfig(url="https://download.example.com/linux/repo", suites=["bookworm"],
-                                components=["main"], arches=["amd64"], name="extra")
-    cfg = setup.cfg()
-    config.save(cfg.model_copy(update={"sources": [setup.src, other],
-                                       "networks": [n.model_copy(update={
-                                           "select": [config.NetworkSelect(source=setup.src.url)]})
-                                           for n in cfg.networks]}), setup.tmp)
-    result = _invoke(setup, "--quiet", "--as-of", "2026-10-15", "--repo", "extra")
-    assert result.exit_code == 1
-    assert "no network publishes extra" in result.output
+    config.save(setup.cfg().model_copy(update={"networks": []}), setup.tmp)
+    result = _invoke(setup, "--quiet", "--as-of", "2026-10-15", "--repo", setup.repo)
+    assert result.exit_code == 0, result.output
+    assert "Added:" in result.output
+    with Pool(setup.mirror_dir) as pool:
+        assert len(pool.repository_points(setup.repo)) == 2
 
 
 def test_record_run_says_why_nothing_was_recorded(setup):

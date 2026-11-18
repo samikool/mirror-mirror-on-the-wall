@@ -31,9 +31,14 @@ Then:
 - **Snapshots are labels now.** Nothing takes one for you. Bundling and
   publishing choose points by date. Keep taking snapshots for the moments you
   want to name.
+- **Repository history is independent of networks.** APT units may sync
+  separately; points preserve each unit's last synced state. Existing points
+  remain legacy slices. New networks start with current points;
+  `mmw network history -n NAME` explicitly includes retained earlier points.
 - **History has a limit:** `keep_points` (default 3 per suite, `all`, or an
   age like `90d`), per suite with `keep_suites`. `mmw prune --dry-run
-  --costs` says what each choice frees. Points a snapshot holds, or that a
+  --costs` says what each repository and network choice frees. Repository
+  defaults live in `[settings] keep_points`, with per-source overrides. Points a snapshot holds, or that a
   network hasn't been sent yet, are always kept.
 - **Bundles need mmw on the far side.** Tick **Include mmw installer** (or
   `mmw bundle --installer`) for the first bundle to a far side that doesn't

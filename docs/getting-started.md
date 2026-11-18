@@ -350,7 +350,8 @@ rug out from under a served tree.
 
 ### Roll a network back: by date, or to a snapshot
 
-Every sync records what each network had, suite by suite. Publish a network
+Every successful APT sync records the repository state, suite by suite, even
+without a network. Networks record their selected slices of that history. Publish a network
 as it was on any recorded date — each repository as its last sync by then had
 it:
 
@@ -359,8 +360,10 @@ mmw publish -n lab --as-of 2026-11-03             # or 3nov, or a full stamp
 mmw publish -n lab                                # back to now
 ```
 
-How far back you can go is the network's `keep_points` (newest 3 per suite
-by default; `all`, or an age like `90d`): `mmw prune` drops older points'
+History is kept by repository rules (`[settings] keep_points`, default 3,
+with source overrides) and network rules. A network's `keep_points` keeps
+its newest three points per suite by default, or a count, `all`, or an age
+like `90d`: `mmw prune` drops older points'
 files, and a date that needs them is refused, naming the setting. A tree
 published as of a date keeps its points through prunes. A suite can have its
 own (`keep_suites = { bookworm = "all" }`), and `mmw prune --dry-run --costs`

@@ -32,6 +32,33 @@ class ArchiveUnavailable(LookupError):
     pass
 
 
+def archive_http_error(url: str, code: int) -> str:
+    message = f"{url}: HTTP {code}"
+    if urlparse(url).hostname == "snapshot.ubuntu.com" and code in (401, 403):
+        message += (" — Ubuntu's public snapshot service refused access. "
+                    "Its documented /ubuntu/TIMESTAMP/ URLs require no credentials; "
+                    "check https://snapshot.ubuntu.com/ and try again later. "
+                    "This response doesn't mean the suite is missing.")
+    return message
+
+
+def fetch_release(url: str) -> bytes | None:
+    """Read metadata without treating access or transport failures as absence."""
+    import httpx
+
+    from mmw.core.http import retrying_client
+    try:
+        with retrying_client(follow_redirects=True, timeout=30) as client:
+            response = client.get(url)
+    except httpx.HTTPError as e:
+        raise ArchiveUnavailable(f"{url}: {e}") from e
+    if response.status_code == 404:
+        return None
+    if response.status_code != 200:
+        raise ArchiveUnavailable(archive_http_error(url, response.status_code))
+    return response.content
+
+
 class BeforeArchive(ValueError):
     def __init__(self, stamp: str, start: str):
         self.stamp, self.start = stamp, start
@@ -145,6 +172,8 @@ def release_fields(fetch: Callable[[str], bytes | None], base: str, suite: str) 
     for name in ("Release", "InRelease"):
         try:
             data = fetch(f"{base.rstrip('/')}/dists/{suite}/{name}")
+        except ArchiveUnavailable:
+            raise
         except Exception:  # noqa: BLE001 — unreadable is "not there" here
             data = None
         if data:
@@ -274,7 +303,7 @@ def skip_missing_suites(plan: PastPlan, base: str, stamp: str, *, status=None) -
                 found = True
                 break
             if code != 404:
-                raise PastPointsFailed(f"{url}: HTTP {code}")
+                raise PastPointsFailed(archive_http_error(url, code))
         if not found:
             gone.append(suite)
     return plan.without_suites(gone, lambda s: f"{s}: not in the archive on {day(stamp)} — skipped")

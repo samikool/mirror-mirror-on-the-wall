@@ -57,6 +57,9 @@ class PastPointPage(Page):
 
     async def _look(self) -> None:
         from mmw.commands.past_points import look
+        self.targets = []
+        self.query_one("#btn-past-run", Button).disabled = True
+        self.query_one("#past-found", Static).update("")
         raw = self._raw()
         if not raw:
             self.set_status("Give a date or a snapshot URL.", "error")

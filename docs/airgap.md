@@ -167,6 +167,7 @@ repository's past state as points, from
 
 ```bash
 mmw sync --quiet --as-of 2026-10-15 --repo Debian     # its state at the end of that day
+mmw sync --quiet --as-of 2026-10-15 --repo https://archive.ubuntu.com/ubuntu
 mmw sync --quiet --from-url https://snapshot.ubuntu.com/ubuntu/20261015T013713Z/
 ```
 
@@ -177,6 +178,15 @@ Release `Origin`, `Label` and `Codename`. An Ubuntu archive and security
 repository can both match; each gets its own suites' points. `--repo`
 overrides the match. Without `--quiet` the TUI opens on **Add a past
 point**. In Sources, highlight a repository and choose **More… → Add a past point…** (or press `t`).
+
+Ubuntu imports use the public service's documented
+`https://snapshot.ubuntu.com/ubuntu/TIMESTAMP/` URLs for both metadata and
+packages, including security pockets. No Ubuntu account, Pro token or local
+APT configuration is needed. **Look** checks the snapshot metadata before
+enabling **Add point**. An HTTP 401 or 403 means the service refused access;
+mmw reports the URL and stops, rather than treating that suite as missing.
+Check [the service](https://snapshot.ubuntu.com/) and retry later. Imports
+never substitute today's archive for an unavailable historical state.
 
 The fetch uses all configured units of that repository, through the same
 code as a sync, so files already in the pool are not downloaded again.

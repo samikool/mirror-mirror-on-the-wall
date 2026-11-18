@@ -37,10 +37,7 @@ class Target:
 
 
 def _fetch(url: str) -> bytes | None:
-    from mmw.core.http import retrying_client
-    with retrying_client(follow_redirects=True, timeout=30) as client:
-        resp = client.get(url)
-    return resp.content if resp.status_code == 200 else None
+    return pp.fetch_release(url)
 
 
 def apt_repos(cfg, mirror_dir) -> dict[str, list[MirrorConfig]]:
@@ -107,8 +104,17 @@ def look(cfg, mirror_dir, *, as_of: str | None = None, from_url: str | None = No
         archive, name = pp.archive_for(key, origin)
         stamp = pp.stamp_for(archive, as_of)
         keys = [key]
-    return [Target(archive, name, stamp, k, repository_label(k, cfg),
-                   list(dict.fromkeys(u.suite for u in repos[k]))) for k in keys]
+    targets = [Target(archive, name, stamp, k, repository_label(k, cfg),
+                      list(dict.fromkeys(u.suite for u in repos[k]))) for k in keys]
+    # Automatic URL matching already read the snapshot. Explicit repository
+    # selection must check it too, before the TUI enables Add point.
+    if key:
+        for target in targets:
+            releases = [pp.release_fields(fetch, target.base, suite) for suite in target.suites]
+            if not any(releases):
+                raise pp.NoMatch(f"{target.base}: none of the configured suites "
+                                 f"({', '.join(target.suites)}) is available at this time")
+    return targets
 
 
 def report_lines(target: Target, report: pp.PastPointsReport) -> list[str]:

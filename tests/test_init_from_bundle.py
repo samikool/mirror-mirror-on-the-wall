@@ -9,7 +9,7 @@ from mmw.core.publisher.bundle import bundle_network
 
 from test_dry_run_totals import two_mirrors  # noqa: F401
 from test_tui_setup import _run
-from waiting import until
+from waiting import settle, until
 
 
 @pytest.fixture
@@ -89,7 +89,13 @@ async def pick_bundle(app, pilot, path):
     await until(pilot, lambda: app.screen.query("#btn-setup-from-bundle"))
     app.screen.query_one("#btn-setup-from-bundle", Button).press()
     await until(pilot, lambda: type(app.screen).__name__ == "PathPickPage" and app.screen.query("#path-input"))
-    app.screen.query_one("#path-input", Input).value = str(path)
+    # Initial tree highlights can still replace the input while the picker
+    # loads. Type only after that work settles, as a person would.
+    await settle(pilot)
+    box = app.screen.query_one("#path-input", Input)
+    box.focus()
+    box.value = str(path)
+    await pilot.pause()
     app.screen.query_one("#btn-use", Button).press()
     await until(pilot, lambda: type(app.screen).__name__ == "SetupPage"
                 and path in app.screen._bundle_paths)

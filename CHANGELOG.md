@@ -6,6 +6,98 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.1]
+
+Repository history now belongs to the repository, independently of networks.
+Transfers choose recorded points by date, show each suite's actual range, and
+resume from per-repository transfer records. Older bundles add history on the
+far side without requesting rollback or deleting retained points.
+
+Existing history remains available; new repository-owned points begin with
+the next successful sync, even when no new packages need downloading. The
+bundle format stays unchanged.
+
+### Added
+
+- Repository-owned APT history, including sources with no network. Units may
+  sync separately; each point keeps the accumulated successful state and each unit's
+  own Release metadata. Unselected unit updates leave a network's history
+  and transfer unchanged.
+- Include retained earlier repository points through `mmw network history`
+  or Networks → More… → Include earlier points. Look previews the selected
+  suites; Add keeps current serving unchanged.
+- Repository retention in Settings and Sources, or `mmw keep`: a default of
+  three points per suite, source and suite overrides, and repository costs
+  alongside network costs in `mmw prune --costs`.
+
+- `mmw sync --as-of DATE --repo NAME` and `mmw sync --from-url URL` record
+  a Debian or Ubuntu repository's past state as points, from
+  snapshot.debian.org or snapshot.ubuntu.com, without changing what any
+  network is on now. Files already in the pool are not downloaded again,
+  and `bundle --history` carries the points. In the TUI, press `t` on a
+  repository in Sources: Look shows the archive and repository match before
+  anything is fetched, and the fetch runs on the Sync page. A selected suite
+  the archive didn't have on that date is skipped with a warning.
+
+- Before converting an older far-side mirror to timelines, mmw keeps each
+  root's database and settings in `.mmw/site.before-timelines/` and reports
+  the backup once, in the CLI and the TUI. The store is not copied. Tidy
+  lists the backup as removable and leaves it for you to remove when ready.
+
+- `mmw init --from-bundle PATH` rebuilds `mmw.toml` from kept bundles,
+  restoring recorded APT sources and network settings. Supply several
+  bundles for several networks, choose a new mirror directory, and inspect
+  the TOML with `--dry-run`. Existing configs are never overwritten.
+- Setup can start from kept bundles, with sources and network settings
+  prefilled and an editable review before writing. Recovery names source
+  settings that bundles did not record, including VS Code, PyPI and local
+  APT sources that need adding again.
+
+- `mmw bundle --since DATE` sends what the far side lacks as of that date,
+  using a kept bundle's manifest or this side's retained points. Search
+  extra folders with `--bundles DIR`; recover lost transfers without sending
+  everything again. The TUI offers the same date and kept-folder choices,
+  previews the source, and offers a full transfer when no state is found.
+- `--since --history` includes retained intermediate points even when they
+  were previously bundled, so a lost bundle's history can be sent again.
+
+### Changed
+
+- Transfer now selects recorded points by date instead of asking for snapshots.
+  It defaults to each repository's last transfer through its latest points,
+  previews actual dates per suite and retained history, and supports earlier
+  targets with `bundle` / `stage --until DATE`. `--dry-run` previews the range
+  without writing a transfer.
+- Far-side apply review shows arriving point dates per suite and explains that
+  older points are stored without automatic rollback. Holds, pins and explicit
+  cleanup settings stay in control.
+
+- Every TUI action is now on screen: actions with no room in a page's
+  action bar are listed under **More…**, each with its key. Sources lists
+  Add packages, Sources file, Add a past point and Keep costs there; the
+  far side's home lists Adopt, Combine, Settings, Verify and the rest; a
+  network's Certs moved there too. The keys still work.
+
+- Setup can finish without any sources, including during bundle recovery.
+  Cancelling the first Add sources page returns to Setup; repositories can
+  be added after the configuration is written.
+
+- Bundle `--from` is deprecated; use `--since DATE` (a snapshot's date) or
+  `--full`. It still works and prints a warning.
+
+### Fixed
+
+- `mmw site adopt` with a folder on another machine (`host:/path`) or into
+  a mirror over ssh now adopts there, over ssh, instead of reporting "no APT
+  trees" — in the TUI too. A folder that doesn't exist now says so.
+
+- Debian security mirrors no longer treat the suite's `updates` alias as a
+  component. Past-point downloads also handle aliases already in an older
+  pool, including snapshot.debian.org's symlink listings.
+- Editing a repository that mirrors all components, suites or architectures
+  now loads available choices when Choose is opened, without requiring a
+  separate Probe first. Individual components can then be excluded.
+
 ## [1.5.0]
 
 History you can move through. Every sync records a point per suite; a far side

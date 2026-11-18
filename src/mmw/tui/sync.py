@@ -910,6 +910,11 @@ class SyncView(Vertical):
         with the lock released and the outcome said."""
         from mmw.commands.past_points import record_run
         try:
+            # The recorder opens its own pool connection. Archive fetches do
+            # not reconcile refs, so unlike a normal sync they have no writer
+            # barrier yet: commit this pool's queued rows before reading there.
+            if self._pool is not None:
+                self._past_failures.extend(f"pool write: {error}" for error in self._pool.flush_writes())
             text, ok = record_run(self._cfg, self._past, self._past_entries, self._past_failures,
                                   self._past_counts, stopped=self._stop_event.is_set())
         except Exception as e:  # noqa: BLE001 — said, never a crash

@@ -111,3 +111,41 @@ def test_look_failure_is_said_on_the_page(setup):
         async with app.run_test(size=(120, 40)) as pilot:
             await shows(pilot, _found(app), "the archive starts 2023-03-01")
     asyncio.run(scenario())
+
+
+def test_recording_waits_for_the_fetch_pools_pending_writes(setup, monkeypatch):
+    """The recorder opens another connection: fetched rows must be committed."""
+    from mmw.commands import past_points as command
+    from mmw.tui.app import MmwApp
+    from mmw.tui.ui.widgets import Button
+    flushed, seen = set(), []
+    real_flush, real_record = Pool.flush_writes, command.record_run
+    holder = {}
+
+    def flush(pool, *args, **kwargs):
+        result = real_flush(pool, *args, **kwargs)
+        flushed.add(pool)
+        return result
+
+    def record(*args, **kwargs):
+        live = holder['app'].active_sync._pool
+        seen.append(live in flushed)
+        return real_record(*args, **kwargs)
+
+    # Footer stats must not supply an incidental flush for the recorder.
+    monkeypatch.setattr(Pool, 'stats', lambda pool: {'packages': 0, 'total_size': 0})
+    monkeypatch.setattr(Pool, 'flush_writes', flush)
+    monkeypatch.setattr(command, 'record_run', record)
+
+    async def scenario():
+        app = MmwApp(setup.cfg(), setup.tmp, initial_section='repositories',
+                     start_past=('2026-10-15', None, setup.repo))
+        holder['app'] = app
+        async with app.run_test(size=(120, 40)) as pilot:
+            await shows(pilot, _found(app), 'Found: ')
+            app.screen.query_one('#btn-past-run', Button).press()
+            await until(pilot, lambda: bool(seen) and not app.active_sync._past_locked)
+            assert seen == [True]
+            with Pool(setup.mirror_dir, read_only=True) as pool:
+                assert any(p.date.startswith('20220401') for p in pool.repository_points(setup.repo))
+    asyncio.run(scenario())

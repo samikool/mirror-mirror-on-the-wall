@@ -87,6 +87,9 @@ bundle format stays unchanged.
 
 ### Fixed
 
+- Adding a past point in the TUI waits for fetched files to be committed before
+  recording history, avoiding intermittent "not synced yet" recording failures.
+
 - A file picker's late directory highlight no longer replaces a path already
   typed into its input, including bundle recovery and far-side apply.
 

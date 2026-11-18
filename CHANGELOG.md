@@ -87,6 +87,9 @@ bundle format stays unchanged.
 
 ### Fixed
 
+- A file picker's late directory highlight no longer replaces a path already
+  typed into its input, including bundle recovery and far-side apply.
+
 - `mmw site adopt` with a folder on another machine (`host:/path`) or into
   a mirror over ssh now adopts there, over ssh, instead of reporting "no APT
   trees" — in the TUI too. A folder that doesn't exist now says so.

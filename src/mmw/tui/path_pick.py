@@ -90,6 +90,12 @@ class PathPickPage(Page):
     @on(DirectoryTree.NodeHighlighted, "#path-tree")
     def _highlighted(self, event) -> None:
         entry = event.node.data
+        # Loading the tree can report a highlight after someone has already
+        # typed. Highlights are previews; an explicit file/directory selection
+        # still calls _set_selected and replaces the typed path.
+        boxes = list(self.query("#path-input").results(Input))
+        if not boxes or boxes[0].value.strip() != str(self._selected):
+            return
         if entry is not None:
             self._set_selected(entry.path)
 

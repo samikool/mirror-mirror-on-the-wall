@@ -253,3 +253,26 @@ def test_closing_straight_after_opening_never_trips_on_the_tree(tmp_path):
                 await _settle(pilot)
                 assert app.result is None
     _run(scenario)
+
+
+def test_late_tree_highlight_preserves_a_typed_file_path(tmp_path):
+    """A load finishing after typing must not replace the user's path."""
+    from types import SimpleNamespace
+    bundle = tmp_path / 'chosen.tar'
+    bundle.write_bytes(b'bundle')
+
+    async def scenario():
+        page = PathPickPage('Choose bundle', start=str(tmp_path), dirs_only=False)
+        app = _Harness(page)
+        async with app.run_test() as pilot:
+            await _settle(pilot)
+            box = page.query_one('#path-input', Input)
+            box.value = str(bundle)
+            page._highlighted(SimpleNamespace(node=SimpleNamespace(
+                data=SimpleNamespace(path=tmp_path))))
+            assert box.value == str(bundle)
+            page.query_one('#btn-use', Button).press()
+            await _settle(pilot)
+        return app.result
+
+    assert asyncio.run(scenario()) == str(bundle)

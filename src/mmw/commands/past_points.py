@@ -177,8 +177,15 @@ class PastRun:
         return [s for _t, plan in self.runs for s in plan.skipped]
 
 
-def plan_run(cfg, mirror_dir, targets: list[Target]) -> PastRun:
-    return PastRun([(t, pp.plan_past_points(cfg, mirror_dir, t.repo)) for t in targets])
+def plan_run(cfg, mirror_dir, targets: list[Target], *, status=None) -> PastRun:
+    """Each target's plan, less the suites its archive didn't have then."""
+    runs = []
+    for t in targets:
+        plan = pp.plan_past_points(cfg, mirror_dir, t.repo)
+        if plan.networks:
+            plan = pp.skip_missing_suites(plan, t.base, t.stamp, status=status)
+        runs.append((t, plan))
+    return PastRun(runs)
 
 
 def record_run(cfg, run: PastRun, entries: dict, failures: list[str], counts: list[int], *,
@@ -195,7 +202,7 @@ def record_run(cfg, run: PastRun, entries: dict, failures: list[str], counts: li
     with Pool(cfg.settings.mirror_dir) as pool:
         for target, plan in run.runs:
             if not plan.networks:
-                lines += [f"Skipped: {s}" for s in plan.skipped]
+                lines += [f"Skipped: {s}" for s in plan.skipped] + [f"⚠ {n}" for n in plan.notes]
                 continue
             mine = {u.name: entries[u.name] for u in plan.units if u.name in entries}
             report = pp.record_past_points(cfg, pool, plan, mine)

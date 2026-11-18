@@ -348,13 +348,15 @@ class MmwApp(UpdateOffers, ThemedApp):
             return
         try:
             run = await asyncio.to_thread(plan_run, self.cfg, self.cfg.settings.mirror_dir, targets)
-        except LookupError as e:
+        except (LookupError, RuntimeError) as e:          # RuntimeError: the archive failed
             self.notify(str(e), severity="error", timeout=10)
             return
         for note in run.skipped:
             self.notify(f"Skipped: {note}", severity="warning", timeout=10)
         mirrors = run.mirrors()
         if not mirrors:
+            notes = [n for _t, plan in run.runs for n in plan.notes]
+            self.notify("Nothing to fetch. " + " ".join(notes), severity="warning", timeout=15)
             return
         await self.switch_mode("sync")
         await self.screen.start(self.cfg, mirrors, past=run)

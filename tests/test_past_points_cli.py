@@ -113,3 +113,12 @@ def test_record_run_says_why_nothing_was_recorded(setup):
     text, ok = record_run(cfg, run, {}, ["http://x: 429"], [0, 0], stopped=False)
     assert not ok and "Nothing recorded" in text and "http://x: 429" in text
     assert "20220401" not in _past_dates(setup)
+
+
+def test_tui_plan_skips_a_missing_suite_and_record_run_says_so(setup):
+    from mmw.commands.past_points import look, plan_run
+    cfg = setup.cfg()
+    targets = look(cfg, setup.mirror_dir, as_of="2026-10-15", repo=setup.repo)
+    run = plan_run(cfg, setup.mirror_dir, targets, status=lambda url: 404)
+    assert run.mirrors() == []
+    assert run.runs[0][1].notes == ["jammy: not in the archive on 2026-10-15 — skipped"]

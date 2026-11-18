@@ -232,10 +232,53 @@ class PastPlan:
     networks: list[tuple[object, list[MirrorConfig]]]
     units: list[MirrorConfig]
     skipped: list[str]
+    notes: list[str] = field(default_factory=list)     # warnings the report carries (suites skipped)
 
     def fetching(self, base: str) -> list[MirrorConfig]:
         """The units, each fetching from `base` instead of its own URL."""
         return [u.model_copy(update={"fetch_base": base}) for u in self.units]
+
+    def without_suites(self, gone: list[str], note) -> "PastPlan":
+        """This plan less the units of `gone` suites, each said by `note(suite)`;
+        a network left with none drops out."""
+        if not gone:
+            return self
+        keep = lambda units: [u for u in units if u.suite not in gone]  # noqa: E731
+        networks = [(n, keep(units)) for n, units in self.networks if keep(units)]
+        return PastPlan(self.repo, self.label, networks, keep(self.units), list(self.skipped),
+                        [*self.notes, *(note(s) for s in gone)])
+
+
+def _status(url: str) -> int:
+    from mmw.core.http import retrying_client
+    with retrying_client(follow_redirects=True, timeout=30) as client:
+        return client.get(url).status_code
+
+
+def skip_missing_suites(plan: PastPlan, base: str, stamp: str, *, status=None) -> PastPlan:
+    """Drop the suites the archive didn't have at `stamp` (its Release is a
+    404 — a pocket created later), each with a warning. Anything else that
+    isn't a Release (a 429, a 5xx, no answer) raises PastPointsFailed: only
+    "not there" is a reason to go on without it."""
+    from mmw.site.versionref import day
+    status = status or _status
+    gone = []
+    for suite in dict.fromkeys(u.suite for u in plan.units):
+        found = None
+        for name in ("InRelease", "Release"):
+            url = f"{base.rstrip('/')}/dists/{suite}/{name}"
+            try:
+                code = status(url)
+            except Exception as e:  # noqa: BLE001 — named, nothing recorded
+                raise PastPointsFailed(f"{url}: {e}") from e
+            if code == 200:
+                found = True
+                break
+            if code != 404:
+                raise PastPointsFailed(f"{url}: HTTP {code}")
+        if not found:
+            gone.append(suite)
+    return plan.without_suites(gone, lambda s: f"{s}: not in the archive on {day(stamp)} — skipped")
 
 
 def plan_past_points(cfg, mirror_dir, repo_key: str) -> PastPlan:
@@ -331,7 +374,7 @@ def record_past_points(cfg, pool, plan: PastPlan, entries: dict[str, list[tuple[
     from mmw.core.snapshots import RecordingSink
 
     now = now or now_stamp()
-    report = PastPointsReport(skipped=list(plan.skipped))
+    report = PastPointsReport(skipped=list(plan.skipped), warnings=list(plan.notes))
     pool.flush_writes()                         # downloaded rows, before they are read back
     when = datetime.now(timezone.utc)
     for network, units in plan.networks:
@@ -366,7 +409,7 @@ def record_past_points(cfg, pool, plan: PastPlan, entries: dict[str, list[tuple[
 
 def add_past_points(cfg, mirror_dir, repo_key: str, archive: Archive, name: str, stamp: str, *,
                     base: str | None = None, events=None, stop_event=None,
-                    now: str | None = None) -> PastPointsReport:
+                    now: str | None = None, status=None) -> PastPointsReport:
     """Record `repo_key`'s state in `archive` at `stamp` as points of every
     network that selects it — fetched with each network's own units through
     the sync's own code, every URL taken from the archive (`base`, default
@@ -382,8 +425,10 @@ def add_past_points(cfg, mirror_dir, repo_key: str, archive: Archive, name: str,
     archive.check(name)
     base = (base or archive.base(name, stamp)).rstrip("/")
     plan = plan_past_points(cfg, mirror_dir, repo_key)
+    if plan.networks:
+        plan = skip_missing_suites(plan, base, stamp, status=status)
     if not plan.networks:
-        return PastPointsReport(skipped=list(plan.skipped))
+        return PastPointsReport(skipped=list(plan.skipped), warnings=list(plan.notes))
     entries: dict[str, list[tuple[str, str, str]]] = {}
     fetched = in_pool = 0
     with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:

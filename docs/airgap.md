@@ -185,6 +185,8 @@ does not change: a later `mmw bundle --history` carries them to the far
 side. Nothing is recorded unless every file arrived; a re-run fetches only
 what is missing.
 
+- A selected suite the archive didn't have yet on that date (a pocket
+  created later) is skipped with a warning; the others still get points.
 - snapshot.ubuntu.com starts on 2023-03-01, and its ports archive (arm64 and
   the other non-x86 architectures) is not public.
 - Third-party repositories have no archive.

@@ -185,3 +185,48 @@ def test_bundle_history_carries_the_past_point(lab, tmp_path):
         header = json.loads(tar.extractfile(".mmw/manifest.jsonl").readline())
     dates = sorted(p["date"][:8] for p in header["points"][lab.repo]["points"])
     assert "20220401" in dates
+
+
+@pytest.fixture
+def two_suites(tmp_path):
+    """jammy and jammy-backports synced; the archive's past has only jammy."""
+    up = UpstreamRepo(tmp_path, {("jammy", "main"): [make_deb(tmp_path / "u", "hello", "2.10-2")],
+                                 ("jammy-backports", "main"): [make_deb(tmp_path / "b", "hello", "2.11-1")]})
+    src = up.source(["jammy", "jammy-backports"])
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "m"), sources=[src],
+                        networks=[config.NetworkConfig(name="lab", root=tmp_path / "pub")])
+    units = sync_upstream(cfg, src)
+    points.record_network_points(cfg.networks[0], cfg, tmp_path / "m")
+    up.republish({("jammy", "main"): [make_deb(tmp_path / "old", "hello", "2.9-1")]}, date=OLD_DATE)
+    yield cfg, up, repository_key(units[0])
+    up.close()
+
+
+def test_a_suite_not_in_the_archive_then_is_skipped_with_a_warning(two_suites):
+    cfg, up, repo = two_suites
+    report = add_past_points(cfg, cfg.settings.mirror_dir, repo, UBUNTU, "ubuntu", "20220401T235959Z",
+                             base=up.url)
+    assert len(report.added) == 1 and "jammy 2022-04-01" in report.added[0]
+    assert report.warnings == ["jammy-backports: not in the archive on 2022-04-01 — skipped"]
+
+
+def test_no_suite_in_the_archive_then_records_nothing_and_says_so(two_suites, tmp_path):
+    cfg, up, repo = two_suites
+    up.republish({("noble", "main"): [make_deb(tmp_path / "n", "hello", "3.0-1")]}, date=OLD_DATE)
+    report = add_past_points(cfg, cfg.settings.mirror_dir, repo, UBUNTU, "ubuntu", "20220401T235959Z",
+                             base=up.url)
+    assert report.added == [] and report.already == []
+    assert len(report.warnings) == 2 and all("not in the archive" in w for w in report.warnings)
+
+
+def test_only_a_404_means_not_there(two_suites):
+    from mmw.core.past_points import plan_past_points, skip_missing_suites
+    cfg, up, repo = two_suites
+    plan = plan_past_points(cfg, cfg.settings.mirror_dir, repo)
+    with pytest.raises(PastPointsFailed, match="HTTP 429"):
+        skip_missing_suites(plan, up.url, "20220401T235959Z", status=lambda url: 429)
+    kept = skip_missing_suites(plan, up.url, "20220401T235959Z",
+                               status=lambda url: 404 if "backports" in url else 200)
+    assert {u.suite for u in kept.units} == {"jammy"}
+    assert {u.suite for _n, us in kept.networks for u in us} == {"jammy"}
+    assert skip_missing_suites(plan, up.url, "x", status=lambda url: 200) is plan

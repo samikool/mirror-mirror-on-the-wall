@@ -14,7 +14,7 @@ from mmw.site.timeline import migrate
 from mmw.tui.site.app import SiteApp
 
 from test_site_timeline import REPO, _put, _snap
-from waiting import until
+from waiting import settle, until
 
 
 @pytest.fixture
@@ -121,12 +121,14 @@ def test_tui_open_shows_conversion_notice_once_and_uses_shared_command(legacy, m
         app = SiteApp(open_set())
         async with app.run_test(size=(120, 40)) as pilot:
             if first:
-                await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog" and app.screen.query("#confirm-message"))
+                # The message and the button mount separately: wait for the one pressed.
+                await until(pilot, lambda: type(app.screen).__name__ == "ConfirmDialog"
+                            and app.screen.query("#confirm-message") and app.screen.query("#confirm"))
                 assert "converted to timelines (one-way)" in str(app.screen.query_one("#confirm-message").render())
                 assert str(backup(home)) in str(app.screen.query_one("#confirm-message").render())
                 app.screen.query_one("#confirm").press()
             await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage" and app.screen.query("#site-repos"))
-            await app.workers.wait_for_complete()
+            await settle(pilot)                 # a cancelled page worker is no error here
             assert type(app.screen).__name__ == "SiteHomePage"
     asyncio.run(run(True))
     asyncio.run(run(False))
@@ -195,7 +197,7 @@ def test_tui_tidy_names_the_removable_backup(legacy):
         app = SiteApp(open_set())
         async with app.run_test(size=(120, 40)) as pilot:
             await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage" and app.screen.query("#btn-site-tidy"))
-            await app.workers.wait_for_complete()
+            await settle(pilot)                 # a cancelled page worker is no error here
             app.screen.query_one("#btn-site-tidy").press()
             await until(pilot, lambda: type(app.screen).__name__ == "TidyRunPage" and app.screen.query("#run-done")
                         and "removable" in str(app.screen.query_one("#run-done").render()))

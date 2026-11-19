@@ -53,8 +53,8 @@ def after_command(checker: "U.Checker | None", mirror_dir: Path | None, exc=None
     (anything else) — never after Ctrl-C, a usage error or a crash."""
     if checker is None:
         return
-    import click
-    if exc is not None and not isinstance(exc, click.exceptions.Exit):
+    from typer import Exit
+    if exc is not None and not isinstance(exc, Exit):
         return
     offer = checker.result(wait=1.5)
     if offer is None:

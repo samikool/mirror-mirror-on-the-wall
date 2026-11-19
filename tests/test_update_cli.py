@@ -121,3 +121,24 @@ def test_no_offer_after_an_exception(monkeypatch):
         raise KeyboardInterrupt
     except KeyboardInterrupt:
         cmd.after_command(_checker("1.3.0"), None, exc=sys.exc_info()[1])
+
+
+def test_installer_finishes_without_a_separate_click_import(monkeypatch, tmp_path):
+    import builtins
+    from mmw.commands import installer
+
+    real_import = builtins.__import__
+
+    def without_click(name, globals=None, *args, **kwargs):
+        if name == "click" and (globals or {}).get("__name__", "").startswith("mmw."):
+            raise ModuleNotFoundError("No module named 'click'")
+        return real_import(name, globals, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_click)
+    monkeypatch.setattr(U.Checker, "start", lambda self: _checker("1.3.0"))
+    monkeypatch.setattr(cmd, "_interactive", lambda: False)
+    monkeypatch.setattr(installer, "run", lambda *args, **kwargs: 0)
+    result = CliRunner().invoke(cli.app, ["--config", str(tmp_path), "installer", "--out", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "is available" in result.output
+    assert result.exception is None

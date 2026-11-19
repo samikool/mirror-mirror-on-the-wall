@@ -27,8 +27,9 @@ def nginx_image(cache: Path, *, progress=None, stop_event=None) -> ImageResult:
                            label="Nginx", progress=progress, stop_event=stop_event)
 
 
-def publish_image(mirror_dir, sink, result, *, progress=None, stop_event=None) -> set[str]:
-    image = nginx_image(
+def publish_image(mirror_dir, sink, result, *, progress=None, stop_event=None, cached_only=False) -> set[str]:
+    from mmw.core.container_image import cached_image
+    image = cached_image(mirror_dir / CACHE) if cached_only else nginx_image(
         mirror_dir / CACHE, stop_event=stop_event,
         progress=(lambda phase: progress("nginx", f"nginx-image:{phase}")) if progress else None,
     )

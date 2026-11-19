@@ -121,10 +121,13 @@ def publish_network(
         sink = TreeSink(network.root, progress=progress, stop_event=stop_event,
                         prev=_open_record(network.root, network.name), recheck=recheck)
         try:
+            from mmw.core.transfer_ranges import repository_projection
+            projection = repository_projection(pool, network, cfg, mirror_dir)
             walk_network(network, cfg, mirror_dir, sink, pool, result,
                          nginx_root=str(network.root), prune=network.prune,
                          progress=progress, stop_event=stop_event,
-                         mirror_start_callback=mirror_start_callback)
+                         mirror_start_callback=mirror_start_callback,
+                         **({'repository_files': projection} if projection else {}))
             if not (stop_event and stop_event.is_set()):
                 _render_derived(network.root, progress, stop_event)
                 prepare_tree(network.root, network, cfg)
@@ -303,6 +306,30 @@ def publish_snapshot(
     return result
 
 
+@holds_shared_pool_lock
+def read_publish_moment(network: NetworkConfig, cfg: Config, mirror_dir: Path, when: str):
+    """A recorded network view, or repository points predating that network."""
+    from mmw.core.points import moment_rows, prepare_recordings, resolve_when
+    from mmw.core.transfer_ranges import recorded_selection, repository_owned, selected_tree
+    stamp = resolve_when(when)
+    prepare_recordings(mirror_dir, network.name)
+    with Pool(mirror_dir, read_only=True) as pool:
+        first = pool.first_recording(network.name)
+        if pool.points_at(network.name, stamp) or (first is not None and first <= stamp):
+            return moment_rows(pool, network.name, stamp), []
+        settings, current = recorded_selection(pool, network, mirror_dir, cfg)
+        if not repository_owned(pool, current, network):
+            return moment_rows(pool, network.name, stamp), []
+    with Pool(mirror_dir) as pool:
+        rows, settings, _, notes, _ = selected_tree(
+            pool, network, cfg, mirror_dir, settings, current, until=stamp)
+        info = pool.blob_info(rows.values())
+        if set(rows.values()) - info.keys():
+            raise ValueError('Some files of the selected repository points are no longer in the pool')
+        return ([(path, cs, info[cs][0], info[cs][1]) for path, cs in sorted(rows.items())], settings), notes
+
+
+@holds_shared_pool_lock
 def publish_as_of(
     network: NetworkConfig,
     cfg: Config,
@@ -319,7 +346,7 @@ def publish_as_of(
     """Lay `network` out at `root` as it was recorded at or before `when` (a
     date or stamp): each repository's points then, that day's settings.
     `moment`: `moment_rows`' answer, if already read. **Blocking.**"""
-    from mmw.core.points import AS_OF, moment_rows, prepare_recordings, resolve_when, seeded_note
+    from mmw.core.points import AS_OF, resolve_when, seeded_note
 
     stamp = resolve_when(when)
     result = NetworkPublishResult(network_name=network.name, dry_run=False)
@@ -328,9 +355,8 @@ def publish_as_of(
         raise ValueError(f"network '{network.name}' has no publish root — pass a directory")
     _check_destination(root, mirror_dir)
     if moment is None:
-        prepare_recordings(mirror_dir, network.name)
-        with Pool(mirror_dir, read_only=True) as pool:
-            moment = moment_rows(pool, network.name, stamp)
+        moment, notes = read_publish_moment(network, cfg, mirror_dir, when)
+        result.warnings.extend(notes)
     with Pool(mirror_dir, read_only=True) as pool:
         if note := seeded_note(pool, network.name, stamp):
             result.warnings.append(note)
@@ -485,6 +511,7 @@ def walk_network(
     stop_event=None,
     mirror_start_callback=None,
     repository_files=None,
+    preview=False,
 ) -> list:
     """Lay a network's complete tree into `sink` from `pool`: every group,
     dist-upgrade, nginx (only with `nginx_root`; snapshots record its settings
@@ -537,13 +564,20 @@ def walk_network(
         group_results, bases = provider.publish(ctx, walked) if walked else ([], set())
         for repo in sorted({repository_key(u) for u in deferred}):
             files = supplied[repo]
-            info = pool.blob_info(files.values())
-            if set(files.values()) - set(info):
-                raise ValueError(f"{repo}: recorded files are no longer in the pool — verify or sync again")
-            link = getattr(sink, 'link_pooled', sink.link)
-            for path, cs in files.items():
-                src, size = info[cs]
-                link(src, path, size, cs, 'pkg')
+            from mmw.core.publisher.links import publish_recorded_group
+            repo_units = [u for u in deferred if repository_key(u) == repo]
+            repo_bases = {u.mirror_base for u in repo_units}
+            for base in sorted(repo_bases):
+                nested = {u.mirror_base for u in mine if u.mirror_base != base and u.mirror_base.startswith(base + '/')}
+                own = {p: cs for p, cs in files.items() if p.startswith(base + '/')
+                       and not any(p.startswith(n + '/') for n in nested)}
+                name = next(u.name for u in repo_units if u.mirror_base == base)
+                if mirror_start_callback:
+                    mirror_start_callback(name, started + len(group_results) + 1,
+                                          started + len(group_results) + len(repo_bases))
+                group_results.append(publish_recorded_group(
+                    own, base, sink, pool, progress=progress, stop_event=stop_event,
+                    prune=prune, prune_exclude=nested, keep_extra=upstream_paths, name=name))
         bases |= {u.mirror_base for u in deferred}
         started += len(group_results)
         result.mirrors.extend(group_results)
@@ -565,7 +599,8 @@ def walk_network(
         nginx_rels: set[str] = set()
         if network.nginx:
             from mmw.core.publisher.nginx_container import publish_image
-            nginx_rels |= publish_image(mirror_dir, sink, result, progress=progress, stop_event=stop_event)
+            options = {'cached_only': True} if preview else {}
+            nginx_rels |= publish_image(mirror_dir, sink, result, progress=progress, stop_event=stop_event, **options)
         if network.nginx and nginx_root is not None:
             from mmw.core.publisher.nginx import deployment_nginx_files
             from mmw.core.publisher.nginx_container import TLS_INCLUDE

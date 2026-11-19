@@ -330,6 +330,29 @@ def publish_group(
     return result
 
 
+def publish_recorded_group(files, base, sink, pool, *, progress=None, stop_event=None,
+                           prune=False, prune_exclude=(), keep_extra=(), name=None):
+    """Replay immutable files through the same trust phases and prune as sync refs."""
+    from mmw.core.publisher import replay_kind
+    result = MirrorPublishResult(mirror_name=name or base)
+    info = pool.blob_info(files.values())
+    if set(files.values()) - info.keys():
+        raise ValueError(f'{base}: recorded files are no longer in the pool — verify or sync again')
+    buckets = {kind: [] for kind in (KIND_PKG, KIND_META, KIND_RELEASE)}
+    for path, checksum in sorted(files.items()):
+        src, size = info[checksum]
+        kind = replay_kind(path, base)
+        buckets[kind].append((path[len(base) + 1:], str(src), size, kind, checksum))
+    for rows in buckets.values():
+        if not _link_rows(rows, base, sink, result, progress, stop_event, False):
+            return result
+    if prune and not (stop_event and stop_event.is_set()):
+        keep = set(files) | {p for p in keep_extra if p.startswith(base + '/')}
+        live = {r[4] for kind in (KIND_META, KIND_RELEASE) for r in buckets[kind]}
+        result.pruned, result.pruned_bytes = sink.finalize_group(base, keep, live, set(prune_exclude))
+    return result
+
+
 def file_checksum(path: Path) -> str:
     """sha256 of a file on disk, streamed.
 

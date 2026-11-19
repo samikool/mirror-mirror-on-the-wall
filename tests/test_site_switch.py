@@ -66,6 +66,64 @@ def test_switch_places_then_deletes_in_order(tmp_path, monkeypatch):
     assert not (root / BASE / "pool/old").exists()                   # emptied directory pruned
 
 
+def test_obsolete_package_cleanup_failure_does_not_block_target(tmp_path, monkeypatch):
+    from mmw.core import disk_io
+    root, store, db, (v1, v2) = _setup(tmp_path, [V1, V2])
+    switch_repo(db, store, root, 'R', v1)
+    remove = disk_io.ops.remove
+
+    def denied(path):
+        if path.name == 'gone.deb':
+            raise PermissionError('cleanup denied')
+        return remove(path)
+
+    monkeypatch.setattr(disk_io.ops, 'remove', denied)
+    result = switch_repo(db, store, root, 'R', v2)
+    assert db.repo_state('R').serving.id == v2
+    assert db.pending_switches() == []
+    assert all((root / BASE / rel).read_bytes() == body for rel, body in V2.items())
+    assert (root / BASE / 'pool/old/gone.deb').exists()
+    assert any('gone.deb' in warning and 'could not be removed' in warning for warning in result.warnings)
+
+
+def test_retired_suite_cleanup_failure_is_a_warning(tmp_path, monkeypatch):
+    from mmw.core import disk_io
+    target = {p.replace('noble', 'jammy'): body for p, body in V2.items()}
+    root, store, db, (v1, v2) = _setup(tmp_path, [V1, target])
+    switch_repo(db, store, root, 'R', v1)
+    remove = disk_io.ops.remove
+
+    def denied(path):
+        if path.name == 'InRelease' and 'noble' in path.parts:
+            raise PermissionError('cleanup denied')
+        return remove(path)
+
+    monkeypatch.setattr(disk_io.ops, 'remove', denied)
+    result = switch_repo(db, store, root, 'R', v2)
+    assert db.repo_state('R').serving.id == v2
+    assert all((root / BASE / rel).read_bytes() == body for rel, body in target.items())
+    assert any('noble/InRelease' in warning for warning in result.warnings)
+
+
+def test_stale_signature_in_an_active_suite_must_be_removed(tmp_path, monkeypatch):
+    from mmw.core import disk_io
+    target = {p: body for p, body in V2.items() if not p.endswith('InRelease')}
+    target['dists/noble/Release'] = b'unsigned R2'
+    root, store, db, (v1, v2) = _setup(tmp_path, [V1, target])
+    switch_repo(db, store, root, 'R', v1)
+    remove = disk_io.ops.remove
+
+    def denied(path):
+        if path.name == 'InRelease':
+            raise PermissionError('active signature still present')
+        return remove(path)
+
+    monkeypatch.setattr(disk_io.ops, 'remove', denied)
+    with pytest.raises(PermissionError, match='active signature'):
+        switch_repo(db, store, root, 'R', v2)
+    assert db.repo_state('R').serving.id == v1
+
+
 def test_switch_resumes_after_interruption(tmp_path, monkeypatch):
     root, store, db, (v1, v2) = _setup(tmp_path, [V1, V2])
     switch_repo(db, store, root, "R", v1)

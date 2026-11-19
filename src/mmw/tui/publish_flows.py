@@ -108,7 +108,7 @@ class PublishFlows:
         include_verify=False skips phase 1 — used when the caller just verified
         (dry-run → confirm → publish) to avoid re-parsing every index.
         """
-        from mmw.core.verify import verify_mirror
+        from mmw.core.verify import verify_publish_unit
         from mmw.core.pool import Pool
         from mmw.core.publisher import (
             dry_run_mirror, NetworkPublishResult, network_totals,
@@ -149,7 +149,7 @@ class PublishFlows:
                     # its steps show beside the count.
                     say = ((lambda text: record("", f"verify:{m.name}: {text}"))
                            if record else None)
-                    return verify_mirror(m, mirror_dir, pool, say=say, stop_event=stop)
+                    return verify_publish_unit(m, net, mirror_dir, pool, say=say, stop_event=stop)
 
                 verify_results = await _run_per_mirror(
                     selected_mirrors, _verify, _report_verify, stop,
@@ -393,24 +393,21 @@ class PublishFlows:
 
     async def _execute_as_of_publish(self, net: "config.NetworkConfig", when: str,
                                      view, *, recheck: bool = False) -> None:
-        from mmw.core.pool import Pool
-        from mmw.core.points import moment_rows, prepare_recordings, resolve_when
-        from mmw.core.publisher import publish_as_of
+        from mmw.core.publisher import publish_as_of, read_publish_moment
 
         mirror_dir = self.cfg().settings.mirror_dir
 
         def read():
-            prepare_recordings(mirror_dir, net.name)
-            with Pool(mirror_dir, read_only=True) as pool:
-                return moment_rows(pool, net.name, resolve_when(when))
+            return read_publish_moment(net, self.cfg(), mirror_dir, when)
         try:
-            moment = await asyncio.to_thread(read)
+            moment, notes = await asyncio.to_thread(read)
             view.begin(len(moment[0]))
             result = await asyncio.to_thread(
                 lambda: publish_as_of(
                     net, self.cfg(), mirror_dir, when,
                     progress=view.record, stop_event=view.stop_event,
                     mirror_start_callback=view.notify_mirror_start, recheck=recheck, moment=moment))
+            result.warnings.extend(notes)
         except Exception as exc:  # noqa: BLE001 — shown on the panel
             view.mark_error(str(exc) or type(exc).__name__)
             return

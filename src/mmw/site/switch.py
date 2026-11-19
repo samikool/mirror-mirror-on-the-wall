@@ -51,6 +51,7 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
     # the release phase, not after: never upstream's signature beside new indexes.
     release_gone = sorted(r for r in gone if replay_kind(r, _base(r, state.bases)) == KIND_RELEASE)
     removed = 0
+    warnings = []
     for kind in PHASES:
         db.switch_phase(repo, kind)
         for rel in by_kind[kind]:
@@ -60,13 +61,24 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
                 progress(rel, kind)
         if kind == KIND_RELEASE:
             for rel in release_gone:
-                if disk_io.ops.remove(root / rel) is not None:
-                    removed += 1
+                try:
+                    if disk_io.ops.remove(root / rel) is not None:
+                        removed += 1
+                except OSError as exc:
+                    prefix = rel.rsplit('/', 1)[0] + '/'
+                    if any(p.startswith(prefix) for p in after):
+                        # A stale signature in an active suite can hide its
+                        # new metadata. That is activation, not optional tidying.
+                        raise
+                    warnings.append(f'{rel}: target point installed; obsolete file could not be removed ({exc})')
     db.switch_phase(repo, "delete")
     for rel in sorted(gone - set(release_gone)):
-        if disk_io.ops.remove(root / rel) is not None:
-            removed += 1
-            _prune_empty_parents(str(root), str((root / rel).parent))
+        try:
+            if disk_io.ops.remove(root / rel) is not None:
+                removed += 1
+                _prune_empty_parents(str(root), str((root / rel).parent))
+        except OSError as exc:
+            warnings.append(f'{rel}: target point installed; obsolete file could not be removed ({exc})')
     if held is None:                     # a resumed switch: as it was begun, else the repository's own hold
         begun = db.switch_held(repo)
         held = begun if begun is not None else state.held
@@ -76,7 +88,7 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
     db.set_meta(f"hold:{repo}", "")
     db.retire_overlays(repo, to_id, overlay)
     db.end_switch(repo)
-    return SwitchResult(placed, removed)
+    return SwitchResult(placed, removed, warnings=tuple(warnings))
 
 
 def _set_previous(db, from_id: int | None, to_id: int) -> None:
@@ -114,7 +126,7 @@ def switch_repo(db, store, root: Path, repo: str, to_id: int, *, progress=None,
         return SwitchResult(0, 0, held=layered.hold_reason, warnings=tuple(layered.warnings))
     db.begin_switch(repo, from_id, to_id, layered.digest, held)
     result = _run(db, store, Path(root), repo, from_id, to_id, progress, layered.digest, held)
-    return SwitchResult(result.placed, result.removed, warnings=tuple(layered.warnings))
+    return SwitchResult(result.placed, result.removed, warnings=(*layered.warnings, *result.warnings))
 
 
 def resume_switches(db, roots) -> list[str]:

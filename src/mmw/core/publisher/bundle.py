@@ -166,12 +166,33 @@ def _free_target(network, name: str, out_path) -> Path:
     return target
 
 
-def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None):
+def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None, *, cfg=None, repos=None):
     """Read an explicit baseline, shared by transfer planning and its preview."""
     from mmw.core.points import resolve_when
     baseline, source, skipped = None, None, []
     from mmw.core.publisher.kept import state_at
     since = resolve_when(since_date)
+    if cfg is not None:
+        from mmw.core.transfer_ranges import recorded_selection, repository_owned, retained_track_points, point_date
+        from mmw.core.repository_points import files_for_settings
+        with Pool(mirror_dir, read_only=True) as pool:
+            try:
+                settings, current = recorded_selection(pool, network, mirror_dir, cfg, only=repos)
+            except ValueError:
+                current = {}
+            if repository_owned(pool, current, network):
+                known = pool.points_of(pid for ids in current.values() for pid in ids)
+                selected = []
+                for tid in {p.track for p in known.values()}:
+                    candidates = [(point_date(pool, p, settings), p) for p in
+                                  retained_track_points(pool, network.name, tid, known, settings)]
+                    eligible = [(date, p) for date, p in candidates if date <= since]
+                    if not eligible:
+                        raise NothingToStandOn(f'no retained repository point at or before {since_date} '
+                                               '— choose a later From date or send everything')
+                    selected.append(max(eligible, key=lambda item: (item[0], item[1].stamp, item[1].ident))[1])
+                baseline = {cs for p in selected if p.held for cs in files_for_settings(pool, p.id, settings).values()}
+                return since, baseline, f'repository points as of {since_date}', []
     dirs = [*([network.bundle_dir] if network.bundle_dir is not None else []),
             ledger_dir(mirror_dir, network.name), *(kept_dirs or [])]
     state = state_at(dirs, network.name, since, skipped=skipped)
@@ -278,6 +299,8 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     from mmw.core.snapshots import find_snapshot, recorded_repos
     from mmw.site.versionref import day
 
+    from mmw.core.transfer_ranges import validate_dates
+    validate_dates(since_date, until)
     warm_for_publish(mirror_dir, progress, stop_event)
     from mmw.core import snapshots as _snaps            # the one clock snapshots and bundles share
     stamp = _snaps.now_stamp()
@@ -298,26 +321,40 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             since, since_by_repo = None, {}
     baseline, source, skipped = None, None, []
     if since_date is not None:
-        since, baseline, source, skipped = resolve_since(network, mirror_dir, since_date, kept_dirs)
+        since, baseline, source, skipped = resolve_since(network, mirror_dir, since_date, kept_dirs, cfg=cfg, repos=repos)
         since_by_repo = {}
     result = BundleResult(network_name=network.name, created=stamp, previous=since, full=full)
     result.since_source = source
     result.warnings.extend(skipped)
-    if until is not None:
+    from mmw.core.transfer_ranges import recorded_selection, repository_owned, selected_tree
+    detached, extra_files = False, {}
+    if to_ref == 'now':
+        with Pool(mirror_dir, read_only=True) as pool:
+            from mmw.core.resolve import network_mirrors
+            from mmw.core.repos import repository_key
+            repos_now = {repository_key(u) for u in network_mirrors(network, cfg, mirror_dir)}
+            if any(pool.repository_points(repo, stubs=True) for repo in repos_now):
+                settings, current = recorded_selection(pool, network, mirror_dir, cfg, only=repos)
+                detached = repository_owned(pool, current, network)
+    if detached:
+        bundle_output_path(network, 'x', out_path)
+        with Pool(mirror_dir) as pool:
+            _, settings, extra_files, notes, _ = selected_tree(
+                pool, network, cfg, mirror_dir, settings, current,
+                until=until, progress=progress, stop_event=stop_event)
+        result.warnings.extend(notes)
+    elif until is not None:
         from mmw.core.points import resolve_when
         resolve_when(until)  # Validate before reading or creating output.
         with Pool(mirror_dir, read_only=True) as pool:
-            settings = pool.settings_at(network.name, "99999999T999999Z")
-            if not settings:
-                raise ValueError("No recorded points for this network — sync its repositories first.")
-            current = pts.current_points(pool, network.name)
+            settings, current = recorded_selection(pool, network, mirror_dir, cfg)
     elif to_ref == "now":
         bundle_output_path(network, "x", out_path)               # destination check
         report = pts.record_network_points(network, cfg, mirror_dir, stamp=stamp, stop_event=stop_event)
         result.warnings.extend(report.warnings)
         settings = report.settings
         with Pool(mirror_dir) as pool:
-            current = pts.current_points(pool, network.name)
+            settings, current = recorded_selection(pool, network, mirror_dir, cfg)
     else:
         with Pool(mirror_dir) as pool:
             snap = find_snapshot(pool, network.name, to_ref)
@@ -353,11 +390,12 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             pool, network.name, settings, current, until=until, history=history,
             since=since, since_by_repo=since_by_repo if not full else {},
             explicit_since=since_date is not None or from_ref not in (_LAST, None),
-            sent_points=sent_points if not full else (), repos=chosen, warnings=result.warnings)
+            sent_points=sent_points if not full else (), repos=chosen, warnings=result.warnings, full=full)
         files = {pid: files_for_settings(pool, pid, settings) for ids in listing.values() for pid in ids}
         net_files: dict[str, str] = {}
         for pid in current.get(net_repo, []):
             net_files.update(pool.point_files(pid))
+        net_files.update(extra_files)
         from mmw.core.publisher.deployment import RETIRED
         for name in RETIRED:                         # an old snapshot's far-side scripts never travel
             net_files.pop(name, None)
@@ -367,6 +405,10 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         generated = dict(_far_nginx(settings, network.certs))
         gen_sums = {hashlib.sha256(d).hexdigest() for d in generated.values()}
         sent = baseline if baseline is not None else (set() if full else pool.sent_checksums(network.name, every | gen_sums))
+        from mmw.core.transfer_ranges import range_baseline
+        interval_base = range_baseline(pool, network.name, settings, current, since=since_date, full=full, listing=listing)
+        if interval_base is not None:
+            sent = interval_base
         missing = sorted(c for c in every if c not in info)
         if missing:
             raise ValueError(f"{len(missing)} file(s) of {network.name}'s points are no longer in the pool "

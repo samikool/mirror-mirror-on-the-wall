@@ -430,8 +430,9 @@ def test_differing_releases_apply_equals_publish_for_all_selections(tmp_path):
         assert _tree(root) == _tree(published)
 
 
-def test_incomplete_sync_keeps_previous_state_and_bundle_refuses_mismatched_refs(tmp_path):
-    import pytest
+def test_incomplete_sync_transfers_the_last_complete_repository_point(tmp_path):
+    import json
+    import tarfile
     from mmw.core import config, points
     from mmw.core.downloader import MirrorSummary
     from mmw.core.publisher.bundle import bundle_network
@@ -446,8 +447,12 @@ def test_incomplete_sync_keeps_previous_state_and_bundle_refuses_mismatched_refs
                                     attempted=units, say=lambda _: None)
     with Pool(md) as pool:
         assert len(pool.repository_points(units[0].source)) == 1
-    with pytest.raises(ValueError, match='complete sync'):
-        bundle_network(net, cfg, md, out_path=tmp_path / 'incomplete.tar')
+    result = bundle_network(net, cfg, md, out_path=tmp_path / 'complete.tar')
+    with tarfile.open(result.out_path) as tar:
+        header = json.loads(tar.extractfile('.mmw/manifest.jsonl').readline())
+    assert {p['date'][:8] for p in header['points'][units[0].source]['points']} == {'20261101'}
+    with Pool(md) as pool:
+        assert len(pool.repository_points(units[0].source)) == 1
 
 
 def test_past_plan_includes_configured_units_not_synced_yet(tmp_path):

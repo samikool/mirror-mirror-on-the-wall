@@ -440,8 +440,11 @@ class RootApply:
             for rel in sorted(set(old) - set(new)):
                 if rel in served:
                     continue                    # a repository serves it now: only the record goes
-                if disk_io.ops.remove(root / rel) is not None:
-                    _prune_empty_parents(str(root), str((root / rel).parent))
+                try:
+                    if disk_io.ops.remove(root / rel) is not None:
+                        _prune_empty_parents(str(root), str((root / rel).parent))
+                except OSError as exc:
+                    result.lines.append(f'  {rel}: new network files installed; obsolete file could not be removed ({exc})')
         if header.settings and self.network_files:
             db.set_meta("settings", header.settings)
         if self.foreign_mirrors:

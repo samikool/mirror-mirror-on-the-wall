@@ -195,6 +195,11 @@ does not change: a later `mmw bundle --history` carries them to the far
 side. Nothing is recorded unless every file arrived; a re-run fetches only
 what is missing.
 
+Transfer previews read retained repository points even if the network was
+created after the sync. You do not need to sync again just to give that
+network its own recording. Imported past points can also be transferred
+without replacing the live repository's files or sync references.
+
 - A selected suite the archive didn't have yet on that date (a pocket
   created later) is skipped with a warning; the others still get points.
 - snapshot.ubuntu.com starts on 2023-03-01, and its ports archive (arm64 and
@@ -211,9 +216,9 @@ Every successful APT sync records the repository's accumulated state per
 suite, even without a network. Architectures may sync separately: a point
 retains each unit's last successfully synced files and its own Release metadata. Networks
 select their slice; an update to an unselected unit does not create another
-network point or transfer unchanged files. If a failed sync left current
-refs different from the last complete recorded state, a live bundle asks
-for a complete sync rather than silently sending a different tree.
+network point or transfer unchanged files. Publish and transfer use the
+last complete repository point, even if a later failed sync left different
+live refs. Creating or editing a network does not require another sync.
 
 A new network starts with the current points. Include retained earlier
 points explicitly when you want its earlier history:
@@ -267,15 +272,26 @@ independently for every selected suite. Repositories need not share dates.
 A selected suite with no eligible point, or whose target was pruned, is named
 and refused; it is never silently dropped. History includes retained
 intermediate points through the end date and warns about pruned history.
+With the default From point, `--history` also carries older history imported
+or explicitly included since the last transfer. Explicit dates bound the range.
 `--repo` limits the repositories; a partial transfer advances only their local
 transfer records. `--dry-run` uses the same range planner without writing a
 bundle or advancing those records. These options also work with `mmw stage`.
 Legacy snapshot `--to` remains available, but cannot be combined with `--until`.
 
-Date-targeted transfers use the network's latest recorded selection and
-configuration, with older repository content. They do not need to read or
-verify unrelated live refs. Sync after changing the network's selection or
-configuration to record it before choosing an older content target.
+Date-targeted APT transfers use the network's current selection and
+configuration to slice retained repository points. They do not need a
+network-specific recording or unrelated live refs. A network created after
+the syncs can select those earlier points immediately.
+
+An APT X→Z transfer is cumulative across the retained points in that range.
+A site at Y, with X ≤ Y ≤ Z, can reach Z using the bundle and its existing
+Y files. A file that disappears after X and returns by Z is carried again;
+having sent it in an earlier transfer is not grounds to omit it. The last
+transfer supplies the default From point, not an exact-base requirement.
+Network configuration and keys travel with the range. A failed removal of
+an obsolete package warns after the target is installed rather than blocking
+the update; files required by Z must still be present and verified.
 
 The far-side review shows each arriving suite's date span. Importing an older
 point does **not** roll back a newer served point or remove retained points:

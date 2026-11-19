@@ -39,6 +39,20 @@ def _newest(cache: Path) -> Path | None:
     return tars[0] if tars else None
 
 
+def cached_image(cache: Path) -> ImageResult:
+    """Read the cached image without Docker, downloads or cache writes."""
+    path = _newest(cache)
+    if path is None:
+        return ImageResult(None, error='no cached container image')
+    side = path.with_name(path.name + '.sha256')
+    if disk_io.ops.exists(side):
+        checksum = disk_io.ops.read_text(side).strip()
+    else:
+        with disk_io.ops.open_rb(path) as fh:
+            checksum = disk_io.ops.hash_fh(fh)[0]
+    return ImageResult(path, checksum)
+
+
 def _use_cache(cache: Path, notes: list[str], why: str, error: str, say) -> ImageResult:
     cached = _newest(cache)
     if cached is None:

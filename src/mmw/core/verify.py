@@ -81,6 +81,28 @@ class VerifyResult:
         )
 
 
+def verify_publish_unit(mirror, network, mirror_dir, pool, **options):
+    """Check the retained view being published, independent of live sync refs."""
+    from mmw.core.repos import repository_key
+    from mmw.core.transfer_ranges import repository_targets
+    from mmw.core.repository_points import selected_point_files
+    repo = repository_key(mirror)
+    ids = repository_targets(pool, repo) if network.layer_for(repo) is None else []
+    if not ids:
+        return verify_mirror(mirror, mirror_dir, pool, **options)
+    files = {p: cs for pid in ids for p, cs in selected_point_files(pool, pid, [mirror]).items()}
+    result = VerifyResult(mirror.name, mirror.provider, total=len(files))
+    if not files:
+        result.error = 'no retained repository point matches this unit'
+        return result
+    known = pool.blob_info(files.values())
+    missing = [(p, cs) for p, cs in files.items() if cs not in known]
+    result.present = len(files) - len(missing)
+    result.missing_refs_count = len(missing)
+    result.missing_refs = missing[:10]
+    return result
+
+
 def verify_mirror(
     mirror: MirrorConfig,
     mirror_dir: Path,

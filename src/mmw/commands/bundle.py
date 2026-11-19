@@ -113,7 +113,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
 
         if dry_run:
             try:
-                plan = preview_transfer(net, mirror_dir, since=since, until=until,
+                plan = preview_transfer(net, mirror_dir, cfg=cfg, since=since, until=until,
                                         full=full or from_ref == "none", history=history,
                                         repos=keys, kept_dirs=kept)
                 from mmw.core.repos import repository_label
@@ -140,7 +140,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         # Only "now" is checked here: an existing snapshot's own files are
         # checked by the bundle itself (refused if any left the pool).
         if not to_ref and until is None and not preflight_ok("bundle", net, cfg, mirror_dir, allow_incomplete,
-                                              stdout_is_payload=streaming):
+                                              stdout_is_payload=streaming, **({'only': keys} if keys else {})):
             ok = False
             continue
 

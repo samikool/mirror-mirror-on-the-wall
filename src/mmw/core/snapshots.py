@@ -88,20 +88,23 @@ def _free_stamp(pool: Pool, network: str) -> str:
 
 
 def walk_tree(network: NetworkConfig, cfg: Config, mirror_dir: Path, pool: Pool, *,
-              progress=None, stop_event=None, repository_files=None) -> tuple[dict[str, str], str, list[str]]:
+              progress=None, stop_event=None, repository_files=None, sink=None,
+              preview=False, build_layers=True) -> tuple[dict[str, str], str, list[str]]:
     """`network`'s complete tree as served — layers applied, generated nginx
     left out — as (path → checksum, its settings JSON, warnings). Keys and
     upstream files are frozen into the pool on the way. The caller holds the
     pool's shared lock (see `take_snapshot`). Raises if the walk reported
     errors, and InterruptedError on a stop."""
-    sink = RecordingSink(pool)
+    sink = sink or RecordingSink(pool)
     result = NetworkPublishResult(network_name=network.name, dry_run=False)
     from mmw.core.layers import apply_build
-    apply_build(network, cfg, mirror_dir, pool, result)     # what the network serves, layer and all
+    if build_layers:
+        apply_build(network, cfg, mirror_dir, pool, result)     # what the network serves, layer and all
     from mmw.core.publisher import walk_network
     mirrors = walk_network(network, cfg, mirror_dir, sink, pool, result,
                            nginx_root=None, prune=False,
                            progress=progress, stop_event=stop_event,
+                           **({'preview': True} if preview else {}),
                            **({"repository_files": repository_files} if repository_files else {}))
     warnings = [*result.dist_upgrade_warnings, *result.warnings]      # reported, never dropped
     if stop_event is not None and stop_event.is_set():

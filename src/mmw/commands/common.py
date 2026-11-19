@@ -82,7 +82,7 @@ def interruptible(fn):
     return wrapper
 
 
-def incomplete_mirrors(net, cfg, mirror_dir: Path) -> list[str]:
+def incomplete_mirrors(net, cfg, mirror_dir: Path, *, only=None) -> list[str]:
     """One line per mirror of `net` the pool cannot fully serve. Read-only.
 
     The same check `tui/publish_flows.PublishFlows._run_pre_publish` runs, reached the same
@@ -92,13 +92,16 @@ def incomplete_mirrors(net, cfg, mirror_dir: Path) -> list[str]:
     """
     from mmw.core import resolve
     from mmw.core.pool import Pool
-    from mmw.core.verify import verify_mirror
+    from mmw.core.verify import verify_publish_unit
 
     mirrors = resolve.network_mirrors(net, cfg, mirror_dir)
+    if only is not None:
+        from mmw.core.repos import repository_key
+        mirrors = [m for m in mirrors if repository_key(m) in only]
     problems: list[str] = []
     with Pool(mirror_dir, read_only=True) as pool:
         for m in mirrors:
-            r = verify_mirror(m, mirror_dir, pool)
+            r = verify_publish_unit(m, net, mirror_dir, pool)
             if r.error:
                 problems.append(f"{r.mirror_name}: {r.error}")
             elif not r.complete:
@@ -107,7 +110,7 @@ def incomplete_mirrors(net, cfg, mirror_dir: Path) -> list[str]:
 
 
 def preflight_ok(verb: str, net, cfg, mirror_dir: Path, allow_incomplete: bool,
-                 warn_only: bool = False, *, stdout_is_payload: bool = False) -> bool:
+                 warn_only: bool = False, *, stdout_is_payload: bool = False, only=None) -> bool:
     """False when `net` must not be published/bundled. Prints the reason.
 
     `--allow-incomplete` is an escape hatch, not a silence: it still says what
@@ -124,7 +127,7 @@ def preflight_ok(verb: str, net, cfg, mirror_dir: Path, allow_incomplete: bool,
     say = eprint if stdout_is_payload else print
     warm_for_job(mirror_dir, say=lambda message: say(f"  {message}"))
     try:
-        problems = incomplete_mirrors(net, cfg, mirror_dir)
+        problems = incomplete_mirrors(net, cfg, mirror_dir, **({'only': only} if only is not None else {}))
     except Exception as e:
         # A pre-flight that cannot run is not a licence to skip it: an
         # unreadable pool is exactly when the thing it guards against is most

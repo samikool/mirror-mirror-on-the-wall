@@ -299,7 +299,7 @@ class BundlePickPage(Page):
         from mmw.commands.bundle import preview_transfer
         from mmw.site.versionref import day
         try:
-            plan = preview_transfer(self._net, self._mirror_dir, **options)
+            plan = preview_transfer(self._net, self._mirror_dir, cfg=getattr(self.app, 'cfg', None), **options)
             source = f"since {plan.source}" if options["since"] else plan.source
             if plan.source.startswith("the points"):
                 source += " (no bundle that old was found)"
@@ -340,6 +340,12 @@ class BundlePickPage(Page):
                 return
         if self._picked_repos() == ():
             self.set_status("Tick at least one repository.", "error")
+            return
+        from mmw.core.transfer_ranges import validate_dates
+        try:
+            validate_dates(self._range_options()['since'], self._range_options()['until'])
+        except ValueError as exc:
+            self.set_status(str(exc), 'error')
             return
         self.dismiss(self.choice())
 

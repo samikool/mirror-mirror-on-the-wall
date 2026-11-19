@@ -2,6 +2,181 @@
 from dataclasses import dataclass
 
 from mmw.core.repository_points import files_for_settings, wire_draft
+from mmw.core.snapshots import RecordingSink
+
+
+class PreviewSink(RecordingSink):
+    """The shared tree generator, with no pool or filesystem mutations."""
+
+    def __init__(self, pool):
+        super().__init__(pool)
+        self.info = {}
+
+    def link(self, src, rel, size, checksum, kind):
+        self.rows[rel] = checksum
+        self.info[checksum] = (src, size)
+        return 'linked'
+
+    link_pooled = link
+
+    def write(self, rel, data):
+        import hashlib
+        if rel.startswith('nginx/'):
+            return
+        checksum = hashlib.sha256(data).hexdigest()
+        self.rows[rel] = checksum
+        self.info[checksum] = (None, len(data))
+
+
+def repository_owned(pool, current, network=None):
+    if network is not None and network.layers:
+        return False
+    ids = [pid for repo, ids in current.items() if not repo.startswith('network:') for pid in ids]
+    return bool(ids) and all(not p.legacy for p in pool.points_of(ids).values())
+
+
+def repository_projection(pool, network, cfg, mirror_dir):
+    """Current configured slices; legacy providers keep their existing walk."""
+    from mmw.core.repository_points import selected_point_files
+    from mmw.core.resolve import network_mirrors
+    from mmw.core.repos import repository_key
+    units = network_mirrors(network, cfg, mirror_dir)
+    projection = {}
+    for repo in {repository_key(u) for u in units}:
+        if network.layer_for(repo) is not None:
+            continue
+        ids = repository_targets(pool, repo)
+        if not ids:
+            continue
+        files = {p: cs for pid in ids for p, cs in selected_point_files(pool, pid, units).items()}
+        if not files:
+            raise ValueError(f'{repo}: selected repository point is no longer kept — verify or choose another point')
+        projection[repo] = files
+    return projection
+
+
+def selected_tree(pool, network, cfg, mirror_dir, settings, current, *, until=None,
+                  preview=False, progress=None, stop_event=None):
+    """Generate a network view from immutable points, never from live refs."""
+    from mmw.core.snapshots import walk_tree, recorded_repos
+    from mmw.core.repos import attribute
+    targets, _, _ = select_range(pool, network.name, settings, current, until=until)
+    projection = {repo: {path: cs for pid in ids for path, cs in files_for_settings(pool, pid, settings).items()}
+                  for repo, ids in targets.items() if not repo.startswith('network:')}
+    from mmw.core.resolve import network_mirrors
+    from mmw.core.repos import repository_key
+    for unit in network_mirrors(network, cfg, mirror_dir):
+        projection.setdefault(repository_key(unit), {})
+    sink = PreviewSink(pool) if preview else RecordingSink(pool)
+    rows, settings, warnings = walk_tree(
+        network, cfg, mirror_dir, pool, repository_files=projection, sink=sink,
+        preview=preview, build_layers=False, progress=progress, stop_event=stop_event)
+    repos = recorded_repos(settings)
+    extras = {p: c for p, c in rows.items() if attribute(p, repos) is None}
+    return rows, settings, extras, warnings, sink.info if preview else {}
+
+
+def repository_targets(pool, repo):
+    from mmw.core.repository_points import current_repository_points
+    ids = current_repository_points(pool, repo)
+    if ids:
+        return ids
+    newest = {}
+    for point in pool.repository_points(repo, stubs=True):
+        old = newest.get(point.track)
+        if old is None or (point.date, point.stamp, point.ident) > (old.date, old.stamp, old.ident):
+            newest[point.track] = point
+    return [p.id for p in newest.values()]
+
+
+def recorded_selection(pool, network, mirror_dir, cfg=None, *, only=None):
+    """Read retained repository states even before a network has a recording.
+
+    Sync owns the states. A new network only selects their unit slices;
+    previewing it must neither resync nor manufacture historical states.
+    """
+    import json
+
+    from mmw.core.points import current_points
+    from mmw.core.resolve import network_mirrors
+    from mmw.core.repos import repository_key
+
+    settings = pool.settings_at(network.name, '99999999T999999Z')
+    current = current_points(pool, network.name)
+    if cfg is None:
+        if not settings:
+            raise ValueError('No recorded points for this network — sync its repositories first.')
+        return settings, current
+    units = network_mirrors(network, cfg, mirror_dir)
+    repos = {}
+    for unit in units:
+        repos.setdefault(repository_key(unit), []).append(unit)
+    if only is not None:
+        unknown = set(only) - set(repos)
+        if unknown:
+            raise ValueError(f'unknown repository {sorted(unknown)[0]!r}')
+        repos = {repo: mine for repo, mine in repos.items() if repo in only}
+    # A network's cached view must not hide states synced before it existed,
+    # nor keep a changed selection tied to that old view.
+    missing = {repo: mine for repo, mine in repos.items()
+               if not current.get(repo) or (network.layer_for(repo) is None and repository_targets(pool, repo))}
+    if not missing and settings:
+        return settings, current
+    data = json.loads(settings) if settings else {}
+    data.update(nginx_container=2, network=network.model_dump(mode='json'),
+                mirrors=[u.legacy_dict() for u in units])
+    bases = data.setdefault('repos', {})
+    for repo, mine in repos.items():
+        if repo in missing or repo not in bases:
+            bases[repo] = sorted({u.mirror_base for u in mine}, key=len, reverse=True)
+    data['bases'] = sorted(set(data.get('bases', [])) | {base for group in bases.values() for base in group})
+    from mmw.core.publisher.links import upstream_file_hosts, upstream_files
+    from mmw.providers import extra_hosts
+    data['upstream_hosts'] = upstream_file_hosts(upstream_files(mirror_dir, units))
+    data['extra_hosts'] = extra_hosts(network, units)
+    settings = json.dumps(data, sort_keys=True)
+    for repo in missing:
+        if network.layer_for(repo) is not None:
+            raise ValueError(f'{repo}: no recorded state for this network\'s layer — sync it first.')
+        ids = repository_targets(pool, repo)
+        selected = [pid for pid in ids if files_for_settings(pool, pid, settings)]
+        if not selected:
+            raise ValueError(f'{repo}: no retained points match the selected suites and architectures '
+                             '— sync this repository first.')
+        current[repo] = selected
+    current = {repo: ids for repo, ids in current.items() if repo in repos or repo.startswith('network:')}
+    if repository_owned(pool, current, network):
+        current = {repo: ids for repo, ids in current.items() if not repo.startswith('network:')}
+    if not current:
+        raise ValueError('No recorded points for this network — sync its repositories first.')
+    return settings, current
+
+
+def retained_track_points(pool, network, track, current, settings):
+    """Retained repository states, sliced by this network's selection."""
+    from mmw.site.tracks import content_ident
+    points = {p.id: p for p in current.values() if p.track == track}
+    for point in pool.network_points(network, track, stubs=True):
+        points.setdefault(point.id, point)
+    owned = next((p for p in points.values() if not p.legacy), None)
+    if owned is not None:
+        repo = pool.track_of_point(owned.id).repo
+        for point in pool.repository_points(repo, stubs=True):
+            if point.track == track:
+                points.setdefault(point.id, point)
+    selected, seen = [], set()
+    for point in points.values():
+        if not point.held:
+            selected.append(point)
+            continue
+        files = files_for_settings(pool, point.id, settings)
+        if not files:
+            continue
+        identity = content_ident(files)
+        if identity not in seen:
+            seen.add(identity)
+            selected.append(point)
+    return selected
 
 
 def point_date(pool, point, settings):
@@ -13,13 +188,116 @@ def point_date(pool, point, settings):
     return wire_draft(pool, point.id, files, settings, point.stamp).date if files else point.date
 
 
+def transferred_slice(pool, network, point, settings):
+    """Recover the selected slice named by the last-transfer convenience record.
+
+    Its digest must match: stale settings or a missing ledger can only make
+    us carry more, never omit data on the strength of an assumed selection.
+    """
+    import json
+    from mmw.core import disk_io
+    from mmw.core.publisher.manifest import ledger_dir, MANIFEST_SUFFIX
+    from mmw.site.tracks import content_ident
+    expected = pool.sent_slice(network, point)
+    if expected is None:
+        return None
+
+    def choices():
+        yield settings
+        yield pool.settings_at(network, '99999999T999999Z')
+        for bundle in pool.bundles(network):
+            path = ledger_dir(pool.pool_dir.parent, network) / f'{bundle.to_stamp}{MANIFEST_SUFFIX}'
+            try:
+                with disk_io.ops.open_file(path, 'r', encoding='utf-8') as fh:
+                    header = json.loads(fh.readline())
+                    if isinstance(header, dict):
+                        yield header.get('settings')
+            except (OSError, ValueError):
+                continue
+
+    for candidate in choices():
+        if not isinstance(candidate, str) or not candidate:
+            continue
+        try:
+            files = files_for_settings(pool, point, candidate)
+        except (ValueError, TypeError):
+            continue
+        if content_ident(files) == expected:
+            return set(files.values())
+    return None
+
+
+def range_baseline(pool, network, settings, targets, *, since=None, full=False, listing=None):
+    """Files guaranteed at every retained starting point inside X..Z.
+
+    Subtracting only X loses a file removed at Y and reintroduced at Z.
+    Intersect the selected slices throughout the interval instead. Missing
+    history makes the safe baseline empty, so it never causes an omission.
+    """
+    from mmw.core.points import resolve_when
+    if not repository_owned(pool, targets):
+        return None                      # compatibility with legacy network states
+    if full:
+        return set()
+    known = pool.points_of(pid for ids in targets.values() for pid in ids)
+    cursors = pool.sent_dates_by_track(network)
+    explicit = resolve_when(since) if since else None
+    common = set()
+    needed_elsewhere = set()
+    listed = pool.points_of(pid for ids in (listing or targets).values() for pid in ids)
+    for tid in {p.track for p in known.values()}:
+        target = next(p for p in known.values() if p.track == tid)
+        end = point_date(pool, target, settings)
+        start = explicit or cursors.get(tid)
+        needed = {cs for p in listed.values() if p.track == tid
+                  for cs in files_for_settings(pool, p.id, settings).values()}
+        if start is None:
+            needed_elsewhere.update(needed)
+            continue
+        if start > end and explicit is None:
+            needed_elsewhere.update(needed)
+            continue                     # a past destination needs a full payload
+        dated = [(point_date(pool, p, settings), p) for p in
+                 retained_track_points(pool, network, tid, known, settings)]
+        # A suite may be unchanged throughout the requested interval: its
+        # Release date predates From, but it is still the state at both ends.
+        before = [(date, p) for date, p in dated if date <= min(start, end)]
+        if not before:
+            needed_elsewhere.update(needed)
+            continue
+        first = max(before, key=lambda item: (item[0], item[1].stamp, item[1].ident))[1]
+        prior_slice = transferred_slice(pool, network, first.id, settings)
+        if prior_slice is None and (explicit is None or pool.sent_slice(network, first.id) is not None):
+            needed_elsewhere.update(needed)
+            continue
+        interval = [first, *(p for date, p in dated if start < date <= end)]
+        if any(not p.held for p in interval):
+            needed_elsewhere.update(needed)
+            continue
+        held = [set(files_for_settings(pool, p.id, settings).values()) for p in interval]
+        if prior_slice is not None:
+            held[0] = prior_slice
+        if held:
+            certain = set.intersection(*held)
+            common.update(certain)
+            needed_elsewhere.update(needed - certain)
+    return common - needed_elsewhere
+
+
 def settings_network(settings):
     import json
     return json.loads(settings).get('network', {}).get('name', '')
 
 
+def validate_dates(since, until):
+    from mmw.core.points import resolve_when
+    if since and until and resolve_when(since) > resolve_when(until):
+        raise ValueError('From must be at or before To — choose an earlier starting point.')
+
+
 def select_range(pool, network, settings, current, *, until=None, history=False,
-                 since=None, since_by_repo=None, explicit_since=False, sent_points=(), repos=None, warnings=None):
+                 since=None, since_by_repo=None, explicit_since=False, sent_points=(), repos=None, warnings=None,
+                 full=False):
     """(targets, listed history, points): never silently omit a selected track."""
     from mmw.core.points import resolve_when
     cutoff = resolve_when(until) if until else None
@@ -36,7 +314,7 @@ def select_range(pool, network, settings, current, *, until=None, history=False,
                 continue
             targets = []
             for tid in sorted({known[p].track for p in ids}):
-                candidates = pool.network_points(network, tid, stubs=True)
+                candidates = retained_track_points(pool, network, tid, known, settings)
                 dated = [(point_date(pool, p, settings), p.stamp, p.ident, p) for p in candidates]
                 eligible = [item for item in dated if item[0] <= cutoff]
                 track = pool.track_of_point(next(pid for pid in ids if known[pid].track == tid))
@@ -61,12 +339,19 @@ def select_range(pool, network, settings, current, *, until=None, history=False,
         start = (since_by_repo or {}).get(repo, since) if explicit_since else (since_by_repo or {}).get(repo)
         gaps = 0
         for tid in sorted({known[p].track for p in ids}):
-            for p in pool.network_points(network, tid, stubs=True):
+            for p in retained_track_points(pool, network, tid, known, settings):
                 first = pool.network_point_stamp(network, p.id) or p.stamp
                 after_start = start is None or first > start
-                if not explicit_since and tid in cursors:
+                if not p.legacy:
+                    lower = None if full else since if explicit_since else cursors.get(tid)
+                    after_start = lower is None or point_date(pool, p, settings) > lower
+                    if not explicit_since:
+                        # Newly imported or explicitly included older history
+                        # still rides the next default history transfer.
+                        after_start = after_start or start is None or first > start
+                elif not explicit_since and tid in cursors:
                     after_start = after_start or point_date(pool, p, settings) > cursors[tid]
-                if (p.id not in listing[repo] and (explicit_since or p.id not in sent_points)
+                if (p.id not in listing[repo] and (not p.legacy or explicit_since or p.id not in sent_points)
                         and after_start
                         and (cutoff is None or point_date(pool, p, settings) <= cutoff)):
                     if not p.held:
@@ -103,7 +388,7 @@ class TransferPreview:
     warnings: tuple[str, ...] = ()
 
 
-def preview_transfer(net, mirror_dir, *, since=None, until=None, full=False,
+def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=False,
                      history=None, repos=None, kept_dirs=None):
     """Resolve the same retained point range and checksum baseline as a transfer."""
     from mmw.core import points
@@ -111,17 +396,20 @@ def preview_transfer(net, mirror_dir, *, since=None, until=None, full=False,
     from mmw.core.publisher.bundle import _far_nginx, resolve_since
     from mmw.site.tracks import content_ident
     import hashlib
+    validate_dates(since, until)
 
     baseline, source, warnings = None, 'last transfer (local record)', []
     if since is not None:
-        since_stamp, baseline, source, warnings = resolve_since(net, mirror_dir, since, kept_dirs)
+        since_stamp, baseline, source, warnings = resolve_since(net, mirror_dir, since, kept_dirs, cfg=cfg, repos=repos)
     else:
         since_stamp = None
     with Pool(mirror_dir, read_only=True) as pool:
-        settings = pool.settings_at(net.name, '99999999T999999Z')
-        if not settings:
-            raise ValueError('No recorded points for this network — sync its repositories first.')
-        current = points.current_points(pool, net.name)
+        settings, current = recorded_selection(pool, net, mirror_dir, cfg, only=repos)
+        extras, external = {}, {}
+        if cfg is not None and repository_owned(pool, current, net):
+            _, settings, extras, notes, external = selected_tree(
+                pool, net, cfg, mirror_dir, settings, current, until=until, preview=True)
+            warnings.extend(notes)
         by_repo, fallback = points.history_since(pool, net.name)
         if since is None and fallback is None:
             source = "first transfer — send everything"
@@ -133,17 +421,23 @@ def preview_transfer(net, mirror_dir, *, since=None, until=None, full=False,
             history=net.history if history is None else history,
             since=since_stamp if since is not None else fallback,
             since_by_repo={} if since is not None or full else by_repo,
-            explicit_since=since is not None, sent_points=() if full else sent_points, repos=repos, warnings=warnings)
+            explicit_since=since is not None, sent_points=() if full else sent_points, repos=repos, warnings=warnings,
+            full=full)
         files = {p: files_for_settings(pool, p, settings) for ids in listing.values() for p in ids}
         for p in targets.get(f'network:{net.name}', []):
             files[p] = pool.point_files(p)
         checksums = {cs for f in files.values() for cs in f.values()}
+        checksums.update(extras.values())
         info = pool.blob_info(checksums)
+        info.update(external)
         if checksums - info.keys():
             raise ValueError('Some files of the selected points are no longer in the pool — verify or choose another range.')
         generated = _far_nginx(settings, net.certs)
         generated = {hashlib.sha256(data).hexdigest(): len(data) for data in dict(generated).values()}
         sent = baseline if baseline is not None else set() if full else pool.sent_checksums(net.name, checksums | generated.keys())
+        interval_base = range_baseline(pool, net.name, settings, targets, since=since, full=full, listing=listing)
+        if interval_base is not None:
+            sent = interval_base
         sizes = {cs: data[1] for cs, data in info.items()}
         sizes.update(generated)
         payload = sizes.keys() - sent
@@ -153,11 +447,17 @@ def preview_transfer(net, mirror_dir, *, since=None, until=None, full=False,
             for tid in sorted({known[p].track for p in targets[repo]}):
                 point = next(known[p] for p in targets[repo] if known[p].track == tid)
                 track = pool.track_of_point(point.id)
+                retained = retained_track_points(pool, net.name, tid, known, settings)
                 available = tuple(sorted({point_date(pool, p, settings)
-                                          for p in pool.network_points(net.name, tid) if p.held}))
+                                          for p in retained if p.held}))
+                to_date = point_date(pool, point, settings)
+                from_date = None if full else since_stamp if since else before.get(tid)
+                if since and not full:
+                    eligible = [point_date(pool, p, settings) for p in retained
+                                if point_date(pool, p, settings) <= min(since_stamp, to_date)]
+                    from_date = max(eligible, default=since_stamp)
                 rows.append(RangeRow(repo, track.suite or track.name.rsplit('/', 1)[-1] or 'files',
-                                     None if full else since_stamp if since else before.get(tid),
-                                     point_date(pool, point, settings),
+                                     from_date, to_date,
                                      sum(known[p].track == tid for p in ids), available))
         return TransferPreview(tuple(rows), len(payload), sum(sizes[c] for c in payload),
                                'everything' if full else source, tuple(warnings))

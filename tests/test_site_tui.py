@@ -205,6 +205,7 @@ def test_review_untick_note(env, tmp_path):  # noqa: F811
     async def check(app, pilot):
         await _choose(app, pilot, bundle)
         sl = app.screen.query_one("#review-repos", SelectionList)
+        await until(pilot, lambda: sl.is_mounted)
         sl.deselect(_key(cfg, "a"))
         await until(pilot, lambda: "stored and held" in str(app.screen.query_one("#review-notes").render()))
     _run(home, check)

@@ -1,6 +1,6 @@
 [project]
 name = "mirror-mirror-on-the-wall"
-version = "1.5.2"
+version = "1.5.3"
 description = "Mirror APT repositories, PyPI and VS Code for airgapped networks — exact upstream layouts at the real hostnames, signatures preserved, one deduplicated pool"
 readme = "README.md"
 license = "AGPL-3.0-or-later"

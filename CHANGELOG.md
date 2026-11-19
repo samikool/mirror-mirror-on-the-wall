@@ -6,6 +6,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.2]
+
+### Fixed
+
+- APT transfer and publish now find repository points synced before a network
+  was created. Historical imports can be transferred without another live
+  sync, using the network's selected suites and architectures.
+- APT range transfers include files needed when applying an X-to-Z transfer
+  to an intermediate retained point, including files removed and later
+  reintroduced. Obsolete file cleanup failures warn without blocking a
+  complete target from being served.
+- Exporting an installer no longer fails with a missing Click import when
+  installed with newer Typer versions.
+- Historical snapshot imports check access before fetching and explain Ubuntu
+  snapshot service access failures in both the CLI and TUI instead of
+  treating them as missing suites.
+
 ## [1.5.1]
 
 Repository history now belongs to the repository, independently of networks.

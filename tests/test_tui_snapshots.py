@@ -117,7 +117,7 @@ async def _transfer_preview_ready(pilot):
 
 def test_snapshot_bundle_picker(snap_compare, tmp_path, monkeypatch):
     _point_preview_demo(monkeypatch)
-    from mmw.tui.snapshot_pages import BundlePickPage
+    from mmw.tui.point_pages import BundlePickPage
     from test_tui_sweep import snapshot_status_demo
 
     net = config.NetworkConfig(name="lab", select=[])
@@ -127,7 +127,7 @@ def test_snapshot_bundle_picker(snap_compare, tmp_path, monkeypatch):
 
 def test_snapshot_bundle_picker_mmw(snap_compare, tmp_path, monkeypatch):
     _point_preview_demo(monkeypatch)
-    from mmw.tui.snapshot_pages import BundlePickPage
+    from mmw.tui.point_pages import BundlePickPage
     from test_tui_sweep import snapshot_status_demo
 
     net = config.NetworkConfig(name="lab", select=[])
@@ -137,7 +137,7 @@ def test_snapshot_bundle_picker_mmw(snap_compare, tmp_path, monkeypatch):
 
 
 def test_snapshot_publish_picker(snap_compare):
-    from mmw.tui.snapshot_pages import PublishPickPage
+    from mmw.tui.point_pages import PublishPickPage
     from test_tui_sweep import snapshot_status_demo
 
     net = config.NetworkConfig(name="lab", root=_Path("/srv/www/lab"), select=[])

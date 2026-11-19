@@ -22,7 +22,7 @@ def _net(**kw):
 def _seed(pool, days, network="oak"):
     ids = {}
     for d in days:
-        pid, _ = pool.record_point("R", _draft(d), f"202611{d:02d}T120000Z")
+        pid, _ = pool.record_point("R", _draft(d), f"202611{d:02d}T120000Z", legacy=True)
         pool.link_network_point(network, pid, f"202611{d:02d}T120000Z")
         ids[d] = pid
     return ids

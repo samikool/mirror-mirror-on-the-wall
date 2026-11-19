@@ -42,19 +42,18 @@ codes — see [far-side.md](far-side.md#exit-codes).
 | [`mmw bundle`](#mmw-bundle) | Transfer recorded points: from each repository's last transfer to its latest recorded points |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
+| [`mmw history`](#mmw-history) | List repository-owned points; no snapshot or network history import is needed |
 | [`mmw init`](#mmw-init) | Setup wizard, or recover mmw.toml from kept bundles |
 | [`mmw installer`](#mmw-installer) | Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh` on the far side puts mmw on the path, offline |
 | [`mmw keep`](#mmw-keep) | Set repository history retention, independently of networks |
 | [`mmw manage`](#mmw-manage) | Manage configured mirrors (add, remove) |
 | [`mmw move-database`](#mmw-move-database) | Move the pool database (settings.database) and point mmw.toml at it |
-| [`mmw network`](#mmw-network) | Manage a network's repository history |
 | [`mmw packages`](#mmw-packages) | Your own .debs: into a folder repository, or into an upstream mirror as one network serves it |
 | [`mmw prune`](#mmw-prune) | Remove orphaned pool packages not referenced by any mirror |
 | [`mmw publish`](#mmw-publish) | Publish mirrors to network targets |
 | [`mmw retry-failed`](#mmw-retry-failed) | Retry missing VS Code files from saved metadata, without a full sync |
 | [`mmw signing-key`](#mmw-signing-key) | The keys mmw signs repositories with |
 | [`mmw site`](#mmw-site) | mmw on the far side of the airgap: apply bundles to your mirror's roots, serve any kept version |
-| [`mmw snapshot`](#mmw-snapshot) | Network snapshots: a network's exact state, kept to bundle to or publish again |
 | [`mmw sources-file`](#mmw-sources-file) | Print the sources file a client saves in /etc/apt/sources.list.d/ — for a folder repository, or (with --network) an upstream mirror a network adds packages to |
 | [`mmw stage`](#mmw-stage) | Lay a bundle out as a directory of hardlinks to the pool — the same members as `mmw bundle`, almost no disk — to tar, rsync or inspect without mmw |
 | [`mmw sync`](#mmw-sync) | Sync configured mirrors |
@@ -116,17 +115,15 @@ latest recorded points. Use --since / --until for earlier dates.
 | `--network`, `-n` |  | Bundle one network by name |
 | `--out`, `-o` |  | Write here instead of the network's bundle_dir. '-' streams the tar to stdout (needs -n). |
 | `--allow-incomplete` |  | Bundle even if the pool cannot serve everything the indexes promise. The gap is invisible in the bundle and surfaces as a 404 during `apt install` on the far side, so you are told exactly what is missing. |
-| `--from` |  | Deprecated: bounds history from a snapshot (stamp, label or id), or 'none' for full. Use --since DATE or --full. |
 | `--since` |  | Send what the far side lacks, as it was on DATE (a kept bundle's manifest, else this side's points) |
 | `--dry-run` |  | Preview retained point ranges and payload without writing a transfer. |
 | `--until` |  | Carry each suite's newest retained point at or before DATE; never requests a far-side rollback. |
 | `--bundles` |  | Search kept bundles here too (repeatable) |
-| `--to` |  | Snapshot to bring it to (stamp, label or id). Default: latest recorded points. |
 | `--repo` |  | Only this repository (URL or name; repeatable). Needs -n. |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
 | `--history`, `--newest` |  | mmw far side: every point since the last bundle, or each suite's newest (default: the network's `history`). |
-| `--full` |  | Carry every file again, sent before or not (the same as --from none). |
+| `--full` |  | Carry every file again, sent before or not. |
 
 ### `mmw certs`
 
@@ -149,6 +146,16 @@ and sign it with your CA.
 Show what would be downloaded without fetching anything.
 
 Takes no options.
+
+### `mmw history`
+
+List repository-owned points; no snapshot or network history import is needed.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--network`, `-n` |  | Limit to this network's current selection |
+| `--repo` |  | Repository name or URL (repeatable) |
+| `--since` |  | Show points on or after DATE |
 
 ### `mmw init`
 
@@ -204,12 +211,6 @@ Move the pool database (settings.database) and point mmw.toml at it.
 |--------|---------|-------------|
 | `PATH` |  | New path for the pool database file, e.g. on a fast disk *(required)* |
 
-### `mmw network`
-
-Manage a network's repository history.
-
-Takes no options.
-
 ### `mmw packages`
 
 Your own .debs: into a folder repository, or into an upstream mirror as one network serves it.
@@ -229,7 +230,7 @@ Remove orphaned pool packages not referenced by any mirror.
 ### `mmw publish`
 
 Publish mirrors to network targets. Without --quiet opens the TUI
-(--snapshot / --as-of / --root / --recheck / --take-snapshot always run headless).
+(--as-of / --root / --recheck always run headless).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -237,10 +238,8 @@ Publish mirrors to network targets. Without --quiet opens the TUI
 | `--network`, `-n` |  | Publish a specific network by name |
 | `--dry-run` |  | Show what would be linked without writing |
 | `--allow-incomplete` |  | Publish even if the pool cannot serve everything the indexes promise (you are still told what is missing). |
-| `--snapshot`, `-s` |  | Publish this snapshot (stamp, label or id — see `mmw snapshot list`) instead of the current state; 'live' is the current state. Needs -n. |
 | `--root` |  | Publish into this directory instead of the network's root. Its nginx config points there with the same hostnames, so serve it on its own address. Needs -n. |
 | `--recheck` |  | Ignore the record of the last publish and recheck every published file. |
-| `--take-snapshot` |  | Take a snapshot of the network first. |
 | `--as-of` |  | Publish the network as it was recorded on this date (2026-11-03, 3nov, or a stamp): each repository as its last sync then had it. Needs -n. |
 
 ### `mmw retry-failed`
@@ -267,12 +266,6 @@ mmw on the far side of the airgap: apply bundles to your mirror's roots, serve a
 
 Takes no options.
 
-### `mmw snapshot`
-
-Network snapshots: a network's exact state, kept to bundle to or publish again.
-
-Takes no options.
-
 ### `mmw sources-file`
 
 Print the sources file a client saves in /etc/apt/sources.list.d/ — for a folder
@@ -295,17 +288,15 @@ mmw.
 | `--network`, `-n` |  | The network to stage *(required)* |
 | `--out`, `-o` |  | Directory to stage into instead of the network's bundle_dir |
 | `--allow-incomplete` |  | Stage even if the pool cannot serve everything the indexes promise. |
-| `--from` |  | Deprecated: bounds history from a snapshot, or 'none' for everything. Use --since DATE or --full. |
 | `--since` |  | Send what the far side lacks as of DATE, from a kept manifest or retained points |
 | `--dry-run` |  | Preview retained point ranges and payload without writing a transfer. |
 | `--until` |  | Carry each suite's newest retained point at or before DATE; never requests a far-side rollback. |
 | `--bundles` |  | Search kept bundles here too (repeatable) |
-| `--to` |  | Snapshot to bring it to. Default: latest recorded points. |
 | `--repo` |  | Only this repository (URL or name; repeatable). |
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
 | `--history`, `--newest` |  | mmw far side: every point since the last bundle, or each suite's newest (default: the network's `history`). |
-| `--full` |  | Carry every file again, sent before or not (the same as --from none). |
+| `--full` |  | Carry every file again, sent before or not. |
 
 ### `mmw sync`
 

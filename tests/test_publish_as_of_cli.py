@@ -33,7 +33,7 @@ def test_cli_as_of_reaches_publish(two_mirrors, tmp_path, monkeypatch):  # noqa:
 
 
 @pytest.mark.parametrize("extra,message", [
-    (["--snapshot", "x"], "--as-of"), (["--dry-run"], "--as-of"), (["--take-snapshot"], "--as-of")])
+    (["--dry-run"], "--as-of")])
 def test_as_of_combinations(two_mirrors, tmp_path, monkeypatch, extra, message):  # noqa: F811
     cfg, net, md = two_mirrors
     r = run(monkeypatch, _cfg_dir(cfg, tmp_path), "publish", "-n", net.name, "--as-of", "2030-01-01", *extra)

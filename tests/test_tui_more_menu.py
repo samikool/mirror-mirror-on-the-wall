@@ -42,7 +42,7 @@ def test_more_lists_the_extras_and_runs_one(tmp_path):
             menu = app.screen
             options = menu.query_one("#more-list", OptionList)
             labels = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
-            assert [x.split()[0] for x in labels] == ["Add", "Sources", "Add", "Keep"]
+            assert [x.split()[0] for x in labels] == ["Add", "Sources", "Add", "History", "Keep"]
             assert any("Add a past point…" in x and x.endswith("[dim]t[/]") for x in labels)
             # The sources file is only a folder repository's: shown, but not offered here.
             assert options.get_option("sources_file").disabled

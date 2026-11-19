@@ -12,14 +12,14 @@ to do yourself, by where you start from. Do the connected side first.
 ## The connected side
 
 Install the new mmw and sync as usual. On the first sync (or the first
-bundle, publish or `mmw snapshot list`, whichever comes first), each network:
+bundle or publish, whichever comes first), each network:
 
 - **Turns its snapshots into points**, once, each at its own date. One that
   can't be split is named and skipped (it stays a snapshot).
 - **Seeds its recordings from those snapshots**, so `mmw publish --as-of` reaches
   back past the upgrade. A date before the upgrade is published as the
-  snapshot before it, and the publish says so: what synced between that
-  snapshot and the upgrade wasn't recorded.
+  snapshot before it when only legacy history is available: what synced between
+  that snapshot and the upgrade was not recorded.
 - **Carries over what it has sent**, so the first bundle afterwards is still
   a delta. A full bundle a forced snapshot delete had queued is sent full,
   once.
@@ -28,18 +28,24 @@ Then:
 
 - **`far_side = "apply"` in `mmw.toml` is retired.** mmw says so once per
   run and otherwise ignores it. Remove the line.
-- **Snapshots are labels now.** Nothing takes one for you. Bundling and
-  publishing choose points by date. Keep taking snapshots for the moments you
-  want to name.
-- **Repository history is independent of networks.** APT units may sync
-  separately; points preserve each unit's last synced state. Existing points
-  remain legacy slices. New networks start with current points;
-  `mmw network history -n NAME` explicitly includes retained earlier points.
-- **History has a limit:** `keep_points` (default 3 per suite, `all`, or an
-  age like `90d`), per suite with `keep_suites`. `mmw prune --dry-run
-  --costs` says what each repository and network choice frees. Repository
-  defaults live in `[settings] keep_points`, with per-source overrides. Points a snapshot holds, or that a
-  network hasn't been sent yet, are always kept.
+- **Manual network snapshots are retired.** Use `mmw history` (or Sources /
+  Networks → More… → History) to inspect repository points. Publish with
+  `--as-of DATE`; transfer with `--since DATE`, `--until DATE` and `--full`.
+  The old `snapshot` commands, `publish --snapshot` / `--take-snapshot`, and
+  connected-side bundle / stage `--from` / `--to` options are removed.
+  Existing snapshot-derived history and old bundles remain readable.
+- **APT repository history is independent of networks.** Creating or editing
+  a network does not need a resync or a history import. Its current selection
+  can publish or transfer retained repository points, including earlier ones.
+  PyPI, VS Code and layers retain their compatibility history adapters.
+- **Repository history has a limit:** `[settings] keep_points` (default three
+  per suite), overridden in Sources with `keep_points` / `keep_suites`.
+  Network legacy retention does not override it. A point an actual publish
+  directory serves stays protected until that directory advances.
+  `mmw prune --dry-run --costs` previews retention before deleting anything.
+  Older publish records without point IDs retain prior history conservatively;
+  `mmw history` explains when republishing that directory can replace this with
+  an exact hold. No resync or new airgap transfer is needed.
 - **Bundles need mmw on the far side.** Tick **Include mmw installer** (or
   `mmw bundle --installer`) for the first bundle to a far side that doesn't
   have this version yet.

@@ -119,8 +119,19 @@ class RepositoriesPage(Page):
         Binding("k", "add_packages", "Add packages", show=False),
         Binding("c", "keep_costs", "Keep costs", show=False),
         Binding("t", "past_point", "Add a past point…", show=False),
+        Binding("h", "history", "History", show=False),
     ]
-    MORE = ("add_packages", "sources_file", "past_point", "keep_costs")
+    MORE = ("add_packages", "sources_file", "past_point", "history", "keep_costs")
+
+    def action_history(self):
+        from mmw.tui.history import HistoryPage
+        from mmw.core.repos import repository_key
+        row = self.highlighted()
+        repo = repository_key(row.mirror) if row and row.kind == 'mirror' else None
+        if row and row.kind == 'source':
+            provider = get_provider(row.source.provider)
+            repo = provider.name if provider.repository_scope == 'provider' else row.source.identity
+        self.app.push_screen(HistoryPage(repos=[repo] if repo else None))
 
     def __init__(self):
         super().__init__()

@@ -194,8 +194,8 @@ ever move the mirror.
 Publish and bundle have the same deployable contents — container images and
 configs included — except TLS keys: a published tree carries this side's, and
 a far side makes its own. A published tree copied to a drive becomes a far
-side with `mmw site adopt`. Neither publishing nor bundling takes a snapshot:
-a snapshot is a label you add by hand.
+side with `mmw site adopt`. Publishing and bundling select retained repository
+points by date; manual network snapshots are no longer needed or offered.
 
 ## Serving it
 
@@ -234,8 +234,7 @@ without publishing its internal port; load its image too as described in
 the generated guide. Compose never pulls on the serving host.
 
 Publish pulls the latest image and caches exports by image ID. Bundles
-include it; deltas resend image bytes only when they change, and snapshots
-preserve their recorded image. If Docker is unavailable, a cached export is
+include it; deltas resend image bytes only when they change. If Docker is unavailable, a cached export is
 used with a warning; with no cache, the guide explains how to load the image
 separately. `nginx = false` omits the container setup.
 
@@ -305,7 +304,7 @@ In the TUI, once every mirror is checked, an incomplete publish or bundle
 pops up each mirror's status (incomplete first, with what is missing) and
 asks whether to **Publish anyway** (or **Bundle anyway**) or cancel.
 Proceeding keeps a warning in the transfer log and completion status. This applies to current
-content; snapshot integrity checks still apply when replaying a snapshot.
+content; historical points must still have all their required files.
 
 Every headless command exits non-zero on failure, so cron is the intended
 frontend:
@@ -379,7 +378,7 @@ point so any day can be served again.
 
 ```bash
 uv run mmw bundle -n lab                    # delta since the last bundle
-uv run mmw bundle -n lab --from none        # send everything
+uv run mmw bundle -n lab --full             # send everything
 ssh mirrorhost mmw bundle -n lab --out - > /media/drive/lab.tar   # straight onto a drive, no disk spent
 # ...carry lab-20260906T143000Z.tar across...
 mmw site apply lab-20260906T143000Z.tar --root '*'=/srv/www

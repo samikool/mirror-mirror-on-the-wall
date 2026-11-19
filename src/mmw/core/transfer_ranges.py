@@ -35,7 +35,7 @@ def repository_owned(pool, current, network=None):
     return bool(ids) and all(not p.legacy for p in pool.points_of(ids).values())
 
 
-def repository_projection(pool, network, cfg, mirror_dir):
+def repository_projection(pool, network, cfg, mirror_dir, *, point_ids=None):
     """Current configured slices; legacy providers keep their existing walk."""
     from mmw.core.repository_points import selected_point_files
     from mmw.core.resolve import network_mirrors
@@ -48,19 +48,24 @@ def repository_projection(pool, network, cfg, mirror_dir):
         ids = repository_targets(pool, repo)
         if not ids:
             continue
-        files = {p: cs for pid in ids for p, cs in selected_point_files(pool, pid, units).items()}
+        slices = {pid: selected_point_files(pool, pid, units) for pid in ids}
+        files = {p: cs for mine in slices.values() for p, cs in mine.items()}
         if not files:
             raise ValueError(f'{repo}: selected repository point is no longer kept — verify or choose another point')
         projection[repo] = files
+        if point_ids is not None:
+            point_ids.update(pid for pid, mine in slices.items() if mine)
     return projection
 
 
 def selected_tree(pool, network, cfg, mirror_dir, settings, current, *, until=None,
-                  preview=False, progress=None, stop_event=None):
+                  preview=False, progress=None, stop_event=None, point_ids=None):
     """Generate a network view from immutable points, never from live refs."""
     from mmw.core.snapshots import walk_tree, recorded_repos
     from mmw.core.repos import attribute
     targets, _, _ = select_range(pool, network.name, settings, current, until=until)
+    if point_ids is not None:
+        point_ids.update(pid for ids in targets.values() for pid in ids)
     projection = {repo: {path: cs for pid in ids for path, cs in files_for_settings(pool, pid, settings).items()}
                   for repo, ids in targets.items() if not repo.startswith('network:')}
     from mmw.core.resolve import network_mirrors
@@ -339,6 +344,10 @@ def select_range(pool, network, settings, current, *, until=None, history=False,
         start = (since_by_repo or {}).get(repo, since) if explicit_since else (since_by_repo or {}).get(repo)
         gaps = 0
         for tid in sorted({known[p].track for p in ids}):
+            # Imported states may be newer than the live current point.
+            # Carrying history must not silently advance past the selected To.
+            upper = (max(point_date(pool, known[p], settings) for p in ids if known[p].track == tid)
+                     if any(not known[p].legacy for p in ids if known[p].track == tid) else None)
             for p in retained_track_points(pool, network, tid, known, settings):
                 first = pool.network_point_stamp(network, p.id) or p.stamp
                 after_start = start is None or first > start
@@ -353,6 +362,7 @@ def select_range(pool, network, settings, current, *, until=None, history=False,
                     after_start = after_start or point_date(pool, p, settings) > cursors[tid]
                 if (p.id not in listing[repo] and (not p.legacy or explicit_since or p.id not in sent_points)
                         and after_start
+                        and (upper is None or point_date(pool, p, settings) <= upper)
                         and (cutoff is None or point_date(pool, p, settings) <= cutoff)):
                     if not p.held:
                         gaps += 1

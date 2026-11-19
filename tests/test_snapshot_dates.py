@@ -3,14 +3,12 @@ by the date upstream signed them, and which changed since the one before;
 the far side's apply review likewise."""
 from pathlib import Path
 
-from mmw.core import config
 from mmw.core import snapshots as S
 from mmw.core.pool import Pool
 
 from test_bundle_mmw import _mmw
 from test_dry_run_totals import two_mirrors  # noqa: F401
 from test_site_apply_timeline import set_a
-from test_snapshot_publish import _mmw as run
 from test_snapshot_repo_versions import _key
 
 
@@ -26,19 +24,6 @@ def test_suite_dates_and_what_changed(two_mirrors):  # noqa: F811
         assert {r for r, _s, _d in S.changed_suites(pool, s1, None)} == {_key(cfg, "a"), _key(cfg, "b")}
 
 
-def test_snapshot_list_says_dates(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
-    cfg, net, md = _mmw(two_mirrors)
-    set_a(md, 1)
-    S.take_snapshot(net, cfg, md, kind="manual")
-    set_a(md, 2)
-    S.take_snapshot(net, cfg, md, kind="manual")
-    d = tmp_path / "cfg"
-    d.mkdir()
-    config.save(cfg, d)
-    r = run(monkeypatch, d, "snapshot", "list", "-n", net.name, "--repos")
-    assert r.exit_code == 0, r.output
-    assert " v1" not in r.output and " v2" not in r.output
-    assert "stable 2026-11-02 (changed)" in r.output and "stable 2026-11-01" in r.output
 
 
 def test_apply_review_says_dates():

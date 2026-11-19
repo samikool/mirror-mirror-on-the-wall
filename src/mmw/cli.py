@@ -351,10 +351,6 @@ def cmd_publish(
         help="Publish even if the pool cannot serve everything the indexes promise "
              "(you are still told what is missing).",
     ),
-    snapshot: str = typer.Option(
-        None, "--snapshot", "-s",
-        help="Publish this snapshot (stamp, label or id — see `mmw snapshot list`) "
-             "instead of the current state; 'live' is the current state. Needs -n."),
     root: Path = typer.Option(
         None, "--root",
         help="Publish into this directory instead of the network's root. Its nginx "
@@ -363,24 +359,21 @@ def cmd_publish(
     recheck: bool = typer.Option(
         False, "--recheck",
         help="Ignore the record of the last publish and recheck every published file."),
-    take_snapshot: bool = typer.Option(
-        False, "--take-snapshot", help="Take a snapshot of the network first."),
     as_of: str = typer.Option(
         None, "--as-of",
         help="Publish the network as it was recorded on this date (2026-11-03, 3nov, or a "
              "stamp): each repository as its last sync then had it. Needs -n."),
 ):
     """Publish mirrors to network targets. Without --quiet opens the TUI
-    (--snapshot / --as-of / --root / --recheck / --take-snapshot always run headless)."""
+    (--as-of / --root / --recheck always run headless)."""
     cfg_dir = _cfg_dir()
     cfg = _load_config_or_exit(cfg_dir)
 
-    if quiet or dry_run or snapshot or root or recheck or take_snapshot or as_of is not None:
+    if quiet or dry_run or root or recheck or as_of is not None:
         from mmw.commands.publish import run
         raise typer.Exit(run(cfg_dir, network=network, dry_run=dry_run,
                              allow_incomplete=allow_incomplete,
-                             snapshot=snapshot, root=root, recheck=recheck,
-                             take_snapshot=take_snapshot, as_of=as_of))
+                             root=root, recheck=recheck, as_of=as_of))
 
     _run_tui(_open_app(cfg, cfg_dir, "networks"))
 
@@ -705,17 +698,11 @@ def cmd_bundle(
              "The gap is invisible in the bundle and surfaces as a 404 during "
              "`apt install` on the far side, so you are told exactly what is missing.",
     ),
-    from_ref: str = typer.Option(
-        None, "--from", help="Deprecated: bounds history from a snapshot (stamp, label or id), or 'none' "
-                             "for full. Use --since DATE or --full."),
     since: str = typer.Option(None, "--since", help="Send what the far side lacks, as it was on DATE "
                               "(a kept bundle's manifest, else this side's points)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview retained point ranges and payload without writing a transfer."),
     until: str = typer.Option(None, "--until", help="Carry each suite's newest retained point at or before DATE; never requests a far-side rollback."),
     bundles: list[Path] = typer.Option(None, "--bundles", help="Search kept bundles here too (repeatable)"),
-    to_ref: str = typer.Option(
-        None, "--to", help="Snapshot to bring it to (stamp, label or id). "
-                           "Default: latest recorded points."),
     repo: list[str] = typer.Option(
         None, "--repo", help="Only this repository (URL or name; repeatable). Needs -n."),
     installer: bool = typer.Option(
@@ -727,15 +714,14 @@ def cmd_bundle(
     history: bool = typer.Option(
         None, "--history/--newest", help="mmw far side: every point since the last bundle, or each suite's "
                                          "newest (default: the network's `history`)."),
-    full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not "
-                                                    "(the same as --from none)."),
+    full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not."),
 ):
     """Transfer recorded points: from each repository's last transfer to its
     latest recorded points. Use --since / --until for earlier dates."""
     from mmw.commands.bundle import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out,
                          allow_incomplete=allow_incomplete,
-                         from_ref=from_ref, to_ref=to_ref, repos=repo or None,
+                         repos=repo or None,
                          installer=installer, runtime_wheel=runtime_wheel, history=history, full=full,
                          since=since, kept=bundles, until=until, dry_run=dry_run))
 
@@ -748,16 +734,11 @@ def cmd_stage(
     allow_incomplete: bool = typer.Option(
         False, "--allow-incomplete",
         help="Stage even if the pool cannot serve everything the indexes promise."),
-    from_ref: str = typer.Option(
-        None, "--from", help="Deprecated: bounds history from a snapshot, or 'none' for everything. "
-                             "Use --since DATE or --full."),
     since: str = typer.Option(None, "--since", help="Send what the far side lacks as of DATE, "
                               "from a kept manifest or retained points"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview retained point ranges and payload without writing a transfer."),
     until: str = typer.Option(None, "--until", help="Carry each suite's newest retained point at or before DATE; never requests a far-side rollback."),
     bundles: list[Path] = typer.Option(None, "--bundles", help="Search kept bundles here too (repeatable)"),
-    to_ref: str = typer.Option(
-        None, "--to", help="Snapshot to bring it to. Default: latest recorded points."),
     repo: list[str] = typer.Option(
         None, "--repo", help="Only this repository (URL or name; repeatable)."),
     installer: bool = typer.Option(
@@ -769,15 +750,14 @@ def cmd_stage(
     history: bool = typer.Option(
         None, "--history/--newest", help="mmw far side: every point since the last bundle, or each suite's "
                                          "newest (default: the network's `history`)."),
-    full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not "
-                                                    "(the same as --from none)."),
+    full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not."),
 ):
     """Lay a bundle out as a directory of hardlinks to the pool — the same
     members as `mmw bundle`, almost no disk — to tar, rsync or inspect without
     mmw."""
     from mmw.commands.stage import run
     raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
-                         from_ref=from_ref, to_ref=to_ref, repos=repo or None,
+                         repos=repo or None,
                          installer=installer, runtime_wheel=runtime_wheel, history=history, full=full,
                          since=since, kept=bundles, until=until, dry_run=dry_run))
 
@@ -1298,69 +1278,6 @@ def cmd_site_certs(root: Path = _ROOT,
     raise typer.Exit(certs(root, days, force, out))
 
 
-snapshot_app = typer.Typer(
-    help="Network snapshots: a network's exact state, kept to bundle to or publish again.",
-    no_args_is_help=True,
-)
-app.add_typer(snapshot_app, name="snapshot")
-_SNAP_NET = typer.Option(..., "--network", "-n", help="The network")
-
-
-@snapshot_app.command("take")
-def cmd_snapshot_take(network: str = _SNAP_NET,
-                      label: str = typer.Option(None, "--label", "-l",
-                                                help="A name for it, e.g. pre-upgrade")):
-    """Record the network's current state as a snapshot."""
-    from mmw.commands.snapshot import take
-    raise typer.Exit(take(_cfg_dir(), network, label))
-
-
-@snapshot_app.command("list")
-def cmd_snapshot_list(network: str = _SNAP_NET,
-                      repos: bool = typer.Option(False, "--repos",
-                                                 help="Also show each repository's version")):
-    """List the network's snapshots, newest first, with the disk each alone holds."""
-    from mmw.commands.snapshot import list_
-    raise typer.Exit(list_(_cfg_dir(), network, repos=repos))
-
-
-@snapshot_app.command("rename")
-def cmd_snapshot_rename(ref: str = typer.Argument(..., help="Stamp, label or id"),
-                        label: str = typer.Argument(..., help="The new label"),
-                        network: str = _SNAP_NET):
-    """Label (or relabel) a snapshot."""
-    from mmw.commands.snapshot import rename
-    raise typer.Exit(rename(_cfg_dir(), network, ref, label))
-
-
-@snapshot_app.command("delete")
-def cmd_snapshot_delete(ref: str = typer.Argument(..., help="Stamp, label or id"),
-                        network: str = _SNAP_NET,
-                        force: bool = typer.Option(
-                            False, "--force",
-                            help="Forget it outright, with the transfers that went to it — "
-                                 "if the far side is at it, the next transfer sends everything"),
-                        yes: bool = typer.Option(False, "--yes", "-y",
-                                                 help="Don't ask before a --force")):
-    """Delete a snapshot. `mmw prune` then frees the files only it kept. One a
-    transfer went to stays as history only — where the next transfer can start
-    from; --force forgets it instead. One a directory serves is refused:
-    publish something else there first."""
-    from mmw.commands.snapshot import delete
-    raise typer.Exit(delete(_cfg_dir(), network, ref, force, yes))
-
-
-@snapshot_app.command("clean")
-def cmd_snapshot_clean(network: str = _SNAP_NET,
-                       keep: int = typer.Option(..., "--keep", min=0,
-                                                help="How many of the newest to keep"),
-                       yes: bool = typer.Option(False, "--yes", "-y",
-                                                help="Delete — without it, only preview")):
-    """Delete all but the newest N snapshots (previews unless --yes)."""
-    from mmw.commands.snapshot import clean
-    raise typer.Exit(clean(_cfg_dir(), network, keep, yes))
-
-
 @app.command("update")
 def cmd_update(yes: bool = typer.Option(False, "--yes", help="Don't ask")):
     """Update mmw to the newest release, the way it was installed (uv tool, pipx, pip)."""
@@ -1395,17 +1312,13 @@ def cmd_keep(
     from mmw.commands.retention import run
     raise typer.Exit(run(_cfg_dir(), value, repo, suite))
 
-network_app = typer.Typer(help="Manage a network's repository history.", no_args_is_help=True)
-app.add_typer(network_app, name="network")
 
-
-@network_app.command("history")
-def cmd_network_history(
-    network: str = typer.Option(..., "--network", "-n", help="Network to include earlier points in"),
-    since: str = typer.Option(None, "--since", help="Include points dated on or after this date; omitted means all retained"),
-    repo: list[str] = typer.Option(None, "--repo", help="Limit to a repository name or URL (repeatable)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Look at what would be included without adding it"),
+@app.command("history")
+def cmd_history(
+    network: str = typer.Option(None, "--network", "-n", help="Limit to this network's current selection"),
+    repo: list[str] = typer.Option(None, "--repo", help="Repository name or URL (repeatable)"),
+    since: str = typer.Option(None, "--since", help="Show points on or after DATE"),
 ):
-    """Include retained earlier points; current serving stays as it is."""
-    from mmw.commands.network_history import run
-    raise typer.Exit(run(_cfg_dir(), network, since, repo, dry_run))
+    """List repository-owned points; no snapshot or network history import is needed."""
+    from mmw.commands.history import run
+    raise typer.Exit(run(_cfg_dir(), network=network, repos=repo, since=since))

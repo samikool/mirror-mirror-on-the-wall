@@ -26,7 +26,7 @@ def test_repository_retention_without_networks(tmp_path):
         assert len(pool.repository_points(cfg.sources[0].identity)) == 2
 
 
-def test_repository_default_and_network_rules_are_additive(tmp_path):
+def test_network_rules_do_not_override_repository_defaults(tmp_path):
     cfg = seeded(tmp_path)
     cfg.sources[0].keep_points = None
     with Pool(tmp_path) as pool:
@@ -34,7 +34,7 @@ def test_repository_default_and_network_rules_are_additive(tmp_path):
         net = config.NetworkConfig(name='all', keep_points='all')
         for p in pool.repository_points(cfg.sources[0].identity):
             pool.link_network_point(net.name, p.id, p.stamp)
-        assert points.retention_plan(pool, [net], cfg=cfg) == []
+        assert len(points.retention_plan(pool, [net], cfg=cfg)) == 2
 
 
 def test_keep_settings_roundtrip(tmp_path):

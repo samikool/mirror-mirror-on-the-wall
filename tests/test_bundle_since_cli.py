@@ -1,4 +1,4 @@
-"""The CLI exposes explicit baselines and warns about the old --from door."""
+"""The CLI exposes date baselines; obsolete snapshot endpoints are gone."""
 import pytest
 from typer.testing import CliRunner
 
@@ -30,10 +30,9 @@ def test_since_cli_names_manifest(mmw_net, tmp_path, monkeypatch):  # noqa: F811
     assert f"since {first.out_path.name} (its manifest)" in r.output
 
 
-def test_from_warns_once(mmw_net, tmp_path):  # noqa: F811
+def test_snapshot_from_option_is_removed(mmw_net, tmp_path):  # noqa: F811
     r = invoke(mmw_net, tmp_path, "--from", "none")
-    assert r.exit_code == 0, r.output
-    assert r.stderr.count("--from is deprecated") == 1
+    assert r.exit_code == 2 and "No such option" in r.output
 
 
 def test_since_nothing_found_is_exit_one(mmw_net, tmp_path):  # noqa: F811
@@ -42,7 +41,7 @@ def test_since_nothing_found_is_exit_one(mmw_net, tmp_path):  # noqa: F811
     assert "--full" in r.output
 
 
-@pytest.mark.parametrize("args", [("--full",), ("--from", "none")])
+@pytest.mark.parametrize("args", [("--full",)])
 def test_since_conflicting_start_is_refused(mmw_net, tmp_path, args):  # noqa: F811
     r = invoke(mmw_net, tmp_path, "--since", "2026-11-01", *args)
     assert r.exit_code == 1

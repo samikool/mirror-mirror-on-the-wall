@@ -56,26 +56,22 @@ async def _run_per_mirror(mirrors, fn, on_done, stop_event=None):
 
 @dataclass(frozen=True)
 class PublishChoice:
-    """What `p` publishes: the live state or a snapshot (stamp), and where —
+    """What `p` publishes: latest points or a date, and where —
     the network's root (None) or another directory."""
-    snapshot: str | None = None
     root: Path | None = None
     allow_incomplete: bool = False
     recheck: bool = False           # ignore the tree's record; recheck every file
-    take_snapshot: bool = False     # snapshot the network first (live publishes only)
     as_of: str | None = None        # a date: the network as recorded then
 
 
 @dataclass(frozen=True)
 class BundleChoice:
-    """What `b` bundles: from where the last bundle went (`from_last`), a
-    legacy snapshot, or nothing (None: full); to recorded points or a date."""
+    """What `b` bundles: from where the last bundle went (`from_last`),
+    a chosen date, or nothing (full); to latest points or a chosen date."""
     since: str | None = None
     until: str | None = None
     kept_dir: Path | None = None
     from_last: bool = True
-    from_ref: str | None = None
-    to_ref: str = "now"
     allow_incomplete: bool = False
     repos: tuple[str, ...] | None = None    # mmw far side: only these (None: all)
     stage: bool = False                     # mmw far side: a directory of hardlinks, not a tar
@@ -266,13 +262,6 @@ class PublishFlows:
             await self._guarded(view, "Publish", lambda: self._execute_as_of_publish(
                 net, choice.as_of, view, recheck=choice.recheck))
             return
-        if choice.snapshot is not None:
-            # A snapshot's files are checked by publish_snapshot itself: the
-            # verify below is about the live state's refs.
-            await self._guarded(view, "Publish", lambda: self._execute_snapshot_publish(
-                net, choice.snapshot, view, recheck=choice.recheck))
-            return
-
         async def flow():
             # A pool query — off the loop, and inside the guard: a locked pool
             # is reported like any other publish error.
@@ -285,10 +274,6 @@ class PublishFlows:
                 self._allow_incomplete(view)
             if self._ends_early(verify_results, view):
                 return
-            if choice.take_snapshot:
-                from mmw.core.snapshots import take_snapshot
-                taken = await asyncio.to_thread(take_snapshot, net, self.cfg(), mirror_dir)
-                view.write(f"  [dim]# snapshot {escape(taken.stamp)} taken[/]")
             await self._execute_publish(net, per_mirror, view, recheck=choice.recheck)
         await self._guarded(view, "Publish", flow)
 
@@ -326,12 +311,12 @@ class PublishFlows:
         # NOR a bundle. Skipping this let a bundle ship an index naming a .deb
         # that isn't there: the far side applies it, and the 404 only shows
         # as `apt install` failing on the far side, where nobody can debug it.
-        # A snapshot destination was gated when it was taken; its files are
-        # checked by bundle_network itself.
+        # Explicit historical targets have their files checked by the shared
+        # point-range planner rather than by the current-ref preflight.
         choice = choice or BundleChoice()
 
         async def flow():
-            if choice.to_ref == "now" and choice.until is None:
+            if choice.until is None:
                 selected_mirrors = await asyncio.to_thread(self._selected_mirrors_for, net)
                 mirror_dir = self.cfg().settings.mirror_dir
                 verify_results, _, _ = await self._run_pre_publish(
@@ -416,43 +401,20 @@ class PublishFlows:
             await self._certs_after_publish(net, view)
         view.mark_done(result, stopped=stopped)
 
-    async def _execute_snapshot_publish(self, net: "config.NetworkConfig", stamp: str,
-                                        view, *, recheck: bool = False) -> None:
-        from mmw.core.pool import Pool
-        from mmw.core.publisher import publish_snapshot
-
-        def files() -> int:
-            with Pool(self.cfg().settings.mirror_dir, read_only=True) as pool:
-                return next((s.files for s in pool.snapshots(net.name) if s.stamp == stamp), 0)
-        view.begin(await asyncio.to_thread(files))
-        try:
-            result = await asyncio.to_thread(
-                lambda: publish_snapshot(
-                    net, self.cfg(), self.cfg().settings.mirror_dir, stamp,
-                    progress=view.record, stop_event=view.stop_event,
-                    mirror_start_callback=view.notify_mirror_start, recheck=recheck))
-        except Exception as exc:  # noqa: BLE001 — shown on the panel
-            view.mark_error(str(exc) or type(exc).__name__)
-            return
-        stopped = view.stop_event.is_set()
-        if net.certs and not stopped and not result.errors:
-            await self._certs_after_publish(net, view)
-        view.mark_done(result, stopped=stopped)
-
     async def _execute_bundle(self, net: "config.NetworkConfig", view,
                               choice: BundleChoice | None = None) -> None:
         from mmw.commands.bundle import transfer
         from mmw.core.publisher.bundle import NothingToStandOn
 
         choice = choice or BundleChoice()
-        ends = {"to_ref": choice.to_ref}
+        ends = {}
         if choice.until is not None:
             ends["until"] = choice.until
         if choice.since is not None:
             ends["since"] = choice.since
             ends["kept_dirs"] = [choice.kept_dir] if choice.kept_dir is not None else None
         elif not choice.from_last:
-            ends["from_ref"] = choice.from_ref
+            ends["full"] = True
         if choice.repos is not None:
             ends["repos"] = list(choice.repos)
         if choice.installer:
@@ -478,7 +440,7 @@ class PublishFlows:
                 return
             ends.pop("since", None)
             ends.pop("kept_dirs", None)
-            ends["from_ref"] = None
+            ends["full"] = True
             try:
                 result = await asyncio.to_thread(run)
             except Exception as retry_exc:

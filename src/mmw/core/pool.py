@@ -225,6 +225,13 @@ CREATE TABLE IF NOT EXISTS published (
     target   TEXT NOT NULL,                   -- 'live' | snapshot stamp
     made     TEXT NOT NULL DEFAULT (strftime('%Y%m%dT%H%M%SZ', 'now'))
 );
+CREATE TABLE IF NOT EXISTS published_points (
+    root TEXT NOT NULL,
+    point INTEGER NOT NULL,
+    PRIMARY KEY (root, point)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS history_upgrades (name TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS published_legacy_holds (root TEXT PRIMARY KEY);
 
 -- A network whose far side may sit at a snapshot force-deleted here: the
 -- record of what it has is gone, so its next default transfer is full.
@@ -1067,6 +1074,61 @@ class Pool:
         # has none until a writable open builds it.
         self._packages_by = (" INDEXED BY idx_packages_cover"
                              if self._has_index("idx_packages_cover") else "")
+        if not read_only:
+            self._retire_manual_snapshots()
+
+    def _retire_manual_snapshots(self) -> None:
+        """One-time upgrade: snapshots become ordinary retained point history.
+
+        Leave the old lists/settings for transfer migration. Only release a
+        snapshot's independent GC hold after all its files are in held points;
+        an unreadable/incomplete conversion keeps its old protection.
+        """
+        if self._conn.execute("SELECT 1 FROM history_upgrades WHERE name = 'manual-snapshots'").fetchone():
+            return
+        from mmw.core.points import convert_snapshots, seed_recordings
+        from mmw.core.repository_points import files_for_settings
+        for network in sorted(self.network_names()):
+            convert_snapshots(self, network)
+            seed_recordings(self, network)
+            deployments = self.published(network)
+            # Older live/as-of publish records contain no exact point IDs.
+            # Preserve pre-existing history conservatively until that root is
+            # republished, when the normal path records its exact projection.
+            existing = self.points_of(self.linked_held_points())
+            existing.update({p.id: p for p in self.repository_points()})
+            for deployment in deployments:
+                if deployment.target != 'live' and not deployment.target.startswith('as-of:'):
+                    continue
+                ids = [p.id for p in existing.values() if p.held and p.stamp <= deployment.made]
+                if ids:
+                    with self._lock:
+                        self._conn.executemany('INSERT OR IGNORE INTO published_points VALUES (?, ?)',
+                                               [(deployment.root, pid) for pid in ids])
+                        self._conn.execute('INSERT OR IGNORE INTO published_legacy_holds VALUES (?)',
+                                           (deployment.root,))
+                        self._conn.commit()
+            for snap in self.snapshots(network):
+                if not snap.complete:
+                    continue
+                ids = self.snapshot_point_ids(snap.id)
+                try:
+                    recorded = {p: cs for pid in ids
+                                for p, cs in files_for_settings(self, pid, snap.settings).items()}
+                except (ValueError, LookupError):
+                    continue  # Preserve an old state whose selection cannot be read.
+                if not ids or recorded != dict(self.snapshot_files(snap.id)):
+                    continue
+                for deployment in deployments:
+                    if deployment.target == snap.stamp:
+                        with self._lock:
+                            self._conn.executemany('INSERT OR IGNORE INTO published_points VALUES (?, ?)',
+                                                   [(deployment.root, pid) for pid in ids])
+                            self._conn.commit()
+                self.demote_snapshot(snap.id)
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO history_upgrades VALUES ('manual-snapshots')")
+            self._conn.commit()
 
     def _migrate_repository_points(self) -> None:
         with self._lock:
@@ -2622,13 +2684,34 @@ class Pool:
             "WHERE sb.id IN (SELECT blob FROM sent)", args)
         return (row[0], row[1]) if row else (0, 0)
 
-    def record_published(self, root: str, network: str, target: str) -> None:
+    def record_published(self, root: str, network: str, target: str, point_ids=()) -> None:
         """`root` now serves `target` ('live' or a snapshot stamp)."""
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO published (root, network, target) VALUES (?, ?, ?)",
                 (root, network, target))
+            self._conn.execute('DELETE FROM published_points WHERE root = ?', (root,))
+            self._conn.execute('DELETE FROM published_legacy_holds WHERE root = ?', (root,))
+            self._conn.executemany('INSERT INTO published_points VALUES (?, ?)',
+                                   [(root, pid) for pid in sorted(set(point_ids))])
             self._conn.commit()
+
+    def published_point_ids(self) -> set[int]:
+        """Repository points held by actual publish destinations, across networks."""
+        with self._read() as c:
+            try:
+                return {r[0] for r in c.execute('SELECT DISTINCT point FROM published_points')}
+            except sqlite3.OperationalError:  # Read-only databases from before this index.
+                return set()
+
+    def legacy_publish_notes(self) -> list[str]:
+        with self._read() as c:
+            try:
+                roots = [r[0] for r in c.execute('SELECT root FROM published_legacy_holds ORDER BY root')]
+            except sqlite3.OperationalError:
+                roots = []
+        return [f'{root}: older publish metadata lacks exact point IDs; prior history is kept '
+                'conservatively until this directory is republished (no resync needed).' for root in roots]
 
     def published(self, network: str) -> list[PublishedInfo]:
         """Every destination this network was published to, newest first."""

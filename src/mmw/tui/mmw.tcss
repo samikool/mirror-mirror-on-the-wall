@@ -301,8 +301,7 @@ CertsPage .success-line, CertsPage .error-line { margin-bottom: 1; }
 CertsPage .host-entry { padding-left: 2; }
 
 /* ── Snapshots and the publish / bundle pickers ─────────────────────── */
-SnapshotsPage #snap-table { height: 1fr; }
-PublishPickPage #pick-note, BundlePickPage #pick-estimate, CleanPage #clean-preview {
+PublishPickPage #pick-note, BundlePickPage #pick-estimate {
     width: 1fr;
     height: auto;
     margin-top: 1;

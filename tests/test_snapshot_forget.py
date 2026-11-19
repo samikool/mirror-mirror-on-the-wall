@@ -80,19 +80,3 @@ def test_a_served_snapshot_is_never_forgotten_and_names_follow_the_network(two_m
         p.record_published("/srv/www", net.name, "live")
         assert not S.forget_snapshot(p, md, snap)            # a bundle never needs to be full after
         assert p.snapshots(net.name) == []
-
-
-def test_cli_force_delete_asks_or_needs_yes(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
-    from mmw.core import config
-    from test_snapshot_publish import _mmw as run
-    cfg, net, md = two_mirrors
-    snap = S.take_snapshot(net, cfg, md, kind="manual")
-    cfg_dir = tmp_path / "cfg"
-    cfg_dir.mkdir()
-    config.save(cfg, cfg_dir)
-    r = run(monkeypatch, cfg_dir, "snapshot", "delete", "-n", net.name, snap.stamp, "--force")
-    assert r.exit_code == 1 and "rewrites history" in r.output and "--yes" in r.output
-    r = run(monkeypatch, cfg_dir, "snapshot", "delete", "-n", net.name, snap.stamp, "--force", "--yes")
-    assert r.exit_code == 0 and "Forgot" in r.output and "sends everything" not in r.output, r.output
-    with Pool(md) as p:
-        assert p.snapshots(net.name) == []

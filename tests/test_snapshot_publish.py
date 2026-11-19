@@ -7,11 +7,9 @@ import pytest
 from typer.testing import CliRunner
 
 from mmw import cli
-from mmw.core import config
 from mmw.core import snapshots as S
 from mmw.core.pool import Pool
 from mmw.core.publisher import publish_network, publish_snapshot
-from mmw.core.publisher.bundle import bundle_network
 
 from test_bundle_snapshots import _tree, states  # noqa: F401 — the shared fixture
 
@@ -99,36 +97,6 @@ def _mmw(monkeypatch, cfg_dir, *args):
     return CliRunner().invoke(cli.app, ["--config", str(cfg_dir), *args])
 
 
-def test_cli_publish_snapshot_and_delete_guards(states, tmp_path, monkeypatch):  # noqa: F811
-    cfg, net, mirror_dir, snaps, published = states
-    root = tmp_path / "published-3"
-    cfg_dir = tmp_path / "cfg"
-    cfg_dir.mkdir()
-    config.save(cfg.model_copy(update={"networks": [net.model_copy(update={"root": root})]}),
-                cfg_dir)
-
-    r = _mmw(monkeypatch, cfg_dir, "publish", "--snapshot", "s1")
-    assert r.exit_code == 1 and "-n" in r.output
-    r = _mmw(monkeypatch, cfg_dir, "publish", "-n", "lab", "--snapshot", "s1")
-    assert r.exit_code == 0, r.output
-    assert _split(_tree(root))[0] == _split(published[1])[0]
-
-    r = _mmw(monkeypatch, cfg_dir, "snapshot", "list", "-n", "lab")
-    assert f"published at {root.resolve()}" in r.output
-    r = _mmw(monkeypatch, cfg_dir, "snapshot", "delete", "-n", "lab", "s1")
-    assert r.exit_code == 1 and "published at" in r.output
-
-    bundle_network(net, cfg, mirror_dir, from_ref=None, to_ref="s2")
-    r = _mmw(monkeypatch, cfg_dir, "snapshot", "delete", "-n", "lab", "s2")
-    assert r.exit_code == 0 and "stays as history only" in r.output, r.output
-    r = _mmw(monkeypatch, cfg_dir, "snapshot", "delete", "-n", "lab", "s2", "--yes")
-    assert r.exit_code == 1 and "frees nothing" in r.output     # --yes still accepted
-
-    other = tmp_path / "other"
-    r = _mmw(monkeypatch, cfg_dir, "publish", "-n", "lab", "--snapshot", "live",
-             "--root", str(other), "--allow-incomplete")   # fixture indexes are fake
-    assert r.exit_code == 0, r.output
-    assert _split(_tree(other))[0] == _split(published[3])[0]
 
 
 def test_snapshot_publish_per_base_counts_unchanged(states, tmp_path):  # noqa: F811

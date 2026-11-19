@@ -360,47 +360,29 @@ mmw publish -n lab --as-of 2026-11-03             # or 3nov, or a full stamp
 mmw publish -n lab                                # back to now
 ```
 
-History is kept by repository rules (`[settings] keep_points`, default 3,
-with source overrides) and network rules. A network's `keep_points` keeps
-its newest three points per suite by default, or a count, `all`, or an age
-like `90d`: `mmw prune` drops older points'
-files, and a date that needs them is refused, naming the setting. A tree
-published as of a date keeps its points through prunes. A suite can have its
-own (`keep_suites = { bookworm = "all" }`), and `mmw prune --dry-run --costs`
-says what each choice would free.
+APT history is kept by repository rules (`[settings] keep_points`, default 3,
+with source overrides in `keep_points` / `keep_suites`). A network selects
+from it when publishing or transferring; creating a network does not need
+another sync. `mmw prune --dry-run --costs` previews retention. Points an
+actual published directory serves stay protected until that directory advances.
 
-A mirror from before mmw recorded every sync has only its snapshots for the
-time before the upgrade: a date then is published as the snapshot before it,
-and the publish says so — anything synced between that snapshot and the
-upgrade isn't known.
-
-A snapshot is a label on a moment, taken by hand — nothing takes one for
-you. It keeps every package, index, key and mirrored file the network had,
-whatever `keep_points` says. Take one before anything you might want to undo:
+Inspect retained points with `mmw history` or Sources / Networks → More… →
+History. Publish and Transfer menus list retained dates and accept custom dates.
+Publish uses the network's current selection at the chosen date. Use another
+root to serve an older point beside the current tree:
 
 ```bash
-mmw snapshot take -n lab --label pre-upgrade
-mmw snapshot list -n lab
-mmw publish -n lab --snapshot pre-upgrade         # serve that state again, exactly
-mmw publish -n lab --snapshot live                # back to the current state
-mmw publish -n lab --snapshot pre-upgrade --root /srv/www-old   # beside the live one
+mmw history --repo Debian
+mmw publish -n lab --as-of 2026-11-01 --root /srv/www-old
+mmw publish -n lab --quiet                     # latest repository points
 ```
 
-Publishing into another directory writes an nginx config for that directory
-with the same hostnames, so serve it on its own address. Neither publishing
-nor bundling takes one; `mmw snapshot list --repos` says each suite's date
-and which changed since the snapshot before.
-
-`mmw prune` never deletes a file a snapshot lists; `mmw snapshot delete` /
-`clean --keep N` let it go (the next prune frees it). One a transfer went to
-stays listed as history only — no files, just where the next transfer can start
-from. `delete --force` forgets it outright instead, with the transfers that
-went to it; if the far side may be there, the next transfer sends everything.
-A snapshot some directory serves cannot be deleted. Renaming a network carries its snapshots along, and
-removing it in the TUI removes them; a network deleted from `mmw.toml` by hand
-leaves them behind — `mmw prune` names it, and
-`mmw snapshot clean -n OLD --keep 0 --yes` clears them. In the TUI: `n` on a network opens its snapshots, and
-`p` asks what to publish — now, a date, or a snapshot — and where.
+Serve the other directory on its own address because it uses the same
+hostnames. Manual network snapshots and the old snapshot flags are removed.
+Existing snapshot-derived history is converted automatically, without a resync;
+its old metadata remains for older bundle compatibility. A snapshot whose
+files cannot be converted remains protected. PyPI, VS Code and network layers
+continue through their existing history adapters.
 
 ### Your own packages
 

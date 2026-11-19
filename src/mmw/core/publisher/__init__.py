@@ -9,6 +9,7 @@ Public API:
     NetworkPublishResult / MirrorPublishResult
 """
 from pathlib import Path
+from dataclasses import dataclass
 
 from mmw.core import disk_io
 from mmw.core.config import Config, NetworkConfig
@@ -122,7 +123,8 @@ def publish_network(
                         prev=_open_record(network.root, network.name), recheck=recheck)
         try:
             from mmw.core.transfer_ranges import repository_projection
-            projection = repository_projection(pool, network, cfg, mirror_dir)
+            selected_ids = set()
+            projection = repository_projection(pool, network, cfg, mirror_dir, point_ids=selected_ids)
             walk_network(network, cfg, mirror_dir, sink, pool, result,
                          nginx_root=str(network.root), prune=network.prune,
                          progress=progress, stop_event=stop_event,
@@ -138,7 +140,8 @@ def publish_network(
             result.timings.update(sink.job.stats.timings())
     if not (stop_event and stop_event.is_set()):
         _write_record(network.root, network.name, sink, result, recheck, network.prune, progress)
-        _record_published(mirror_dir, network.root, network.name, "live")
+        if not result.errors:
+            _record_published(mirror_dir, network.root, network.name, "live", point_ids=selected_ids)
 
     return result
 
@@ -221,9 +224,23 @@ def _check_destination(root: Path, mirror_dir: Path) -> None:
         raise ValueError(f"refusing to publish into {root}: {problem}")
 
 
-def _record_published(mirror_dir: Path, root: Path, network: str, target: str) -> None:
+def _record_published(mirror_dir: Path, root: Path, network: str, target: str, *,
+                      cfg=None, net=None, point_ids=None) -> None:
     with Pool(mirror_dir) as pool:
-        pool.record_published(str(Path(root).resolve()), network, target)
+        ids = []
+        if point_ids is not None:
+            ids = point_ids
+        elif cfg is not None and net is not None and (target == 'live' or target.startswith('as-of:')):
+            from mmw.core.transfer_ranges import recorded_selection, repository_owned, select_range
+            try:
+                settings, current = recorded_selection(pool, net, mirror_dir, cfg)
+            except ValueError:
+                current = {}
+            if repository_owned(pool, current, net):
+                targets, _, _ = select_range(pool, network, settings, current,
+                                            until=target.removeprefix('as-of:') if target != 'live' else None)
+                ids = [pid for pids in targets.values() for pid in pids]
+        pool.record_published(str(Path(root).resolve()), network, target, ids)
 
 
 # Trust roots: placed after everything they reference.
@@ -306,27 +323,50 @@ def publish_snapshot(
     return result
 
 
+@dataclass(frozen=True)
+class PublishMoment:
+    rows: list
+    settings: str
+    point_ids: frozenset[int]
+
+    def __iter__(self):
+        yield self.rows
+        yield self.settings
+
+    def __getitem__(self, index):
+        return (self.rows, self.settings)[index]
+
+
 @holds_shared_pool_lock
 def read_publish_moment(network: NetworkConfig, cfg: Config, mirror_dir: Path, when: str):
-    """A recorded network view, or repository points predating that network."""
+    """Today's network selection at a repository point date; legacy views fall back."""
     from mmw.core.points import moment_rows, prepare_recordings, resolve_when
     from mmw.core.transfer_ranges import recorded_selection, repository_owned, selected_tree
     stamp = resolve_when(when)
     prepare_recordings(mirror_dir, network.name)
     with Pool(mirror_dir, read_only=True) as pool:
-        first = pool.first_recording(network.name)
-        if pool.points_at(network.name, stamp) or (first is not None and first <= stamp):
+        try:
+            settings, current = recorded_selection(pool, network, mirror_dir, cfg)
+        except ValueError:
+            # Older databases may contain only snapshot-derived recordings.
+            # Their historical view remains readable without a fresh sync.
+            from mmw.core.resolve import network_mirrors
+            from mmw.core.repos import repository_key
+            if any(pool.repository_points(repository_key(u), stubs=True)
+                   for u in network_mirrors(network, cfg, mirror_dir)):
+                raise
             return moment_rows(pool, network.name, stamp), []
-        settings, current = recorded_selection(pool, network, mirror_dir, cfg)
         if not repository_owned(pool, current, network):
             return moment_rows(pool, network.name, stamp), []
     with Pool(mirror_dir) as pool:
+        point_ids = set()
         rows, settings, _, notes, _ = selected_tree(
-            pool, network, cfg, mirror_dir, settings, current, until=stamp)
+            pool, network, cfg, mirror_dir, settings, current, until=stamp, point_ids=point_ids)
         info = pool.blob_info(rows.values())
         if set(rows.values()) - info.keys():
             raise ValueError('Some files of the selected repository points are no longer in the pool')
-        return ([(path, cs, info[cs][0], info[cs][1]) for path, cs in sorted(rows.items())], settings), notes
+        return PublishMoment([(path, cs, info[cs][0], info[cs][1]) for path, cs in sorted(rows.items())],
+                             settings, frozenset(point_ids)), notes
 
 
 @holds_shared_pool_lock
@@ -366,13 +406,13 @@ def publish_as_of(
         return result
     _lay_out(network, cfg, root, rows, settings, result, progress=progress, stop_event=stop_event,
              mirror_start_callback=mirror_start_callback, recheck=recheck,
-             record_target=(mirror_dir, AS_OF + stamp))
+             record_target=(mirror_dir, AS_OF + stamp), record_points=getattr(moment, 'point_ids', None))
     return result
 
 
 def _lay_out(network: NetworkConfig, cfg: Config, root: Path, rows, settings: str,
              result: NetworkPublishResult, *, progress=None, stop_event=None,
-             mirror_start_callback=None, recheck: bool = False, record_target=None) -> None:
+             mirror_start_callback=None, recheck: bool = False, record_target=None, record_points=None) -> None:
     """Lay recorded rows — (path, checksum, pool path, size), in path order —
     out at `root` with `settings`' nginx: what publishing a snapshot or a
     date does. `record_target`: (mirror_dir, what `root` now serves)."""
@@ -493,8 +533,9 @@ def _lay_out(network: NetworkConfig, cfg: Config, root: Path, rows, settings: st
         result.mirrors.append(other)
     if not (stop_event and stop_event.is_set()):
         _write_record(root, network.name, sink, result, recheck, network.prune, progress)
-        if record_target is not None:
-            _record_published(record_target[0], root, network.name, record_target[1])
+        if record_target is not None and not result.errors:
+            _record_published(record_target[0], root, network.name, record_target[1],
+                              cfg=cfg, net=network, point_ids=record_points)
 
 
 def walk_network(

@@ -177,22 +177,3 @@ def test_recheck_rechecks_through_publish_network(seeded, tmp_path, monkeypatch)
                         lambda *a, **k: (seen.append(k.get("recheck")), real(*a, **k))[1])
     assert publish_cmd.run(tmp_path, network="lab", recheck=True, allow_incomplete=True) == 0
     assert seen == [True]
-
-
-def test_take_snapshot_snapshots_once_before_publishing(seeded, tmp_path):  # noqa: F811
-    from mmw.core.pool import Pool
-    mirror_dir, _net = _seeded_cfg(seeded, tmp_path)
-    assert publish_cmd.run(tmp_path, network="lab", take_snapshot=True, allow_incomplete=True) == 0
-    with Pool(mirror_dir, read_only=True) as pool:
-        snaps = pool.snapshots("lab")
-    assert len(snaps) == 1 and snaps[0].kind == "manual"
-    assert publish_cmd.run(tmp_path, network="lab", allow_incomplete=True) == 0
-    with Pool(mirror_dir, read_only=True) as pool:
-        assert len(pool.snapshots("lab")) == 1, "a plain publish never snapshots"
-
-
-def test_take_snapshot_with_a_snapshot_target_is_refused(seeded, tmp_path, capsys):  # noqa: F811
-    _seeded_cfg(seeded, tmp_path)
-    assert publish_cmd.run(tmp_path, network="lab", snapshot="x", take_snapshot=True) == 1
-    assert "nothing to snapshot" in capsys.readouterr().err
-

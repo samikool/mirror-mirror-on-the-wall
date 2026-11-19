@@ -200,6 +200,6 @@ def test_cli_repo_by_label(two_mirrors, tmp_path, monkeypatch):  # noqa: F811
     assert r.exit_code == 0, r.output
     assert "  a  files new → " in r.output and "  b " not in r.output
     r = run("stage", "-n", "oak", "--out", str(tmp_path / "s"), "--allow-incomplete", "--repo", "b",
-            "--from", "none")
+            "--full")
     assert r.exit_code == 0, r.output
     assert "  b  files new → " in r.output

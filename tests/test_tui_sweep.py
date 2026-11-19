@@ -205,7 +205,7 @@ def _screens():
     from mmw.tui.path_pick import PathPickPage
     from mmw.tui.pick import PickPage
     from mmw.tui.publish_modals import CertsPage
-    from mmw.tui.snapshot_pages import BundlePickPage, CleanPage, LabelPage, PublishPickPage
+    from mmw.tui.point_pages import BundlePickPage, PublishPickPage
     from mmw.tui.transfer import PUBLISH, DryRunReport, TransferView
     from mmw.tui.source_screens import EditSourcePage
 
@@ -230,8 +230,6 @@ def _screens():
             net.model_copy(update={"root": Path("/srv/mirror/lab")}), snapshot_status_demo()),
         "BundlePickPage": lambda: BundlePickPage(net, snapshot_status_demo(),
                                                  Path(tempfile.mkdtemp())),
-        "LabelPage": lambda: LabelPage("Take a snapshot of lab"),
-        "CleanPage": lambda: CleanPage(net, Path(tempfile.mkdtemp())),
         "CertsPage": lambda: CertsPage("lab", [f"host{i}.example.com" for i in range(6)]),
         "DryRunReport": lambda: _in_a_page(lambda: DryRunReport(result)),
         "TransferView": lambda: _in_a_page(lambda: TransferView(PUBLISH, "lab")),

@@ -84,6 +84,11 @@ def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, comple
                for path, _, _, kind, cs in _dedup_rows(view.mirror_files(names))
                if not path.startswith(ROOT_RELATIVE_PREFIX)}
         drafts = {d.track: d for d in split_repo(pool, repo, one.rows, settings, stamp)}
+        unreadable = sorted({path for draft in drafts.values() for path in draft.unreadable})
+        if unreadable:
+            raise ValueError(f"{unit.name}: cannot record a complete repository point: "
+                             f"unreadable required indexes or Release metadata ({', '.join(unreadable[:3])}); "
+                             "check the configured pool with `mmw verify --stat` and restore missing files")
         members.append((unit, raw, drafts))
     extra_sink = RecordingSink(pool)
     if refs is None or getattr(refs, "live", False):

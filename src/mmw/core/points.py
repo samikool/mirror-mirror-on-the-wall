@@ -356,7 +356,8 @@ def seeded_note(pool: Pool, network: str, stamp: str) -> str | None:
     except sqlite3.OperationalError:
         return None
     # Seeded recordings sit at the stamps of the snapshots they came from.
-    seeded = {s.stamp for s in pool.snapshots(network) if s.complete} & set(stamps)
+    seeded = {s.stamp for s in pool.snapshots(network)
+              if s.complete or pool.snapshot_point_ids(s.id)} & set(stamps)
     if at is None:                       # seeded before the moment was kept: its first sync after
         at = next((s for s in stamps if s not in seeded), None)
     if at is not None and stamp >= at:
@@ -467,11 +468,26 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
     kept: set[int] = set()
     for n in networks:
         kept |= _kept_by(pool, n, now)
+    kept |= pool.published_point_ids()
     # Every held point any network saw: one only a removed network saw is kept by none.
     candidates = set(pool.linked_held_points())
     if cfg is not None:
         from types import SimpleNamespace
         from mmw.core.repository_points import current_repository_points
+        # Modern history is owned by repositories. Network caches and old
+        # network retention rules must not pin it indefinitely.
+        owned = {p.id for p in pool.repository_points()}
+        kept -= owned
+        kept |= pool.published_point_ids()
+        # Before publish destinations recorded exact point IDs, an as-of
+        # deployment was identified by its saved network recording instead.
+        kept |= {pid for n in networks for deployment in pool.published(n.name)
+                 if deployment.target.startswith(AS_OF)
+                 for ids in pool.points_at(n.name, deployment.target[len(AS_OF):]).values()
+                 for pid in ids if pid in owned}
+        # Explicit old snapshots remain compatibility roots until migrated.
+        kept |= {pid for n in networks for snap in pool.snapshots(n.name) if snap.complete
+                 for pid in pool.snapshot_point_ids(snap.id) if pid in owned}
         by_repo_track = {}
         for p in pool.repository_points():
             candidates.add(p.id)

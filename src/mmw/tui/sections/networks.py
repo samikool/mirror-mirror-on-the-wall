@@ -33,8 +33,8 @@ class NetworksPage(Page):
             "TLS key and CSR (and checks a signed cert). k: custom .debs this network adds to\n"
             "an upstream mirror it publishes, and how that mirror is signed.\n"
             "Publish, dry run and transfer run in the Publish section (4) — keep browsing meanwhile.\n"
-            "Publish asks what (live, or a snapshot) and where; transfer asks from, to and how.\n"
-            "Snapshots (n) keeps exact network states to transfer or publish again.")
+            "Publish chooses repository points by date and where to serve them.\n"
+            "Transfer chooses From, To and how; retained history belongs to repositories.")
     BINDINGS = [
         Binding("a", "add", "Add"),
         Binding("e", "edit", "Edit"),
@@ -44,11 +44,10 @@ class NetworksPage(Page):
         Binding("t", "verb('bundle')", "Transfer"),
         # Off the footer and the bar (they must fit 80 columns): under More….
         Binding("c", "certs", "Certs", show=False),
-        Binding("n", "snapshots", "Snapshots"),
         Binding("k", "packages", "Packages", show=False),
-        Binding("h", "earlier_points", "Include earlier points…", show=False),
+        Binding("h", "history", "History", show=False),
     ]
-    MORE = ("certs", "packages", "earlier_points")
+    MORE = ("certs", "packages", "history")
 
     def __init__(self):
         super().__init__()
@@ -70,7 +69,6 @@ class NetworksPage(Page):
         yield Button("Dry run", id="btn-net-dry-run", compact=True)
         yield Button("Publish", id="btn-net-publish", variant="primary", compact=True)
         yield Button("Transfer…", id="btn-net-bundle", compact=True)
-        yield Button("Snapshots", id="btn-net-snapshots", compact=True)
 
     async def on_mount(self) -> None:
         # A transfer finishing while this section is the one showing: re-read
@@ -138,13 +136,13 @@ class NetworksPage(Page):
 
     # ── actions ──────────────────────────────────────────────────────────────
 
-    def action_earlier_points(self) -> None:
-        from mmw.tui.network_history import NetworkHistoryPage
+    def action_history(self) -> None:
+        from mmw.tui.history import HistoryPage
         net = self.highlighted()
         if net is None:
             self.notify("Select a network first.", severity="warning")
             return
-        self.app.push_screen(NetworkHistoryPage(net.name))
+        self.app.push_screen(HistoryPage(network=net.name))
 
     def action_add(self) -> None:
         self.start_flow(self._add)
@@ -196,9 +194,9 @@ class NetworksPage(Page):
             return
         if verb in ("publish", "bundle"):
             # Asked here, where the user is, before the section switches.
-            from mmw.tui.snapshot_pages import BundlePickPage, PublishPickPage, load_status
+            from mmw.tui.point_pages import BundlePickPage, PublishPickPage
             mirror_dir = self.app.cfg.settings.mirror_dir
-            if verb == "bundle":
+            if verb in ("publish", "bundle"):
                 def read_status():
                     from mmw.commands.bundle import available_transfer_dates
                     from mmw.core.pool import Pool
@@ -211,8 +209,6 @@ class NetworksPage(Page):
                         dates = ()  # The form's preview explains missing points.
                     return status, dates
                 status, dates = await asyncio.to_thread(read_status)
-            else:
-                status = await asyncio.to_thread(load_status, mirror_dir, net)
             repos, due = None, None
             if verb == "bundle":
                 from mmw.core.repos import network_repos
@@ -222,7 +218,7 @@ class NetworksPage(Page):
                     due = await asyncio.to_thread(installer_due, net, mirror_dir)
                 except Exception:  # noqa: BLE001 — a default, never a failure
                     due = status.last_bundle is None
-            page = (PublishPickPage(net, status) if verb == "publish"
+            page = (PublishPickPage(net, status, available_dates=dates) if verb == "publish"
                     else BundlePickPage(net, status, mirror_dir, repos=repos, installer_due=due,
                                         available_dates=dates))
             choice = await self.app.push_screen_wait(page)
@@ -238,19 +234,7 @@ class NetworksPage(Page):
         from mmw.tui.packages import NetworkPackagesPage
         self.app.push_screen(NetworkPackagesPage(net), lambda _: self._show_detail(force=True))
 
-    def action_snapshots(self) -> None:
-        net = self.highlighted()
-        if net is None:
-            self.notify("Select a network first.", severity="warning")
-            return
-        from mmw.tui.snapshot_pages import SnapshotsPage
-        self.app.push_screen(SnapshotsPage(net), lambda _: self._show_detail(force=True))
 
-    @on(Button.Pressed, "#btn-net-snapshots")
-    def _snapshots_pressed(self) -> None:
-        self.action_snapshots()
-
-    @on(Button.Pressed, "#btn-net-publish")
     def _publish_pressed(self) -> None:
         self.action_verb("publish")
 
@@ -343,7 +327,7 @@ class NetworksPage(Page):
             return
         if not await self.app.push_screen_wait(ConfirmDialog(
                 "Remove network", f"Remove network [b]{escape(net.name)}[/b]?\n"
-                "Its snapshots and bundle history are removed with it.", "Remove")):
+                "Its transfer records are removed with it; repository history stays.", "Remove")):
             return
         try:
             await self.app.save_config(lambda c: networks.without_network(c, net.name))

@@ -159,7 +159,7 @@ def _pick_page(tmp_path, status, check):
     import asyncio
 
     from mmw.core import config
-    from mmw.tui.snapshot_pages import BundlePickPage
+    from mmw.tui.point_pages import BundlePickPage
     from test_tui_snapshots import _app
 
     net = config.NetworkConfig(name="lab", select=[])
@@ -321,7 +321,7 @@ def test_the_page_uses_what_its_caller_worked_out(tmp_path, monkeypatch):
     from test_tui_sweep import snapshot_status_demo
     monkeypatch.setattr(R, "installer_due", lambda network, mirror_dir: pytest.fail("read on the screen's thread"))
     from mmw.core import config
-    from mmw.tui.snapshot_pages import BundlePickPage
+    from mmw.tui.point_pages import BundlePickPage
     page = BundlePickPage(config.NetworkConfig(name="lab", select=[]), snapshot_status_demo(), tmp_path,
                           installer_due=True)
     assert page._installer_due() is True

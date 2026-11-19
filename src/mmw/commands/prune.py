@@ -44,8 +44,8 @@ def _plan(cfg, mirror_dir: Path, released: list[int] = ()) -> tuple[list[str], i
         # Snapshots are GC roots, so a network removed from mmw.toml by hand
         # keeps its files in the pool until its snapshots go. Said here, where
         # someone is asking what can be freed.
-        print(f"  Snapshots of {name} (no longer configured) still hold files — "
-              f"`mmw snapshot clean -n {name} --keep 0 --yes` lets prune free them.")
+        print(f"  Legacy snapshot data for {name} remains protected until its point conversion "
+              "is complete; inspect repository history with `mmw history`.")
     return dropped, files, size
 
 

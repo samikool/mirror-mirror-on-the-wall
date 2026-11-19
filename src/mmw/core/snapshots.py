@@ -1,20 +1,8 @@
-"""Network snapshots — a network's complete published tree at a moment, kept
-in the pool database so it can later be bundled to (from any other snapshot,
-forwards or backwards) or published again exactly.
+"""Shared tree recording and compatibility with pre-repository history.
 
-A snapshot is taken by walking the network exactly as a publish does
-(`publisher.walk_network`), into a `RecordingSink` that records rows instead
-of writing files. So a snapshot cannot drift from what publish lays out.
-
-- Package, index and by-hash files are pool blobs already: recorded by checksum.
-- Keys and mirrored upstream files live outside the pool and a later sync
-  rewrites them: they are copied into the pool first (frozen), then recorded.
-- The nginx image is frozen like any other file; generated container setup
-  is regenerated from the settings stored with the snapshot.
-
-Every checksum a complete snapshot lists is a pool GC root (see
-`Pool.prune_orphans`). Deleting one a transfer went to only makes it history
-only: it keeps its list, as where the next transfer starts, but not its files.
+The public manual-snapshot workflow is retired. Old snapshot tables and replay
+helpers remain so existing databases and transfers keep their history. New
+repository history is recorded by successful syncs through repository_points.
 """
 import hashlib
 import json

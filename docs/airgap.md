@@ -220,25 +220,23 @@ network point or transfer unchanged files. Publish and transfer use the
 last complete repository point, even if a later failed sync left different
 live refs. Creating or editing a network does not require another sync.
 
-A new network starts with the current points. Include retained earlier
-points explicitly when you want its earlier history:
+A network can use all retained points of its selected repositories directly.
+Inspect them without changing any state:
 
 ```bash
-mmw network history -n lab --since 2026-10-01 --dry-run
-mmw network history -n lab --since 2026-10-01
-mmw network history -n lab --repo Debian       # all retained points for Debian
+mmw history -n lab --since 2026-10-01
+mmw history --repo Debian
 ```
 
-In Networks, select the network, then **More… → Include earlier points…**.
-Choose a date and repositories (blank means all), Look, then Add. This does
-not change current serving. The next `mmw bundle -n lab --history` carries
-the included points. Points whose files were already pruned cannot be added.
-Networks with a layer keep their existing rewritten history; earlier
-upstream points are skipped and named for those networks.
+In Sources or Networks, choose **More… → History**. There is no Add step:
+the transfer's From and To menus select retained dates directly. `--history`
+carries intermediate retained points. A network layer keeps its own rewritten
+history; upstream history cannot stand in for that layer's generated files.
 
 Repository retention defaults to `[settings] keep_points = 3` per suite.
-Override `keep_points` and `keep_suites` on a source; network rules also keep
-points. Use Settings or the source's History fields, or:
+Override `keep_points` and `keep_suites` on a source. Network compatibility
+rules do not override repository retention. Points currently published to a
+directory remain protected until it advances. Use Settings or Sources, or:
 
 ```bash
 mmw keep 10
@@ -326,11 +324,9 @@ default. The summary names each suite's dates:
   VS Code  stable new → 2026-11-15
 ```
 
-No snapshot is taken: a snapshot is a label you add by hand
-(`mmw snapshot take`), and `--to <snapshot>` sends the points it holds.
-`--from <snapshot>` is deprecated; it still only bounds `--history`. Use
-`--since DATE` (the snapshot’s date) or `--full` instead. Force-deleting a
-snapshot never makes the next bundle full.
+Manual network snapshots and snapshot endpoints have been removed. Use
+`--since DATE`, `--until DATE` and `--full` instead. Existing snapshot-derived
+history remains readable through compatibility code; upgrading does not erase it.
 
 A bundle counts as sent once it is written: mmw cannot know whether it ever
 reached the far side. If one never arrived (the drive was lost, the stage

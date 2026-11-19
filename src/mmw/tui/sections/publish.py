@@ -65,8 +65,8 @@ class PublishSection(Page):
         self.query_one("#btn-transfer-stop", Button).disabled = False
         self.refresh_bindings()                 # x Stop, while it runs
         what = {"publish": "Publishing", "dry_run": "Dry run of", "bundle": "Bundling"}[verb]
-        if isinstance(choice, PublishChoice) and choice.snapshot:
-            what = f"Publishing snapshot {choice.snapshot} of"
+        if isinstance(choice, PublishChoice) and choice.as_of:
+            what = f"Publishing repository points at {choice.as_of} for"
         self.set_status(f"{what} {net.name}…")
         if self._flows is None:
             self._flows = PublishFlows(self.app, lambda: self.app.cfg)

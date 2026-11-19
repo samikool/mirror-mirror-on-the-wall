@@ -45,9 +45,9 @@ def _on_off(flag: bool) -> str:
 
 def snapshot_line(status) -> str:
     """"3 · serving live · last bundled A → B on <date>" (markup, escaped)."""
-    if not status.snapshots and status.serving is None and status.last_bundle is None:
-        return "[dim]none yet — n to take one[/]"
-    parts = [f"{len(status.snapshots)}"]
+    if status.serving is None and status.last_bundle is None:
+        return "[dim]no publishes or transfers yet[/]"
+    parts = []
     if status.serving is not None:
         parts.append(f"serving {escape(status.name(status.serving))}")
     if status.other_dirs:
@@ -326,7 +326,7 @@ class NetworkDetail(Widget):
             else:
                 when = _fmt_age(self._bundle_mtime)
             self.mount(self._meta("Last transfer", when))
-        self.mount(self._meta("Snapshots", "…" if not self._bundle_loaded
+        self.mount(self._meta("Activity", "…" if not self._bundle_loaded
                               else self._snapshots or "[dim]unreadable[/]"))
         # What it selects — an empty dimension meaning "all" is exactly what a
         # reader needs told; the mirror list alone hides *why* it is that list.

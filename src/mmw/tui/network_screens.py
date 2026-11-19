@@ -174,13 +174,13 @@ class NetworkForm(Vertical):
                     hint="How long releases that left the mirror stay published (PyPI): current, "
                          "forever or days like 90d. Widening is not retroactive."),
                 TextField(
-                    "Keep points", str(net.keep_points) if net else "3", id="inp-keep-points",
-                    hint="Sync points kept per suite when the pool is pruned: a number, all, or an "
-                         "age like 90d. Snapshots and points not yet bundled are always kept."),
+                    "Legacy points", str(net.keep_points) if net else "3", id="inp-keep-points",
+                    hint="Compatibility retention for older network-owned history. Repository-owned "
+                         "points follow Sources and Settings; this cannot override their retention."),
                 TextField(
                     "Keep per suite", format_keep_suites(net.keep_suites) if net else "", id="inp-keep-suites",
                     hint="Optional: suites kept by their own setting, as suite=setting — "
-                         "bookworm=all sid=1. The rest follow Keep points."),
+                         "bookworm=all sid=1. The rest follow Legacy points."),
                 PathField(
                     "Transfer output", str(net.bundle_dir) if net and net.bundle_dir else "",
                     id="inp-bundle-dir", browse_id="btn-browse-bundle",

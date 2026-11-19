@@ -145,7 +145,8 @@ class BundlePickPage(Page):
     with what that sends, as a bundle or (mmw) a stage. Dismisses with a `BundleChoice`, or None."""
 
     def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, mirror_dir: Path,
-                 repos: dict[str, str] | None = None, installer_due: bool | None = None):
+                 repos: dict[str, str] | None = None, installer_due: bool | None = None,
+                 available_dates: tuple[str, ...] = ()):
         super().__init__()
         # Worked out by the caller off the screen's thread (it reads the pool);
         # None: here, as a page built on its own (a test) has no caller to ask.
@@ -165,6 +166,7 @@ class BundlePickPage(Page):
         self._installer_note = "mmw installer"
         self._preview_generation = 0
         self._preview_timer = None
+        self._available_dates = available_dates
 
     def compose_body(self) -> ComposeResult:
         froms = ([(escape(f"Where the last transfer went — {self._status.name(self._last)}"), "last")]
@@ -172,6 +174,11 @@ class BundlePickPage(Page):
         froms += [("Nothing — send everything", "none"),
                   ("A date — what the far side had then", "date")]
         tos = [("Latest recorded points", "now"), ("A date — newest point by then, per suite", "date")]
+        from mmw.site.versionref import day
+        dates = [(f"{day(stamp)} {stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]} UTC — retained point",
+                  f"point:{stamp}") for stamp in self._available_dates]
+        froms += dates
+        tos += dates
         yield Form(
             ChoiceField("From", froms, froms[0][1], id="pick-from",
                         hint="Last transfer uses each repository's local record; arrival across the airgap is unknown."),
@@ -267,11 +274,16 @@ class BundlePickPage(Page):
     def _range_options(self):
         values = self.query_one(Form).values()
         start, dest = self._ends()
-        return dict(since=values["pick-since"].strip() if start == "date" else None,
-                    until=values["pick-until"].strip() if dest == "date" else None,
+        return dict(since=self._endpoint(start, values["pick-since"]),
+                    until=self._endpoint(dest, values["pick-until"]),
                     full=start == "none", history=values["pick-points"] == "history",
                     repos=self._picked_repos(),
                     kept_dirs=[Path(values["pick-kept"]).expanduser()] if values["pick-kept"] else None)
+
+    @staticmethod
+    def _endpoint(selected, custom):
+        return selected.removeprefix("point:") if selected.startswith("point:") else (
+            custom.strip() if selected == "date" else None)
 
     @on(Input.Changed, "#pick-since")
     @on(Input.Changed, "#pick-until")
@@ -353,11 +365,11 @@ class BundlePickPage(Page):
         """What is chosen now."""
         start, dest = self._ends()
         values = self.query_one(Form).values()
-        return BundleChoice(from_last=start in ("last", "date"),
-                            since=values["pick-since"].strip() if start == "date" else None,
+        return BundleChoice(from_last=start in ("last", "date") or start.startswith("point:"),
+                            since=self._endpoint(start, values["pick-since"]),
                             kept_dir=Path(values["pick-kept"]).expanduser() if values["pick-kept"] else None,
-                            from_ref=None if start in ("last", "none", "date") else start,
-                            until=values["pick-until"].strip() if dest == "date" else None,
+                            from_ref=None if start in ("last", "none", "date") or start.startswith("point:") else start,
+                            until=self._endpoint(dest, values["pick-until"]),
                             repos=self._picked_repos(),
                             stage=bool(self._repos) and values["pick-as"] == "stage",
                             installer=self._installer(),

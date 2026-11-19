@@ -268,3 +268,9 @@ def preview_transfer(net, mirror_dir, **options):
     """Read-only range planning, shared by the TUI and CLI."""
     from mmw.core.transfer_ranges import preview_transfer as preview
     return preview(net, mirror_dir, **options)
+
+
+def available_transfer_dates(net, mirror_dir, **options):
+    """The retained dates accepted by the same CLI and TUI range planner."""
+    from mmw.core.transfer_ranges import available_transfer_dates as dates
+    return dates(net, mirror_dir, **options)

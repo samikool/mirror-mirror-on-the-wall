@@ -206,6 +206,54 @@ def test_tui_selects_an_arbitrary_repository_range(synced):
     assert _state(md, net)[:4] == before[:4]
 
 
+def test_retained_date_choices_use_the_cli_range_without_a_network_recording(synced, tmp_path, monkeypatch):
+    from textual.widgets import Select
+    from mmw.commands import bundle as command
+    from pickers import confirm_picker
+    from test_snapshot_tui import _run, _finished
+    from waiting import shows, until
+    cfg, net, md, units = synced
+    unit = next(u for u in units if u.arch == 'amd64')
+    _point(cfg, md, unit, 2, False)
+    _point(cfg, md, unit, 3, True)
+    before = _state(md, net)
+    dates = command.available_transfer_dates(net, md, cfg=cfg)
+    assert len(dates) == 3 and dates == tuple(sorted(dates, reverse=True))
+    first, last = dates[-1], dates[0]
+    cli = CliRunner().invoke(app, ['--config', str(md.parent), 'bundle', '-n', net.name,
+                                  '--since', first, '--until', last, '--dry-run'])
+    assert cli.exit_code == 0, cli.output
+    assert '2026-11-01' in cli.output and '2026-11-03' in cli.output
+    seen = []
+    real = command.transfer
+
+    def spy(*a, **kw):
+        seen.append((kw.get('since'), kw.get('until')))
+        return real(*a, **kw)
+    monkeypatch.setattr(command, 'transfer', spy)
+
+    async def check(app, pilot):
+        await pilot.press('t')
+        await until(pilot, lambda: type(app.screen).__name__ == 'BundlePickPage'
+                    and app.screen.query('#pick-to') and app.screen.query_one('#pick-to').is_mounted)
+        start = app.screen.query_one('#pick-from', Select)
+        end = app.screen.query_one('#pick-to', Select)
+        assert start.value == 'none' and end.value == 'now'
+        start.value = f'point:{first}'
+        end.value = f'point:{last}'
+        app.screen.query_one('#pick-installer', Select).value = 'no'
+        await until(pilot, lambda: not app.screen.query_one('#field-pick-since').display
+                    and not app.screen.query_one('#field-pick-until').display)
+        await shows(pilot, lambda: app.screen.query_one('#pick-estimate').render(), '2026-11-01', '2026-11-03')
+        await confirm_picker(app, pilot, 'BundlePickPage')
+        await until(pilot, lambda: _finished(app))
+        assert app.active_transfer.outcome == 'ok', app.notes
+
+    _run(cfg, md.parent, check)
+    assert seen == [(first, last)]
+    assert _state(md, net)[:4] == before[:4]
+
+
 def test_selected_repository_does_not_require_syncing_other_repositories(synced, tmp_path):
     cfg, net, md, units = synced
     other = config.SourceConfig(url='https://unsynced.test/ubuntu', suites=['stable'],

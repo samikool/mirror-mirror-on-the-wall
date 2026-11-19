@@ -388,6 +388,18 @@ class TransferPreview:
     warnings: tuple[str, ...] = ()
 
 
+def available_transfer_dates(net, mirror_dir, *, cfg=None):
+    """Retained endpoint dates for the network's configured repository slices."""
+    from mmw.core.pool import Pool
+    with Pool(mirror_dir, read_only=True) as pool:
+        settings, current = recorded_selection(pool, net, mirror_dir, cfg)
+        known = pool.points_of(pid for ids in current.values() for pid in ids)
+        return tuple(sorted({point_date(pool, point, settings)
+                             for tid in {p.track for p in known.values()}
+                             for point in retained_track_points(pool, net.name, tid, known, settings)
+                             if point.held}, reverse=True))
+
+
 def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=False,
                      history=None, repos=None, kept_dirs=None):
     """Resolve the same retained point range and checksum baseline as a transfer."""

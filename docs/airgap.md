@@ -259,7 +259,9 @@ Transfer defaults to each repository's last successful local transfer through
 its latest recorded points. The TUI's From and To controls show the actual
 resolved dates per suite, retained date spans, point counts and an approximate
 payload. No snapshot is made. Choose an earlier From date to recover a lost
-transfer; choose an earlier To date to carry older retained points.
+transfer; choose an earlier To date to carry older retained points. Both menus
+list retained repository point dates, newest first, including points synced
+before the network existed. Choose **A date** to enter another cutoff.
 
 ```bash
 mmw bundle -n lab --until 2026-11-10 --dry-run

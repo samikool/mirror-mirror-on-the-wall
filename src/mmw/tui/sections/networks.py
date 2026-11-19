@@ -200,11 +200,17 @@ class NetworksPage(Page):
             mirror_dir = self.app.cfg.settings.mirror_dir
             if verb == "bundle":
                 def read_status():
+                    from mmw.commands.bundle import available_transfer_dates
                     from mmw.core.pool import Pool
                     from mmw.core.snapshots import snapshot_status
                     with Pool(mirror_dir, read_only=True) as pool:
-                        return snapshot_status(pool, net.name, net.root)
-                status = await asyncio.to_thread(read_status)
+                        status = snapshot_status(pool, net.name, net.root)
+                    try:
+                        dates = available_transfer_dates(net, mirror_dir, cfg=self.app.cfg)
+                    except ValueError:
+                        dates = ()  # The form's preview explains missing points.
+                    return status, dates
+                status, dates = await asyncio.to_thread(read_status)
             else:
                 status = await asyncio.to_thread(load_status, mirror_dir, net)
             repos, due = None, None
@@ -217,7 +223,8 @@ class NetworksPage(Page):
                 except Exception:  # noqa: BLE001 — a default, never a failure
                     due = status.last_bundle is None
             page = (PublishPickPage(net, status) if verb == "publish"
-                    else BundlePickPage(net, status, mirror_dir, repos=repos, installer_due=due))
+                    else BundlePickPage(net, status, mirror_dir, repos=repos, installer_due=due,
+                                        available_dates=dates))
             choice = await self.app.push_screen_wait(page)
             if choice is None:
                 return          # cancelled — never falls back to a default silently

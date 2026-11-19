@@ -6,6 +6,48 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.3]
+
+APT history stays with the repository; networks select from it when publishing
+or transferring. Existing points remain usable without another sync. PyPI,
+VS Code and network layers keep their existing history adapters.
+
+### Added
+
+- `mmw history` and Sources / Networks → More… → History list retained
+  repository points without importing or attaching history to a network.
+
+### Changed
+
+- Manual network snapshots and their CLI/TUI workflow are retired. Use
+  `publish --as-of DATE` and transfer From / To dates, `--since`, `--until`
+  and `--full`. The old `snapshot` commands, publish snapshot flags,
+  connected-side bundle/stage `--from` / `--to`, and `network history`
+  attachment command are removed.
+- Old snapshot-derived history is converted automatically without a resync.
+  Older transfer metadata remains readable; an old state that cannot be
+  converted safely remains protected.
+- Repository retention governs repository-owned APT history. Network legacy
+  rules no longer override it. Published directories protect the points they
+  serve until they advance. Older publish records without point IDs retain
+  prior history conservatively; History explains when a local republish can
+  replace that compatibility hold with exact references.
+
+### Fixed
+
+- Publish and transfer menus list retained point dates, including points synced
+  before the network existed. Custom dates and default endpoints remain available.
+- Publishing by date uses the network's current repository selection instead
+  of resurrecting a saved network selection. Unselected architecture updates
+  do not change the dates shown for that selection.
+- A history transfer cannot silently carry a repository beyond its selected To
+  point. A sync advancing during publish cannot change which points the
+  published directory records as serving, and a failed publish cannot advance
+  that record.
+- APT sync no longer records a supposedly complete repository point when its
+  required indexes or Release metadata cannot be read from the configured
+  pool. It reports the problem and leaves recorded history unchanged.
+
 ## [1.5.2]
 
 ### Fixed

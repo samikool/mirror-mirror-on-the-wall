@@ -409,12 +409,16 @@ def test_readline_does_not_treat_a_network_as_a_directory(configured, tmp_path, 
         assert needle in got, got.decode(errors='replace')
     try:
         until(b'PROMPT> ')
-        setup = ('PS1=; source ' + shlex.quote(str(script)) + "; bind -x "
+        setup = ('source ' + shlex.quote(str(script)) + "; bind -x "
                  + shlex.quote('"\\C-x\\C-r":printf "\\nREADLINE=%s\\n" "$READLINE_LINE"')
-                 + "; printf '\\x52\\x45\\x41\\x44\\x59\\n'\n")
+                 + "; PS1=$'\\x52\\x45\\x41\\x44\\x59\\x3e\\x20'\n")
         os.write(master, setup.encode())
-        until(b'READY\r\n')
-        os.write(master, b'mmw bundle --network wor\t\x18\x12')
+        # The prompt is emitted by Readline after it has entered raw mode.
+        # A printf inside the setup command races that terminal transition.
+        until(b'READY> ')
+        os.write(master, b'mmw bundle --network wor\t')
+        until(b'mmw bundle --network work ')
+        os.write(master, b'\x18\x12')
         until(b'READLINE=mmw bundle --network work \r\n')
     finally:
         os.close(master)

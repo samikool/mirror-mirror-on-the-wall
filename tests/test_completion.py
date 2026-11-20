@@ -397,7 +397,7 @@ def test_readline_does_not_treat_a_network_as_a_directory(configured, tmp_path, 
     master, slave = pty.openpty()
     executable_dir = Path(__file__).resolve().parents[1] / '.venv/bin'
     process = subprocess.Popen(['bash', '--noprofile', '--norc', '-i'], stdin=slave, stdout=slave,
-                               stderr=slave, cwd=tmp_path, env={**os.environ, 'PS1': 'PROMPT> ',
+                               stderr=slave, cwd=tmp_path, env={**os.environ, 'PS1': 'PROMPT> ', 'HISTFILE': os.devnull,
                                'PATH': str(executable_dir) + os.pathsep + os.environ['PATH']})
     os.close(slave)
     def until(needle):

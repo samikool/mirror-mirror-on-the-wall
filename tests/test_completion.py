@@ -349,3 +349,30 @@ def test_tui_and_shell_offer_the_same_retained_dates(tmp_path, monkeypatch):
         choices = {value for _, value in tui.screen.query_one('#pick-to', Select)._options}
         assert {f'point:{date}' for date in dates} <= choices
     _run(cfg, tmp_path, check)
+
+
+def test_flat_repository_dates_without_a_suite(tmp_path, monkeypatch):
+    import hashlib
+    from mmw.core.pool import Pool
+    from mmw.core import points
+    monkeypatch.chdir(tmp_path)
+    source = config.SourceConfig(name='flat', provider='apt-flat', url='https://apt.test/flat')
+    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / 'pool'), sources=[source],
+                        networks=[config.NetworkConfig(name='flat')])
+    unit, = source.to_mirrors()
+    assert unit.suite is None
+    with Pool(cfg.settings.mirror_dir) as pool:
+        refs = []
+        for path, body, kind in [
+            ('Release', b'Date: Sun, 01 Nov 2026 00:00:00 UTC\n', 'release'),
+            ('Packages', b'Package: a\nFilename: a.deb\n\n', 'meta'),
+            ('a.deb', b'package', 'pkg'),
+        ]:
+            checksum = hashlib.sha256(body).hexdigest()
+            pool.add(body, checksum, 'sha256', path, len(body))
+            refs.append((checksum, path, kind))
+        pool.reconcile_refs(unit.name, refs, source.identity)
+        pool.record_mirror(unit)
+    points.record_points_after_sync(cfg, cfg.settings.mirror_dir, {source.identity}, say=lambda _: None)
+    config.save(cfg, tmp_path)
+    assert complete('bundle', '-n', 'flat', '--until', '') == ['2026-11-01', '20261101T000000Z']

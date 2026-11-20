@@ -167,7 +167,7 @@ def _connected_dates(cfg, ctx):
                     (u.source, json.dumps(u.dims, sort_keys=True, separators=(',', ':'))))]
             for point in pool.repository_points(repo):
                 track = pool.track_of_point(point.id)
-                if track.name and not any(track.name in (u.mirror_base, u.mirror_base + '/dists/' + u.suite)
+                if track.name and not any(track.name in (u.mirror_base, u.mirror_base + '/dists/' + (u.suite or ''))
                                           for u in mine):
                     continue
                 date = point.date

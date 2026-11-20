@@ -6,6 +6,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.5]
+
+### Added
+
+- Bash completion sets itself up silently on the first interactive CLI or TUI
+  launch after installing with pip or uv, and during offline installation.
+  Completion scripts refresh automatically on later launches without prompts or
+  setup messages. Existing Bash startup content and permissions are preserved;
+  Tab completion and non-interactive commands remain read-only.
+
 ## [1.5.4]
 
 Retained history is available immediately after upgrading, and older mirrors can

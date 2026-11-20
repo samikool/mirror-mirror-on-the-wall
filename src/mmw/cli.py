@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import typer
+from typer.core import TyperGroup
 
 from mmw.core import config
 
@@ -47,7 +48,15 @@ def _run_tui(app):
     return result
 
 
+class _CompletionGroup(TyperGroup):
+    def main(self, *args, **kwargs):
+        from mmw.completion_setup import on_launch
+        on_launch()
+        return super().main(*args, **kwargs)
+
+
 app = typer.Typer(
+    cls=_CompletionGroup,
     name="mmw",
     help="Mirror Mirror on the Wall — APT, PyPI and VS Code mirrors for airgapped networks.",
     no_args_is_help=True,

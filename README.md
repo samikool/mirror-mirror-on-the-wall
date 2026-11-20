@@ -97,9 +97,11 @@ end, from zero to a client running `apt update` against your mirror.
 
 ## Shell completion
 
-With `mmw` on your `PATH`, run `mmw --install-completion` in your shell and
-start a new shell. To inspect or install the script yourself, use
-`mmw --show-completion`. Bash, Zsh, Fish and PowerShell use Typer's completion
+Bash completion sets itself up silently on the first interactive launch of
+`mmw`, and when installing with the offline installer. It refreshes itself on
+later launches when the script changes. Open a new shell to load it.
+To inspect the script, use `mmw --show-completion`. Other shells can use
+`mmw --install-completion`; Bash, Zsh, Fish and PowerShell use Typer's completion
 support.
 
 Tab completes commands, flags, networks, repositories, suites, retained dates
@@ -117,8 +119,7 @@ Completion reads local configuration and retained history without syncing,
 changing a site, or connecting over SSH. Remembered SSH locations complete as
 root names; remote-only repositories and history need to be typed explicitly.
 Paths containing spaces and Bash's URL / `HOST=PATH` word breaks are supported.
-If you installed completion before upgrading, run `mmw --install-completion`
-again to refresh the script.
+Existing Bash completion installations are refreshed automatically.
 
 ## Documentation
 

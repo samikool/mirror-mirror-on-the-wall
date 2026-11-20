@@ -29,9 +29,11 @@ def test_installer_in_rocky8(tmp_path):
     (path,) = write_installers(tmp_path / "out", arches=[ARCH], python="3.12", cache=cache,
                                fetcher=R.RealFetcher(), wheel=R.resolve_wheel(None, cache / "build"))
     script = ("set -e; ! command -v python3; tar -xf /b/" + path.name + " -C /tmp; "
-              "sh /tmp/mmw-*/install.sh; ~/.local/bin/mmw site --help")
+              "sh /tmp/mmw-*/install.sh; ~/.local/bin/mmw site --help; "
+              "bash --noprofile --rcfile /root/.bashrc -ic 'complete -p mmw'")
     r = subprocess.run(["docker", "run", "--rm", "--network", "none", "-v", f"{path.parent}:/b:ro", IMAGE,
                         "sh", "-c", script], capture_output=True, text=True, timeout=900)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "installed — /root/.local/bin/mmw" in r.stdout
     assert "apply" in r.stdout and "serve" in r.stdout          # `mmw site --help`: the dev build's commands
+    assert 'complete -F _mmw_completion mmw' in r.stdout

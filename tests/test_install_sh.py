@@ -5,6 +5,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tarfile
 
 import pytest
@@ -40,7 +41,8 @@ def _runtime(tmp_path, arch=ARCH, version="1.2.0"):
     (a / "wheels" / f"mirror_mirror_on_the_wall-{version}-py3-none-any.whl").write_bytes(b"wheel")
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        data = b"#!/bin/sh\necho python\n"
+        data = (b'#!/bin/sh\nif [ "$1" = -c ] && [ -n "${STUB_SETUP_PYTHON:-}" ]; then\n'
+                b'    exec "$STUB_SETUP_PYTHON" "$@"\nfi\necho python\n')
         info = tarfile.TarInfo("python/bin/python3")
         info.size, info.mode = len(data), 0o755
         tar.addfile(info, io.BytesIO(data))
@@ -95,6 +97,18 @@ def test_default_prefix_is_home_local(tmp_path):
     r, _log = _run(rt, home=tmp_path / "h")
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "h/.local/bin/mmw").exists() and (tmp_path / "h/.local/share/mmw/CURRENT").exists()
+
+
+def test_installer_silently_registers_completion_without_a_terminal(tmp_path):
+    rt, home, prefix = _runtime(tmp_path), tmp_path / 'home', tmp_path / 'prefix'
+    home.mkdir()
+    r, _ = _run(rt, prefix, home=home, STUB_SETUP_PYTHON=sys.executable,
+                XDG_DATA_HOME=str(home / '.local/share'))
+    assert r.returncode == 0, r.stderr
+    user = home / '.local/share/bash-completion/completions/mmw'
+    assert user.read_bytes() == (prefix / 'share/bash-completion/completions/mmw').read_bytes()
+    assert 'mmw bash completion' in (home / '.bashrc').read_text()
+    assert 'completion' not in r.stdout and not r.stderr
 
 
 def test_install_says_when_bin_is_not_on_path(tmp_path):

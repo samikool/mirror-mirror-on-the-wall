@@ -148,6 +148,8 @@ chmod 755 "$launcher.tmp"
 mv -f "$launcher.tmp" "$launcher"
 echo "$version $py $name" > "$share/CURRENT.tmp"
 mv -f "$share/CURRENT.tmp" "$share/CURRENT"
+# Completion setup is best effort and silent, including non-interactive installs.
+"$dest/venv/bin/python" -c 'import sys; from pathlib import Path; from mmw.completion_setup import install; install(Path(sys.argv[1]))' "$prefix" >/dev/null 2>&1 || :
 echo "mmw $version installed — $launcher"
 case ":${PATH:-}:" in
     *":$prefix/bin:"*) ;;

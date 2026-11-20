@@ -16,6 +16,20 @@ from pickers import confirm_picker, press_bundle, press_publish
 from waiting import settle, until
 
 
+@pytest.fixture(autouse=True)
+def offline_installer_wheel(tmp_path, monkeypatch):
+    """Exercise installer export without building this checkout for every UI test.
+
+    FakeFetcher already supplies the offline runtime. The source-wheel build
+    still launched uv and could exceed the UI deadline while fetching build
+    dependencies on CI. Actual wheel building has its own runtime tests.
+    """
+    from mmw.core import runtime
+    wheel = tmp_path / f"mirror_mirror_on_the_wall-{runtime.mmw_version()}-py3-none-any.whl"
+    wheel.write_bytes(b"offline UI test wheel")
+    monkeypatch.setattr(runtime, "checkout_wheel", lambda *a, **kw: wheel)
+
+
 async def _settle(pilot, n=6):
     """Until no work is in flight — see tests/waiting.py. The count is ignored."""
     await settle(pilot)
@@ -55,7 +69,15 @@ def _handled(view) -> bool:
 
 async def _finished(pilot, view):
     """Done, and the section has handled `Completed` (status, buttons, toast)."""
-    await _until(pilot, lambda: _handled(view))
+    try:
+        await _until(pilot, lambda: _handled(view))
+    except AssertionError as exc:
+        raise AssertionError(
+            f"Transfer did not finish: outcome={view.outcome!r}, "
+            f"displayed={view._done_displayed}, summary={view.summary()!r}, "
+            f"status={str(view.screen.query_one('#page-status').render())!r}, "
+            f"screen={type(pilot.app.screen).__name__}, notes={pilot.app.notes!r}"
+        ) from exc
     await _settle(pilot)
 
 

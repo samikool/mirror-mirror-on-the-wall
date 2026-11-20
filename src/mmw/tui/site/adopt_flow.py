@@ -23,6 +23,7 @@ class AdoptChoice:
     as_base: str | None
     key: str | None
     unverified: bool
+    break_lock: bool = False
 
 
 def _run_adopt(root: str | None, c: AdoptChoice, dry_run: bool, said=None) -> tuple[int, list[str]]:
@@ -49,6 +50,7 @@ def _run_adopt(root: str | None, c: AdoptChoice, dry_run: bool, said=None) -> tu
     far = root is not None and parse_location(root)[0] == "ssh"  # never this one's ~
     code = adopt(Path(c.path) if far else Path(c.path).expanduser(), Path(root) if root else None, None, c.as_base or None,
                  Path(c.key).expanduser() if c.key else None, c.unverified, dry_run, True,
+                 break_lock=c.break_lock,
                  say=lines.append, err=lines.append, hashing=hashing, said=said)
     return code, lines
 
@@ -72,7 +74,7 @@ class AdoptPage(Page):
         if root is None:
             self.subtitle = "Upgrade an apply.py mirror or a copied published tree in place"
             self.HELP = ("Choose the existing mirror folder. Its recorded manifest checks the files.\n"
-                         "Look previews the conversion; Adopt creates mmw's points in place.\n"
+                         "Stop the old mirror/apply jobs first. Look checks the files; Adopt converts them.\n"
                          "The served files stay where they are. No new transfer is needed.")
 
     def compose_body(self) -> ComposeResult:
@@ -83,7 +85,8 @@ class AdoptPage(Page):
                TextField("Key file", "", id="adopt-key", placeholder="upstream's public key (else this mirror's keys)"),
                ToggleField("Adopt unverified", False, id="adopt-unverified",
                            hint="Without a key: adopted, marked 'signature not checked'")]
-              if self._root is not None else []))
+              if self._root is not None else [ToggleField('Clear a stale lock', False, id='adopt-break-lock',
+                  hint='Only if the previous mmw process is gone. Look never clears the lock.')]))
         yield Static("", id="adopt-report")
 
     def compose_actions(self) -> ComposeResult:
@@ -94,7 +97,8 @@ class AdoptPage(Page):
     def choice(self) -> AdoptChoice:
         values = self.query_one(Form).values()
         return AdoptChoice(values["adopt-path"].strip(), values.get("adopt-as", "").strip() or None,
-                           values.get("adopt-key", "").strip() or None, bool(values.get("adopt-unverified", False)))
+                           values.get("adopt-key", "").strip() or None, bool(values.get("adopt-unverified", False)),
+                           bool(values.get('adopt-break-lock', False)))
 
     @on(Input.Changed)
     def _changed(self, _event=None) -> None:

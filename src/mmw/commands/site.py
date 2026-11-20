@@ -821,7 +821,8 @@ def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_loc
     import sys
 
     from mmw.site import recents
-    from mmw.site.adopt import apt_bases
+    from mmw.site.adopt import apt_bases, check_apply_tree
+    from mmw.site.lock import LockHeld
     bases = apt_bases(managed.rows)
     say(f"An apply.py tree of {managed.network} at {managed.path} (as of {managed.created}): "
           f"{len(managed.rows):,} files")
@@ -841,6 +842,22 @@ def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_loc
     else:
         say("→ in place: it becomes a root of an mmw mirror; served files stay as they are")
     if dry_run:
+        try:
+            checked = check_apply_tree(managed, progress=hashing(managed.path))
+        except _ERRORS as e:
+            return (err(str(e)) or 1)
+        say(f'Checked {len(checked.present):,} files against the recorded manifest.')
+        for what, why in checked.refused.items():
+            err(f'  {what} refused: {why}')
+        for what, n in checked.missing.items():
+            say(f'  {what}: {n} file(s) missing from the original tree')
+        for rel in checked.missing_paths[:10]:
+            say(f'  missing: {rel}')
+        if len(checked.missing_paths) > 10:
+            say(f'  … and {len(checked.missing_paths) - 10:,} more missing files')
+        if target is None and (checked.refused or any(b != 'network files' for b in checked.missing)):
+            err('Not ready to upgrade — restore the named files and Look again; nothing has been changed.')
+            return 1
         return 0
     if not yes:
         if not sys.stdin.isatty():
@@ -851,12 +868,21 @@ def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_loc
     try:
         if target is None:
             from mmw.site.adopt import adopt_apply_tree
+            if break_lock:
+                from mmw.site.home import root_home
+                from mmw.site.lock import break_lock as clear_lock
+                clear_lock(root_home(managed.path))
             r = adopt_apply_tree(managed, progress=hashing(managed.path))
         else:
             r = target.adopt_apply_tree(managed, progress=hashing(managed.path))
-    except _ERRORS as e:
-        return (err(str(e).strip("'\"")) or 1)
-    if target is None:
+    except (*_ERRORS, LockHeld) as e:
+        if target is None:
+            from mmw.site.home import root_home
+            if disk_io.ops.exists(root_home(managed.path) / 'adoption.json'):
+                err('Upgrade is unfinished; progress is saved. Fix the problem, then Look and Adopt the same folder again.')
+        return (err(str(e).strip("'\"")) or (5 if isinstance(e, LockHeld) else 1))
+    complete = r.converted
+    if target is None and complete:
         recents.remember(str(managed.path))
     for line in r.lines:
         say(line)
@@ -864,6 +890,9 @@ def _adopt_apply(managed, root: Path | None, dry_run: bool, yes: bool, break_loc
         say(f"  {what} refused: {why}")
     for what, n in r.incomplete.items():
         say(f"  {what} stored incomplete: {n} file(s) missing")
+    if target is None and not complete:
+        err('Not adopted — restore the named files and Look again; the original mirror is unchanged.')
+        return 1
     say(f"adopted ({r.linked} linked" + (f", {r.copied} copied" if r.copied else "") + ") — the "
           "network's next mmw bundle names its repositories")
     return 0
@@ -988,7 +1017,10 @@ def adopt(path: Path, root: Path | None = None, repo: str | None = None, as_base
         key_bytes = disk_io.ops.read_bytes(Path(key))
     else:
         key_bytes = None
-    managed = find_apply_tree(Path(path))
+    try:
+        managed = find_apply_tree(Path(path))
+    except _ERRORS as exc:
+        return (err(str(exc)) or 1)
     if managed is not None:
         return _adopt_apply(managed, root, dry_run, yes, break_lock, say, err, hashing)
     trees = find_trees(Path(path))

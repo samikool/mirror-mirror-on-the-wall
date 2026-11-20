@@ -205,6 +205,10 @@ def read_root(location: str) -> RootInfo | None:
     home = root_home(path)
     if not disk_io.ops.exists(home / SETTINGS):
         return None
+    # An interrupted adoption isn't an opened mirror yet. Keep discovery
+    # (local and SSH) on the first-run path until Look/Adopt finishes it.
+    if disk_io.ops.exists(home / 'adoption.json'):
+        return None
     s = load_site(home)
     return RootInfo(location, path.resolve(), home, s.name or path.name, s.set_id, s.network,
                     tuple(s.members or [s.name or path.name]))

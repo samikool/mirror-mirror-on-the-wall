@@ -97,6 +97,18 @@ the existing folder, then **Look** and **Adopt**. This uses the same in-place
 conversion as the CLI. Close the result to open the converted mirror and its
 points; no replacement transfer is needed.
 
+Stop the old mirror/apply jobs before starting. **Look** is read-only and checks
+the files against the recorded manifest, including older compressed manifests.
+It reports damaged and missing repository files before creating any mmw state;
+restore those files and Look again. Unchanged hash results are reused by Adopt.
+
+If adoption is interrupted, its progress is retained. Fix the reported problem,
+then repeat Look and Adopt on the same folder, even after restarting mmw. The
+original manifest remains available until conversion finishes, and an unfinished
+conversion is not exposed as a ready mirror. If the previous process died and
+left a lock, select **Clear a stale lock** only after confirming it is gone
+(`--break-lock` in the CLI); Look never clears a lock.
+
 ## A tree mmw didn't make
 
 An APT mirror kept by other tools (apt-mirror, debmirror, rsync):

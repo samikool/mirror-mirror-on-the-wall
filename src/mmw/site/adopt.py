@@ -232,15 +232,17 @@ def _hash(path: Path) -> str:
 
 # (device, inode, size, mtime) → sha256: a file several trees share (hardlinked
 # snapshots of one mirror) is read once per run.
-_HASHED: dict[tuple[int, int, int, int], str] = {}
+_HASHED: dict[tuple[int, int, int, int, int], str] = {}
 
 
-def _files(root: Path) -> dict[str, os.stat_result]:
+def _files(root: Path, *, skip_control=False) -> dict[str, os.stat_result]:
     """Every regular file under `root` (no symlinks, none followed) → its stat."""
     out = {}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         d = Path(dirpath)
         dirnames[:] = [n for n in dirnames if not (d / n).is_symlink()]
+        if skip_control and d == root:
+            dirnames[:] = [n for n in dirnames if n != '.mmw']
         for n in filenames:
             p = d / n
             st = p.lstat()
@@ -251,6 +253,21 @@ def _files(root: Path) -> dict[str, os.stat_result]:
 
 def _stat_key(st: os.stat_result) -> tuple[int, int, int, int]:
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _cached_hash(path, st):
+    # ctime detects a writer preserving the old size and mtime. Keep it out
+    # of the hardlink identity: making the link itself changes ctime.
+    key = (*_stat_key(st), st.st_ctime_ns)
+    if key not in _HASHED:
+        checksum = _hash(path)
+        _HASHED[key] = checksum
+    from mmw.core import disk_io
+    after = disk_io.ops.stat(path)
+    if (*_stat_key(after), after.st_ctime_ns) != key:
+        _HASHED.pop(key, None)
+        raise ValueError(f'{path} changed while it was checked — stop what writes to the tree and try again')
+    return _HASHED[key]
 
 
 def check_tree(tree: FoundTree, keyring: Path | None, progress=None) -> TreeCheck:
@@ -267,16 +284,14 @@ def check_tree(tree: FoundTree, keyring: Path | None, progress=None) -> TreeChec
     unreadable: set[str] = set()
 
     def sha(rel: str) -> str | None:
-        key = check.stats[rel]
-        if key not in _HASHED:
-            try:
-                _HASHED[key] = _hash(root / rel)
-            except OSError:
-                unreadable.add(rel)
-                return None
-            if progress:
-                progress(rel, files[rel].st_size)
-        return _HASHED[key]
+        try:
+            checksum = _cached_hash(root / rel, files[rel])
+        except OSError:
+            unreadable.add(rel)
+            return None
+        if progress:
+            progress(rel, files[rel].st_size)
+        return checksum
 
     wants: dict[str, dict[str, tuple[str, int | None]]] = {}     # rel → track dir → (sha, size)
 
@@ -404,6 +419,7 @@ class AdoptResult:
     linked: int = 0
     copied: int = 0
     copied_bytes: int = 0
+    converted: bool = False
 
 
 def _suite_name(track_dir: str, fields: dict[str, str]) -> str:
@@ -605,11 +621,39 @@ def find_apply_tree(path: Path) -> ApplyTree | None:
     """The tree at `path` if apply.py (or a publish) keeps its manifest there."""
     from mmw.core.publisher.manifest import RECORD_PATH, iter_manifest
     record = Path(path) / RECORD_PATH
+    if not record.is_file() and (Path(path) / '.mmw/site/adoption.json').is_file():
+        record = record.with_name('manifest.apply.jsonl')
     if not record.is_file():
         return None
-    header, rows = iter_manifest(record)
-    return ApplyTree(Path(path), header.network, header.created, header.created_label,
-                     {p: c for p, c in rows if not p.startswith(".mmw/") and _safe(p)})
+    try:
+        header, rows = iter_manifest(record)
+        if not isinstance(header.network, str) or not header.network.strip():
+            raise ValueError('missing network name')
+        time.strptime(header.created, '%Y%m%dT%H%M%SZ')
+        if header.created_label is not None and not isinstance(header.created_label, str):
+            raise ValueError('invalid point label')
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f'{record}: cannot read mirror manifest: {exc}') from exc
+    try:
+        checked = {}
+        from mmw.site.store import Store
+        store = Store(path)
+        for rel, checksum in rows:
+            if not isinstance(rel, str) or not _safe(rel):
+                raise ValueError(f'{record}: unsafe manifest path {rel!r}')
+            rel = posixpath.normpath(rel)
+            if rel.startswith('.mmw/'):
+                continue
+            if not isinstance(checksum, str):
+                raise ValueError(f'{record}: invalid checksum for {rel}')
+            checksum = checksum.lower()
+            store.path(checksum)  # Validate before creating any control state.
+            if rel in checked and checked[rel] != checksum:
+                raise ValueError(f'{record}: conflicting checksums for {rel}')
+            checked[rel] = checksum
+    except (TypeError, KeyError) as exc:
+        raise ValueError(f'{record}: cannot read mirror manifest row: {exc}') from exc
+    return ApplyTree(Path(path), header.network, header.created, header.created_label, checked)
 
 
 def apt_bases(rows: dict[str, str]) -> list[str]:
@@ -631,6 +675,74 @@ def apt_bases(rows: dict[str, str]) -> list[str]:
     return sorted(bases, key=lambda b: (-len(b), b))
 
 
+@dataclass
+class ApplyCheck:
+    present: dict[str, str] = field(default_factory=dict)
+    stats: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)
+    sizes: dict[str, int] = field(default_factory=dict)
+    refused: dict[str, str] = field(default_factory=dict)
+    missing: dict[str, int] = field(default_factory=dict)
+    missing_paths: list[str] = field(default_factory=list)
+
+
+def check_apply_tree(tree: ApplyTree, progress=None) -> ApplyCheck:
+    """Read-only preflight shared by Look and adoption; never create a site."""
+    check = ApplyCheck()
+    files = _files(tree.path, skip_control=True)
+    bases = apt_bases(tree.rows)
+    for rel, want in sorted(tree.rows.items()):
+        base = next((b for b in bases if rel.startswith(b + '/')), None)
+        st = files.get(rel)
+        if st is None:
+            group = base or 'network files'
+            check.missing[group] = check.missing.get(group, 0) + 1
+            check.missing_paths.append(rel)
+            continue
+        try:
+            got = _cached_hash(tree.path / rel, st)
+        except OSError as exc:
+            check.refused.setdefault(base or 'network files', f'{rel} cannot be read: {exc}')
+            continue
+        if progress:
+            progress(rel, st.st_size)
+        if base is not None and got != want:
+            check.refused.setdefault(base, f"{rel} differs from the tree's manifest")
+            continue
+        check.present[rel], check.stats[rel], check.sizes[rel] = got, _stat_key(st), st.st_size
+    return check
+
+
+def _adoption_identity(tree):
+    from mmw.site.tracks import content_ident
+    return dict(network=tree.network, created=tree.created, label=tree.created_label, files=content_ident(tree.rows))
+
+
+def _prepare_apply_adoption(tree, home):
+    """Journal before initialization so retries can distinguish our partial
+    conversion from an unrelated or already finished mmw mirror."""
+    from mmw.core import disk_io
+    from mmw.site import home as H
+    from mmw.site.db import SiteDB
+    from mmw.site.lock import SiteLock
+    disk_io.ops.mkdir(home, parents=True, exist_ok=True)
+    journal = home / 'adoption.json'
+    with SiteLock(home):
+        pending = disk_io.ops.exists(journal)
+        if pending and json.loads(disk_io.ops.read_text(journal)) != _adoption_identity(tree):
+            raise ValueError('unfinished adoption belongs to another manifest — refusing to overwrite it')
+        if disk_io.ops.exists(home / H.SETTINGS):
+            if H.load_site(home).network != tree.network:
+                raise ValueError('this root belongs to another network — refusing to overwrite it')
+            if not pending:
+                with SiteDB(home) as db:
+                    if db.applied() or db.repo_states():
+                        raise ValueError(f'{tree.path} is already an mmw mirror — nothing to convert')
+        if not pending:
+            disk_io.ops.atomic_write(journal, json.dumps(_adoption_identity(tree), sort_keys=True).encode())
+        if not disk_io.ops.exists(home / H.SETTINGS):
+            H.init_root(tree.path, name='main', set_id=H.new_set_id(), network=tree.network)
+
+
 def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None) -> AdoptResult:
     """Adopt a tree apply.py manages: every file its manifest lists, hashed
     against it and linked into the store; each APT base a repository
@@ -642,18 +754,20 @@ def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None
     from mmw.site.ops import _render, _reserve, _session
     from mmw.site.timeline import import_rows
 
-    from mmw.site.db import SiteDB
+    from mmw.core import disk_io
     in_place = home is None
+    result = AdoptResult("", tree.network)
+    check = check_apply_tree(tree, progress)
+    result.refused.update(check.refused)
+    result.incomplete.update(check.missing)
+    result.lines.extend(f'  missing: {rel}' for rel in check.missing_paths[:10])
+    if len(check.missing_paths) > 10:
+        result.lines.append(f'  … and {len(check.missing_paths) - 10:,} more missing files')
+    if in_place and (result.refused or any(base != 'network files' for base in check.missing)):
+        return result  # Leave the original manifest and served tree usable.
     if in_place:
         home = H.root_home(tree.path)
-        if (home / H.SETTINGS).exists():
-            with SiteDB(home) as db:
-                if db.applied() or db.repo_states():
-                    raise ValueError(f"{tree.path} is already an mmw mirror — nothing to convert")
-        else:
-            H.init_root(tree.path, name="main", set_id=H.new_set_id(), network=tree.network)
-    result = AdoptResult("", tree.network)
-    files = _files(tree.path)
+        _prepare_apply_adoption(tree, home)
     bases = apt_bases(tree.rows)
     if any(p.startswith("dists/") and p.rsplit("/", 1)[-1] in ("Release", "InRelease") for p in tree.rows):
         result.lines.append("  dists/ at the tree's top is under no host — kept as the network's own files, "
@@ -662,31 +776,15 @@ def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None
     def base_of(rel: str) -> str | None:
         return next((b for b in bases if rel.startswith(b + "/")), None)
 
-    present: dict[str, str] = {}
-    stats: dict = {}
-    sizes: dict[str, int] = {}
-    network: dict[str, str] = {}
-    for rel, want in sorted(tree.rows.items()):
-        st = files.get(rel)
-        base = base_of(rel)
-        if st is None:
-            continue                                   # missing: a repository's point is incomplete
-        key = _stat_key(st)
-        if key not in _HASHED:
-            try:
-                _HASHED[key] = _hash(tree.path / rel)
-            except OSError:
-                continue
-            if progress:
-                progress(rel, st.st_size)
-        got = _HASHED[key]
-        if base is not None and got != want:
-            result.refused.setdefault(base, f"{rel} differs from the tree's manifest")
-            continue
-        present[rel], stats[rel], sizes[rel] = got, key, st.st_size
-        if base is None:
-            network[rel] = got                         # nginx text is rewritten here: what is served counts
+    present, stats, sizes = check.present, check.stats, check.sizes
+    network = {rel: cs for rel, cs in present.items() if base_of(rel) is None}
     with _session(home) as (db, roots):
+        if in_place:
+            journal = home / 'adoption.json'
+            if not disk_io.ops.exists(journal):
+                raise ValueError(f'{tree.path} is already an mmw mirror — nothing to convert')
+            if json.loads(disk_io.ops.read_text(journal)) != _adoption_identity(tree):
+                raise ValueError('unfinished adoption belongs to another manifest')
         root_cfg = roots.primary
         roots.check_mounted(root_cfg)
         store = roots.store(root_cfg)
@@ -722,8 +820,6 @@ def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None
         elif network:
             result.lines.append(f"  network {tree.network}'s own files ({len(network)}) left out — this mirror "
                                 f"is {mine}'s, with its own")
-        if in_place:
-            db.record_applied(tree.created, None, "adopted")
         if keys:
             result.lines.append("  signatures not checked here: the connected side checked them when it synced "
                                 "(check them now: mmw site check-signatures)")
@@ -731,11 +827,16 @@ def adopt_apply_tree(tree: ApplyTree, *, home: Path | None = None, progress=None
             switched = _reserve(db, roots, key)
             result.lines.extend(f"  {key[len(ADOPTED):]}  {w}" for w in switched.warnings)
         _render(roots, db)
+        if in_place:
+            if not any(stamp == tree.created and kind == 'adopted' for stamp, _, kind, _ in db.applied()):
+                db.record_applied(tree.created, None, 'adopted')
+            record = tree.path / '.mmw/manifest.jsonl'
+            if disk_io.ops.exists(record):
+                disk_io.ops.replace(record, record.with_name('manifest.apply.jsonl'))
+            disk_io.ops.unlink(journal, missing_ok=True)
+            result.converted = True
         if not in_place:
             _note_original(db, tree.path, tree.created, sorted(result.refused))
-    if in_place:
-        record = tree.path / ".mmw" / "manifest.jsonl"
-        os.replace(record, record.with_name("manifest.apply.jsonl"))   # converted: never again
     result.repo = ",".join(keys)
     return result
 

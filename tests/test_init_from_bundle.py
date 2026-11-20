@@ -9,7 +9,7 @@ from mmw.core.publisher.bundle import bundle_network
 
 from test_dry_run_totals import two_mirrors  # noqa: F401
 from test_tui_setup import _run
-from waiting import settle, until
+from waiting import at_step, settle, until
 
 
 @pytest.fixture
@@ -119,7 +119,7 @@ def test_setup_prefills_review_edits_and_writes_via_shared_command(kept, monkeyp
         assert not config.config_path(target).exists()
         assert page._planned == cfg.sources
         page.query_one("#btn-wizard-next", Button).press()
-        await until(pilot, lambda: page.step == 1 and page.query_one("#setup-repos").display)
+        await at_step(pilot, page, 1)
         assert "example.com/a" in str(page.query_one("#setup-repo-list").render())
         page.query_one("#btn-setup-review", Button).press()
         await until(pilot, lambda: type(app.screen).__name__ == "BundleConfigReviewPage" and app.screen.query("#recovered-config"))
@@ -129,7 +129,7 @@ def test_setup_prefills_review_edits_and_writes_via_shared_command(kept, monkeyp
         await until(pilot, lambda: app.screen is page)
         assert not config.config_path(target).exists()
         page.query_one("#btn-wizard-next", Button).press()
-        await until(pilot, lambda: page.step == 2 and page.query("StepConfirm"))
+        await at_step(pilot, page, 2)
         assert "recovered" in str(page.query_one("#setup-recovered-networks").render())
         page.query_one("#btn-wizard-next", Button).press()
         await until(pilot, lambda: app.cfg is not None and app.current_mode == "repositories")
@@ -152,7 +152,7 @@ def test_setup_can_add_a_second_bundle_and_cancel_review(kept):
         page = app.screen
         assert {n.name for n in page._recovered.networks} == {"oak", "prod"}
         page.query_one("#btn-wizard-next", Button).press()
-        await until(pilot, lambda: page.step == 1)
+        await at_step(pilot, page, 1)
         page.query_one("#btn-setup-review", Button).press()
         await until(pilot, lambda: type(app.screen).__name__ == "BundleConfigReviewPage")
         await pilot.press("escape")

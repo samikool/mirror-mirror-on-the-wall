@@ -18,9 +18,10 @@ _SCRIPT = r'''
                 _MMW_BASH_WORD="${COMP_WORDS[COMP_CWORD]}" \
                 _MMW_BASH_BREAKS="$COMP_WORDBREAKS" \
                 %(autocomplete_var)s=complete_bash "$1")
-    # Let Readline escape spaces and shell metacharacters, and keep walking
-    # directories / HOST= mappings without inserting a space after them.
-    compopt -o filenames 2>/dev/null || true
+    # Quote spaces and shell metacharacters. `filenames` would append '/' to
+    # a network or key that happens to name a directory in the working folder.
+    # Path callbacks already mark directories with '/', independently of that.
+    compopt -o fullquote 2>/dev/null || true
     if [[ ${#COMPREPLY[@]} == 1 && ${COMPREPLY[0]} == *[/=] ]]; then
         compopt -o nospace 2>/dev/null || true
     fi

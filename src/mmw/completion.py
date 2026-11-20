@@ -363,17 +363,17 @@ def _candidates(ctx, kind, incomplete):
         yield from _keys(cfg.settings.mirror_dir)
     elif kind == 'ext_ids':
         for source in cfg.sources:
-            if source.provider == 'vscode':
+            if isinstance(source, config.VscodeSource):
                 yield from source.extensions.ids
     elif kind == 'requirements':
         for source in cfg.sources:
-            if source.provider == 'pypi':
+            if isinstance(source, config.PypiSource):
                 yield from source.requirement_lines()
     elif kind in ('glibc', 'musl', 'macos'):
         from mmw.providers.pypi.targets import Floors
         yield getattr(Floors(), kind)
         for source in cfg.sources:
-            if source.provider == 'pypi':
+            if isinstance(source, config.PypiSource):
                 yield getattr(source, kind)
     elif kind == 'files':
         from mmw.core.layers import layer_dir

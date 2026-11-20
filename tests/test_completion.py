@@ -376,3 +376,51 @@ def test_flat_repository_dates_without_a_suite(tmp_path, monkeypatch):
     points.record_points_after_sync(cfg, cfg.settings.mirror_dir, {source.identity}, say=lambda _: None)
     config.save(cfg, tmp_path)
     assert complete('bundle', '-n', 'flat', '--until', '') == ['2026-11-01', '20261101T000000Z']
+
+
+def test_readline_does_not_treat_a_network_as_a_directory(configured, tmp_path, monkeypatch):
+    import os
+    import pty
+    import select
+    import shutil
+    import subprocess
+    import time
+    import typer.completion
+    if not shutil.which('bash'):
+        pytest.skip('Bash is not installed')
+    (tmp_path / 'work').mkdir()
+    monkeypatch.setattr(typer.completion, '_get_shell_name', lambda: 'bash')
+    shown = CliRunner().invoke(app, ['--show-completion'], prog_name='mmw')
+    assert shown.exit_code == 0, shown.output
+    script = tmp_path / 'completion.bash'
+    script.write_text(shown.stdout)
+    master, slave = pty.openpty()
+    executable_dir = Path(__file__).resolve().parents[1] / '.venv/bin'
+    process = subprocess.Popen(['bash', '--noprofile', '--norc', '-i'], stdin=slave, stdout=slave,
+                               stderr=slave, cwd=tmp_path, env={**os.environ, 'PS1': 'PROMPT> ',
+                               'PATH': str(executable_dir) + os.pathsep + os.environ['PATH']})
+    os.close(slave)
+    def until(needle):
+        got = b''
+        deadline = time.monotonic() + 10
+        while needle not in got and time.monotonic() < deadline:
+            if select.select([master], [], [], .1)[0]:
+                got += os.read(master, 65536)
+        assert needle in got, got.decode(errors='replace')
+    try:
+        until(b'PROMPT> ')
+        setup = ('PS1=; source ' + shlex.quote(str(script)) + "; bind -x "
+                 + shlex.quote('"\\C-x\\C-r":printf "\\nREADLINE=%s\\n" "$READLINE_LINE"')
+                 + "; printf '\\x52\\x45\\x41\\x44\\x59\\n'\n")
+        os.write(master, setup.encode())
+        until(b'READY\r\n')
+        os.write(master, b'mmw bundle --network wor\t\x18\x12')
+        until(b'READLINE=mmw bundle --network work \r\n')
+    finally:
+        os.close(master)
+        process.terminate()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)

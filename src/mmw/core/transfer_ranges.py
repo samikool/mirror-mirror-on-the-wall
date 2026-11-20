@@ -107,7 +107,12 @@ def recorded_selection(pool, network, mirror_dir, cfg=None, *, only=None):
     from mmw.core.repos import repository_key
 
     settings = pool.settings_at(network.name, '99999999T999999Z')
-    current = current_points(pool, network.name)
+    # Snapshot conversion seeds recordings without rebuilding the sync cache.
+    # Use those recordings when no cached current state exists. If the cache
+    # does exist it records the actual last walk, even when an imported or
+    # explicitly dated recording has a later timestamp.
+    current = pool.latest_recordings(network.name)
+    current.update(current_points(pool, network.name))
     if cfg is None:
         if not settings:
             raise ValueError('No recorded points for this network — sync its repositories first.')
@@ -401,6 +406,8 @@ class TransferPreview:
 def available_transfer_dates(net, mirror_dir, *, cfg=None):
     """Retained endpoint dates for the network's configured repository slices."""
     from mmw.core.pool import Pool
+    from mmw.core.points import prepare_history
+    prepare_history(mirror_dir)
     with Pool(mirror_dir, read_only=True) as pool:
         settings, current = recorded_selection(pool, net, mirror_dir, cfg)
         known = pool.points_of(pid for ids in current.values() for pid in ids)
@@ -419,6 +426,7 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
     from mmw.site.tracks import content_ident
     import hashlib
     validate_dates(since, until)
+    points.prepare_history(mirror_dir)
 
     baseline, source, warnings = None, 'last transfer (local record)', []
     if since is not None:

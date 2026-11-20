@@ -17,16 +17,12 @@ class HistoryRow:
 
 
 def prepare(cfg, *, network=None, repos=None, since=None):
-    from mmw.core.points import prepare_recordings, resolve_when
+    from mmw.core.points import prepare_history, prepare_recordings, resolve_when
     from mmw.core.repository_points import current_repository_points, selected_point_files, wire_draft
     from mmw.site.tracks import content_ident
     from mmw.core.resolve import available_mirrors, network_mirrors
     from mmw.core.repos import repository_key, repository_label, resolve_repo_refs
-    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
-        upgrade = not pool._has_table('history_upgrades')
-    if upgrade:
-        with Pool(cfg.settings.mirror_dir):
-            pass  # Complete the one-time storage upgrade, never a fresh sync.
+    prepare_history(cfg.settings.mirror_dir)
     if network is not None:
         net = next((n for n in cfg.networks if n.name == network), None)
         if net is None:

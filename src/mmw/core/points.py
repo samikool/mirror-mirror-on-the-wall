@@ -324,9 +324,29 @@ def resolve_when(text: str) -> str:
     return f"{day_part}T{time_part + '235959'[len(time_part):]}Z"     # the end of what it names
 
 
+def prepare_history(mirror_dir: Path) -> None:
+    """Finish retained-history upgrades before the first history/transfer read.
+
+    Schema creation alone isn't completion: an interrupted upgrade can leave
+    the table without its marker. Never create a pool or read live refs here;
+    the writable open only converts already-retained states, once.
+    """
+    from mmw.core.pool import database_path
+    if not disk_io.ops.exists(database_path(mirror_dir)):
+        return
+    with Pool(mirror_dir, read_only=True) as pool:
+        if pool._has_table('history_upgrades'):
+            with pool._read() as conn:
+                if conn.execute("SELECT 1 FROM history_upgrades WHERE name = 'manual-snapshots'").fetchone():
+                    return
+    with shared_pool_lock(mirror_dir), Pool(mirror_dir):
+        pass  # The shared storage upgrade converts retained data, not a sync.
+
+
 def prepare_recordings(mirror_dir: Path, network: str) -> None:
     """Before reading a date: a pool from before recordings gets its tables,
     and existing snapshots seed them — once, without waiting for a sync."""
+    prepare_history(mirror_dir)
     with Pool(mirror_dir, read_only=True) as pool:
         try:
             if pool.recordings_seeded(network):

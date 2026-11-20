@@ -11,8 +11,11 @@ to do yourself, by where you start from. Do the connected side first.
 
 ## The connected side
 
-Install the new mmw and sync as usual. On the first sync (or the first
-bundle or publish, whichever comes first), each network:
+Install the new mmw. Existing retained points become available without another
+sync: opening history, opening a publish/transfer date picker, or previewing a
+transfer finishes any pending history upgrade. This uses retained data only;
+it does not fetch repositories or invent a new point for today's state.
+The upgrade, or the first bundle or publish, as needed, handles each network:
 
 - **Turns its snapshots into points**, once, each at its own date. One that
   can't be split is named and skipped (it stays a snapshot).

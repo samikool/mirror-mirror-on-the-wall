@@ -95,6 +95,31 @@ uv run mmw add -f /etc/apt/sources.list.d --keys-dir ./keyrings-from-that-box
 Next: **[Getting started](https://github.com/samikool/mirror-mirror-on-the-wall/blob/master/docs/getting-started.md)** walks the same path end to
 end, from zero to a client running `apt update` against your mirror.
 
+## Shell completion
+
+With `mmw` on your `PATH`, run `mmw --install-completion` in your shell and
+start a new shell. To inspect or install the script yourself, use
+`mmw --show-completion`. Bash, Zsh, Fish and PowerShell use Typer's completion
+support.
+
+Tab completes commands, flags, networks, repositories, suites, retained dates
+and points, signing keys, package filenames, and provider choices. Suggestions
+follow `--config`, `--network`, `--repo`, `--track` and `--root`; put those
+selectors before the value you want to complete. For example:
+
+```bash
+mmw bundle --network work --repo <Tab>
+mmw bundle --network work --until <Tab>
+mmw site serve --root /srv/mirror debian --track <Tab>
+```
+
+Completion reads local configuration and retained history without syncing,
+changing a site, or connecting over SSH. Remembered SSH locations complete as
+root names; remote-only repositories and history need to be typed explicitly.
+Paths containing spaces and Bash's URL / `HOST=PATH` word breaks are supported.
+If you installed completion before upgrading, run `mmw --install-completion`
+again to refresh the script.
+
 ## Documentation
 
 | Document | What it covers |

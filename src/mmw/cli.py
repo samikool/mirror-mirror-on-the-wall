@@ -1322,3 +1322,9 @@ def cmd_history(
     """List repository-owned points; no snapshot or network history import is needed."""
     from mmw.commands.history import run
     raise typer.Exit(run(_cfg_dir(), network=network, repos=repo, since=since))
+
+
+# Keep Typer's shell protocol and path handling; add saved-object suggestions.
+from mmw.completion import configure as _configure_completion  # noqa: E402
+
+_configure_completion(app)

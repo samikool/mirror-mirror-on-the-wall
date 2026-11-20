@@ -6,6 +6,39 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.4]
+
+Retained history is available immediately after upgrading, and older mirrors can
+be checked and converted from the far-side TUI without another transfer.
+
+### Added
+
+- Context-aware shell completion for networks, repositories, suites, retained
+  dates and points, signing keys, package filenames, paths and provider choices.
+  Suggestions follow the selected config, network and site root and work offline.
+  Bash preserves spaces in paths and handles URLs and `HOST=PATH` mappings. Run
+  `mmw --install-completion` after upgrading to enable or refresh completion.
+- **Upgrade an older mirror…** on the far-side TUI's first screen. Look and Adopt
+  use the same in-place adoption command as the CLI and open the converted mirror
+  when finished. Existing files are reused; no replacement transfer is needed.
+
+### Fixed
+
+- Publish and transfer date choices finish pending history upgrades before
+  reading retained points. Historical recordings remain usable before another
+  sync has populated the current-state cache. Existing current states still take
+  precedence over explicitly dated recordings.
+- Older-mirror Look now checks file contents against the recorded manifest and
+  identifies damaged or missing repository files before creating any mmw state.
+  Older compressed manifests and dot-relative paths are supported. Unchanged hash
+  results are reused during Adopt.
+- Interrupted in-place adoption resumes from saved progress, including after
+  restarting mmw or a failure during finalization, without duplicating history.
+  Partial conversions are kept out of normal mirror discovery until finished.
+- The upgrade form exposes **Clear a stale lock**, matching CLI `--break-lock`;
+  Look never clears a lock. Stop old mirror/apply jobs before upgrading, and clear
+  a lock only after confirming the previous process is gone.
+
 ## [1.5.3]
 
 APT history stays with the repository; networks select from it when publishing

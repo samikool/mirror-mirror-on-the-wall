@@ -25,7 +25,7 @@ class AdoptChoice:
     unverified: bool
 
 
-def _run_adopt(root: str, c: AdoptChoice, dry_run: bool, said=None) -> tuple[int, list[str]]:
+def _run_adopt(root: str | None, c: AdoptChoice, dry_run: bool, said=None) -> tuple[int, list[str]]:
     """**Blocking.** `mmw site adopt`, its lines kept. `said(text)`: how far
     hashing has got, now and then (never more than a few times a second)."""
     import time
@@ -46,8 +46,8 @@ def _run_adopt(root: str, c: AdoptChoice, dry_run: bool, said=None) -> tuple[int
                 said(f"{where}: {seen[0]:,} files done ({fmt_size(seen[1])})")
         return tick
     from mmw.site.ssh import parse_location
-    far = parse_location(root)[0] == "ssh"         # the folder is on that host: never this one's ~
-    code = adopt(Path(c.path) if far else Path(c.path).expanduser(), Path(root), None, c.as_base or None,
+    far = root is not None and parse_location(root)[0] == "ssh"  # never this one's ~
+    code = adopt(Path(c.path) if far else Path(c.path).expanduser(), Path(root) if root else None, None, c.as_base or None,
                  Path(c.key).expanduser() if c.key else None, c.unverified, dry_run, True,
                  say=lines.append, err=lines.append, hashing=hashing, said=said)
     return code, lines
@@ -63,21 +63,27 @@ class AdoptPage(Page):
             "Without a key, tick Adopt unverified — `mmw site check-signatures` checks later.\n"
             "A mirror over ssh adopts there: the folder is on its host, the key file on this one.")
 
-    def __init__(self, root: str):
+    def __init__(self, root: str | None):
         super().__init__()
         from mmw.site.ssh import parse_location
         self._root = root
-        self._host = parse_location(root)[1]       # a root over ssh: the folder is on its host
+        self._host = parse_location(root)[1] if root else None
         self._looked: AdoptChoice | None = None
+        if root is None:
+            self.subtitle = "Upgrade an apply.py mirror or a copied published tree in place"
+            self.HELP = ("Choose the existing mirror folder. Its recorded manifest checks the files.\n"
+                         "Look previews the conversion; Adopt creates mmw's points in place.\n"
+                         "The served files stay where they are. No new transfer is needed.")
 
     def compose_body(self) -> ComposeResult:
         yield Form(
             TextField(f"Folder on {self._host}" if self._host else "Folder", "", id="adopt-path",
                       placeholder="where the trees are: /srv/www"),
-            TextField("Served at", "", id="adopt-as", placeholder="HOST/PATH, for a repository new here"),
-            TextField("Key file", "", id="adopt-key", placeholder="upstream's public key (else this mirror's keys)"),
-            ToggleField("Adopt unverified", False, id="adopt-unverified",
-                        hint="Without a key: adopted, marked 'signature not checked'"))
+            *([TextField("Served at", "", id="adopt-as", placeholder="HOST/PATH, for a repository new here"),
+               TextField("Key file", "", id="adopt-key", placeholder="upstream's public key (else this mirror's keys)"),
+               ToggleField("Adopt unverified", False, id="adopt-unverified",
+                           hint="Without a key: adopted, marked 'signature not checked'")]
+              if self._root is not None else []))
         yield Static("", id="adopt-report")
 
     def compose_actions(self) -> ComposeResult:
@@ -87,8 +93,8 @@ class AdoptPage(Page):
 
     def choice(self) -> AdoptChoice:
         values = self.query_one(Form).values()
-        return AdoptChoice(values["adopt-path"].strip(), values["adopt-as"].strip() or None,
-                           values["adopt-key"].strip() or None, bool(values["adopt-unverified"]))
+        return AdoptChoice(values["adopt-path"].strip(), values.get("adopt-as", "").strip() or None,
+                           values.get("adopt-key", "").strip() or None, bool(values.get("adopt-unverified", False)))
 
     @on(Input.Changed)
     def _changed(self, _event=None) -> None:
@@ -144,10 +150,11 @@ class AdoptRunPage(Page):
 
     TITLE = "Adopting"
 
-    def __init__(self, root: str, choice: AdoptChoice):
+    def __init__(self, root: str | None, choice: AdoptChoice):
         super().__init__()
         self._root, self._choice = root, choice
         self.finished = False
+        self.succeeded = False
         self.subtitle = choice.path
 
     def compose_body(self) -> ComposeResult:
@@ -180,6 +187,7 @@ class AdoptRunPage(Page):
 
     def _done(self, code: int, lines: list[str]) -> None:
         self.finished = True
+        self.succeeded = code == 0
         if not self.is_attached:
             return
         self.query_one("#adopt-out", Static).update(Text("\n".join(lines)))

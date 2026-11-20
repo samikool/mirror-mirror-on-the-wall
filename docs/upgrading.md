@@ -72,6 +72,12 @@ that converts its old history, mmw:
   `auto_clean = true`, the same behaviour under the new names. See `mmw site
   settings`.
 
+Opening the far-side TUI also performs this conversion and shows the retained
+points immediately. You can upgrade directly from an older release; another
+bundle apply or an intermediate mmw installation is not required. The served
+files, retained versions, labels, and held repository's selected point stay in
+place.
+
 `mmw site tidy` lists the conversion backup as removable, in the TUI too,
 but leaves it in place. Remove `.mmw/site.before-timelines/` yourself once
 you are satisfied with the converted mirror.
@@ -85,6 +91,11 @@ Install mmw there, then `mmw site adopt /srv/www --yes`: the tree becomes
 an mmw root where it stands (every file checked against its
 `.mmw/manifest.jsonl`; nothing served changes), and the network's next
 bundle names its repositories. See [far-side.md](far-side.md#a-far-side-applypy-manages).
+
+In the far-side TUI's first screen, choose **Upgrade an older mirror…**, select
+the existing folder, then **Look** and **Adopt**. This uses the same in-place
+conversion as the CLI. Close the result to open the converted mirror and its
+points; no replacement transfer is needed.
 
 ## A tree mmw didn't make
 

@@ -11,7 +11,8 @@ from mmw.tui.ui.widgets import Button
 class StartPage(Page):
     TITLE = "mmw · far side"
     HELP = ("Apply a bundle: pick the .tar (or stage folder), then choose where each hostname goes —\n"
-            "an empty folder becomes a new root. Open a mirror: a folder that already holds one.")
+            "an empty folder becomes a new root. Open a mirror: a folder that already holds one.\n"
+            "Upgrade an older mirror: adopt an apply.py or copied published tree in place.")
 
     def __init__(self):
         super().__init__()
@@ -24,12 +25,25 @@ class StartPage(Page):
         yield Static("[dim]  first time: pick the bundle, then choose the folder(s) it goes in[/]")
         yield Button("Open a mirror…", id="start-open")
         yield Static("[dim]  a folder that already holds a mirror[/]")
+        yield Button("Upgrade an older mirror…", id="start-upgrade")
+        yield Static("[dim]  an apply.py mirror or a copied published tree; use the files already here[/]")
         yield Static("", id="start-note")
         recent = recents.known()
         yield Static("Recent: " + (", ".join(recent) if recent else "none"), id="start-recent", markup=False)
 
     def status_text(self) -> str:
         return str(self.query_one("#page-status", Static).render())
+
+    @on(Button.Pressed, "#start-upgrade")
+    def _upgrade(self) -> None:
+        from mmw.tui.site.adopt_flow import AdoptPage, AdoptRunPage
+
+        def chosen(choice):
+            if choice is None:
+                return
+            page = AdoptRunPage(None, choice)
+            self.app.push_screen(page, lambda _: page.succeeded and self.open_path(choice.path))
+        self.app.push_screen(AdoptPage(None), chosen)
 
     @on(Button.Pressed, "#start-apply")
     def _pick_bundle(self) -> None:
@@ -79,8 +93,8 @@ class StartPage(Page):
             # the root when a bundle is applied, never an error to puzzle over.
             if path not in self._suggested:
                 self._suggested.append(path)
-            self._note(f"{path} holds no mirror yet. To start one there: Apply a bundle… — this folder "
-                       "is offered as the root for its hostnames.")
+            self._note(f"{path} holds no mirror yet. For an apply.py mirror or copied published tree, "
+                       "choose Upgrade an older mirror…; for an empty folder, Apply a bundle….")
             return
         recents.remember(path)
         self.app.mset = _mset.open_set(set_id=info.set_id)
@@ -92,7 +106,7 @@ class StartPage(Page):
         self.query_one("#start-note", Static).update(text)
 
     def _busy(self, on: bool) -> None:
-        for b in ("#start-apply", "#start-open"):
+        for b in ("#start-apply", "#start-open", "#start-upgrade"):
             self.query_one(b, Button).disabled = on
 
     def apply_path(self, path: str) -> None:

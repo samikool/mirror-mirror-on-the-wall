@@ -6,15 +6,52 @@ from mmw.core.pool import Pool
 from mmw.site.tracks import PointDraft
 
 
-def seeded(tmp_path):
-    src = config.SourceConfig(url='https://apt.test/debian', keep_points=2)
+def seeded(tmp_path, *, keep_points=2, days=5):
+    src = config.SourceConfig(url='https://apt.test/debian', keep_points=keep_points)
     cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path), sources=[src])
     with Pool(tmp_path) as pool:
-        for day in range(1, 6):
+        for day in range(1, days + 1):
             draft = PointDraft('apt.test/debian/dists/stable', f'release:{day}', f'2026110{day}T000000Z',
                                {'Suite': 'stable'}, {'path': f'blob{day}'})
             pool.record_point(src.identity, draft, f'2026110{day}T120000Z')
     return cfg
+
+
+@pytest.fixture
+def history_network(tmp_path):
+    cfg = seeded(tmp_path, keep_points=1, days=6)
+    net = config.NetworkConfig(name='oak', history=True)
+    with Pool(tmp_path) as pool:
+        ids = []
+        for point in reversed(pool.repository_points(cfg.sources[0].identity)):
+            pool.link_network_point(net.name, point.id, point.stamp)
+            ids.append(point.id)
+        yield cfg, net, pool, ids
+
+
+def test_unsent_repository_points_survive_retention(history_network):
+    cfg, net, pool, ids = history_network
+    pool.record_bundle(net.name, None, '20261102T130000Z', 'oak.tar', 0, 0, 0)
+    assert points.retention_plan(pool, [net], cfg=cfg) == ids[:2]
+
+
+def test_unsent_protection_needs_history(history_network):
+    cfg, net, pool, ids = history_network
+    net.history = False
+    pool.record_bundle(net.name, None, '20261102T130000Z', 'oak.tar', 0, 0, 0)
+    assert points.retention_plan(pool, [net], cfg=cfg) == ids[:5]
+
+
+def test_never_bundled_network_pins_nothing(history_network):
+    cfg, net, pool, ids = history_network
+    assert points.retention_plan(pool, [net], cfg=cfg) == ids[:5]
+
+
+def test_sent_points_are_released(history_network):
+    cfg, net, pool, ids = history_network
+    pool.record_bundle(net.name, None, '20261102T130000Z', 'oak.tar', 0, 0, 0)
+    pool.record_sent(net.name, ids[2:5], [], '20261106T130000Z')
+    assert points.retention_plan(pool, [net], cfg=cfg) == ids[:5]
 
 
 def test_repository_retention_without_networks(tmp_path):

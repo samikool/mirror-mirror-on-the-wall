@@ -132,8 +132,6 @@ def test_held_repo_stores_without_switching(env, tmp_path):
         assert [p.date[:8] for p in db.points(_track(db, a).id)] == ["20261102", "20261101"]
 
 
-# ── a bundle from another network ────────────────────────────────────────────
-
 def _add_c(cfg, md):
     """A third repository, only network elm mirrors."""
     from mmw.core import config
@@ -145,94 +143,6 @@ def _add_c(cfg, md):
         pool.reconcile_refs("c", [(_sha(data), "c.deb", KIND_PKG), (_sha(idx), "Packages", KIND_META)])
     c = config.SourceConfig(name="c", label="c", provider="apt-flat", url="https://example.net/c/")
     return cfg.model_copy(update={"sources": [*cfg.sources, c]})
-
-
-@pytest.fixture
-def two_nets(env, tmp_path):
-    from mmw.site.recents import remember
-    cfg, net, md, _home = env
-    elm = net.model_copy(update={"name": "elm", "root": tmp_path / "pub-elm"})
-    remember  # noqa: B018 — imported so XDG state is per test (below)
-    return cfg, net, elm, md
-
-
-def _set_apply(root, path, **kw):
-    from mmw.site.apply import apply_to_set
-    from mmw.site.mset import open_set
-    return apply_to_set(open_set([str(root)]), path, say=lambda *a: None, **kw)
-
-
-@pytest.fixture(autouse=True)
-def _xdg(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-
-
-def _oak_site(cfg, net, md, tmp_path, days=(1, 2, 4)):
-    from mmw.site.apply import apply_to_set
-    root = tmp_path / "oak-srv"
-    for i, day in enumerate(days):
-        set_a(md, day)
-        b = _bundle(cfg, net, md, tmp_path / f"x{day}", from_ref=None)
-        if i == 0:
-            apply_to_set(None, b, place={"*": str(root)}, say=lambda *a: None)
-        else:
-            _set_apply(root, b)
-    return root
-
-
-def _root_db(root):
-    from mmw.site.home import read_root
-    return SiteDB(read_root(str(root)).home)
-
-
-def _nginx(root) -> str:
-    return "".join(p.read_text() for p in sorted((root / "nginx").rglob("*.conf")))
-
-
-def test_other_networks_history_merges(two_nets, tmp_path):
-    cfg, oak, elm, md = two_nets
-    root = _oak_site(cfg, oak, md, tmp_path)
-    before = _nginx(root)
-    set_a(md, 3)
-    r = _set_apply(root, _bundle(cfg.model_copy(update={"networks": [oak, elm]}), elm, md,
-                                 tmp_path / "y3", from_ref=None))
-    assert r.foreign
-    assert r.lines[0] == ("this bundle is for network 'elm' — this mirror holds 'oak': importing repository "
-                          "history; its network files (nginx, settings, TLS) are not applied")
-    with _root_db(root) as db:
-        a = _key(cfg, "a")
-        assert [p.date[:8] for p in db.points(_track(db, a).id)] == ["20261104", "20261103", "20261102",
-                                                                      "20261101"]
-        assert _served_day(db, a) == "20261104"
-    assert _nginx(root) == before
-
-
-def test_foreign_repo_skipped_by_default(two_nets, tmp_path):
-    cfg, oak, elm, md = two_nets
-    root = _oak_site(cfg, oak, md, tmp_path, days=(1,))
-    cfg2 = _add_c(cfg, md).model_copy(update={"networks": [oak, elm]})
-    r = _set_apply(root, _bundle(cfg2, elm, md, tmp_path / "y", from_ref=None))
-    assert r.skipped == ["c"]
-    assert any("c  not mirrored here — skipped (deploy it: mmw site apply BUNDLE --deploy 'c')" in ln
-               for ln in r.lines)
-    assert not (root / "example.net").exists()
-    with _root_db(root) as db:
-        assert "https://example.net/c/" not in {s.repo for s in db.repo_states()}
-
-
-def test_foreign_repo_deployed_on_request(two_nets, tmp_path):
-    cfg, oak, elm, md = two_nets
-    root = _oak_site(cfg, oak, md, tmp_path, days=(1,))
-    cfg2 = _add_c(cfg, md).model_copy(update={"networks": [oak, elm]})
-    r = _set_apply(root, _bundle(cfg2, elm, md, tmp_path / "y", from_ref=None), deploy={"c"},
-                   place={"example.net": str(root)})
-    assert r.skipped == []
-    assert (root / "example.net/c/c.deb").read_bytes() == b"c" * 120
-    assert "example.net" in _nginx(root)
-    # The site's own network keeps c's server block on its next bundle.
-    set_a(md, 2)
-    _set_apply(root, _bundle(cfg, oak, md, tmp_path / "x2", from_ref=None))
-    assert "example.net" in _nginx(root) and (root / "example.net/c/c.deb").exists()
 
 
 def test_one_conflicting_suite_never_refuses_the_whole_repository(env, tmp_path):

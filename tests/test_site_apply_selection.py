@@ -46,8 +46,11 @@ def test_a_suite_gone_from_the_selection_retires(env, tmp_path):  # noqa: F811
     assert not (root / "example.com/a/Release").exists()
 
 
-def test_another_networks_selection_changes_no_network_files(env, tmp_path):  # noqa: F811
+def test_another_networks_selection_changes_no_network_files(env, tmp_path, monkeypatch):  # noqa: F811
+    from mmw.site.apply import apply_to_set
+    from mmw.site.mset import open_set
     from test_site_apply import _rewrite
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     cfg, net, md, home, root = env
     set_a(md, 1)
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1")), say=quiet)
@@ -64,7 +67,8 @@ def test_another_networks_selection_changes_no_network_files(env, tmp_path):  # 
             return json.dumps(h, sort_keys=True).encode() + b"\n" + rest
         return data
     other = _rewrite(src, tmp_path / "elm.tar", rename)
-    apply_bundle(home, str(other), say=quiet)
+    result = apply_to_set(open_set([str(root)]), str(other), place={"*": str(root)}, say=quiet)
+    assert result.foreign
     assert (root / "nginx/mirror.conf").read_bytes() == before
     with tarfile.open(other) as tar:
         assert tar.getnames()[0] == ".mmw/manifest.jsonl"

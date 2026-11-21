@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import BinaryIO, Iterator
 
 from mmw.core import disk_io
-from mmw.core.served_tree import is_safe_path
+from mmw.core.served_tree import MANIFEST_MEMBER, is_safe_path
 
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
@@ -58,10 +58,18 @@ def _members(tar: tarfile.TarFile) -> Iterator[Member]:
 
 
 def _from_dir(root: Path) -> Iterator[Member]:
+    manifest = root / MANIFEST_MEMBER
+    if disk_io.ops.is_symlink(manifest.parent) or disk_io.ops.is_symlink(manifest):
+        raise SourceError(2, f"refusing {MANIFEST_MEMBER!r}: a symlink in a stage directory")
+    if disk_io.ops.is_file(manifest):
+        with disk_io.ops.open_rb(manifest) as fh:
+            yield Member(MANIFEST_MEMBER, "file", fh, None, disk_io.ops.stat(manifest).st_size)
     for dirpath, dirnames, filenames in disk_io.ops.walk(root):
         dirnames.sort()
         for fn in sorted(filenames):
             path = Path(dirpath) / fn
+            if path == manifest:
+                continue
             name = _name(path.relative_to(root).as_posix())
             if disk_io.ops.is_symlink(path):
                 raise SourceError(2, f"refusing {name!r}: a symlink in a stage directory")

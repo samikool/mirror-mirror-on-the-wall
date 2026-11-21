@@ -177,20 +177,28 @@ def _promote(pool, old: int) -> str | None:
 def _move(pool, old: int, new: int) -> None:
     """Every row naming the legacy point names the repository point instead."""
     with pool._lock:
-        c = pool._conn
-        for table in ("network_points", "snapshot_points", "published_points", "network_slices",
-                      "network_slice_dates", "sent_slices", "sent_points"):
-            if not pool._has_table(table):
-                continue
-            c.execute(f"UPDATE OR IGNORE {table} SET point = ? WHERE point = ?", (new, old))
-            c.execute(f"DELETE FROM {table} WHERE point = ?", (old,))
-        for table, keys in (("network_recordings", ("network", "repo", "stamp")),
-                            ("network_repo_rows", ("network", "repo"))):
-            rows = c.execute(f"SELECT {', '.join(keys)}, points FROM {table}").fetchall()
-            for *key, raw in rows:
-                ids = json.loads(raw)
-                if old in ids:
-                    ids = sorted({new if i == old else i for i in ids})
-                    c.execute(f"UPDATE {table} SET points = ? WHERE {' AND '.join(f'{k} = ?' for k in keys)}",
-                              (json.dumps(ids), *key))
-        c.commit()
+        move_point_rows(pool._conn, old, new)
+        pool._conn.commit()
+
+
+def move_point_rows(c, old: int, new: int) -> None:
+    """On connection `c`, uncommitted: every network, snapshot, publish and
+    transfer row naming point `old` names `new` instead."""
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for table in ("network_points", "snapshot_points", "published_points", "network_slices",
+                  "network_slice_dates", "sent_slices", "sent_points"):
+        if table not in tables:
+            continue
+        c.execute(f"UPDATE OR IGNORE {table} SET point = ? WHERE point = ?", (new, old))
+        c.execute(f"DELETE FROM {table} WHERE point = ?", (old,))
+    for table, keys in (("network_recordings", ("network", "repo", "stamp")),
+                        ("network_repo_rows", ("network", "repo")),
+                        ("repository_current", ("repo",))):
+        if table not in tables:
+            continue
+        for *key, raw in c.execute(f"SELECT {', '.join(keys)}, points FROM {table}").fetchall():
+            ids = json.loads(raw)
+            if old in ids:
+                ids = sorted({new if i == old else i for i in ids})
+                c.execute(f"UPDATE {table} SET points = ? WHERE {' AND '.join(f'{k} = ?' for k in keys)}",
+                          (json.dumps(ids), *key))

@@ -51,7 +51,7 @@ def _bring(db, store, repo, r: Repo, stamp: str, key="https://ex.org/debian/"):
     for cs, data in r.blobs.items():
         store.add_stream(io.BytesIO(data), expect=cs)
     return import_rows(db, store, key, "debian", [r.base], r.rows, {c: len(b) for c, b in r.blobs.items()},
-                       stamp, None, set())
+                       stamp, None, set(), network="oak")         # a network's selection, as apply passes it
 
 
 def _served(db, store, key="https://ex.org/debian/"):

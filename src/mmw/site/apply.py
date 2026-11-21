@@ -516,11 +516,14 @@ class RootApply:
                     continue
                 result.updated.append(repo)
                 now = _served_by_track(db, db.repo_state(repo))
+                refreshed = {o.point: o.status for o in recorded[repo] if o.status in ("widened", "refilled")}
                 for tid, (track, date, pid) in sorted(now.items(), key=lambda kv: kv[1][0].name):
                     _t, old, was_pid = served.get(tid, (None, None, None))
                     if was_pid != pid:
                         result.lines.append(f"  {label}  {_suite_of(track)} {_day(old) if old else 'full'} → "
                                             f"{_day(date)}")
+                    elif pid in refreshed:
+                        result.lines.append(f"  {label}  {_suite_of(track)} {_day(date)} {refreshed[pid]}")
                 result.lines.extend(f"  {w}" for w in switched.warnings)
                 db.drop_unused_states(repo)
 

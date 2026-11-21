@@ -116,6 +116,19 @@ class EditSourcePage(Page):
     def on_mount(self) -> None:
         self._refresh_summaries()
         self._refresh_key_status()
+        self._say_scheme_twin(self._source.url)
+
+    def _say_scheme_twin(self, url: str) -> None:
+        """Warn (never refuse) when this URL is another repository's under
+        the other scheme — the same line `config.load` prints."""
+        mine = config.normalize_url(url)
+        twins = [line for other in sorted(self._existing_urls)
+                 for line in config.scheme_twins([other, mine])]
+        if twins:
+            self.set_status(twins[0])
+        elif getattr(self, "_twin_said", False):
+            self.set_status("")                # only clear what this said
+        self._twin_said = bool(twins)
 
     # ── dimension summaries ──────────────────────────────────────────────────
 
@@ -193,6 +206,7 @@ class EditSourcePage(Page):
             return
         self._draft.url = url
         self._probe_summary("[$mmw-warn]URL changed — probe to refresh the choices[/]")
+        self._say_scheme_twin(url)
 
     @on(Select.Changed, "#edit-source-provider")
     def _provider_changed(self, event: Select.Changed) -> None:

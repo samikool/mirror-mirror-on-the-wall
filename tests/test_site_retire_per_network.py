@@ -100,6 +100,7 @@ def test_upgrade_keeps_existing_gone_flags(site):
         gone = db.ensure_track(REPO, "trixie", {})
         present = db.ensure_track(REPO, "bookworm", {})
     with sqlite3.connect(home / "site.db") as conn:
+        conn.execute("PRAGMA user_version=0")  # schema before per-network contributions
         conn.execute("DROP TABLE IF EXISTS track_networks")
         conn.execute("DELETE FROM meta WHERE key = 'track-networks'")
         conn.execute("UPDATE tracks SET gone = 1 WHERE id = ?", (gone,))
@@ -151,6 +152,7 @@ def test_upgrade_without_home_network_keeps_omitted_suite_retired(site, tmp_path
     _apply(site, tmp_path, "oak", 2, "bookworm")
     save_settings(home, load_site(home).model_copy(update={"network": None}))
     with sqlite3.connect(home / "site.db") as conn:
+        conn.execute("PRAGMA user_version=0")  # schema before per-network contributions
         conn.execute("DROP TABLE track_networks")
         conn.execute("DELETE FROM meta WHERE key = 'track-networks'")
 

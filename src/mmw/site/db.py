@@ -140,9 +140,22 @@ class SiteDB:
     def __init__(self, home: Path):
         self.home = Path(home)                   # site layers live beside the database
         self._conn = sqlite3.connect(Path(home) / DB_FILE)
-        self._conn.execute("PRAGMA journal_mode=DELETE")
-        self._conn.execute("PRAGMA foreign_keys=OFF")
-        self._conn.executescript(SCHEMA)
+        try:
+            self._conn.execute("PRAGMA foreign_keys=OFF")
+            if self._conn.execute("PRAGMA journal_mode").fetchone()[0] != "delete":
+                self._conn.execute("PRAGMA journal_mode=DELETE")
+            if self._conn.execute("PRAGMA user_version").fetchone()[0] == 0:
+                with self._conn:
+                    self._initialize_schema()
+        except BaseException:
+            self._conn.close()
+            raise
+
+    def _initialize_schema(self) -> None:
+        # First opens (e.g. status and adoption) may overlap. Reserve the
+        # writer before inspecting or changing tables. executescript commits
+        # a pending transaction, so BEGIN belongs in the script itself.
+        self._conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
         repo_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(repos)")}
         if "root" not in repo_cols:
             self._conn.execute("ALTER TABLE repos ADD COLUMN root TEXT")
@@ -170,6 +183,7 @@ class SiteDB:
         if "selection" not in point_cols:
             self._conn.execute("ALTER TABLE points ADD COLUMN selection TEXT")
         self._migrate_track_networks()
+        self._conn.execute("PRAGMA user_version=1")
 
     def _migrate_track_networks(self) -> None:
         if self.get_meta("track-networks"):
@@ -180,7 +194,7 @@ class SiteDB:
             if network is not None:
                 c.execute("INSERT OR IGNORE INTO track_networks (track, network, present) "
                           "SELECT id, ?, 1 - gone FROM tracks", (network,))
-        self.set_meta("track-networks", "1")
+        c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('track-networks', '1')")
 
     def home_network(self) -> str | None:
         from mmw.site.home import load_site

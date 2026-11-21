@@ -553,6 +553,10 @@ class RootApply:
                                             f"{_day(date)}")
                     elif pid in refreshed:
                         result.lines.append(f"  {label}  {_suite_of(track)} {_day(date)} {refreshed[pid]}")
+                from mmw.site.combine import narrowed
+                result.lines.extend(f"  {label}  {line}" for line in narrowed(
+                    db, repo, {tid: p for tid, (_t, _d, p) in served.items()},
+                    {tid: p for tid, (_t, _d, p) in now.items()}))
                 result.lines.extend(f"  {w}" for w in switched.warnings)
                 db.drop_unused_states(repo)
 

@@ -160,6 +160,14 @@ class SshRoot:
                 return []
             raise
 
+    def narrowing(self, key: str) -> list[str]:
+        try:
+            return self._call("narrowing", key)["lines"]
+        except ValueError as e:
+            if "unknown verb" in str(e):    # an older mmw there: it can't say
+                return []
+            raise
+
     def serve_preview(self, key: str, when: str, track: str | None = None):
         return _ns(self._call("serve-preview", key, when, *([track] if track else [])))
 

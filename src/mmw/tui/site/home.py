@@ -337,6 +337,10 @@ class SiteHomePage(Page):
                 details.update(root.details())
             except Exception:  # noqa: BLE001 — an older mmw over ssh has no `details`: the rest still shows
                 pass
+            try:
+                details["narrowing"] = root.narrowing(repo)
+            except Exception:  # noqa: BLE001 — what it serves still shows
+                pass
             layer_details = getattr(root, "layer_details", None)       # a local root's only
             if layer_details is not None:
                 details.update(layer_details(repo))
@@ -379,6 +383,7 @@ class SiteHomePage(Page):
             *([f"[$mmw-warn]held by its local packages: {_esc(details['layer_hold'])}[/]"]
               if details.get("layer_hold") else []),
             "[dim]state[/]      " + held,
+            *(f"[$mmw-warn]{_esc(line)}[/]" for line in details.get("narrowing", [])),
             f"[dim]kept[/]       {len(kept)} point{'s' if len(kept) != 1 else ''} · {fmt_size(total)}"
             + (f" · old ones free {fmt_size(frees)}" if frees else ""),
             f"[dim]https[/]      {_esc(details.get('https', '—'))}",

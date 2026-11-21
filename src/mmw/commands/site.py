@@ -489,6 +489,8 @@ def status(root: Path | None = None) -> int:
         print(f"  {where}{s.label:<36} {serving:<36} {state}{local}")
         if extra.get("layer_hold"):
             print(f"  {where}{'':<36} held by its local packages: {extra['layer_hold']}")
+        for line in roots_by[name].narrowing(s.repo):
+            print(f"  {where}{'':<36} {line}")
         if name not in dated_by_root:                   # one read per root, not one per repository
             dated_by_root[name] = getattr(roots_by[name], "dated_urls", lambda: [])()
         dated = [u for lab, u in dated_by_root[name] if lab == s.label]

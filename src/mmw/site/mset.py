@@ -115,6 +115,11 @@ class LocalRoot:
         from mmw.site import ops
         return ops.deleted_stamps(self.home, key)
 
+    def narrowing(self, key: str) -> list[str]:
+        """Each suite of `key` serving fewer slices than an older point held."""
+        from mmw.site import ops
+        return ops.narrowing(self.home, key)
+
     def serve_preview(self, key: str, when: str, track: str | None = None):
         from mmw.site import ops
         return ops.serve_preview(self.home, key, when, track)

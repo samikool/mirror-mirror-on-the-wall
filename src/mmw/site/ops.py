@@ -574,6 +574,13 @@ def unverified(home: Path, repo: str) -> list[str]:
         return out
 
 
+def narrowing(home: Path, ref: str) -> list[str]:
+    """`combine.narrowing` of a repository: what its suites no longer serve."""
+    from mmw.site.combine import narrowing as lines
+    with SiteDB(home) as db:
+        return lines(db, resolve_repo(db, ref))
+
+
 def deleted_stamps(home: Path, ref: str) -> list[str]:
     """When the bundles that brought a repository's deleted versions were made."""
     with SiteDB(home) as db:

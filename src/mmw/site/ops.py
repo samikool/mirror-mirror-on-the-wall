@@ -780,7 +780,8 @@ def move_out_info(home: Path, key: str) -> dict:
                              "held": pt.held, "serving": pt.id in served,
                              "files": [(rel, c, sizes.get(c, 0)) for rel, c in files.items()]})
             tracks.append({"name": t.name, "suite": t.suite, "codename": t.codename, "points": rows,
-                           "pinned": byid.get(t.pinned), "previous": byid.get(t.previous)})
+                           "pinned": byid.get(t.pinned), "previous": byid.get(t.previous),
+                           "networks": db.track_networks(t.id), "gone": t.gone})
         return {"label": state.label, "bases": state.bases, "held": state.held, "tracks": tracks,
                 "layer": ({"signing": layer.signing, "key": layer.key, "contents": layer.contents,
                            "drop_valid_until": layer.drop_valid_until} if layer else None),
@@ -832,6 +833,8 @@ def move_in(home: Path, key: str, info: dict) -> bool:
                     serving_points.append(pid)
             db.set_pin(tid, ids.get(t.get("pinned")))
             db.set_previous(tid, ids.get(t.get("previous")))
+            if "networks" in t:
+                db.restore_track_presence(tid, t["networks"], t["gone"])
         if served_id is not None and serving_points:
             db.set_state_points(served_id, serving_points)
         if served_id is not None:                     # placed, in package → index → release order

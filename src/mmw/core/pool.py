@@ -1076,6 +1076,8 @@ class Pool:
                              if self._has_index("idx_packages_cover") else "")
         if not read_only:
             self._retire_manual_snapshots()
+            from mmw.core.legacy_points import promote_legacy_points
+            promote_legacy_points(self)
 
     def _retire_manual_snapshots(self) -> None:
         """One-time upgrade: snapshots become ordinary retained point history.

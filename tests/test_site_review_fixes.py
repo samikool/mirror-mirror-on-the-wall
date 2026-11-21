@@ -120,8 +120,8 @@ def test_a_renumbered_repository_is_not_refused(env, tmp_path):  # noqa: F811
     same points, whatever the connected side numbers them."""
     cfg, net, md, home, root = env
     apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "1", from_ref=None)), say=quiet)
-    with SiteDB(home) as db:                         # this site's a v1 is not the pool's any more
-        db._conn.execute("UPDATE versions SET digest = 'elsewhere' WHERE repo = ?", (_key(cfg, "a"),))
+    with SiteDB(home) as db:                         # the site's version number differs from the pool's
+        db._conn.execute("UPDATE versions SET number = 99 WHERE repo = ?", (_key(cfg, "a"),))
         db._conn.commit()
     r = apply_bundle(home, str(_bundle(cfg, net, md, tmp_path / "2", from_ref=None)), say=quiet)
     assert not r.refused

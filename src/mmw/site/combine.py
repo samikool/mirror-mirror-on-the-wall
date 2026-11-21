@@ -59,6 +59,57 @@ def _selection_of(db, point_id: int, track: str) -> dict[str, list[str]]:
     return got
 
 
+def narrowed(db, repo: str, before: dict[int, int], after: dict[int, int]) -> list[str]:
+    """One line per track whose point in `after` covers fewer architectures or
+    components than its point in `before` ({track id: point id} each), and
+    how to serve both again."""
+    from mmw.site.ops import suite_of
+    from mmw.site.versionref import day
+    state = db.repo_state(repo)
+    label = state.label if state is not None else repo
+    out = []
+    for tid, new_id in sorted(after.items()):
+        old_id = before.get(tid)
+        track = db.track(tid)
+        if old_id is None or old_id == new_id or track is None or not track.name:
+            continue
+        old, new = _selection_of(db, old_id, track.name), _selection_of(db, new_id, track.name)
+        lost_arches = [a for a in old["arches"] if a not in new["arches"]]
+        lost_comps = [c for c in old["components"] if c not in new["components"]]
+        if not lost_arches and not lost_comps:
+            continue
+        has = ",".join(new["arches"]) or "nothing"
+        if lost_comps:
+            has += " · " + ",".join(new["components"])
+        lost = ",".join(lost_arches + lost_comps)
+        suite = suite_of(track)
+        new_day, old_day = day(db.point(new_id).date), day(db.point(old_id).date)
+        out.append(f"{suite} now serves {has} — {old_day} also had {lost}: mmw site combine '{label}' "
+                   f"{new_day} {old_day} --track {suite} --key KEY serves both (re-signed with this site's key)")
+    return out
+
+
+def narrowing(db, repo: str) -> list[str]:
+    """What `narrowed` says of each track's served point against the newest
+    older held point of that track that covers more."""
+    from mmw.site.ops import _served_points
+    served = _served_points(db, repo)
+    lines = []
+    for tid, pid in served.items():
+        track = db.track(tid)
+        if track is None or not track.name:
+            continue
+        mine = _selection_of(db, pid, track.name)
+        date = db.point(pid).date
+        wider = next((p.id for p in db.points(tid) if p.id != pid and p.date < date
+                      and (set(_selection_of(db, p.id, track.name)["arches"]) - set(mine["arches"])
+                           or set(_selection_of(db, p.id, track.name)["components"]) - set(mine["components"]))),
+                     None)
+        if wider is not None:
+            lines += narrowed(db, repo, {tid: wider}, {tid: pid})
+    return lines
+
+
 def notes(db, repo: str) -> dict[int, str]:
     """Point id → what it covers ("amd64,arm64 · main"), what it has that
     what its suite serves lacks, and whether mmw signed it (combined)."""

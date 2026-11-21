@@ -458,16 +458,20 @@ class SiteDB:
 
     # ── states: one chosen point per track ───────────────────────────────────
 
-    def state(self, repo: str, point_ids: list[int]) -> VersionInfo | None:
-        found = self._version_rows("WHERE repo = ? AND points = ?", (repo, json.dumps(sorted(point_ids))))
+    def state(self, repo: str, point_ids: list[int], digest: str | None = None) -> VersionInfo | None:
+        where = "WHERE repo = ? AND points = ?"
+        args = (repo, json.dumps(sorted(point_ids)))
+        if digest is not None:
+            where += " AND digest = ?"
+            args += (digest,)
+        found = self._version_rows(where, args)
         return found[0] if found else None
 
     def add_state(self, repo: str, label: str, bases: list[str], point_ids: list[int], digest: str,
                   stamp: str, snap_label: str | None, rows: Iterable[tuple[str, str, int]], *,
                   commit: bool = True) -> int:
-        """A state and its materialised files; the existing one when these
-        points already make one."""
-        found = self.state(repo, point_ids)
+        """A state and its materialised files, reused when both match."""
+        found = self.state(repo, point_ids, digest)
         if found is not None:
             return found.id
         c = self._conn

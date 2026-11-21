@@ -173,15 +173,15 @@ def ensure_state(db, store, repo: str, chosen: dict[int, int]) -> tuple[int, lis
     """The version serving exactly `chosen`, built when new. Two tracks
     naming one path with different files: the newer point's wins."""
     ids = sorted(chosen.values())
-    found = db.state(repo, ids)
+    state = db.repo_state(repo)
+    files, warnings = state_files(db, ids)
+    digest = repo_digests(list(files.items()), {repo: state.bases})[repo]
+    found = db.state(repo, ids, digest)
     if found is not None:
         return found.id, []
-    state = db.repo_state(repo)
-    points = sorted((db.point(i) for i in ids), key=lambda p: (p.date, p.stamp, p.ident))
-    files, warnings = state_files(db, ids)
     sizes = db.blob_sizes(files.values())
+    points = sorted((db.point(i) for i in ids), key=lambda p: (p.date, p.stamp, p.ident))
     newest = max(points, key=lambda p: p.stamp) if points else None
-    digest = repo_digests(list(files.items()), {repo: state.bases})[repo]
     vid = db.add_state(repo, state.label, state.bases, ids, digest,
                        newest.stamp if newest else "", newest.snap_label if newest else None,
                        [(p, cs, sizes.get(cs, 0)) for p, cs in files.items()])

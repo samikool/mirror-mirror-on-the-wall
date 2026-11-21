@@ -47,6 +47,7 @@ codes — see [far-side.md](far-side.md#exit-codes).
 | [`mmw installer`](#mmw-installer) | Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh` on the far side puts mmw on the path, offline |
 | [`mmw keep`](#mmw-keep) | Set repository history retention, independently of networks |
 | [`mmw manage`](#mmw-manage) | Manage configured mirrors (add, remove) |
+| [`mmw merge`](#mmw-merge) | Make one repository of an archive configured under two URLs (http and https, or a renamed host): OLDER's points join NEWER's history, an identical Release kept once, and OLDER leaves the config |
 | [`mmw move-database`](#mmw-move-database) | Move the pool database (settings.database) and point mmw.toml at it |
 | [`mmw packages`](#mmw-packages) | Your own .debs: into a folder repository, or into an upstream mirror as one network serves it |
 | [`mmw prune`](#mmw-prune) | Remove orphaned pool packages not referenced by any mirror |
@@ -202,6 +203,19 @@ Manage configured mirrors (add, remove).
 |--------|---------|-------------|
 | `--quiet`, `-q` |  | Print mirror list to stdout, no TUI |
 | `--profile` |  | Sample every thread's stack and CPU use; write a report on exit. In-process, so it needs no ptrace/root. Covers the whole session (publish, bundle, sync-from-manage), not just one action. |
+
+### `mmw merge`
+
+Make one repository of an archive configured under two URLs (http and
+https, or a renamed host): OLDER's points join NEWER's history, an
+identical Release kept once, and OLDER leaves the config.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `OLDER` |  | The repository to fold in: its name, label or URL *(required)* |
+| `NEWER` |  | The repository it is: its history goes here *(required)* |
+| `--dry-run` |  | Say what would move; change nothing |
+| `--yes`, `-y` |  | Merge without asking |
 
 ### `mmw move-database`
 

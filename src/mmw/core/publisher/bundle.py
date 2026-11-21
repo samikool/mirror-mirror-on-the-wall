@@ -166,14 +166,21 @@ def _free_target(network, name: str, out_path) -> Path:
     return target
 
 
-def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None, *, cfg=None, repos=None):
-    """Read an explicit baseline, shared by transfer planning and its preview."""
+def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None, *, cfg=None, repos=None,
+                  whole=None):
+    """Read an explicit baseline, shared by transfer planning and its preview.
+
+    This side's points as of the date, projected with the selection the far
+    side is assumed to hold (`transfer_ranges.assumed_selection`): a kept
+    bundle at or before the date says what it was sent; `--whole` what it lacks."""
     from mmw.core.points import resolve_when
     baseline, source, skipped = None, None, []
     from mmw.core.publisher.kept import state_at
     since = resolve_when(since_date)
     if cfg is not None:
-        from mmw.core.transfer_ranges import recorded_selection, repository_owned, retained_track_points, point_date
+        from mmw.core.transfer_ranges import (
+            assumed_selection, kept_state, point_date, recorded_selection, repository_owned,
+            retained_track_points)
         from mmw.core.repository_points import files_for_settings
         with Pool(mirror_dir, read_only=True) as pool:
             try:
@@ -194,7 +201,12 @@ def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None, *,
                         raise NothingToStandOn(f'no retained repository point at or before {since_date} '
                                                '— choose a later From date or send everything')
                     selected.append(max(eligible, key=lambda item: (item[0], item[1].stamp, item[1].ident))[1])
-                baseline = {cs for p in selected if p.held for cs in files_for_settings(pool, p.id, settings).values()}
+                base, _ = assumed_selection(network, mirror_dir, settings, cfg=cfg, since=since,
+                                            kept_dirs=kept_dirs, whole=whole)
+                baseline = {cs for p in selected if p.held for cs in files_for_settings(pool, p.id, base).values()}
+                kept = kept_state(network, mirror_dir, since, kept_dirs)
+                if kept is not None and kept.settings is None:
+                    baseline &= kept.checksums      # an older manifest names no selection: trust its files
                 return since, baseline, f'repository points as of {since_date}', []
     dirs = [*([network.bundle_dir] if network.bundle_dir is not None else []),
             ledger_dir(mirror_dir, network.name), *(kept_dirs or [])]
@@ -256,6 +268,7 @@ def bundle_network(
     since: str | None = None,
     kept_dirs: list[Path] | None = None,
     until: str | None = None,
+    whole: list[str] | None = None,
 ) -> BundleResult:
     """One bundle for the network's far side: each chosen repository's
     timeline points (newest, or with `history` every point since it was
@@ -282,13 +295,15 @@ def bundle_network(
                           mirror_start_callback=mirror_start_callback, from_ref=from_ref, to_ref=to_ref, stdout=stdout, repos=repos, stage=stage,
                           history=network.history if history is None else history,
                           full=full or from_ref is None, installer=installer,
-                          runtime_wheel=runtime_wheel, fetcher=fetcher, since_date=since, kept_dirs=kept_dirs, until=until)
+                          runtime_wheel=runtime_wheel, fetcher=fetcher, since_date=since, kept_dirs=kept_dirs, until=until,
+                          whole=whole)
 
 
 def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_path, progress, stop_event, *,
                    mirror_start_callback=None,
                    from_ref, to_ref: str, stdout, repos: list[str] | None, stage: bool, history: bool,
-                   full: bool, installer: bool, runtime_wheel, fetcher, since_date=None, kept_dirs=None, until=None) -> BundleResult:
+                   full: bool, installer: bool, runtime_wheel, fetcher, since_date=None, kept_dirs=None, until=None,
+                   whole=None) -> BundleResult:
     """An mmw network's bundle of timeline points: each chosen repository's
     current points (always listed — the far side retires what's missing),
     and with `history` every point first seen since the last bundle; a file
@@ -324,7 +339,8 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             since, since_by_repo = None, {}
     baseline, source, skipped = None, None, []
     if since_date is not None:
-        since, baseline, source, skipped = resolve_since(network, mirror_dir, since_date, kept_dirs, cfg=cfg, repos=repos)
+        since, baseline, source, skipped = resolve_since(network, mirror_dir, since_date, kept_dirs, cfg=cfg,
+                                                         repos=repos, whole=whole)
         since_by_repo = {}
     result = BundleResult(network_name=network.name, created=stamp, previous=since, full=full)
     result.since_source = source
@@ -412,10 +428,15 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         generated = dict(_far_nginx(settings, network.certs))
         gen_sums = {hashlib.sha256(d).hexdigest() for d in generated.values()}
         sent = baseline if baseline is not None else (set() if full else pool.sent_checksums(network.name, every | gen_sums))
-        from mmw.core.transfer_ranges import range_baseline
-        interval_base = range_baseline(pool, network, settings, current, since=since_date, full=full, listing=listing)
+        from mmw.core.transfer_ranges import assumed_selection, range_baseline
+        base, result.whole = (settings, []) if full else assumed_selection(
+            network, mirror_dir, settings, cfg=cfg, since=since if since_date is not None else None,
+            kept_dirs=kept_dirs, whole=whole)
+        interval_base = range_baseline(pool, network, settings, current, since=since_date, full=full, listing=listing,
+                                       base_settings=None if base is settings else base)
         if interval_base is not None:
-            sent = interval_base
+            # Both are what the far side is assumed to hold: trust only what both say.
+            sent = interval_base if baseline is None else interval_base & baseline
         missing = sorted(c for c in every if c not in info)
         if missing:
             raise ValueError(f"{len(missing)} file(s) of {network.name}'s points are no longer in the pool "
@@ -572,11 +593,11 @@ def stage_network(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_dir
                   installer: bool = False, runtime_wheel: Path | None = None, fetcher=None,
                   history: bool | None = None, full: bool = False,
                   since: str | None = None, kept_dirs: list[Path] | None = None,
-                  until: str | None = None) -> BundleResult:
+                  until: str | None = None, whole: list[str] | None = None) -> BundleResult:
     """`mmw stage`: the bundle `bundle_network` would write, laid out as a
     directory `{out_dir or bundle_dir}/{network}-{name}/` of hardlinks to the
     pool instead of a tar. For mmw networks only."""
     return bundle_network(network, cfg, mirror_dir, out_dir, progress, stop_event, mirror_start_callback,
                           from_ref=None if full else from_ref, to_ref=to_ref, repos=repos, stage=True,
                           installer=installer, runtime_wheel=runtime_wheel, fetcher=fetcher, history=history,
-                          since=since, kept_dirs=kept_dirs, until=until)
+                          since=since, kept_dirs=kept_dirs, until=until, whole=whole)

@@ -77,6 +77,7 @@ class BundleChoice:
     stage: bool = False                     # mmw far side: a directory of hardlinks, not a tar
     installer: bool = False                 # mmw far side: mmw's installer written beside it
     history: bool | None = None             # mmw far side: every point since the last bundle (None: the network's)
+    whole: tuple[str, ...] = ()             # parts the far side lacks, sent in full (`--whole`)
 
 
 class PublishFlows:
@@ -415,6 +416,8 @@ class PublishFlows:
             ends["kept_dirs"] = [choice.kept_dir] if choice.kept_dir is not None else None
         elif not choice.from_last:
             ends["full"] = True
+        if choice.whole and (choice.since is not None or choice.from_last):
+            ends["whole"] = list(choice.whole)
         if choice.repos is not None:
             ends["repos"] = list(choice.repos)
         if choice.installer:

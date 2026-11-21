@@ -738,6 +738,10 @@ def cmd_bundle(
     history: bool = typer.Option(
         None, "--history/--newest", help="mmw far side: every point since the last bundle, or each suite's "
                                          "newest (default: the network's `history`)."),
+    whole: list[str] = typer.Option(
+        None, "--whole", help="Send this part in full whatever --since says — what the far side never had: "
+                              "[REPO:]DIMENSION=VALUE[,VALUE], DIMENSION one of arches, components, suites; "
+                              "e.g. ubuntu:arches=i386 (repeatable)."),
     full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not."),
 ):
     """Transfer recorded points: from each repository's last transfer to its
@@ -747,7 +751,7 @@ def cmd_bundle(
                          allow_incomplete=allow_incomplete,
                          repos=repo or None,
                          installer=installer, runtime_wheel=runtime_wheel, history=history, full=full,
-                         since=since, kept=bundles, until=until, dry_run=dry_run))
+                         since=since, kept=bundles, until=until, dry_run=dry_run, whole=whole or None))
 
 
 @app.command("stage")
@@ -774,6 +778,10 @@ def cmd_stage(
     history: bool = typer.Option(
         None, "--history/--newest", help="mmw far side: every point since the last bundle, or each suite's "
                                          "newest (default: the network's `history`)."),
+    whole: list[str] = typer.Option(
+        None, "--whole", help="Send this part in full whatever --since says — what the far side never had: "
+                              "[REPO:]DIMENSION=VALUE[,VALUE], DIMENSION one of arches, components, suites; "
+                              "e.g. ubuntu:arches=i386 (repeatable)."),
     full: bool = typer.Option(False, "--full", help="Carry every file again, sent before or not."),
 ):
     """Lay a bundle out as a directory of hardlinks to the pool — the same
@@ -783,7 +791,7 @@ def cmd_stage(
     raise typer.Exit(run(_cfg_dir(), network=network, out=out, allow_incomplete=allow_incomplete,
                          repos=repo or None,
                          installer=installer, runtime_wheel=runtime_wheel, history=history, full=full,
-                         since=since, kept=bundles, until=until, dry_run=dry_run))
+                         since=since, kept=bundles, until=until, dry_run=dry_run, whole=whole or None))
 
 
 @app.command("installer")

@@ -16,6 +16,7 @@ class KeptState:
     created: str
     where: str
     checksums: frozenset[str]
+    settings: str | None = None      # the selection it was made with (format 3)
 
 
 @contextmanager
@@ -78,7 +79,9 @@ def kept_states(dirs: list[Path], network: str, *, skipped: list[str]) -> list[K
                             if not isinstance(row["c"], str) or not row["c"]:
                                 raise ValueError("missing checksum")
                             sums.add(row["c"])
-                    states.append(KeptState(header["created"], str(path), frozenset(sums)))
+                    settings = header.get("settings")
+                    states.append(KeptState(header["created"], str(path), frozenset(sums),
+                                            settings if isinstance(settings, str) and settings else None))
             except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, ZstdError) as exc:
                 skipped.append(f"{path}: {exc}")
     return sorted(states, key=lambda state: (state.created, state.where.endswith(".tar"), state.where))

@@ -82,3 +82,120 @@ def test_an_added_arch_goes_whole_while_the_sent_one_goes_as_a_diff(synced, tmp_
         assert (far / f'pool/{name}.deb').read_bytes() == body
     assert (far / 'dists/stable/main/binary-arm64/Packages').is_file()
     assert b'new.deb' in (far / 'dists/stable/main/binary-amd64/Packages').read_bytes()
+
+
+# ── A wiped connected side: no record of the last transfer ──────────────────
+#
+# What the far side holds then comes from --since DATE alone, and today's
+# selection (amd64 + arm64) is not what was sent (amd64 only). A kept bundle
+# says what was; without one, --whole says what the far side never had.
+
+@pytest.fixture
+def wiped(synced, tmp_path, monkeypatch):  # noqa: F811
+    """Old side: amd64 bundled on 1 Nov, kept. New side: resynced from scratch
+    with the 2 Nov point, its network now selecting arm64 too."""
+    from mmw.core import snapshots
+    from test_repository_points import apt_repository
+    cfg, net, md, units = synced
+    kept = tmp_path / 'kept'
+    kept.mkdir()
+    monkeypatch.setattr(snapshots, 'now_stamp', lambda: '20261101T180000Z')
+    bundle_network(net, cfg, md, out_path=kept / 'amd64-only.tar')
+    monkeypatch.undo()
+    fresh = tmp_path / 'fresh'
+    cfg, md, units = apt_repository(fresh)
+    points.record_points_after_sync(cfg, md, {units[0].source}, say=lambda _: None)
+    _day_two(cfg, md, units)
+    wide = config.NetworkConfig(name='work', nginx=False, certs=False, bundle_dir=fresh / 'usb',
+                                select=[config.NetworkSelect(source=units[0].source, arches=['amd64', 'arm64'])])
+    cfg = cfg.model_copy(update={'networks': [wide]})
+    config.save(cfg, fresh)
+    return cfg, wide, md, kept
+
+
+def _carries(path):
+    blobs, _ = _blobs(path)
+    return {name for name in ('amd64', 'arm64', 'new', 'shared') if sha(name.encode()) in blobs}
+
+
+def test_a_kept_bundle_says_what_was_sent(wiped, tmp_path):
+    cfg, net, md, kept = wiped
+    plan = preview_transfer(net, md, cfg=cfg, since='2026-11-01', kept_dirs=[kept])
+    assert plan.whole == ("apt: arches arm64 sent whole (not in amd64-only.tar's selection)",)
+    out = bundle_network(net, cfg, md, since='2026-11-01', kept_dirs=[kept], out_path=tmp_path / 'b.tar')
+    assert _carries(out.out_path) == {'arm64', 'new'}
+    assert out.whole == list(plan.whole)
+
+
+@pytest.mark.parametrize('spec', ['apt:arches=arm64', 'arches=arm64', 'https://apt.test/debian:arch=arm64'])
+def test_whole_sends_what_the_far_side_never_had(wiped, tmp_path, spec):
+    cfg, net, md, _ = wiped
+    plan = preview_transfer(net, md, cfg=cfg, since='2026-11-01', whole=[spec])
+    assert plan.whole == ('apt: arches arm64 sent whole (--whole)',)
+    out = bundle_network(net, cfg, md, since='2026-11-01', whole=[spec], out_path=tmp_path / 'b.tar')
+    # amd64 as a diff from 1 Nov; arm64 whole, but not what amd64 already carried.
+    assert _carries(out.out_path) == {'arm64', 'new'}
+
+
+def test_whole_also_works_from_the_last_transfer(synced, tmp_path):  # noqa: F811
+    cfg, net, md, units = synced
+    both = net.model_copy(update={'select': [config.NetworkSelect(source=units[0].source,
+                                                                  arches=['amd64', 'arm64'])]})
+    cfg = cfg.model_copy(update={'networks': [both]})
+    bundle_network(both, cfg, md, out_path=tmp_path / 'first.tar')
+    _day_two(cfg, md, units)
+    out = bundle_network(both, cfg, md, whole=['arches=arm64'], out_path=tmp_path / 'b.tar')
+    assert _carries(out.out_path) == {'arm64', 'new'}
+
+
+@pytest.mark.parametrize('spec, says', [('apt:arches=i386', 'matches nothing'),
+                                        ('nope:arches=arm64', 'unknown repository'),
+                                        ('apt:flavour=x', 'expected')])
+def test_a_whole_that_names_nothing_is_said(wiped, spec, says):
+    cfg, net, md, _ = wiped
+    with pytest.raises((ValueError, LookupError), match=says):
+        preview_transfer(net, md, cfg=cfg, since='2026-11-01', whole=[spec])
+
+
+@pytest.mark.parametrize('verb', ['bundle', 'stage'])
+def test_cli_whole(wiped, verb):
+    from typer.testing import CliRunner
+
+    from mmw.cli import app
+    cfg, net, md, _ = wiped
+    where = ['--config', str(md.parent), verb, '-n', 'work', '--since', '2026-11-01']
+    result = CliRunner().invoke(app, [*where, '--whole', 'apt:arches=arm64', '--dry-run'])
+    assert result.exit_code == 0, result.output
+    assert 'apt: arches arm64 sent whole (--whole)' in result.output
+    result = CliRunner().invoke(app, [*where, '--whole', 'apt:arches=arm64'])
+    assert result.exit_code == 0, result.output
+    assert 'apt: arches arm64 sent whole (--whole)' in result.output
+    refused = CliRunner().invoke(app, ['--config', str(md.parent), verb, '-n', 'work', '--full',
+                                       '--whole', 'apt:arches=arm64'])
+    assert refused.exit_code == 1 and 'cannot be combined with --full' in refused.output
+
+
+def test_tui_sends_whole(wiped):
+    from textual.widgets import Input, Select
+
+    from pickers import confirm_picker
+    from test_snapshot_tui import _finished, _run
+    from waiting import shows, until
+    cfg, net, md, _ = wiped
+
+    async def check(app, pilot):
+        await pilot.press('t')
+        await until(pilot, lambda: type(app.screen).__name__ == 'BundlePickPage' and app.screen.query('#pick-to'))
+        app.screen.query_one('#pick-from', Select).value = 'date'
+        app.screen.query_one('#pick-since', Input).value = '2026-11-01'
+        app.screen.query_one('#pick-whole', Input).value = 'apt:arches=arm64'
+        app.screen.query_one('#pick-installer', Select).value = 'no'
+        await shows(pilot, lambda: app.screen.query_one('#pick-estimate').render(),
+                    'apt: arches arm64 sent whole (--whole)')
+        await confirm_picker(app, pilot, 'BundlePickPage')
+        await until(pilot, lambda: _finished(app))
+        assert app.active_transfer.outcome == 'ok', app.notes
+
+    _run(cfg, md.parent, check)
+    [out] = (md.parent / 'usb').glob('*.tar')
+    assert _carries(out) == {'arm64', 'new'}

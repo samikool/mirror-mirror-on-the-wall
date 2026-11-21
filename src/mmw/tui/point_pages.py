@@ -156,6 +156,10 @@ class BundlePickPage(Page):
                       hint="YYYY-MM-DD (end of day UTC) or YYYYMMDDTHHMMSSZ."),
             PathField("Kept bundles", str(self._net.bundle_dir or ""), id="pick-kept",
                       browse_title="Kept bundles", hint="Search here as well as the network's bundle folder and ledger."),
+            TextField("Send whole", "", id="pick-whole",
+                      placeholder="ubuntu:arches=i386",
+                      hint="Parts the far side never had, sent in full whatever From says: "
+                           "[repository:]arches, components or suites=value — space-separated."),
             ChoiceField("To", tos, "now", id="pick-to",
                         hint="Points to carry. Older points are stored; rollback is an explicit site action."),
             TextField("Through date", "", id="pick-until",
@@ -233,9 +237,16 @@ class BundlePickPage(Page):
 
     @on(Select.Changed, "#pick-from")
     def _show_since(self) -> None:
-        show = self.query_one("#pick-from", Select).value == "date"
+        start = self.query_one("#pick-from", Select).value
+        show = start == "date"
         self.query_one("#field-pick-since").display = show
         self.query_one("#field-pick-kept").display = show
+        # Nothing to send "whole" when everything goes.
+        self.query_one("#field-pick-whole").display = start != "none"
+
+    def _whole(self) -> tuple[str, ...]:
+        start = self._ends()[0]
+        return () if start == "none" else tuple(self.query_one(Form).values()["pick-whole"].split())
 
     @on(Select.Changed, "#pick-to")
     def _show_until(self) -> None:
@@ -247,7 +258,7 @@ class BundlePickPage(Page):
         return dict(since=self._endpoint(start, values["pick-since"]),
                     until=self._endpoint(dest, values["pick-until"]),
                     full=start == "none", history=values["pick-points"] == "history",
-                    repos=self._picked_repos(),
+                    repos=self._picked_repos(), whole=self._whole() or None,
                     kept_dirs=[Path(values["pick-kept"]).expanduser()] if values["pick-kept"] else None)
 
     @staticmethod
@@ -258,6 +269,7 @@ class BundlePickPage(Page):
     @on(Input.Changed, "#pick-since")
     @on(Input.Changed, "#pick-until")
     @on(Input.Changed, "#pick-kept")
+    @on(Input.Changed, "#pick-whole")
     @on(SelectionList.SelectedChanged, "#pick-repos")
     @on(Select.Changed)
     def _estimate_now(self) -> None:
@@ -292,6 +304,7 @@ class BundlePickPage(Page):
                              if row.available else "")
                 lines.append(f"{label} / {row.suite}: {day(row.from_date) if row.from_date else 'full'}"
                              f" → {day(row.to_date)} · {row.points} point(s){available}")
+            lines.extend(plan.whole)
             lines.append(f"Sends about {plan.blobs:,} new blobs · {fmt_size(plan.bytes)}")
             lines.extend(plan.warnings)
             text = escape("\n".join(lines))
@@ -339,7 +352,7 @@ class BundlePickPage(Page):
                             since=self._endpoint(start, values["pick-since"]),
                             kept_dir=Path(values["pick-kept"]).expanduser() if values["pick-kept"] else None,
                             until=self._endpoint(dest, values["pick-until"]),
-                            repos=self._picked_repos(),
+                            repos=self._picked_repos(), whole=self._whole(),
                             stage=bool(self._repos) and values["pick-as"] == "stage",
                             installer=self._installer(),
                             history=(values["pick-points"] == "history") if "pick-points" in values else None)

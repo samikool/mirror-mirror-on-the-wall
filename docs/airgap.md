@@ -345,10 +345,31 @@ its `bundle_dir`, the local bundle ledger, and any extra `--bundles DIR`
 (repeatable). Only the first tar member is read. Unreadable bundles are named
 and skipped. Format 2 bundles from mmw 1.4 and current format 3 both work.
 
-If no manifest is old enough, mmw uses this network's retained points dated
-on or before the cutoff, the newest per track. The summary names the source;
-points are an assumption about what arrived, whereas a manifest records what
-was bundled. If neither exists, mmw refuses and offers `--full`.
+With repository points, the baseline is this network's retained points dated
+on or before the cutoff, the newest per track, and a kept manifest limits it
+to the units that bundle carried: an architecture, component or suite added
+to the network since then is sent whole, and the preview says so
+(`ubuntu: arches i386 sent whole (not in <bundle>.tar's selection)`). Without
+repository points, the manifest's files are the baseline. If no manifest is
+old enough, the points alone are an assumption about what arrived, whereas a
+manifest records what was bundled; the summary names the source. If neither
+exists, mmw refuses and offers `--full`.
+
+When no kept bundle survives, say what the far side never had with
+`--whole` (repeatable): `[REPO:]DIMENSION=VALUE[,VALUE]`, DIMENSION one of
+`arches`, `components` or `suites`, REPO a repository's name or URL
+(default: every repository).
+
+```bash
+# Ubuntu went over as amd64 only; the network now selects i386 too
+mmw bundle -n lab --since 2026-11-01 --whole ubuntu:arches=i386 --dry-run
+```
+
+amd64 goes as the change since 1 November; every i386 file goes, except
+those amd64 already carried (`Architecture: all` packages), which the far
+side has. A selector that matches nothing the network selects is refused.
+`--whole` also works without `--since`, from the last transfer, and cannot
+be combined with `--full`.
 
 `--since` replaces the sent record for this bundle, including generated
 network files. With `--history`, retained points first seen after the cutoff
@@ -362,8 +383,9 @@ with `--bundles` pointing at that folder. Nothing needs to come back across
 the airgap. If no baseline remains, use `mmw bundle -n lab --full`.
 
 In the TUI, choose **A date** under **From**, enter the date and optionally
-choose a **Kept bundles** folder. The preview names the source; if no state
-can be found, the transfer offers to send everything instead.
+choose a **Kept bundles** folder. **Send whole** takes the same selectors as
+`--whole`, space-separated. The preview names the source and what goes whole;
+if no state can be found, the transfer offers to send everything instead.
 
 The far side checks every point it is given: a point whose files are missing
 is stored incomplete and not served — applying says which, with how many

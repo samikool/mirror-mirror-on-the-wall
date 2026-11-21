@@ -650,6 +650,21 @@ def cmd_move_database(
     raise typer.Exit(run(_cfg_dir(), path))
 
 
+@app.command("merge")
+def cmd_merge(
+    older: str = typer.Argument(..., help="The repository to fold in: its name, label or URL"),
+    newer: str = typer.Argument(..., help="The repository it is: its history goes here"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Say what would move; change nothing"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Merge without asking"),
+):
+    """Make one repository of an archive configured under two URLs (http and
+    https, or a renamed host): OLDER's points join NEWER's history, an
+    identical Release kept once, and OLDER leaves the config."""
+    from mmw.commands.merge import run
+    from mmw.core import config
+    raise typer.Exit(run(config.load(_cfg_dir()), _cfg_dir(), older, newer, dry_run=dry_run, yes=yes))
+
+
 @app.command("prune")
 def cmd_prune(
     dry_run: bool = typer.Option(
@@ -1167,6 +1182,18 @@ def cmd_site_clean(root: Path = _ROOT,
     pinned or served before — saying what each frees. Their records stay."""
     from mmw.commands.site import clean
     raise typer.Exit(clean(root, dry_run, yes))
+
+
+@site_app.command("merge")
+def cmd_site_merge(older: str = typer.Argument(..., help="The repository to fold in: its label or key"),
+                   newer: str = typer.Argument(..., help="The repository it is: its history goes here"),
+                   dry_run: bool = typer.Option(False, "--dry-run", help="Say what would move; change nothing"),
+                   yes: bool = _YES, root: Path = _ROOT):
+    """Make one repository of an archive held here under two URLs (http and
+    https, or a renamed host): OLDER's points join NEWER's history, NEWER
+    serves, and OLDER's paths stop being served."""
+    from mmw.commands.site import merge
+    raise typer.Exit(merge(older, newer, dry_run, yes, root))
 
 
 @site_app.command("combine")

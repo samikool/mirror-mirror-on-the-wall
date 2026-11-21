@@ -541,6 +541,41 @@ def history(repo: str, root: Path | None = None) -> int:
     return 0
 
 
+def merge(older: str, newer: str, dry_run: bool = False, yes: bool = False, root: Path | None = None) -> int:
+    """Make one repository of an archive held here under two URLs: `older`'s
+    points join `newer`'s history, `newer` serves, `older` is forgotten."""
+    import sys
+    from mmw.site.merge import describe
+    try:
+        r_, _k = _repo(root, newer)
+        plan = r_.merge_plan(older, newer)
+    except _ERRORS as e:
+        return _fail(e)
+    if plan.already:
+        print(f"{older} and {newer} are already one repository")
+        return 0
+    print(describe(plan))
+    if plan.proof is None:
+        eprint(f"nothing shows they are one repository ({plan.older}, {plan.newer}): no identical Release, "
+               "no suite in common — merging them would mix two archives' histories")
+        return 1
+    if dry_run:
+        return 0
+    if not yes:
+        if not sys.stdin.isatty():
+            eprint("pass --yes to merge them (no terminal to ask on)")
+            return 1
+        if input(f"Merge {plan.older} into {plan.newer}? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    try:
+        lines = r_.merge(plan.older, plan.newer, confirmed=True)
+    except (*_ERRORS, PermissionError) as e:
+        return _fail(e)
+    for line in lines:
+        print(line)
+    return 0
+
+
 def combine(repo: str, track: str, whens: list[str], key: str, yes: bool = False, root: Path | None = None) -> int:
     """Combine slices of one suite from different days into one served point,
     re-signed with a site key — said first, done on --yes."""

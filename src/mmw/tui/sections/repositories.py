@@ -103,7 +103,9 @@ class RepositoriesPage(Page):
             "Prune drops packages no index references; wipe deletes every downloaded byte;\n"
             "c previews network and repository keep_points costs.\n"
             "t adds a past point: a Debian or Ubuntu repository as it was on a date, from its "
-            "snapshot archive.")
+            "snapshot archive.\n"
+            "m merges the highlighted repository into another URL of the same archive (http and https, "
+            "or a renamed host): one history.")
     BINDINGS = [
         Binding("space", "tick", "Tick"),
         Binding("ctrl+a", "tick_all", "Tick all"),
@@ -120,8 +122,9 @@ class RepositoriesPage(Page):
         Binding("c", "keep_costs", "Keep costs", show=False),
         Binding("t", "past_point", "Add a past point…", show=False),
         Binding("h", "history", "History", show=False),
+        Binding("m", "merge_into", "Merge into…", show=False),
     ]
-    MORE = ("add_packages", "sources_file", "past_point", "history", "keep_costs")
+    MORE = ("add_packages", "sources_file", "past_point", "history", "keep_costs", "merge_into")
 
     def action_history(self):
         from mmw.tui.history import HistoryPage
@@ -555,6 +558,56 @@ class RepositoriesPage(Page):
             return
         await self._after_write()
         self.set_status("Pool wiped. The next sync rebuilds it.", "ok")
+
+    # ── merge ────────────────────────────────────────────────────────────────
+
+    def action_merge_into(self) -> None:
+        """Fold the highlighted repository into another URL of the same archive."""
+        self._start(self._merge_into)
+
+    async def _merge_into(self) -> None:
+        from mmw.commands.merge import describe, merge_into, preview
+        from mmw.core.repo_merge import _merged_config
+        from mmw.tui.pick import PickPage
+        from mmw.tui.ui.dialog import ConfirmDialog
+        src = self._highlighted_source()
+        if src is None:
+            self.notify("Highlight the repository to merge first.", severity="warning")
+            return
+        others = [s for s in self.app.cfg.sources if s.identity != src.identity]
+        options = [f"{s.name} ({s.identity})" for s in others]
+        choice = await self.app.push_screen_wait(PickPage(
+            "Merge into…", f"{src.name}'s history joins the repository you pick, and {src.name} "
+            "leaves the config", options))
+        if not choice:
+            return
+        if len(choice) != 1:
+            self.notify("Pick one repository to merge into.", severity="warning")
+            return
+        target = others[options.index(choice[0])]
+        try:
+            older, newer, plan = await asyncio.to_thread(preview, self.app.cfg, src.identity, target.identity)
+        except (LookupError, ValueError) as e:
+            self.notify(str(e), severity="error")
+            return
+        if plan.already:
+            self.notify(f"{older} and {newer} are already one repository.")
+            return
+        if plan.proof is None:
+            self.notify(f"Nothing shows {src.name} and {target.name} are one repository: no identical "
+                        "Release, no suite in common.", severity="error", timeout=10)
+            return
+        if not await self.app.push_screen_wait(ConfirmDialog(
+                "Merge repositories?", describe(plan), confirm_label="Merge")):
+            return
+        try:
+            result = await asyncio.to_thread(merge_into, self.app.cfg, None, older, newer, confirmed=True)
+            await self.app.save_config(lambda c: _merged_config(c, older, newer))
+        except Exception as e:  # noqa: BLE001 — said on the page
+            self.set_status(f"Not merged: {e}", "error")
+            return
+        await self._after_write()
+        self.notify(" ".join(result.lines))
 
     # ── past point ───────────────────────────────────────────────────────────
 

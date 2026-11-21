@@ -115,6 +115,14 @@ class LocalRoot:
         from mmw.site import ops
         return ops.deleted_stamps(self.home, key)
 
+    def merge_plan(self, older: str, newer: str):
+        from mmw.site.merge import plan
+        return plan(self.home, older, newer)
+
+    def merge(self, older: str, newer: str, *, confirmed: bool = False) -> list[str]:
+        from mmw.site.merge import merge_site_repositories
+        return merge_site_repositories(self.home, older, newer, confirmed=confirmed).lines
+
     def narrowing(self, key: str) -> list[str]:
         """Each suite of `key` serving fewer slices than an older point held."""
         from mmw.site import ops

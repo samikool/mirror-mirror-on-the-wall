@@ -160,6 +160,13 @@ class SshRoot:
                 return []
             raise
 
+    def merge_plan(self, older: str, newer: str):
+        from mmw.site.merge import SiteMergePlan
+        return SiteMergePlan(**self._call("merge-plan", older, newer))
+
+    def merge(self, older: str, newer: str, *, confirmed: bool = False) -> list[str]:
+        return self._call("merge", older, newer, *(["--confirmed"] if confirmed else []))["lines"]
+
     def narrowing(self, key: str) -> list[str]:
         try:
             return self._call("narrowing", key)["lines"]

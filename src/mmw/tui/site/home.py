@@ -93,6 +93,7 @@ class SiteHomePage(Page):
         Binding("K", "signing_keys", "Signing keys", show=False),
         Binding("u", "local_update", "Update local", show=False),
         Binding("j", "combine", "Combine", show=False),
+        Binding("M", "merge_into", "Merge into…", show=False),
         Binding("s", "settings", "Settings", show=False),
         Binding("e", "suite_keep", "Suite keep", show=False),
         Binding("g", "check_signatures", "Check signatures", show=False),
@@ -100,7 +101,7 @@ class SiteHomePage(Page):
         Binding("v", "verify", "Verify", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
-    MORE = ("certs", "adopt", "adopted", "clean_up", "combine", "packages", "signing_keys", "local_update",
+    MORE = ("certs", "adopt", "adopted", "clean_up", "combine", "merge_into", "packages", "signing_keys", "local_update",
             "settings", "suite_keep", "check_signatures", "verify", "refresh")
 
     def __init__(self):
@@ -836,6 +837,47 @@ class SiteHomePage(Page):
                 lambda progress: self.app.root_of(repo).combine(repo, c[0], c[1], c[2], progress=progress),
                 lambda r: f"combined {label} {c[0]} from {', '.join(r.sources)} — re-signed with {c[2]}; "
                           f"clients get its key at {r.key_url}"))
+
+    def action_merge_into(self) -> None:
+        """Fold the selected repository into another URL of the same archive."""
+        from mmw.tui.pick import PickPage
+        repo = self.selected_repo()
+        if repo is None:
+            self.set_status("Select the repository to merge first.", "error")
+            return
+        state = next(s for s in self._states if s.repo == repo)
+        others = [s for s in self._states if s.repo != repo]
+        options = [f"{s.label} ({s.repo})" for s in others]
+        self.app.push_screen(
+            PickPage("Merge into…", f"{state.label}'s history joins the repository you pick; it is served "
+                     f"there, and {state.label}'s own paths no longer are", options),
+            lambda choice: self._merge_picked(state, others, options, choice))
+
+    def _merge_picked(self, state, others, options, choice) -> None:
+        if not choice:
+            return
+        if len(choice) != 1:
+            self.set_status("Pick one repository to merge into.", "error")
+            return
+        target = others[options.index(choice[0])]
+        root = self.app.root_of(target.repo)
+        try:
+            plan = root.merge_plan(state.repo, target.repo)
+        except Exception as e:  # noqa: BLE001 — said on the page
+            self.set_status(str(e), "error")
+            return
+        if plan.proof is None:
+            self.set_status(f"Nothing shows {state.label} and {target.label} are one repository: no identical "
+                            "Release, no suite in common.", "error")
+            return
+        from mmw.site.merge import describe
+        from mmw.tui.ui.dialog import ConfirmDialog
+        self.app.push_screen(
+            ConfirmDialog("Merge repositories?", describe(plan), confirm_label="Merge"),
+            lambda ok: ok and self._run_action(
+                f"Merging {state.label} into {target.label}", [(target.repo, target.label)],
+                lambda progress: root.merge(state.repo, target.repo, confirmed=True),
+                lambda lines: " ".join(lines)))
 
     # ── settings and upkeep ──────────────────────────────────────────────────
 

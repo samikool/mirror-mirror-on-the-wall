@@ -173,11 +173,13 @@ class RootApply:
         disk_io.ops.write_bytes(self.manifest_path, manifest)
         try:
             head, _rows = iter_manifest_v2(self.manifest_path)
-            same = identity.match(identity.known_from_db(self.db), head)
+            mine = self.settings.network
+            same = identity.match(identity.known_from_db(self.db), head,
+                                  foreign=mine is not None and head.network != mine)
         except (ValueError, KeyError, TypeError, AttributeError):
             same = identity.Matches()             # malformed: check() says so
         if same.mapping:                          # arriving keys as they are here
-            manifest = identity.rekeyed_manifest(manifest, same.mapping)
+            manifest = identity.rekeyed_manifest(manifest, same.mapping, same.rebase)
             disk_io.ops.write_bytes(self.manifest_path, manifest)
         self._identity_lines = same.lines
         self._claimable = same.adopted
@@ -426,7 +428,8 @@ class RootApply:
         every_base = [b for plan in planned.values() for b in plan["meta"]["bases"]]
         for repo, plan in planned.items():
             _claim_adopted(db, repo, plan["meta"], result, every_base)
-            _rebase_to(db, repo, plan, result)
+            if not self.foreign and (not self.points_bundle or self.selection):
+                _rebase_to(db, repo, plan, result)   # only this network's own selection moves its host
         result.lines[:0] = [f"  {line}" for line in getattr(self, "_identity_lines", [])
                             if f"  {line}" not in result.lines]
         for repo, plan in planned.items():
@@ -1226,12 +1229,12 @@ def plan_set_apply(mset, src: str, deploy: set[str] | None = None) -> SetApplyPl
         header, rows = iter_manifest_sized(scratch)
         rows = list(rows)
         claimable: set[str] = set()
+        foreign = mset is not None and header.network != mset.network
         if mset is not None:
             from mmw.site import identity
-            same = identity.match(identity.known_from_set(mset), header)
-            header, rows = identity.rekey(header, rows, same.mapping)
+            same = identity.match(identity.known_from_set(mset), header, foreign=foreign)
+            header, rows = identity.rekey(header, rows, same.mapping, same.rebase)
             claimable = same.adopted
-        foreign = mset is not None and header.network != mset.network
         not_here: dict[str, str] = {}
         if foreign:
             held = {st.repo for _n, st in ops.set_status(mset)} | claimable
@@ -1431,13 +1434,17 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         # out for this mirror: one it doesn't name is junk, never "not mirrored here".
         named = {blob_member(c) for _p, c, _r, _s in rows} if header.format == 3 else None
         claimable: set[str] = set()
+        foreign = mset is not None and header.network != mset.network
         if mset is not None:
             from mmw.site import identity
-            same = identity.match(identity.known_from_set(mset), header)
-            header, rows = identity.rekey(header, rows, same.mapping)
+            same = identity.match(identity.known_from_set(mset), header, foreign=foreign)
+            before = rows
+            header, rows = identity.rekey(header, rows, same.mapping, same.rebase)
+            if k_of and rows is not before:           # a re-based row is held by the same points
+                k_of = {(new[0], new[1]): k_of[(old[0], old[1])] for old, new in zip(before, rows)
+                        if (old[0], old[1]) in k_of}
             claimable = same.adopted
             result.lines.extend(same.lines)
-        foreign = mset is not None and header.network != mset.network
         network = mset.network if foreign else header.network
         dropped: set[str] = set()
         foreign_mirrors: dict = {}

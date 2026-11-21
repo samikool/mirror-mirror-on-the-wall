@@ -106,7 +106,10 @@ def merge_site_repositories(home: Path, older: str, newer: str, *, dry_run: bool
                              "(mmw site move)")
         old_base = o.bases[0] if o.bases else ""
         new_base = n.bases[0] if n.bases else old_base
+        had = {t.name for t in db.tracks(p.newer)}
+        carry = []                                # (new track, old track, old point → new point, new to newer)
         for t in db.tracks(p.older):
+            mapped: dict[int, int] = {}
             tid = db.ensure_track(p.newer, p.tracks[t.name],
                                   {k: v for k, v in (("Origin", t.origin), ("Label", t.label), ("Suite", t.suite),
                                                      ("Codename", t.codename)) if v}, commit=False)
@@ -115,6 +118,7 @@ def merge_site_repositories(home: Path, older: str, newer: str, *, dry_run: bool
                 sizes = db.blob_sizes(files.values())
                 draft = PointDraft(p.tracks[t.name], point.ident, point.date, {}, files)
                 pid, status = db.import_point(tid, draft, sizes, point.stamp, point.snap_label, commit=False)
+                mapped[point.id] = pid
                 if status.startswith("conflict:"):
                     db.rollback()
                     raise ValueError(f"{status.split(':', 1)[1]} differs between {o.label} and {n.label} inside one "
@@ -125,7 +129,20 @@ def merge_site_repositories(home: Path, older: str, newer: str, *, dry_run: bool
                         db.stub_point(pid)
                 else:
                     result.same += 1
+            carry.append((tid, t, mapped, p.tracks[t.name] not in had))
         db.commit()
+        # What older had retired stays retired, and what it pinned stays pinned.
+        for tid, t, mapped, fresh in carry:
+            networks = db.track_networks(t.id)
+            if fresh:
+                db.restore_track_presence(tid, networks, t.gone)
+            elif networks:
+                have = db.track_networks(tid)
+                db.restore_track_presence(tid, {**networks, **have}, db.track(tid).gone)
+                db._update_track_retirement(p.newer)
+                db.commit()
+            if t.pinned in mapped and db.track(tid).pinned is None:
+                db.set_pin(tid, mapped[t.pinned])
         switched = _reserve(db, roots, p.newer)
         served_new = set(db.served_files(db.repo_state(p.newer).serving.id, db.repo_overlay(p.newer))) \
             if db.repo_state(p.newer).serving else set()

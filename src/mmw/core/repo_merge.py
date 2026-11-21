@@ -39,6 +39,7 @@ PROOF_SAID = {
     "identity": "the same repository by another URL scheme",
     "release": "they hold an identical Release",
     "fields": "only their suite names match — check they are one archive",
+    "finish": "its history moved already (a merge stopped before the config was saved) — this finishes it",
 }
 
 
@@ -89,6 +90,8 @@ def plan_merge(pool, cfg, older: str, newer: str) -> MergePlan:
     in_config = any(s.identity == older for s in cfg.sources)
     if not o_tracks and not in_config:
         return MergePlan(older, newer, 0, {}, None, already=True)
+    if not o_tracks and _tracks(pool, newer):
+        return MergePlan(older, newer, 0, {}, "finish")
     old_base, new_base = _base(cfg, older, pool), _base(cfg, newer, pool)
     tracks = {name: next(iter(rebase_files({name: ""}, old_base, new_base))) if old_base and new_base else name
               for _tid, name, _s, _c in o_tracks}
@@ -135,6 +138,13 @@ def merge_repositories(pool, cfg, older: str, newer: str, *, config_dir: Path | 
     if plan.proof == "fields" and not confirmed:
         raise PermissionError(f"{older} and {newer}: {PROOF_SAID['fields']}")
     old_base, new_base = _base(cfg, older, pool), _base(cfg, newer, pool)
+    if plan.proof == "finish":
+        result.cfg = _merged_config(cfg, older, newer)
+        if config_dir is not None:
+            from mmw.core import config
+            config.save(result.cfg, config_dir)
+        result.lines.append(f"{older} is now {newer}: the merge that stopped is finished")
+        return result
     with pool._lock:
         c = pool._conn
         try:

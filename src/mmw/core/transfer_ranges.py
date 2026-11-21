@@ -461,6 +461,8 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
             since_by_repo={} if since is not None or full else by_repo,
             explicit_since=since is not None, sent_points=() if full else sent_points, repos=repos, warnings=warnings,
             full=full)
+        from mmw.core.legacy_points import notes as legacy_notes
+        warnings.extend(legacy_notes(pool, current))
         files = {p: files_for_settings(pool, p, settings) for ids in listing.values() for p in ids}
         for p in targets.get(f'network:{net.name}', []):
             files[p] = pool.point_files(p)

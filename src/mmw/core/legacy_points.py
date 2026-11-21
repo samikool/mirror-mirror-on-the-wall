@@ -39,16 +39,30 @@ def promote_legacy_points(pool) -> list[str]:
             continue
         try:
             note = _promote(pool, old)
-        except (OSError, ValueError, LookupError) as e:            # one point never blocks the rest
-            note = _say(pool, old, str(e))
+        except Exception as e:  # noqa: BLE001 — one point never blocks the rest, nor opening the pool
+            try:
+                note = _say(pool, old, str(e))
+            except Exception:  # noqa: BLE001
+                note = None
         if note:
             warnings.append(note)
             if track is not None:
                 kept.add((track.repo, stamp))
     with pool._lock:
+        pool._conn.execute("CREATE TABLE IF NOT EXISTS legacy_notes (repo TEXT NOT NULL, note TEXT NOT NULL)")
+        pool._conn.executemany("INSERT INTO legacy_notes VALUES (?, ?)",
+                               [(n.split(" ", 1)[0], n) for n in warnings])
         pool._conn.execute("INSERT OR IGNORE INTO history_upgrades VALUES (?)", (UPGRADE,))
         pool._conn.commit()
     return warnings
+
+
+def notes(pool, repos) -> list[str]:
+    """What the upgrade said of these repositories' history it kept as one network's."""
+    with pool._read() as c:
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'legacy_notes'").fetchone():
+            return []
+        return [n for r, n in c.execute("SELECT repo, note FROM legacy_notes ORDER BY rowid") if r in set(repos)]
 
 
 def _say(pool, pid: int, _why: str = "") -> str:
@@ -147,7 +161,10 @@ def _promote(pool, old: int) -> str | None:
                     data = read(v)
                     if data is None:
                         continue
-                    names = _referenced(_index_lines(data, v[len(stem):]), stem.rsplit("/", 1)[-1], base)
+                    try:
+                        names = _referenced(_index_lines(data, v[len(stem):]), stem.rsplit("/", 1)[-1], base)
+                    except Exception:  # noqa: BLE001 — a damaged variant (lzma, gzip, bz2): try the next
+                        continue
                     rows.update({p: (files[p], _kind(p, d, base), hashed) for p in names if p in files})
                     break
                 else:

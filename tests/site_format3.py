@@ -12,7 +12,7 @@ def point_dict(draft, stamp, snap_label=None) -> dict:
 
 
 def write_format3(out, network: str, repos: dict, blobs: dict[str, bytes], *, network_files=None,
-                  settings=None, created="20261115T000000Z") -> str:
+                  settings=None, selection=None, created="20261115T000000Z") -> str:
     """`repos`: key -> (label, bases, [(PointDraft, stamp, snap_label)]);
     `blobs`: checksum -> bytes (only those listed go in the tar);
     `network_files`: path -> bytes, rows with no repository."""
@@ -34,7 +34,8 @@ def write_format3(out, network: str, repos: dict, blobs: dict[str, bytes], *, ne
         rows.append({"p": p, "c": c})
         members[blob_member(c)] = data
     header = ManifestHeader(network=network, created=created, previous=None, full=False,
-                            file_count=len(members), format=3, points=header_points, settings=settings)
+                            file_count=len(members), format=3, points=header_points, settings=settings,
+                            selection=selection)
     fields = {k: v for k, v in header.__dict__.items() if v is not None or k in ("previous",)}
     manifest = (json.dumps(fields, sort_keys=True) + "\n" + "".join(json.dumps(r) + "\n" for r in rows)).encode()
     with tarfile.open(out, "w") as tar:

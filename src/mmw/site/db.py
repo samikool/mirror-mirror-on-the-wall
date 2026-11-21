@@ -57,6 +57,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     origin TEXT, label TEXT, suite TEXT, codename TEXT,
     pinned INTEGER, previous INTEGER,
     UNIQUE (repo, name));
+CREATE TABLE IF NOT EXISTS track_networks (
+    track INTEGER NOT NULL, network TEXT NOT NULL, present INTEGER NOT NULL,
+    PRIMARY KEY (track, network)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS points (
     id INTEGER PRIMARY KEY, track INTEGER NOT NULL, ident TEXT NOT NULL, date TEXT NOT NULL,
     stamp TEXT NOT NULL, snap_label TEXT, held INTEGER NOT NULL DEFAULT 1,
@@ -97,7 +100,7 @@ class TrackInfo:
     codename: str | None
     pinned: int | None        # a point id
     previous: int | None      # the point served before the current one
-    gone: bool = False        # not in this network's latest bundle: no longer served unless pinned
+    gone: bool = False        # all contributing networks dropped it; served only if pinned
     origin: str | None = None
     label: str | None = None
     keep: str | None = None   # this suite's own history setting (else the site's)
@@ -166,6 +169,30 @@ class SiteDB:
         # point). NULL: not yet.
         if "selection" not in point_cols:
             self._conn.execute("ALTER TABLE points ADD COLUMN selection TEXT")
+        self._migrate_track_networks()
+
+    def _migrate_track_networks(self) -> None:
+        if self.get_meta("track-networks"):
+            return
+        c = self._conn
+        if c.execute("SELECT 1 FROM tracks LIMIT 1").fetchone():
+            network = self.home_network()
+            if network is not None:
+                c.execute("INSERT OR IGNORE INTO track_networks (track, network, present) "
+                          "SELECT id, ?, 1 - gone FROM tracks", (network,))
+        self.set_meta("track-networks", "1")
+
+    def home_network(self) -> str | None:
+        from mmw.site.home import load_site
+
+        try:
+            network = load_site(self.home).network
+        except FileNotFoundError:
+            network = None
+        if network is None:
+            recorded = json.loads(self.get_meta("settings") or "{}")
+            network = (recorded.get("network") or {}).get("name")
+        return network
 
     def __enter__(self) -> "SiteDB":
         return self
@@ -270,6 +297,7 @@ class SiteDB:
         c.execute("DELETE FROM point_files WHERE point IN (SELECT p.id FROM points p JOIN tracks t "
                   "ON t.id = p.track WHERE t.repo = ?)", (repo,))
         c.execute("DELETE FROM points WHERE track IN (SELECT id FROM tracks WHERE repo = ?)", (repo,))
+        c.execute("DELETE FROM track_networks WHERE track IN (SELECT id FROM tracks WHERE repo = ?)", (repo,))
         c.execute("DELETE FROM tracks WHERE repo = ?", (repo,))
         c.execute("DELETE FROM overlays WHERE repo = ?", (repo,))        # its site layer went with it
         c.execute("DELETE FROM site_layers WHERE repo = ?", (repo,))
@@ -327,12 +355,50 @@ class SiteDB:
         row = self._conn.execute(f"SELECT {self._T} FROM tracks WHERE id = ?", (track_id,)).fetchone()
         return TrackInfo(*row[:7], bool(row[7]), row[8], row[9], row[10]) if row else None
 
-    def set_present(self, repo: str, names: set[str], *, commit: bool = True) -> None:
-        """The tracks a complete list of the repository has; the rest are gone."""
-        for tid, name in self._conn.execute("SELECT id, name FROM tracks WHERE repo = ?", (repo,)).fetchall():
-            self._conn.execute("UPDATE tracks SET gone = ? WHERE id = ?", (int(name not in names), tid))
+    def set_present(self, repo: str, names: set[str], *, network: str, commit: bool = True) -> None:
+        """Record a network's selection, retiring tracks only after all contributors drop them."""
+        c = self._conn
+        c.execute("UPDATE track_networks SET present = 0 WHERE network = ? "
+                  "AND track IN (SELECT id FROM tracks WHERE repo = ?)", (network, repo))
+        c.executemany("INSERT INTO track_networks (track, network, present) VALUES (?, ?, 1) "
+                      "ON CONFLICT (track, network) DO UPDATE SET present = excluded.present",
+                      ((tid, network) for tid, name in c.execute("SELECT id, name FROM tracks WHERE repo = ?", (repo,))
+                       if name in names))
+        # Tracks with no contributors keep their existing flag. A networkless
+        # legacy site can have a retired track with no network to credit.
+        self._update_track_retirement(repo)
         if commit:
-            self._conn.commit()
+            c.commit()
+
+    def _update_track_retirement(self, repo: str) -> None:
+        self._conn.execute(
+            "UPDATE tracks SET gone = NOT EXISTS (SELECT 1 FROM track_networks "
+            "WHERE track = tracks.id AND present = 1) WHERE repo = ? "
+            "AND EXISTS (SELECT 1 FROM track_networks WHERE track = tracks.id)", (repo,))
+
+    def restore_legacy_selection(self, repo: str, names: set[str], *, network: str | None) -> None:
+        """Preserve the selection of the last version when converting a pre-timeline site."""
+        with self._conn as c:
+            tracks = c.execute("SELECT id, name FROM tracks WHERE repo = ?", (repo,)).fetchall()
+            if network is None:
+                c.executemany("UPDATE tracks SET gone = ? WHERE id = ?",
+                              ((int(name not in names), tid) for tid, name in tracks))
+            else:
+                c.executemany("INSERT INTO track_networks (track, network, present) VALUES (?, ?, ?) "
+                              "ON CONFLICT (track, network) DO UPDATE SET present = excluded.present",
+                              ((tid, network, int(name in names)) for tid, name in tracks))
+                self._update_track_retirement(repo)
+
+    def track_networks(self, track: int) -> dict[str, int]:
+        return dict(self._conn.execute("SELECT network, present FROM track_networks WHERE track = ?", (track,)))
+
+    def restore_track_presence(self, track: int, networks: dict[str, int], gone: bool) -> None:
+        """Restore a track's contribution history after moving it to a new root."""
+        with self._conn as c:
+            c.execute("DELETE FROM track_networks WHERE track = ?", (track,))
+            c.executemany("INSERT INTO track_networks (track, network, present) VALUES (?, ?, ?)",
+                          ((track, network, int(bool(present))) for network, present in networks.items()))
+            c.execute("UPDATE tracks SET gone = ? WHERE id = ?", (int(gone), track))
 
     def known_complete(self, point_id: int) -> bool:
         row = self._conn.execute("SELECT complete FROM points WHERE id = ?", (point_id,)).fetchone()

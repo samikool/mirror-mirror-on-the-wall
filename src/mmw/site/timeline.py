@@ -54,11 +54,11 @@ def _suite(fields: dict[str, str], track: str) -> str | None:
 
 def import_rows(db, store, repo: str, label: str, bases: list[str], rows: dict[str, str],
                 sizes: dict[str, int], stamp: str, snap_label: str | None,
-                arrived: set[str], *, own: bool = True) -> list[TrackOutcome]:
+                arrived: set[str], *, own: bool = True,
+                network: str | None = None) -> list[TrackOutcome]:
     """Split one repository's complete file list into points and add each
-    to its track. `own`: the list is this network's selection, so a suite
-    it lacks is no longer served (another network's bundle never retires
-    one). Committed as one transaction."""
+    to its track. `own` allows updates to the repository's label and bases.
+    `network` records presence when these rows are a network's selection."""
     out: list[TrackOutcome] = []
     drafts = split_tracks(rows, bases, _reader(store, rows), stamp)
     try:
@@ -75,8 +75,8 @@ def import_rows(db, store, repo: str, label: str, bases: list[str], rows: dict[s
             missing = is_complete(db, store, pid, arrived)
             out.append(TrackOutcome(d.track, suite, pid, d.date, "incomplete" if missing else status,
                                     missing, note))
-        if own:
-            db.set_present(repo, {d.track for d in drafts}, commit=False)
+        if network is not None:
+            db.set_present(repo, {d.track for d in drafts}, network=network, commit=False)
         db.commit()
     except BaseException:
         db.rollback()
@@ -139,7 +139,7 @@ def choose(db, store, repo: str) -> tuple[dict[int, int], list[str]]:
     warnings: list[str] = []
     for t in db.tracks(repo):
         if t.gone and t.pinned is None:
-            continue                         # no longer in this network's selection
+            continue                         # all contributing networks dropped this track
         if t.pinned is not None:
             pinned = db.point(t.pinned)
             if pinned is not None and pinned.held and not is_complete(db, store, pinned.id, cached=False):
@@ -212,9 +212,11 @@ def migrate(db, roots, *, backup=None) -> bool:
     states = db.repo_states()
     # A fresh empty root has nothing old to convert, so needs no old-database notice.
     backups = (backup or _backup_control)(db, roots) if any(db.versions(st.repo) for st in states) else []
+    network = db.home_network() if states else None
     for st in states:
         store = roots.store(roots.of(st))
-        for v in sorted(db.versions(st.repo), key=lambda v: v.number):
+        versions = sorted(db.versions(st.repo), key=lambda v: v.number)
+        for v in versions:
             rows = db.version_files(v.id)
             sizes = db.blob_sizes(rows.values())
             outcomes = import_rows(db, store, st.repo, st.label, st.bases, rows, sizes, v.stamp,
@@ -225,6 +227,8 @@ def migrate(db, roots, *, backup=None) -> bool:
                 for o in outcomes:
                     if o.point is not None and o.status != "conflict":
                         db.set_pin(db.point(o.point).track, o.point)
+        if versions:
+            db.restore_legacy_selection(st.repo, {o.track for o in outcomes}, network=network)
     if backups:
         import json
         db.set_meta("timeline_conversion_notice", json.dumps(backups))

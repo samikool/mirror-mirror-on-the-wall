@@ -1,6 +1,7 @@
 """The far side applies its own network's bundle of points (format 3, a
 selection) as it applied format 2: network files and settings, and a suite
-the selection no longer has retires; another network's changes none of it."""
+the selection no longer has can retire. Another network's selection leaves
+the network files and settings alone."""
 import json
 import tarfile
 

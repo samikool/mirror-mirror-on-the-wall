@@ -128,7 +128,7 @@ class RootApply:
         self.network_files = network_files
         # Another network's repositories deployed here: their nginx entries.
         self.foreign_mirrors = dict(foreign_mirrors or {})
-        self.foreign = foreign                   # another network's bundle: never retires a suite
+        self.foreign = foreign                   # another network's bundle: repository history only
         self.points_bundle = False               # format 3: points
         self.selection = False                   # format 3 from this network's own connected side
         self.got: dict[str, tuple[str, int]] = {}
@@ -292,10 +292,8 @@ class RootApply:
         _check_points(header)
         held_by: dict[str, tuple[int, ...]] = {}
         if header.format == 3:
-            # Points. From this network's own connected side (`selection`)
-            # it is that network's bundle: its files, settings and keys apply
-            # and a suite it no longer has retires. Otherwise (an export) none
-            # of that: history only.
+            # Only this network's own selection can apply its network files,
+            # settings and keys. Any selection can record repository presence.
             self.points_bundle = True
             self.selection = bool(header.selection) and header.network == self.settings.network
             if not self.selection:
@@ -422,12 +420,12 @@ class RootApply:
             if "points" in plan:
                 outcomes = import_points(db, store, repo, meta["label"], meta["bases"], plan["points"], known,
                                          arrived)
-                if self.selection:
-                    # The network's whole selection of this repository: a suite it lacks is gone.
-                    db.set_present(repo, {d.track for d, _st, _lb in plan["points"]})
+                if header.selection:
+                    db.set_present(repo, {d.track for d, _st, _lb in plan["points"]}, network=header.network)
             else:
                 outcomes = import_rows(db, store, repo, meta["label"], meta["bases"], rows, known,
-                                       header.created, header.created_label, arrived, own=not self.foreign)
+                                       header.created, header.created_label, arrived, own=not self.foreign,
+                                       network=header.network if not self.foreign else None)
             recorded[repo] = outcomes
             label = meta["label"]
             for o in outcomes:
@@ -498,7 +496,8 @@ class RootApply:
                 was = ", ".join(_day(d) for _t, d, _p in served.values()) if served else None
                 chosen, warnings = choose(db, store, repo)
                 result.lines.extend(f"  {label}  {w}" for w in warnings)
-                if not chosen:
+                # An empty state removes the last served tracks once they all retire.
+                if not chosen and not (served and all(t.gone and t.pinned is None for t, _d, _p in served.values())):
                     continue                                   # nothing complete to serve yet
                 vid, state_warnings = ensure_state(db, store, repo, chosen)
                 result.lines.extend(f"  {label}  {w}" for w in state_warnings)

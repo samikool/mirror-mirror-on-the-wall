@@ -244,3 +244,24 @@ def test_a_network_file_a_repository_will_hold_stays_recorded_until_it_does(far,
     assert (dest / kept).exists()
     with SiteDB(root_home(dest)) as db:
         assert kept in db.network_files()
+
+
+def test_apply_tree_then_foreign_bundle_claims_it(far, tmp_path):
+    """A tree apply.py kept for network 'lab', then the same repository from network 'other'."""
+    from mmw.site.apply import apply_to_set
+    from mmw.site.home import root_home
+    from mmw.site.mset import open_set
+    cfg, net, md, snaps, published, dest = far
+    adopt_apply_tree(find_apply_tree(dest))
+    other = net.model_copy(update={"name": "other"})
+    cfg.networks.append(other)
+    b = str(bundle_network(other, cfg, md, out_path=tmp_path / "o").out_path)
+    r = apply_to_set(open_set([str(dest)]), b, say=lambda *_: None)
+    lines = [line.strip() for line in r.merged().lines]
+    assert not any("not mirrored here" in line for line in lines), lines
+    with SiteDB(root_home(dest)) as db:
+        (st,) = db.repo_states()
+        assert not st.repo.startswith("adopted:") and st.bases == [BASE]
+    r = apply_to_set(open_set([str(dest)]), b, say=lambda *_: None, deploy={"ubuntu-archive"})
+    with SiteDB(root_home(dest)) as db:
+        assert len(db.repo_states()) == 1

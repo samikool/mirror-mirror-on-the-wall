@@ -83,7 +83,8 @@ def test_rename_over_a_stale_hold(far, tmp_path):  # noqa: F811
         assert db.get_meta("local-repo:https://x") == "oak"
 
 
-def test_a_foreign_bundle_never_claims(far, tmp_path, monkeypatch):  # noqa: F811
+def test_a_foreign_bundle_claims_the_adopted_tree(far, tmp_path, monkeypatch):  # noqa: F811
+    """An adopted tree is one repository whichever network's bundle brings it."""
     from mmw.core import snapshots
     from mmw.site.apply import apply_bundle
     from mmw.site.home import root_home
@@ -105,4 +106,5 @@ def test_a_foreign_bundle_never_claims(far, tmp_path, monkeypatch):  # noqa: F81
     other = _rewrite(src, tmp_path / "elm.tar", rename)
     apply_bundle(root_home(dest), str(other), say=lambda *a: None)
     with SiteDB(root_home(dest)) as db:
-        assert any(s.repo == f"adopted:{BASE}" for s in db.repo_states())
+        (state,) = db.repo_states()
+        assert state.repo != f"adopted:{BASE}" and state.bases == [BASE]

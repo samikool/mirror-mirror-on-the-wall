@@ -63,3 +63,27 @@ def network_repos(network, cfg: Config, mirror_dir) -> dict[str, str]:
     from mmw.core.resolve import network_mirrors
     keys = {repository_key(m) for m in network_mirrors(network, cfg, mirror_dir)}
     return dict(sorted(((k, repository_label(k, cfg)) for k in keys), key=lambda kv: kv[1].lower()))
+
+
+def repository_identity(key: str) -> str:
+    """What makes two repository keys one repository, whatever the URL's
+    scheme: `http://deb.debian.org/debian` and `https://deb.debian.org/debian/`
+    are `deb.debian.org/debian`. A provider-wide key (`vscode`, `pypi`) is itself."""
+    from mmw.core.config import normalize_url
+    if "://" not in key:
+        return key
+    return normalize_url(key).split("://", 1)[1]
+
+
+def same_release_identity(a_idents, b_idents) -> bool:
+    """Whether two repositories hold one identical upstream Release — the
+    same bytes, so one point: proof they are the same archive."""
+    return any(i.startswith("release:") for i in set(a_idents) & set(b_idents))
+
+
+def rebase_files(files: dict[str, str], old_base: str, new_base: str) -> dict[str, str]:
+    """`files` with `old_base/` re-prefixed `new_base/` (checksums are the
+    same: a Release never names its host)."""
+    old, new = old_base.strip("/"), new_base.strip("/")
+    return {(new + path[len(old):] if path == old or path.startswith(old + "/") else path): cs
+            for path, cs in files.items()}

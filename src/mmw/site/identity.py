@@ -28,6 +28,7 @@ class Known:
 @dataclass
 class Matches:
     mapping: dict[str, str] = field(default_factory=dict)      # arriving key → the key it has here
+    rebase: dict[str, tuple[str, str]] = field(default_factory=dict)  # arriving key → (its base, ours)
     adopted: set[str] = field(default_factory=set)             # arriving keys that claim an adopted tree
     lines: list[str] = field(default_factory=list)
 
@@ -89,11 +90,15 @@ def _under(mine: list[str], theirs: list[str]) -> bool:
     return bool(theirs) and all(any(b == m or b.startswith(m + "/") for m in mine) for b in theirs)
 
 
-def match(known: list[Known], header) -> Matches:
+def match(known: list[Known], header, *, foreign: bool = False) -> Matches:
+    """`foreign`: another network's bundle — it adds history to what is
+    here and never moves it: a repository it brings from another host is
+    re-based onto the base it is served at here."""
     from mmw.core.repos import repository_identity, same_release_identity
     out = Matches()
     keys = {k.key for k in known}
-    for key, inc in sorted(_incoming(header).items()):
+    arriving = _incoming(header)
+    for key, inc in sorted(arriving.items()):
         if key in keys:
             continue
         same, why = None, ""
@@ -116,39 +121,69 @@ def match(known: list[Known], header) -> Matches:
         if same.key.startswith(ADOPTED):
             out.adopted.add(key)                     # the bundle claims it as it applies
             continue
+        if same.key in arriving or same.key in out.mapping.values():
+            out.lines.append(f"{inc['label']} is the same archive as {same.label}, which this bundle brings too "
+                             f"— applied on its own: mmw site merge '{inc['label']}' '{same.label}'")
+            continue
+        if foreign and sorted(same.bases) != sorted(inc["bases"]):
+            if header.format != 3 or len(same.bases) != 1 or len(inc["bases"]) != 1:
+                out.lines.append(f"{inc['label']} looks like {same.label} ({why}) but is served elsewhere — "
+                                 f"applied on its own: mmw site merge '{inc['label']}' '{same.label}'")
+                continue
+            out.rebase[key] = (inc["bases"][0], same.bases[0])
         out.mapping[key] = same.key
         out.lines.append(f"{inc['label']} is {same.label} here ({why})")
     return out
 
 
-def rekey(header, rows: list[tuple], mapping: dict[str, str]):
-    """The header and rows with each arriving key as it is here. A row's
-    repository is its third item."""
+def _moved(path: str, bases: tuple[str, str] | None) -> str:
+    if bases is None:
+        return path
+    from mmw.core.repos import rebase_files
+    return next(iter(rebase_files({path: ""}, *bases)))
+
+
+def _rebased_meta(meta: dict, bases: tuple[str, str] | None) -> dict:
+    if bases is None:
+        return meta
+    return {**meta, "bases": [bases[1]],
+            "points": [{**p, "track": _moved(p["track"], bases)} for p in meta.get("points") or []]}
+
+
+def rekey(header, rows: list[tuple], mapping: dict[str, str], rebase: dict | None = None):
+    """The header and rows with each arriving key as it is here (and, for a
+    key in `rebase`, its paths at the base it has here). A row's path is its
+    first item, its repository its third."""
+    rebase = rebase or {}
     if not mapping:
         return header, rows
     if header.format == 3:
-        header = replace(header, points={mapping.get(k, k): v for k, v in (header.points or {}).items()})
+        header = replace(header, points={mapping.get(k, k): _rebased_meta(v, rebase.get(k))
+                                         for k, v in (header.points or {}).items()})
     else:
         header = replace(header, repos={mapping.get(k, k): v for k, v in (header.repos or {}).items()})
-    rows = [(*row[:2], mapping.get(row[2], row[2]), *row[3:]) for row in rows]
+    rows = [(_moved(row[0], rebase.get(row[2])), row[1], mapping.get(row[2], row[2]), *row[3:]) for row in rows]
     return header, rows
 
 
-def rekeyed_manifest(data: bytes, mapping: dict[str, str]) -> bytes:
-    """A manifest's bytes with its repository keys as they are here."""
+def rekeyed_manifest(data: bytes, mapping: dict[str, str], rebase: dict | None = None) -> bytes:
+    """A manifest's bytes with its repository keys (and re-based paths) as they are here."""
+    rebase = rebase or {}
     if not mapping:
         return data
     lines = data.decode().splitlines()
     head = json.loads(lines[0])
-    for table in ("points", "repos"):
-        if isinstance(head.get(table), dict):
-            head[table] = {mapping.get(k, k): v for k, v in head[table].items()}
+    if isinstance(head.get("points"), dict):
+        head["points"] = {mapping.get(k, k): _rebased_meta(v, rebase.get(k)) for k, v in head["points"].items()}
+    if isinstance(head.get("repos"), dict):
+        head["repos"] = {mapping.get(k, k): v for k, v in head["repos"].items()}
     out = [json.dumps(head, sort_keys=True)]
     for line in lines[1:]:
         if not line.strip():
             continue
         row = json.loads(line)
         if row.get("r") in mapping:
+            row["p"] = _moved(row["p"], rebase.get(row["r"]))
             row["r"] = mapping[row["r"]]
         out.append(json.dumps(row))
     return ("\n".join(out) + "\n").encode()

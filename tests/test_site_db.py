@@ -73,3 +73,35 @@ def test_applied_log(db):
 
 def test_journal_mode_is_delete(db):
     assert db._conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+def test_concurrent_first_open(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    start = Barrier(4)
+
+    def open_fresh_site():
+        start.wait()
+        with SiteDB(tmp_path) as db:
+            return db.get_meta("track-networks")
+
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        opens = [workers.submit(open_fresh_site) for _ in range(4)]
+        assert [task.result() for task in opens] == ["1"] * 4
+
+
+def test_failed_schema_setup_can_be_retried(tmp_path, monkeypatch):
+    import sqlite3
+
+    def interrupted(db):
+        raise RuntimeError("interrupted schema setup")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SiteDB, "_migrate_track_networks", interrupted)
+        with pytest.raises(RuntimeError, match="interrupted schema setup"):
+            SiteDB(tmp_path)
+    with sqlite3.connect(tmp_path / "site.db") as conn:
+        assert conn.execute("SELECT name FROM sqlite_master").fetchall() == []
+    with SiteDB(tmp_path) as db:
+        assert db.get_meta("track-networks") == "1"

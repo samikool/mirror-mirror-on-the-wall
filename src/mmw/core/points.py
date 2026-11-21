@@ -337,7 +337,8 @@ def prepare_history(mirror_dir: Path) -> None:
     with Pool(mirror_dir, read_only=True) as pool:
         if pool._has_table('history_upgrades'):
             with pool._read() as conn:
-                if conn.execute("SELECT 1 FROM history_upgrades WHERE name = 'manual-snapshots'").fetchone():
+                done = {r[0] for r in conn.execute("SELECT name FROM history_upgrades")}
+                if {"manual-snapshots", "legacy-points"} <= done:
                     return
     with shared_pool_lock(mirror_dir), Pool(mirror_dir):
         pass  # The shared storage upgrade converts retained data, not a sync.

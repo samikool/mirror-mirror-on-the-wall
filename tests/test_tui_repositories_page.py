@@ -393,3 +393,23 @@ def test_keep_costs_say_each_choice(tmp_path, monkeypatch):
         assert "lab:" in said and "1: 1.0 KB" in said and "3: 0.0 B" in said
         await pilot.press("escape")
     _run(tmp_path, check)
+
+
+def test_editor_says_a_scheme_twin(tmp_path):
+    """The source editor says when this URL is another repository's under the
+    other scheme — the same line the config load prints."""
+    cfg = _cfg(tmp_path, n=2)
+    cfg.sources[1].url = "http://deb.example.com/debian"
+    cfg.sources[1].name = "plain"
+
+    async def check(app, pilot):
+        await _focus_row(app, pilot, 1)
+        await pilot.press("e")
+        await _settle(pilot)
+        page = app.screen
+        assert isinstance(page, EditSourcePage)
+        status = lambda: str(page.query_one("#page-status").render())  # noqa: E731
+        await until(pilot, lambda: "only the scheme differs" in status())
+        page.query_one("#edit-source-url", Input).value = "https://other.example/debian"
+        await until(pilot, lambda: "only the scheme differs" not in status())
+    _run(tmp_path, check, cfg)

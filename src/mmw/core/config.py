@@ -1487,6 +1487,20 @@ def config_path(directory: Path = Path(".")) -> Path:
 
 
 _SAID_RETIRED: set[str] = set()
+_SAID_TWINS: set[tuple[str, str]] = set()
+
+
+def scheme_twins(urls) -> list[str]:
+    """One line per pair of repository URLs that differ only by scheme
+    (http/https). They are one repository, so say it; don't refuse."""
+    from mmw.core.repos import repository_identity
+    seen: dict[str, str] = {}
+    lines = []
+    for url in urls:
+        first = seen.setdefault(repository_identity(url), url)
+        if first != url:
+            lines.append(f"{first} and {url} are the same repository (only the scheme differs)")
+    return lines
 
 
 def load(directory: Path = Path(".")) -> Config:
@@ -1504,6 +1518,11 @@ def load(directory: Path = Path(".")) -> Config:
                   "(convert an apply.py tree there with `mmw site adopt PATH`); the setting is "
                   "ignored and goes the next time the config is saved", file=sys.stderr)
     cfg = Config.model_validate(data)
+    for line in scheme_twins(s.identity for s in cfg.sources):
+        if (str(path), line) not in _SAID_TWINS:
+            _SAID_TWINS.add((str(path), line))             # once per process
+            import sys
+            print(f"mmw: {line}", file=sys.stderr)
     for source in cfg.sources:
         if isinstance(source, (PypiSource, LocalAptSource)):
             source._config_dir = Path(directory).resolve()

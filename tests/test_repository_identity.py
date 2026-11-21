@@ -188,3 +188,25 @@ def test_two_repositories_on_one_base_are_said(site, tmp_path):
     lines = _apply(root, bundle(tmp_path / "b.tar", "oak",
                                 {"http://deb.debian.org/debian": ("Debian", BASE, [release_tree(5)])}))
     assert "x-one and x-two both serve x.org/debian — mmw site merge 'x-one' 'x-two'" in lines, lines
+
+
+def test_scheme_duplicate_sources_warn(tmp_path, monkeypatch):
+    """Two configured sources that differ only by http/https are said when
+    the config loads (warn, don't refuse); the CLI still runs."""
+    from typer.testing import CliRunner
+
+    from mmw.cli import app
+    monkeypatch.setattr(config, "_SAID_TWINS", set())
+    cfg = config.Config(
+        settings=config.Settings(mirror_dir=tmp_path / "pool"),
+        sources=[config.SourceConfig(url="http://deb.debian.org/debian", name="plain",
+                                     suites=["bookworm"], components=["main"], arches=["amd64"]),
+                 config.SourceConfig(url="https://deb.debian.org/debian", name="tls",
+                                     suites=["bookworm"], components=["main"], arches=["amd64"])])
+    config.save(cfg, tmp_path)
+    result = CliRunner().invoke(app, ["--config", str(tmp_path), "merge", "plain", "tls",
+                                      "--dry-run"], env={"MMW_NO_UPDATE_CHECK": "1"})
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert ("http://deb.debian.org/debian and https://deb.debian.org/debian are the same "
+            "repository (only the scheme differs)") in result.stderr
+    assert config.scheme_twins(["https://a.example/x", "https://b.example/x"]) == []

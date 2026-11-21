@@ -29,9 +29,9 @@ class PreviewSink(RecordingSink):
 
 
 def repository_owned(pool, current, network=None):
-    if network is not None and network.layers:
-        return False
-    ids = [pid for repo, ids in current.items() if not repo.startswith('network:') for pid in ids]
+    ids = [pid for repo, ids in current.items()
+           if not repo.startswith('network:') and (network is None or network.layer_for(repo) is None)
+           for pid in ids]
     return bool(ids) and all(not p.legacy for p in pool.points_of(ids).values())
 
 
@@ -245,19 +245,27 @@ def range_baseline(pool, network, settings, targets, *, since=None, full=False, 
     history makes the safe baseline empty, so it never causes an omission.
     """
     from mmw.core.points import resolve_when
-    if not repository_owned(pool, targets):
+    if not repository_owned(pool, targets, network):
         return None                      # compatibility with legacy network states
     if full:
         return set()
     known = pool.points_of(pid for ids in targets.values() for pid in ids)
-    cursors = pool.sent_dates_by_track(network)
+    cursors = pool.sent_dates_by_track(network.name)
     explicit = resolve_when(since) if since else None
     common = set()
     needed_elsewhere = set()
     listed = pool.points_of(pid for ids in (listing or targets).values() for pid in ids)
     for tid in {p.track for p in known.values()}:
         target = next(p for p in known.values() if p.track == tid)
-        end = point_date(pool, target, settings)
+        # A layer edit can keep the upstream Release date. A historical
+        # baseline cannot assume a layer built after From was already carried.
+        layered = explicit is not None and network.layer_for(pool.track_of_point(target.id).repo) is not None
+
+        def baseline_date(point):
+            date = point_date(pool, point, settings)
+            return max(date, point.stamp) if layered else date
+
+        end = baseline_date(target)
         start = explicit or cursors.get(tid)
         needed = {cs for p in listed.values() if p.track == tid
                   for cs in files_for_settings(pool, p.id, settings).values()}
@@ -267,8 +275,8 @@ def range_baseline(pool, network, settings, targets, *, since=None, full=False, 
         if start > end and explicit is None:
             needed_elsewhere.update(needed)
             continue                     # a past destination needs a full payload
-        dated = [(point_date(pool, p, settings), p) for p in
-                 retained_track_points(pool, network, tid, known, settings)]
+        dated = [(baseline_date(p), p) for p in
+                 retained_track_points(pool, network.name, tid, known, settings)]
         # A suite may be unchanged throughout the requested interval: its
         # Release date predates From, but it is still the state at both ends.
         before = [(date, p) for date, p in dated if date <= min(start, end)]
@@ -276,8 +284,8 @@ def range_baseline(pool, network, settings, targets, *, since=None, full=False, 
             needed_elsewhere.update(needed)
             continue
         first = max(before, key=lambda item: (item[0], item[1].stamp, item[1].ident))[1]
-        prior_slice = transferred_slice(pool, network, first.id, settings)
-        if prior_slice is None and (explicit is None or pool.sent_slice(network, first.id) is not None):
+        prior_slice = transferred_slice(pool, network.name, first.id, settings)
+        if prior_slice is None and (explicit is None or pool.sent_slice(network.name, first.id) is not None):
             needed_elsewhere.update(needed)
             continue
         interval = [first, *(p for date, p in dated if start < date <= end)]
@@ -465,7 +473,7 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
         generated = _far_nginx(settings, net.certs)
         generated = {hashlib.sha256(data).hexdigest(): len(data) for data in dict(generated).values()}
         sent = baseline if baseline is not None else set() if full else pool.sent_checksums(net.name, checksums | generated.keys())
-        interval_base = range_baseline(pool, net.name, settings, targets, since=since, full=full, listing=listing)
+        interval_base = range_baseline(pool, net, settings, targets, since=since, full=full, listing=listing)
         if interval_base is not None:
             sent = interval_base
         sizes = {cs: data[1] for cs, data in info.items()}

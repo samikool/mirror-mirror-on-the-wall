@@ -188,6 +188,9 @@ def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None, *,
                                   retained_track_points(pool, network.name, tid, known, settings)]
                     eligible = [(date, p) for date, p in candidates if date <= since]
                     if not eligible:
+                        point = next(p for p in known.values() if p.track == tid)
+                        if network.layer_for(pool.track_of_point(point.id).repo) is not None:
+                            continue  # A layer first recorded after From needs its full payload.
                         raise NothingToStandOn(f'no retained repository point at or before {since_date} '
                                                '— choose a later From date or send everything')
                     selected.append(max(eligible, key=lambda item: (item[0], item[1].stamp, item[1].ident))[1])
@@ -333,7 +336,11 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             from mmw.core.resolve import network_mirrors
             from mmw.core.repos import repository_key
             repos_now = {repository_key(u) for u in network_mirrors(network, cfg, mirror_dir)}
-            if any(pool.repository_points(repo, stubs=True) for repo in repos_now):
+            chosen_now = repos_now if repos is None else repos_now.intersection(repos)
+            # A live transfer refreshes any selected layer through the same
+            # recording walk as a layer-only network. A dated transfer replays it.
+            refresh_layers = until is None and any(network.layer_for(repo) for repo in chosen_now)
+            if not refresh_layers and any(pool.repository_points(repo, stubs=True) for repo in repos_now):
                 settings, current = recorded_selection(pool, network, mirror_dir, cfg, only=repos)
                 detached = repository_owned(pool, current, network)
     if detached:
@@ -406,7 +413,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         gen_sums = {hashlib.sha256(d).hexdigest() for d in generated.values()}
         sent = baseline if baseline is not None else (set() if full else pool.sent_checksums(network.name, every | gen_sums))
         from mmw.core.transfer_ranges import range_baseline
-        interval_base = range_baseline(pool, network.name, settings, current, since=since_date, full=full, listing=listing)
+        interval_base = range_baseline(pool, network, settings, current, since=since_date, full=full, listing=listing)
         if interval_base is not None:
             sent = interval_base
         missing = sorted(c for c in every if c not in info)

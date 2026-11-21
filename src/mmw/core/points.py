@@ -496,8 +496,25 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
         from mmw.core.repository_points import current_repository_points
         # Modern history is owned by repositories. Network caches and old
         # network retention rules must not pin it indefinitely.
-        owned = {p.id for p in pool.repository_points()}
-        kept -= owned
+        owned = {}
+        by_repo_track = {}
+        for p in pool.repository_points():
+            track = pool.track_of_point(p.id)
+            owned[p.id] = track.repo
+            by_repo_track.setdefault((track.repo, p.track), []).append(p)
+        candidates.update(owned)
+        kept.difference_update(owned)
+        # A history network still needs points observed since its last transfer.
+        for n in networks:
+            if not n.history:
+                continue
+            by_repo, fallback = history_since(pool, n.name)
+            if fallback is None:
+                continue
+            sent = pool.sent_point_ids(n.name)
+            for pid, (first, _) in pool.network_point_stamps(n.name).items():
+                if pid in owned and pid not in sent and first > by_repo.get(owned[pid], fallback):
+                    kept.add(pid)
         kept |= pool.published_point_ids()
         # Before publish destinations recorded exact point IDs, an as-of
         # deployment was identified by its saved network recording instead.
@@ -508,11 +525,6 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
         # Explicit old snapshots remain compatibility roots until migrated.
         kept |= {pid for n in networks for snap in pool.snapshots(n.name) if snap.complete
                  for pid in pool.snapshot_point_ids(snap.id) if pid in owned}
-        by_repo_track = {}
-        for p in pool.repository_points():
-            candidates.add(p.id)
-            track = pool.track_of_point(p.id)
-            by_repo_track.setdefault((track.repo, p.track), []).append(p)
         for (repo, _), ps in by_repo_track.items():
             source = next((s for s in cfg.sources if s.identity == repo), None)
             if source is None:

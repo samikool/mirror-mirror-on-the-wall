@@ -334,6 +334,46 @@ class SiteDB:
             c.rollback()
             raise
 
+    def rebase_repo(self, repo: str, old_base: str, new_base: str) -> None:
+        """Move `repo`'s timeline from `old_base` to `new_base`: its tracks
+        and every point's files are re-prefixed (checksums are unchanged — a
+        Release never names its host), and it is served at `new_base` from
+        its next switch. Its versions keep the paths they were served at."""
+        import json
+        from mmw.core.repos import rebase_files
+        old, new = old_base.strip("/"), new_base.strip("/")
+        c = self._conn
+        try:
+            for tid, name in c.execute("SELECT id, name FROM tracks WHERE repo = ?", (repo,)).fetchall():
+                if name == old or name.startswith(old + "/"):
+                    c.execute("UPDATE tracks SET name = ? WHERE id = ?", (new + name[len(old):], tid))
+            points = [r[0] for r in c.execute("SELECT p.id FROM points p JOIN tracks t ON t.id = p.track "
+                                              "WHERE t.repo = ?", (repo,))]
+            for pid in points:
+                files = self.point_files(pid)
+                moved = rebase_files(files, old, new)
+                if moved == files:
+                    continue
+                c.execute("DELETE FROM point_files WHERE point = ?", (pid,))
+                c.executemany("INSERT INTO point_files (point, path, blob) SELECT ?, ?, id FROM blobs "
+                              "WHERE checksum = ?", [(pid, self._path_id(p), cs) for p, cs in moved.items()])
+                c.execute("UPDATE points SET complete = NULL, selection = NULL WHERE id = ?", (pid,))
+            row = c.execute("SELECT bases FROM repos WHERE repo = ?", (repo,)).fetchone()
+            if row is not None:
+                bases = [new if b == old else b for b in json.loads(row[0])]
+                c.execute("UPDATE repos SET bases = ? WHERE repo = ?", (json.dumps(bases), repo))
+            foreign = json.loads(self.get_meta("foreign_mirrors") or "{}")
+            if repo in foreign:
+                for unit in foreign[repo]:
+                    if unit.get("source_url", "").rstrip("/").endswith(old):
+                        unit["source_url"] = f"https://{new}/"
+                c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('foreign_mirrors', ?)",
+                          (json.dumps(foreign, sort_keys=True),))
+            c.commit()
+        except BaseException:
+            c.rollback()
+            raise
+
     def ensure_track(self, repo: str, name: str, fields: dict[str, str], *, commit: bool = True) -> int:
         c = self._conn
         c.execute("INSERT INTO tracks (repo, name, origin, label, suite, codename) VALUES (?, ?, ?, ?, ?, ?) "

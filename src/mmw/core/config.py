@@ -1441,17 +1441,19 @@ def merge_sources(
     archive.ubuntu.com — is renamed rather than discarded.
     """
     result = list(existing)
-    by_identity = {s.identity: s for s in result}
+    from mmw.core.repos import repository_identity
+    # http and https are one repository: the scheme is no difference.
+    by_identity = {repository_identity(s.identity): s for s in result}
     taken = {s.name for s in result}
     added = merged = 0
 
     for src in new:
-        target = by_identity.get(src.identity)
+        target = by_identity.get(repository_identity(src.identity))
         if target is None:
             if src.name in taken:
                 src.name = _unique_source_name(src.name, src.url, taken)
             taken.add(src.name)
-            by_identity[src.identity] = src
+            by_identity[repository_identity(src.identity)] = src
             result.append(src)
             added += 1
             continue
@@ -1472,7 +1474,7 @@ def merge_sources(
         merged_src = get_provider(src.provider).merge(target, src)
         if merged_src is not target:
             result[result.index(target)] = merged_src
-            by_identity[src.identity] = merged_src
+            by_identity[repository_identity(src.identity)] = merged_src
             target = merged_src
         if target.model_dump() != before:
             merged += 1

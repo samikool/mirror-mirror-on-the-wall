@@ -169,7 +169,18 @@ class RootApply:
             self._lock.__exit__(*exc)
 
     def begin(self, manifest: bytes) -> None:
+        from mmw.site import identity
         disk_io.ops.write_bytes(self.manifest_path, manifest)
+        try:
+            head, _rows = iter_manifest_v2(self.manifest_path)
+            same = identity.match(identity.known_from_db(self.db), head)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            same = identity.Matches()             # malformed: check() says so
+        if same.mapping:                          # arriving keys as they are here
+            manifest = identity.rekeyed_manifest(manifest, same.mapping)
+            disk_io.ops.write_bytes(self.manifest_path, manifest)
+        self._identity_lines = same.lines
+        self._claimable = same.adopted
         self._manifest = True
         network = self.settings.network
         if self.network_files and network is not None:
@@ -181,7 +192,8 @@ class RootApply:
                 _check_paths(p for p, _c, _r in rows)
                 _check_points(header)
                 result = ApplyResult()
-                header, kept, _, _ = _foreign(network, {st.repo for st in self.db.repo_states()}, header,
+                header, kept, _, _ = _foreign(network, {st.repo for st in self.db.repo_states()} | self._claimable,
+                                              header,
                                               [(p, c, r, None) for p, c, r in rows], set(), result)
                 self._foreign_input = (header, [(p, c, r) for p, c, r, _size in kept], result)
                 self._kept_members = set(_member_checksums(header, kept))
@@ -409,10 +421,14 @@ class RootApply:
             result.lines.extend(self._import_keys())
         recorded: dict[str, list] = {}
         arrived = set(sizes)
-        if not self.foreign and (not self.points_bundle or self.selection):
-            every_base = [b for plan in planned.values() for b in plan["meta"]["bases"]]
-            for repo, plan in planned.items():       # only this network's own bundle names what was adopted
-                _claim_adopted(db, repo, plan["meta"], result, every_base)
+        # Any network's bundle names what was adopted (an adopted tree is one
+        # repository, whichever network brings it).
+        every_base = [b for plan in planned.values() for b in plan["meta"]["bases"]]
+        for repo, plan in planned.items():
+            _claim_adopted(db, repo, plan["meta"], result, every_base)
+            _rebase_to(db, repo, plan, result)
+        result.lines[:0] = [f"  {line}" for line in getattr(self, "_identity_lines", [])
+                            if f"  {line}" not in result.lines]
         for repo, plan in planned.items():
             meta = plan["meta"]
             rows = dict(plan["rows"])
@@ -571,6 +587,8 @@ class RootApply:
             from mmw.site.dated import refresh
             refresh(db, roots)
         from mmw.site.certs import tls_notes
+        from mmw.site.identity import shared_bases
+        result.lines.extend(f"  {line}" for line in shared_bases(db))
         result.actions.extend(tls_notes(self.home))
         if progress:
             progress("done")
@@ -580,6 +598,25 @@ class RootApply:
         if "runtime" in self.seen:
             result.actions.append(RUNTIME_NOTE)
         return result
+
+
+def _rebase_to(db, repo: str, plan: dict, result) -> None:
+    """A repository held here at another host that this bundle shows is the
+    same archive (an identical Release): its history moves to the bundle's
+    base, and is served there from now on."""
+    state = db.repo_state(repo)
+    bases = plan["meta"].get("bases") or []
+    if state is None or len(state.bases) != 1 or len(bases) != 1 or state.bases == bases:
+        return
+    arriving = {d.ident for d, *_rest in plan.get("points", [])}
+    held = {p.ident for t in db.tracks(repo) for p in db.points(t.id, stubs=True)}
+    from mmw.core.repos import same_release_identity
+    if not same_release_identity(arriving, held):
+        return
+    old, new = state.bases[0], bases[0]
+    db.rebase_repo(repo, old, new)
+    result.lines.append(f"  {plan['meta']['label']}  served at {new} from now on — its history from {old} is "
+                        f"kept as older points; clients pointed at {old} need {new}")
 
 
 def _claim_adopted(db, repo: str, meta: dict, result, every_base: list[str] | None = None) -> None:
@@ -1188,10 +1225,16 @@ def plan_set_apply(mset, src: str, deploy: set[str] | None = None) -> SetApplyPl
             gen.close()
         header, rows = iter_manifest_sized(scratch)
         rows = list(rows)
+        claimable: set[str] = set()
+        if mset is not None:
+            from mmw.site import identity
+            same = identity.match(identity.known_from_set(mset), header)
+            header, rows = identity.rekey(header, rows, same.mapping)
+            claimable = same.adopted
         foreign = mset is not None and header.network != mset.network
         not_here: dict[str, str] = {}
         if foreign:
-            held = {st.repo for _n, st in ops.set_status(mset)}
+            held = {st.repo for _n, st in ops.set_status(mset)} | claimable
             not_here = {k: m["label"] for k, m in _repo_meta(header).items() if k not in held}
             header, rows, _dropped, _fm = _foreign(mset.network, held, header, rows,
                                                    set(deploy or ()), SetApplyResult())
@@ -1387,12 +1430,19 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
         # Every member the bundle's own manifest names, before anything is filtered
         # out for this mirror: one it doesn't name is junk, never "not mirrored here".
         named = {blob_member(c) for _p, c, _r, _s in rows} if header.format == 3 else None
+        claimable: set[str] = set()
+        if mset is not None:
+            from mmw.site import identity
+            same = identity.match(identity.known_from_set(mset), header)
+            header, rows = identity.rekey(header, rows, same.mapping)
+            claimable = same.adopted
+            result.lines.extend(same.lines)
         foreign = mset is not None and header.network != mset.network
         network = mset.network if foreign else header.network
         dropped: set[str] = set()
         foreign_mirrors: dict = {}
         if foreign:
-            held = {st.repo for _name, st in ops.set_status(mset)}
+            held = {st.repo for _name, st in ops.set_status(mset)} | claimable
             header, rows, dropped, foreign_mirrors = _foreign(network, held, header, rows, set(deploy or ()), result)
         plan, extra = _plan(mset, header, rows, src, Path(tmp))
         result.created = header.created
@@ -1538,6 +1588,7 @@ def apply_to_set(mset, src: str, *, place: dict[str, str] | None = None, dry_run
                                                          say=say, **extra_opts))
             ra.via = roots[name]          # the root this applier writes into (its interface)
             ra.begin(_filtered_manifest(header, rows, repos, k_of))
+            ra._identity_lines = []       # the set said them, once
             appliers[name] = ra
         cs_all = _member_checksums(header, rows)
         for ra in appliers.values():

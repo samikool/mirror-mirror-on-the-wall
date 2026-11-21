@@ -124,6 +124,7 @@ latest recorded points. Use --since / --until for earlier dates.
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
 | `--history`, `--newest` |  | mmw far side: every point since the last bundle, or each suite's newest (default: the network's `history`). |
+| `--whole` |  | Send this part in full whatever --since says — what the far side never had: [REPO:]DIMENSION=VALUE[,VALUE], DIMENSION one of arches, components, suites; e.g. ubuntu:arches=i386 (repeatable). |
 | `--full` |  | Carry every file again, sent before or not. |
 
 ### `mmw certs`
@@ -310,6 +311,7 @@ mmw.
 | `--installer` |  | Include mmw installer: write mmw-<version>-<arch>.tar beside it, for a far side to install mmw from. |
 | `--runtime-wheel` |  | The mmw wheel the installer ships (default: this checkout's own build, or PyPI's for a release). |
 | `--history`, `--newest` |  | mmw far side: every point since the last bundle, or each suite's newest (default: the network's `history`). |
+| `--whole` |  | Send this part in full whatever --since says — what the far side never had: [REPO:]DIMENSION=VALUE[,VALUE], DIMENSION one of arches, components, suites; e.g. ubuntu:arches=i386 (repeatable). |
 | `--full` |  | Carry every file again, sent before or not. |
 
 ### `mmw sync`

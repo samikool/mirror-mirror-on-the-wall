@@ -237,13 +237,128 @@ def transferred_slice(pool, network, point, settings):
     return None
 
 
-def range_baseline(pool, network, settings, targets, *, since=None, full=False, listing=None):
+_DIM_FIELDS = {'arch': 'arch', 'arches': 'arch', 'architecture': 'arch', 'architectures': 'arch',
+               'component': 'component', 'components': 'component', 'suite': 'suite', 'suites': 'suite'}
+
+
+def unit_key(mirror: dict) -> tuple:
+    """One selected unit of a recorded selection, whatever its name."""
+    return (mirror.get('source'), mirror.get('suite'), mirror.get('component'), mirror.get('arch'))
+
+
+def _mirrors(settings) -> list[dict]:
+    import json
+    try:
+        mirrors = json.loads(settings or '{}').get('mirrors', [])
+    except (ValueError, AttributeError):
+        return []
+    return [m for m in mirrors if isinstance(m, dict)]
+
+
+def whole_units(specs, settings, labels) -> frozenset:
+    """The units `--whole` names. Each spec is `[REPO:]DIM=VALUE[,VALUE]`, e.g.
+    `ubuntu:arches=i386`; REPO (a label or URL) defaults to every repository."""
+    from mmw.core.repos import resolve_repo_refs
+    mirrors = _mirrors(settings)
+    out = set()
+    for spec in specs or ():
+        head, sep, values = spec.partition('=')
+        ref, _, dim = head.rpartition(':')
+        field = _DIM_FIELDS.get(dim.strip().lower())
+        wanted = {v.strip() for v in values.split(',') if v.strip()}
+        if not sep or field is None or not wanted:
+            raise ValueError(f'send whole {spec!r}: expected [REPO:]arches|components|suites=VALUE[,VALUE]')
+        repos = set(resolve_repo_refs([ref.strip()], labels)) if ref.strip() else None
+        hit = {unit_key(m) for m in mirrors
+               if (repos is None or m.get('source') in repos) and m.get(field) in wanted}
+        if not hit:
+            raise ValueError(f'send whole {spec!r}: matches nothing this network selects')
+        out |= hit
+    return frozenset(out)
+
+
+def narrowed_selection(settings, *, kept=None, whole=frozenset()):
+    """`settings` with only the units the far side is assumed to hold: not
+    one `--whole` names, and (given a kept bundle's selection) one it carried.
+    Returns (settings, dropped mirrors); unchanged settings when none drop."""
+    import json
+    mirrors = _mirrors(settings)
+    carried = None if kept is None else {unit_key(m) for m in _mirrors(kept)}
+    keep = [m for m in mirrors if unit_key(m) not in whole and (carried is None or unit_key(m) in carried)]
+    if len(keep) == len(mirrors):
+        return settings, []
+    data = json.loads(settings)
+    data['mirrors'] = keep
+    return json.dumps(data, sort_keys=True), [m for m in mirrors if m not in keep]
+
+
+def describe_whole(dropped, settings, label, why) -> list[str]:
+    """One line per repository: what goes whole, by the dimension values
+    dropped entirely (`arches i386`), else a count of units."""
+    mirrors = _mirrors(settings)
+    gone = {unit_key(m) for m in dropped}
+    lines = []
+    for repo in sorted({m.get('source') for m in dropped}):
+        mine = [m for m in mirrors if m.get('source') == repo]
+        lost = [m for m in mine if unit_key(m) in gone]
+        parts = []
+        for field, name in (('suite', 'suites'), ('component', 'components'), ('arch', 'arches')):
+            every = {m.get(field) for m in mine}
+            whole = sorted(v for v in {m.get(field) for m in lost} if v is not None and
+                           all(unit_key(m) in gone for m in mine if m.get(field) == v))
+            if whole and len(whole) < len(every):
+                parts.append(f"{name} {', '.join(whole)}")
+        what = '; '.join(parts) or ('everything' if len(lost) == len(mine) else f'{len(lost)} unit(s)')
+        lines.append(f'{label(repo)}: {what} sent whole ({why})')
+    return lines
+
+
+def assumed_selection(network, mirror_dir, settings, *, cfg=None, since=None, kept_dirs=None, whole=None):
+    """What the baseline projects with: (settings, notes). With an explicit
+    From, a kept bundle at or before it says which units the far side was
+    sent; `--whole` names units it lacks. Either only ever sends more."""
+    from mmw.core.repos import repository_label
+    label = (lambda key: repository_label(key, cfg)) if cfg is not None else str
+    notes = []
+    whole_keys = frozenset()
+    if whole:
+        from mmw.core.repos import network_repos
+        labels = network_repos(network, cfg, mirror_dir) if cfg is not None else {}
+        whole_keys = whole_units(whole, settings, labels)
+        _, dropped = narrowed_selection(settings, whole=whole_keys)
+        notes += describe_whole(dropped, settings, label, '--whole')
+    kept = None
+    if since is not None:
+        kept = kept_state(network, mirror_dir, since, kept_dirs)
+    if kept is not None and kept.settings:
+        from pathlib import Path
+        _, dropped = narrowed_selection(settings, kept=kept.settings, whole=whole_keys)
+        dropped = [m for m in dropped if unit_key(m) not in whole_keys]
+        notes += describe_whole(dropped, settings, label, f"not in {Path(kept.where).name}'s selection")
+    narrowed, _ = narrowed_selection(settings, kept=kept.settings if kept else None, whole=whole_keys)
+    return narrowed, notes
+
+
+def kept_state(network, mirror_dir, since, kept_dirs=None):
+    """The newest kept bundle of `network` at or before `since`, or None."""
+    from mmw.core.publisher.kept import state_at
+    from mmw.core.publisher.manifest import ledger_dir
+    dirs = [*([network.bundle_dir] if network.bundle_dir is not None else []),
+            ledger_dir(mirror_dir, network.name), *(kept_dirs or [])]
+    return state_at(dirs, network.name, since, skipped=[])
+
+
+def range_baseline(pool, network, settings, targets, *, since=None, full=False, listing=None,
+                   base_settings=None):
     """Files guaranteed at every retained starting point inside X..Z.
 
     Subtracting only X loses a file removed at Y and reintroduced at Z.
     Intersect the selected slices throughout the interval instead. Missing
     history makes the safe baseline empty, so it never causes an omission.
+    `base_settings` (see `assumed_selection`) narrows what the far side is
+    assumed to hold; what it needs is still projected with `settings`.
     """
+    base = base_settings or settings
     from mmw.core.points import resolve_when
     if not repository_owned(pool, targets, network):
         return None                      # compatibility with legacy network states
@@ -292,9 +407,9 @@ def range_baseline(pool, network, settings, targets, *, since=None, full=False, 
         if any(not p.held for p in interval):
             needed_elsewhere.update(needed)
             continue
-        held = [set(files_for_settings(pool, p.id, settings).values()) for p in interval]
+        held = [set(files_for_settings(pool, p.id, base).values()) for p in interval]
         if prior_slice is not None:
-            held[0] = prior_slice
+            held[0] = prior_slice if base_settings is None else prior_slice & held[0]
         if held:
             certain = set.intersection(*held)
             common.update(certain)
@@ -409,6 +524,7 @@ class TransferPreview:
     bytes: int
     source: str
     warnings: tuple[str, ...] = ()
+    whole: tuple[str, ...] = ()     # what goes in full whatever From says (see `assumed_selection`)
 
 
 def available_transfer_dates(net, mirror_dir, *, cfg=None):
@@ -426,7 +542,7 @@ def available_transfer_dates(net, mirror_dir, *, cfg=None):
 
 
 def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=False,
-                     history=None, repos=None, kept_dirs=None):
+                     history=None, repos=None, kept_dirs=None, whole=None):
     """Resolve the same retained point range and checksum baseline as a transfer."""
     from mmw.core import points
     from mmw.core.pool import Pool
@@ -438,7 +554,8 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
 
     baseline, source, warnings = None, 'last transfer (local record)', []
     if since is not None:
-        since_stamp, baseline, source, warnings = resolve_since(net, mirror_dir, since, kept_dirs, cfg=cfg, repos=repos)
+        since_stamp, baseline, source, warnings = resolve_since(net, mirror_dir, since, kept_dirs, cfg=cfg,
+                                                                repos=repos, whole=whole)
     else:
         since_stamp = None
     with Pool(mirror_dir, read_only=True) as pool:
@@ -475,9 +592,13 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
         generated = _far_nginx(settings, net.certs)
         generated = {hashlib.sha256(data).hexdigest(): len(data) for data in dict(generated).values()}
         sent = baseline if baseline is not None else set() if full else pool.sent_checksums(net.name, checksums | generated.keys())
-        interval_base = range_baseline(pool, net, settings, targets, since=since, full=full, listing=listing)
+        base, whole_notes = (settings, []) if full else assumed_selection(
+            net, mirror_dir, settings, cfg=cfg, since=since_stamp, kept_dirs=kept_dirs, whole=whole)
+        interval_base = range_baseline(pool, net, settings, targets, since=since, full=full, listing=listing,
+                                       base_settings=None if base is settings else base)
         if interval_base is not None:
-            sent = interval_base
+            # Both are what the far side is assumed to hold: trust only what both say.
+            sent = interval_base if baseline is None else interval_base & baseline
         sizes = {cs: data[1] for cs, data in info.items()}
         sizes.update(generated)
         payload = sizes.keys() - sent
@@ -500,4 +621,4 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
                                      from_date, to_date,
                                      sum(known[p].track == tid for p in ids), available))
         return TransferPreview(tuple(rows), len(payload), sum(sizes[c] for c in payload),
-                               'everything' if full else source, tuple(warnings))
+                               'everything' if full else source, tuple(warnings), tuple(whole_notes))

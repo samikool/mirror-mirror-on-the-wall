@@ -188,6 +188,8 @@ class BundleResult:
     out_path: Path | None = None
     created: str = ""
     since_source: str | None = None
+    # What goes in full whatever From says: `--whole`, or not in a kept bundle's selection.
+    whole: list[str] = field(default_factory=list)
     previous: str | None = None
     full: bool = False
     sent: int = 0

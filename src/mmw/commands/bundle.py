@@ -32,7 +32,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         allow_incomplete: bool = False, from_ref: str | None = None,
         to_ref: str | None = None, repos: list[str] | None = None, stage: bool = False,
         installer: bool = False, runtime_wheel: Path | None = None, history: bool | None = None,
-        full: bool = False, since: str | None = None, kept: list[Path] | None = None, until: str | None = None, dry_run: bool = False) -> int:
+        full: bool = False, since: str | None = None, kept: list[Path] | None = None, until: str | None = None, dry_run: bool = False,
+        whole: list[str] | None = None) -> int:
     """Bundle one or all configured networks. Returns a process exit code.
 
     `from_ref` / `to_ref` name snapshots (stamp, label or id) of the one
@@ -44,6 +45,12 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         eprint("--from is deprecated — use --since DATE (a snapshot's date) or --full")
     if since is not None and (full or from_ref is not None):
         eprint("--since cannot be combined with --full or --from")
+        return 1
+    if whole and (full or from_ref == "none"):
+        eprint("--whole cannot be combined with --full (that already sends everything)")
+        return 1
+    if whole and not network:
+        eprint("--whole names parts of one network's repositories — pass -n too.")
         return 1
     if until is not None and to_ref is not None:
         eprint("--until cannot be combined with --to")
@@ -115,7 +122,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             try:
                 plan = preview_transfer(net, mirror_dir, cfg=cfg, since=since, until=until,
                                         full=full or from_ref == "none", history=history,
-                                        repos=keys, kept_dirs=kept)
+                                        repos=keys, kept_dirs=kept, whole=whole)
                 from mmw.core.repos import repository_label
                 from mmw.site.versionref import day
                 say(f"{net.name}: {plan.source}")
@@ -124,6 +131,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                         f"{day(row.from_date) if row.from_date else 'full'} → {day(row.to_date)} "
                         f"· {row.points} point(s)"
                         + (f"; kept {day(row.available[0])} to {day(row.available[-1])}" if row.available else ""))
+                for line in plan.whole:
+                    say(f"  {line}")
                 say(f"  Sends about {plan.blobs:,} new blobs · {_fmt_size(plan.bytes)}")
                 for warning in plan.warnings:
                     say(f"  {warning}")
@@ -178,6 +187,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
             if since is not None:
                 picked["since"] = since
                 picked["kept_dirs"] = kept
+            if whole:
+                picked["whole"] = list(whole)
             if stage:
                 result = transfer(net, cfg, mirror_dir, out=out, stage=True,
                                   from_ref=start, to_ref=to_ref or "now", **picked)
@@ -198,6 +209,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
         say(f"{net.name}  {span}  →  {'stdout' if streaming else result.out_path}")
         if result.since_source:
             say(f"  since {result.since_source}")
+        for line in result.whole:
+            say(f"  {line}")
         say(f"  sent={result.sent} ({_fmt_size(result.sent_bytes)})  deleted={result.deleted}")
         for r in result.repos:
             say(f"  {r.label}  " + ", ".join(f"{suite} {before or 'new'} → {to}" for suite, before, to in r.suites))

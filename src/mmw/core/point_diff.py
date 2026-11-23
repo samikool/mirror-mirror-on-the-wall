@@ -164,7 +164,12 @@ def diff(a: dict, b: dict) -> PointDiff:
 
 def summary(d: PointDiff) -> str:
     """'+3 ~37 −1', and '↓N' when something went down."""
-    a, r, u, down = d.counts
+    return summary_counts(d.counts)
+
+
+def summary_counts(counts) -> str:
+    """`summary` from `PointDiff.counts` (as the far side's history keeps them)."""
+    a, r, u, down = counts
     return f"+{a} ~{u} −{r}" + (f" ↓{down}" if down else "")
 
 

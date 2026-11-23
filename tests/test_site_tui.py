@@ -7,7 +7,7 @@ from textual.widgets import DataTable
 from mmw.site import ops
 from mmw.tui.site.app import SiteApp
 
-from site_points import nth
+from site_points import nth, row_of
 from test_site_apply import env  # noqa: F401
 from test_site_ops import _three
 from test_dry_run_totals import two_mirrors  # noqa: F401
@@ -52,7 +52,8 @@ def test_lists_repos_and_history(env, tmp_path):  # noqa: F811
         await until(pilot, lambda: len(_rows(app, "site-history")) == 4)       # its suite, then 3 points
         hist = _rows(app, "site-history")
         assert hist[0][0] == "files"
-        assert hist[2][0] == f"▶ {second}" and "serving" in hist[2][3] and "previous" in hist[1][3]
+        assert row_of(app.screen, second) == 2
+        assert hist[2][0].startswith("▶ ") and "serving" in hist[2][3] and "previous" in hist[1][3]
         assert "pinned — Forward serves each suite's newest" in str(app.screen.query_one("#site-detail").render())
     _run(home, check)
 
@@ -72,8 +73,8 @@ async def _pick(app, pilot, repo_label, point=None):
     t.move_cursor(row=[r[0] for r in _rows(app, "site-repos")].index(repo_label))
     if point is not None:
         h = app.screen.query_one("#site-history", DataTable)
-        await until(pilot, lambda: any(r[0].strip().lstrip("▶ ") == point for r in _rows(app, "site-history")))
-        h.move_cursor(row=[r[0].strip().lstrip("▶ ") for r in _rows(app, "site-history")].index(point))
+        await until(pilot, lambda: row_of(app.screen, point) is not None)
+        h.move_cursor(row=row_of(app.screen, point))
         h.focus()
 
 

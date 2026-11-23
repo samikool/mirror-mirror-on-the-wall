@@ -234,3 +234,8 @@ def expired(db, roots, now=None) -> list[tuple[str, str]]:
             if out and out[-1] == (label, url):
                 break
     return out
+
+
+def sources_line(url: str, suite: str, components: list[str]) -> str:
+    """The sources.list line that pins a client to a dated URL."""
+    return " ".join(["deb", url, suite, *(components or ["main"])])

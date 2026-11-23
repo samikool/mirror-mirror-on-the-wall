@@ -15,3 +15,10 @@ def pinned(home, key: str) -> bool:
     from mmw.site.db import SiteDB
     with SiteDB(home) as db:
         return any(t.pinned is not None for t in db.tracks(key))
+
+
+def row_of(screen, point: str) -> int | None:
+    """The far-side history table's row holding the point named `point`
+    (its six-hex digest), or None while it isn't shown."""
+    return next((i for i, row in enumerate(getattr(screen, "_history", []))
+                 if row[1] is not None and row[1].ident.split(":", 1)[-1][:6] == point), None)

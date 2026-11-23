@@ -616,24 +616,13 @@ def history(home: Path, ref: str) -> list[tuple[TrackInfo, list[tuple[PointInfo,
 def diff(home: Path, ref: str, a: str, b: str | None = None, track: str | None = None) -> list:
     """Per suite (`track`: just that one) with a point `a` names: what changed
     from it to the point `b` names — by default the next kept point after it."""
-    from mmw.core.point_diff import SuiteDiff, diff as compare, packages_of
+    from mmw.core.point_diff import SuiteDiff, diff as compare
     from mmw.site.versionref import resolve_point
     roots = _roots(home)
     with SiteDB(home) as db:
         repo = resolve_repo(db, ref)
         state = db.repo_state(repo)
-        store = roots.store(roots.of(state))
-
-        def packages(point):
-            files = db.point_files(point.id)
-
-            def read(path):
-                checksum = files.get(path)
-                try:
-                    return disk_io.ops.read_bytes(store.path(checksum)) if checksum else None
-                except OSError:
-                    return None
-            return packages_of(files, read)
+        packages = _packages_reader(db, roots.store(roots.of(state)))
 
         out, last, refused = [], [], None
         for t in [_track_named(db, repo, track)] if track else db.tracks(repo):
@@ -653,6 +642,92 @@ def diff(home: Path, ref: str, a: str, b: str | None = None, track: str | None =
             raise LookupError(f"{a} is the newest point of {', '.join(last)} kept here — nothing after it to compare")
         raise refused or LookupError(f"{state.label}: no point {a!r} here")
     return out
+
+
+def _packages_reader(db: SiteDB, store: Store):
+    """point → its (package, arch) → version, read from `store`."""
+    from mmw.core.point_diff import packages_of
+
+    def packages(point):
+        files = db.point_files(point.id)
+
+        def read(path):
+            checksum = files.get(path)
+            try:
+                return disk_io.ops.read_bytes(store.path(checksum)) if checksum else None
+            except OSError:
+                return None
+        return packages_of(files, read)
+    return packages
+
+
+def point_rows(home: Path, ref: str) -> dict[int, dict]:
+    """Point id → what the far side's history says beside it:
+    - "changes": [added, removed, upgraded, downgraded] since the kept point
+      before it in its suite — absent for the oldest, and for a pair either
+      of which isn't complete here. Worked out once per pair, then kept.
+    - "covers": its arches and components ("amd64 arm64 · main"), only
+      where its suite's points don't all cover the same.
+    - "components": what a sources.list line names.
+    - "dated": `https://host/path/@YYYY-MM-DD` (http without a certificate)
+      when that day's dated tree is built."""
+    import json as _json
+    import sqlite3
+
+    from mmw.core.point_diff import diff as compare
+    from mmw.site.combine import _selection_of
+    from mmw.site.dated import _day
+    from mmw.site.timeline import is_complete
+    roots = _roots(home)
+    with SiteDB(home) as db:
+        repo = resolve_repo(db, ref)
+        root = roots.of(db.repo_state(repo))
+        store = roots.store(root)
+        packages = _packages_reader(db, store)
+        dirs = set()
+        if roots.settings.dated:
+            for k, rec in _json.loads(db.get_meta(f"dated:{root.name}") or "{}").items():
+                if k.split("|", 1)[0] == repo and isinstance(rec, dict):
+                    dirs.update(rec.get("dirs", []))
+        bases = sorted(db.repo_state(repo).bases)
+        tls = disk_io.ops.exists(Path(roots.primary.path) / ".mmw" / "tls" / "mirror.crt")
+        scheme = "https" if tls else "http"
+        out: dict[int, dict] = {}
+        for t in db.tracks(repo):
+            kept = sorted(db.points(t.id), key=lambda p: (p.date, p.stamp, p.id))      # oldest first
+            sel = {p.id: _selection_of(db, p.id, t.name) for p in kept} if t.name else {}
+            differ = len({(tuple(s["arches"]), tuple(s["components"])) for s in sel.values()}) > 1
+            before = None
+            for p in kept:
+                row: dict = {}
+                s = sel.get(p.id)
+                if s is not None:
+                    comps = s["components"]
+                    row["components"] = sorted(comps, key=lambda c: (c != "main", c))
+                    if differ:
+                        row["covers"] = f"{' '.join(s['arches']) or '—'} · {' '.join(row['components']) or '—'}"
+                dated = next((f"{scheme}://{b}/@{_day(p.date)}" for b in bases
+                              if f"{b}/@{_day(p.date)}" in dirs), None)
+                if dated:
+                    row["dated"] = dated
+                if before is not None:
+                    key = f"changes:{before.id}:{p.id}"
+                    said = db.get_meta(key)
+                    if said:
+                        row["changes"] = _json.loads(said)
+                    elif not is_complete(db, store, before.id) and not is_complete(db, store, p.id):
+                        try:
+                            row["changes"] = list(compare(packages(before), packages(p)).counts)
+                        except ValueError:                 # an unreadable index: nothing said
+                            pass
+                        else:
+                            try:
+                                db.set_meta(key, _json.dumps(row["changes"]))
+                            except sqlite3.OperationalError:   # a busy database: worked out again next time
+                                pass
+                out[p.id] = row
+                before = p
+        return out
 
 
 def _expected(db: SiteDB, roots: Roots) -> dict[str, dict[str, str]]:

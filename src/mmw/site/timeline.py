@@ -36,16 +36,22 @@ def _reader(store, rows: dict[str, str]):
     return read
 
 
+def _absent(db, store, point_id: int) -> list[str]:
+    return [cs for cs in set(db.point_files(point_id).values()) if not store.has(cs)]
+
+
 def is_complete(db, store, point_id: int, arrived: set[str] = frozenset(), *, cached: bool = True) -> int:
-    """How many of the point's files are not here (0: complete). A point
-    found complete is remembered until its files or the store change;
-    `cached=False` looks again — what is about to be served always does."""
+    """How many of the point's files are not here (0: complete) — `arrived`
+    (with a bundle still being applied) counts as here. A point whose files
+    are all in the store is remembered complete until its files or the store
+    change; one complete only by counting `arrived` never is. `cached=False`
+    looks again — what is about to be served always does."""
     if cached and db.known_complete(point_id):
         return 0
-    missing = sum(1 for cs in set(db.point_files(point_id).values()) if cs not in arrived and not store.has(cs))
-    if not missing:
+    absent = _absent(db, store, point_id)
+    if not absent:
         db.set_complete(point_id, True)
-    return missing
+    return sum(1 for cs in absent if cs not in arrived)
 
 
 def _suite(fields: dict[str, str], track: str) -> str | None:
@@ -60,6 +66,7 @@ def import_rows(db, store, repo: str, label: str, bases: list[str], rows: dict[s
     to its track. `own` allows updates to the repository's label and bases.
     `network` records presence when these rows are a network's selection."""
     out: list[TrackOutcome] = []
+    here: list[int] = []                 # complete in the store itself, not only by what arrived
     drafts = split_tracks(rows, bases, _reader(store, rows), stamp)
     try:
         if own or db.repo_state(repo) is None:
@@ -72,7 +79,10 @@ def import_rows(db, store, repo: str, label: str, bases: list[str], rows: dict[s
             if status.startswith("conflict:"):
                 out.append(TrackOutcome(d.track, suite, pid, d.date, "conflict", note=status.split(":", 1)[1]))
                 continue
-            missing = is_complete(db, store, pid, arrived)
+            absent = _absent(db, store, pid)
+            if not absent:
+                here.append(pid)
+            missing = sum(1 for cs in absent if cs not in arrived)
             out.append(TrackOutcome(d.track, suite, pid, d.date, "incomplete" if missing else status,
                                     missing, note))
         if network is not None:
@@ -81,6 +91,8 @@ def import_rows(db, store, repo: str, label: str, bases: list[str], rows: dict[s
     except BaseException:
         db.rollback()
         raise
+    for pid in here:                     # its files had landed: marked only now the import is in
+        db.set_complete(pid, True)
     return out
 
 
@@ -109,6 +121,7 @@ def import_points(db, store, repo: str, label: str, bases: list[str], points, si
     else it alone is refused — then added to its track. Never retires a
     suite. `points`: [(PointDraft, stamp, snap_label)]."""
     out: list[TrackOutcome] = []
+    here: list[int] = []                 # complete in the store itself, not only by what arrived
     try:
         if db.repo_state(repo) is None:
             db.ensure_repo(repo, label, bases, commit=False)
@@ -123,12 +136,17 @@ def import_points(db, store, repo: str, label: str, bases: list[str], points, si
             if status.startswith("conflict:"):
                 out.append(TrackOutcome(d.track, suite, pid, d.date, "conflict", note=status.split(":", 1)[1]))
                 continue
-            missing = is_complete(db, store, pid, arrived, cached=False)
+            absent = _absent(db, store, pid)
+            if not absent:
+                here.append(pid)
+            missing = sum(1 for cs in absent if cs not in arrived)
             out.append(TrackOutcome(d.track, suite, pid, d.date, "incomplete" if missing else status, missing))
         db.commit()
     except BaseException:
         db.rollback()
         raise
+    for pid in here:                     # its files had landed: marked only now the import is in
+        db.set_complete(pid, True)
     return out
 
 

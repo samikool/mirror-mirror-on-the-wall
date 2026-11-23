@@ -99,10 +99,12 @@ class MoreMenu(LiveHitTest, ModalScreen["str | None"]):
 
     BINDINGS = [Binding("escape", "close", "Close", show=False)]
 
-    def __init__(self, title: str, entries: list[tuple[str, str, str, bool]]):
-        """`entries`: (action, label, key, available)."""
+    def __init__(self, title: str, entries: list[tuple[str, str, str, bool]], *, heading: str | None = None):
+        """`entries`: (action, label, key, available). `heading` replaces
+        "TITLE — more" (the menu as a plain choice: which network?)."""
         super().__init__()
         self._title = title
+        self._heading = heading
         self._entries = entries
 
     def compose(self) -> ComposeResult:
@@ -110,7 +112,7 @@ class MoreMenu(LiveHitTest, ModalScreen["str | None"]):
         from textual.widgets.option_list import Option
         width = max((len(label) for _a, label, _k, _ok in self._entries), default=1)
         with Vertical(id="more-box"):
-            yield Label(f"{self._title} — more", id="more-title", markup=False)
+            yield Label(self._heading or f"{self._title} — more", id="more-title", markup=False)
             yield OptionList(*(Option(f"{escape(label):<{width}}  [dim]{escape(key)}[/]", id=action,
                                       disabled=not ok)
                                for action, label, key, ok in self._entries),

@@ -153,6 +153,14 @@ Takes no options.
 
 Repository history: list the points syncs recorded, or delete some.
 
+`mmw history` lists each repository's points, grouped by suite, newest
+first: each one's date, size, and what it is — the latest sync, published at
+a root, sent (or not yet sent) to a network, pruned next under `keep_points`,
+or inconsistent (its Release disagrees with an index it keeps; see
+`mmw verify --points`). `--json` prints the same rows for scripts. The TUI's
+Repository history is the same table, with Publish as of this, Transfer to
+this and Delete acting on the row's point.
+
 `mmw history delete REPO WHEN [--suite S] [--before] [--dry-run] [--yes]`
 deletes kept points by hand (TUI: Repository history → More… → Delete
 points…). WHEN is a date (`2026-11-03`, `3nov`) or a point's stamp;

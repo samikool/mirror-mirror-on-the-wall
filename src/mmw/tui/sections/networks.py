@@ -180,51 +180,7 @@ class NetworksPage(Page):
         self.start_flow(lambda: self._start_transfer(verb, net))
 
     async def _start_transfer(self, verb: str, net: "config.NetworkConfig") -> None:
-        busy = self.app.active_transfer
-        if busy is not None and busy.running:
-            # Before any question: picking delta/full only to be refused is
-            # worse than being refused. (start_transfer checks again.)
-            self.notify(f"Already working on {busy.network_name} — see the Publish section.",
-                        severity="warning")
-            return
-        choice = None
-        if verb == "bundle" and net.bundle_dir is None:
-            self.notify(f"Network '{net.name}' has no transfer output — set one in Edit.",
-                        severity="warning")
-            return
-        if verb in ("publish", "bundle"):
-            # Asked here, where the user is, before the section switches.
-            from mmw.tui.point_pages import BundlePickPage, PublishPickPage
-            mirror_dir = self.app.cfg.settings.mirror_dir
-            if verb in ("publish", "bundle"):
-                def read_status():
-                    from mmw.commands.bundle import available_transfer_dates
-                    from mmw.core.pool import Pool
-                    from mmw.core.snapshots import snapshot_status
-                    with Pool(mirror_dir, read_only=True) as pool:
-                        status = snapshot_status(pool, net.name, net.root)
-                    try:
-                        dates = available_transfer_dates(net, mirror_dir, cfg=self.app.cfg)
-                    except ValueError:
-                        dates = ()  # The form's preview explains missing points.
-                    return status, dates
-                status, dates = await asyncio.to_thread(read_status)
-            repos, due = None, None
-            if verb == "bundle":
-                from mmw.core.repos import network_repos
-                from mmw.core.runtime import installer_due
-                repos = await asyncio.to_thread(network_repos, net, self.app.cfg, mirror_dir)
-                try:                                     # it reads the pool: never on the screen's thread
-                    due = await asyncio.to_thread(installer_due, net, mirror_dir)
-                except Exception:  # noqa: BLE001 — a default, never a failure
-                    due = status.last_bundle is None
-            page = (PublishPickPage(net, status, available_dates=dates) if verb == "publish"
-                    else BundlePickPage(net, status, mirror_dir, repos=repos, installer_due=due,
-                                        available_dates=dates))
-            choice = await self.app.push_screen_wait(page)
-            if choice is None:
-                return          # cancelled — never falls back to a default silently
-        await self.app.start_transfer(verb, net, choice=choice)
+        await start_transfer(self, verb, net)
 
     def action_packages(self) -> None:
         net = self.highlighted()
@@ -346,3 +302,53 @@ class NetworksPage(Page):
                     confirm_label="Yes", cancel_label="No")):
                 await self.app.push_screen_wait(
                     DeleteProgressModal(f"Deleting — {net.name}", [net.root]))
+
+
+async def start_transfer(page, verb: str, net: "config.NetworkConfig", *, when: str | None = None) -> None:
+    """Ask Publish's or Transfer's questions where the user is, then hand the
+    run to the Publish section. `when`: a point's date, filled in as the
+    publish's As of or the transfer's To (Repository history's row actions)."""
+    busy = page.app.active_transfer
+    if busy is not None and busy.running:
+        # Before any question: picking delta/full only to be refused is
+        # worse than being refused. (start_transfer checks again.)
+        page.notify(f"Already working on {busy.network_name} — see the Publish section.",
+                    severity="warning")
+        return
+    choice = None
+    if verb == "bundle" and net.bundle_dir is None:
+        page.notify(f"Network '{net.name}' has no transfer output — set one in Edit.",
+                    severity="warning")
+        return
+    if verb in ("publish", "bundle"):
+        # Asked here, where the user is, before the section switches.
+        from mmw.tui.point_pages import BundlePickPage, PublishPickPage
+        mirror_dir = page.app.cfg.settings.mirror_dir
+        def read_status():
+            from mmw.commands.bundle import available_transfer_dates
+            from mmw.core.pool import Pool
+            from mmw.core.snapshots import snapshot_status
+            with Pool(mirror_dir, read_only=True) as pool:
+                status = snapshot_status(pool, net.name, net.root)
+            try:
+                dates = available_transfer_dates(net, mirror_dir, cfg=page.app.cfg)
+            except ValueError:
+                dates = ()  # The form's preview explains missing points.
+            return status, dates
+        status, dates = await asyncio.to_thread(read_status)
+        repos, due = None, None
+        if verb == "bundle":
+            from mmw.core.repos import network_repos
+            from mmw.core.runtime import installer_due
+            repos = await asyncio.to_thread(network_repos, net, page.app.cfg, mirror_dir)
+            try:                                     # it reads the pool: never on the screen's thread
+                due = await asyncio.to_thread(installer_due, net, mirror_dir)
+            except Exception:  # noqa: BLE001 — a default, never a failure
+                due = status.last_bundle is None
+        pick = (PublishPickPage(net, status, available_dates=dates, when=when) if verb == "publish"
+                else BundlePickPage(net, status, mirror_dir, repos=repos, installer_due=due,
+                                    available_dates=dates, until=when))
+        choice = await page.app.push_screen_wait(pick)
+        if choice is None:
+            return          # cancelled — never falls back to a default silently
+    await page.app.start_transfer(verb, net, choice=choice)

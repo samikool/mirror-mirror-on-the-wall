@@ -24,9 +24,12 @@ class PublishPickPage(Page):
     """Which repository point date to publish, and into which directory.
     Dismisses with a `PublishChoice`, or None."""
 
-    def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, available_dates=()):
+    def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, available_dates=(),
+                 when: str | None = None):
+        """`when`: As of this date, filled in (a history row's Publish as of this)."""
         super().__init__()
         self.TITLE = f"Publish {net.name}"
+        self._when = when
         self._net = net
         self._status = status
         self._available_dates = available_dates
@@ -40,9 +43,9 @@ class PublishPickPage(Page):
         dirs = ([(escape(f"The network's root — {self._net.root}"), "root")]
                 if self._net.root is not None else []) + [("Another directory", "other")]
         yield Form(
-            ChoiceField("Publish", targets, "live", id="pick-target",
+            ChoiceField("Publish", targets, "date" if self._when else "live", id="pick-target",
                         hint="Use this network's current repository selection at the chosen date."),
-            TextField("Date", "", id="pick-when",
+            TextField("Date", self._when or "", id="pick-when",
                       hint="2026-11-03, 3nov or a stamp — each repository as its last sync "
                            "by then had it (--as-of)."),
             ChoiceField("Into", dirs, dirs[0][1], id="pick-dir",
@@ -116,8 +119,10 @@ class BundlePickPage(Page):
 
     def __init__(self, net: config.NetworkConfig, status: SnapshotStatus, mirror_dir: Path,
                  repos: dict[str, str] | None = None, installer_due: bool | None = None,
-                 available_dates: tuple[str, ...] = ()):
+                 available_dates: tuple[str, ...] = (), until: str | None = None):
+        """`until`: To this date, filled in (a history row's Transfer to this)."""
         super().__init__()
+        self._until = until
         # Worked out by the caller off the screen's thread (it reads the pool);
         # None: here, as a page built on its own (a test) has no caller to ask.
         self._due = installer_due
@@ -160,9 +165,9 @@ class BundlePickPage(Page):
                       placeholder="ubuntu:arches=i386",
                       hint="Parts the far side never had, sent in full whatever From says: "
                            "[repository:]arches, components or suites=value — space-separated."),
-            ChoiceField("To", tos, "now", id="pick-to",
+            ChoiceField("To", tos, "date" if self._until else "now", id="pick-to",
                         hint="Points to carry. Older points are stored; rollback is an explicit site action."),
-            TextField("Through date", "", id="pick-until",
+            TextField("Through date", self._until or "", id="pick-until",
                       hint="Newest retained point at or before this date, independently per suite."),
             *([ChoiceField("How", [("One .tar file (bundle)", "bundle"),
                                    ("A folder of hardlinks (stage)", "stage")],

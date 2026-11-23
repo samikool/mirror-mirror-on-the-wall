@@ -47,6 +47,7 @@ def test_a_dated_tree_is_that_day_as_of(env, tmp_path):  # noqa: F811
 
 def test_clean_frees_what_a_dated_tree_held(env, tmp_path):  # noqa: F811
     home, root = _days(env, (1, 2, 3, 4, 5), tmp_path)
+    ops.keep_here(home, 3)
     old = root / "example.com/a/@2026-11-01"
     assert old.is_dir()
     assert ops.clean(home) > 0
@@ -109,6 +110,7 @@ def test_a_build_a_crash_cut_short_is_swept(env, tmp_path):  # noqa: F811
 
 def test_clean_deletes_only_what_was_confirmed(env, tmp_path):  # noqa: F811
     home, root = _days(env, (1, 2, 3, 4, 5), tmp_path)
+    ops.keep_here(home, 3)
     plan = ops.clean_plan_here(home)
     one = next(i for i in plan if i.date == "2026-11-02")
     ops.clean(home, {one.point})

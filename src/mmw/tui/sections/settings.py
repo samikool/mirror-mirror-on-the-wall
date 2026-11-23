@@ -64,7 +64,7 @@ class SettingsPage(Page):
             ),
             TextField(
                 "Repository points to keep", str(s.keep_points), id="settings-keep-points",
-                hint="Default history per repository suite, even without a network: a count, all, or 90d.",
+                hint="History kept per repository suite: all (default), a count, or an age like 90d.",
             ),
             ToggleField(
                 "Check for mmw updates", s.update_check, id="settings-update-check",

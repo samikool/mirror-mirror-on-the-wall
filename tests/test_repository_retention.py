@@ -63,12 +63,13 @@ def test_repository_retention_without_networks(tmp_path):
         assert len(pool.repository_points(cfg.sources[0].identity)) == 2
 
 
-def test_network_rules_do_not_override_repository_defaults(tmp_path):
+def test_a_network_does_not_pin_repository_points(tmp_path):
     cfg = seeded(tmp_path)
     cfg.sources[0].keep_points = None
+    cfg.settings.keep_points = 3
     with Pool(tmp_path) as pool:
         assert len(points.retention_plan(pool, [], cfg=cfg)) == 2
-        net = config.NetworkConfig(name='all', keep_points='all')
+        net = config.NetworkConfig(name='all')
         for p in pool.repository_points(cfg.sources[0].identity):
             pool.link_network_point(net.name, p.id, p.stamp)
         assert len(points.retention_plan(pool, [net], cfg=cfg)) == 2

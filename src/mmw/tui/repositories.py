@@ -272,7 +272,7 @@ def prune_preview(cfg: "config.Config") -> tuple[int, int, int]:
 
 
 def keep_costs(cfg: "config.Config") -> dict[str, list[tuple]]:
-    """Per network, what each keep_points choice would free (as `mmw prune
+    """Per repository, what each keep_points choice would free (as `mmw prune
     --dry-run --costs`). **Blocking**, and a pool read per choice."""
     from mmw.commands.prune import costs_of_keeping
     return costs_of_keeping(cfg, cfg.settings.mirror_dir)

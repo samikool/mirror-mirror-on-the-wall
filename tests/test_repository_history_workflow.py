@@ -100,10 +100,9 @@ def test_older_publish_without_point_ids_protects_history_until_republished(sync
         assert points.retention_plan(pool, [net], cfg=cfg)
 
 
-def test_network_retention_cannot_override_repository_retention(synced):  # noqa: F811
+def test_a_network_cannot_override_repository_retention(synced):  # noqa: F811
     cfg, net, md, units = synced
     unit = next(u for u in units if u.arch == 'amd64')
-    net = net.model_copy(update={'keep_points': 'all'})
     cfg = cfg.model_copy(update={'networks': [net], 'settings': cfg.settings.model_copy(update={'keep_points': 1})})
     for day in (2, 3):
         _point(cfg, md, unit, day, day == 3)

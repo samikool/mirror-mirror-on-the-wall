@@ -78,11 +78,11 @@ def test_as_of_uses_that_dates_settings(recorded, tmp_path):
 
 def test_retention_keeps_a_published_moment(recorded, tmp_path):
     cfg, net, md, _p = recorded
-    net = net.model_copy(update={"keep_points": 1})
+    cfg = cfg.model_copy(update={"settings": cfg.settings.model_copy(update={"keep_points": 1})})
     publish_as_of(net.model_copy(update={"root": tmp_path / "x"}), cfg, md, "2030-01-01")
     with Pool(md, read_only=True) as pool:
         moment = {p for ids in pool.points_at("lab", "20300101T235959Z").values() for p in ids}
-        assert moment and not set(points.retention_plan(pool, [net])) & moment
+        assert moment and not set(points.retention_plan(pool, [net], cfg=cfg)) & moment
 
 
 def test_a_stubbed_moment_is_refused(recorded, tmp_path):

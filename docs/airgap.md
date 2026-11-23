@@ -233,9 +233,10 @@ the transfer's From and To menus select retained dates directly. `--history`
 carries intermediate retained points. A network layer keeps its own rewritten
 history; upstream history cannot stand in for that layer's generated files.
 
-Repository retention defaults to `[settings] keep_points = 3` per suite.
-Override `keep_points` and `keep_suites` on a source. Network compatibility
-rules do not override repository retention. Points currently published to a
+Repository history is kept in full by default (`[settings] keep_points =
+"all"`); pruning it is manual. Set a count or an age there, or override
+`keep_points` and `keep_suites` on a source. Networks have no retention of
+their own. Points currently published to a
 directory remain protected until it advances. Use Settings or Sources, or:
 
 ```bash

@@ -41,9 +41,11 @@ Then:
   a network does not need a resync or a history import. Its current selection
   can publish or transfer retained repository points, including earlier ones.
   PyPI, VS Code and layers retain their compatibility history adapters.
-- **Repository history has a limit:** `[settings] keep_points` (default three
-  per suite), overridden in Sources with `keep_points` / `keep_suites`.
-  Network legacy retention does not override it. A point an actual publish
+- **Repository history is kept in full by default:** `[settings] keep_points`
+  is `all` unless you set it (a pool saved with the old default of 3 now keeps
+  everything), overridden in Sources with `keep_points` / `keep_suites`.
+  Networks no longer have their own retention — `keep_points` / `keep_suites`
+  on a network are ignored with a warning. A point an actual publish
   directory serves stays protected until that directory advances.
   `mmw prune --dry-run --costs` previews retention before deleting anything.
   Older publish records without point IDs retain prior history conservatively;

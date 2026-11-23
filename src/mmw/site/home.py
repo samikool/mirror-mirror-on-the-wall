@@ -44,7 +44,7 @@ class SiteSettings(BaseModel):
     roots: list[RootConfig]             # the first is the primary
     # History kept per suite: the newest N, "all", or an age ("90d"). Acts
     # only in Clean up — or after each apply with `auto_clean`.
-    keep: int | str = 3
+    keep: int | str = "all"
     auto_clean: bool = False
 
     @field_validator("keep", mode="before")
@@ -119,7 +119,7 @@ def save_settings(home: Path, settings: SiteSettings) -> None:
         data["hosts"] = dict(sorted(settings.hosts.items()))
     if settings.hosts_at:
         data["hosts_at"] = settings.hosts_at
-    if settings.keep != 3:
+    if settings.keep != "all":
         data["keep"] = settings.keep
     if settings.auto_clean:
         data["auto_clean"] = True

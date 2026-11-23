@@ -22,7 +22,7 @@ def recorded_settings(tmp_path, monkeypatch):
         config.LocalAptSource(provider="apt-local", url="https://tools.lab/apt", folder="debs",
                               key="tools", structured=True),
     ]
-    net = config.NetworkConfig(name="lab", history=True, keep_points="all")
+    net = config.NetworkConfig(name="lab", history=True)
     cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "pool"), sources=sources,
                         networks=[net])
     # Exercise the real settings builder without fetching any provider's payload.
@@ -83,10 +83,12 @@ def test_apt_settings_round_trip_the_same_units_and_network_fields(tmp_path, fmt
                                  gpg_key_url="https://deb.example/keys/archive.gpg",
                                  extra_files=["https://deb.example/meta-release"])
     net = config.NetworkConfig(name="lab", root=tmp_path / "www", bundle_dir=tmp_path / "bundles",
-                               history=True, keep_points="all", keep_suites={"bookworm": 5},
+                               history=True,
                                runtime_arches=["aarch64"], certs=False, retention="forever",
                                select=[config.NetworkSelect(source=source.identity, arches=["arm64"])])
     settings = {"network": net.model_dump(mode="json"), "mirrors": [u.legacy_dict() for u in source.to_mirrors()]}
+    # Headers from before 1.5.7 carry the network's retired retention: read, then dropped.
+    settings["network"].update(keep_points="all", keep_suites={"bookworm": 5})
     if fmt == 2:  # legacy headers stored the selections with flat dimension keys
         settings["network"]["select"] = [{"source": source.identity, "arches": ["arm64"]}]
         settings["network"]["far_side"] = "mmw"

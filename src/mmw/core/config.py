@@ -445,7 +445,7 @@ class SourceConfig(_StrictModel):
     @field_validator("keep_suites", mode="before")
     @classmethod
     def _keep_suites(cls, value):
-        return NetworkConfig._valid_keep_suites(value)
+        return check_keep_suites(value)
 
     @model_validator(mode="after")
     def _upstream_urls_have_a_path(self):
@@ -864,7 +864,9 @@ DEFAULT_THEME = "mmw"
 
 class Settings(_StrictModel):
     mirror_dir: Path
-    keep_points: int | str = 3
+    # History kept per repository suite unless a source says otherwise:
+    # every point ("all"), the newest N, or an age ("90d"). Pruning is manual.
+    keep_points: int | str = "all"
 
     @field_validator("keep_points", mode="before")
     @classmethod
@@ -989,7 +991,10 @@ class NetworkSelect(_StrictModel):
         return True
 
 
-_LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port", "far_side"})
+_LEGACY_NETWORK_KEYS = frozenset({"bundle_tls", "bundle_compress", "gallery_port", "far_side",
+                                  "keep_points", "keep_suites"})
+# Retired network keys that changed what is kept: said once per network.
+_RETIRED_NETWORK_RETENTION = ("keep_points", "keep_suites")
 
 
 DEFAULT_RETENTION = "90d"
@@ -1062,6 +1067,13 @@ def check_keep(value, what: str):
                      f"\"90d\" — not {value!r}")
 
 
+def check_keep_suites(value) -> dict[str, int | str]:
+    """Per-suite retention: {"bookworm": "all", "sid": 1}, each checked like keep_points."""
+    if not isinstance(value, dict):
+        raise ValueError("keep_suites is a table: suite = how many points (a number, \"all\" or an age)")
+    return {str(k): check_keep(v, f"keep_suites.{k}") for k, v in value.items()}
+
+
 class NetworkConfig(_StrictModel):
     """A named downselect of the mirror — what one site gets.
 
@@ -1090,13 +1102,6 @@ class NetworkConfig(_StrictModel):
     # far side can sign with them. Opt-in per key: anyone holding a bundle
     # can then sign as you. Only an mmw far side has a keyring to put them in.
     carry_keys: list[str] = []
-    # Timeline points kept per suite when prune runs: a number, "all", or an
-    # age ("90d"). Never dropped: one a snapshot holds, or one the network
-    # first saw after its last bundle.
-    keep_points: int | str = 3
-    # Per suite, instead of keep_points: {"bookworm" = "all", "sid" = 1}. A key
-    # is a suite or codename (or a track's path, for a flat repository).
-    keep_suites: dict[str, int | str] = {}
     # What a bundle carries for an mmw network: every point since the last
     # bundle (true), or each suite's newest (false). `--history`/`--newest`.
     history: bool = False
@@ -1113,18 +1118,6 @@ class NetworkConfig(_StrictModel):
         if not value:
             raise ValueError("runtime_arches needs at least one architecture")
         return sorted(set(value))
-
-    @field_validator("keep_points", mode="before")
-    @classmethod
-    def _valid_keep_points(cls, value):
-        return check_keep(value, "keep_points")
-
-    @field_validator("keep_suites", mode="before")
-    @classmethod
-    def _valid_keep_suites(cls, value):
-        if not isinstance(value, dict):
-            raise ValueError("keep_suites is a table: suite = how many points (a number, \"all\" or an age)")
-        return {str(k): check_keep(v, f"keep_suites.{k}") for k, v in value.items()}
 
     @field_validator("retention")
     @classmethod
@@ -1147,7 +1140,9 @@ class NetworkConfig(_StrictModel):
           container. The gallery runs in the nginx Compose stack now, where
           nginx reaches it at `gallery:8080`.
         - `far_side` chose apply.py or mmw on the airgapped side. mmw runs
-          there now; "apply" warns once (`mmw site adopt` converts a tree)."""
+          there now; "apply" warns once (`mmw site adopt` converts a tree).
+        - `keep_points` / `keep_suites` were a network's own retention.
+          History is kept per repository now (`mmw keep`); `load` warns once."""
         if isinstance(data, dict) and _LEGACY_NETWORK_KEYS.intersection(data):
             data = {k: v for k, v in data.items() if k not in _LEGACY_NETWORK_KEYS}
         return data
@@ -1488,6 +1483,7 @@ def config_path(directory: Path = Path(".")) -> Path:
 
 _SAID_RETIRED: set[str] = set()
 _SAID_TWINS: set[tuple[str, str]] = set()
+_SAID_RETENTION: set[tuple[str, str]] = set()
 
 
 def scheme_twins(urls) -> list[str]:
@@ -1517,6 +1513,13 @@ def load(directory: Path = Path(".")) -> Config:
             print(f"mmw: network {name}: far_side = \"apply\" is retired — its far side runs mmw now "
                   "(convert an apply.py tree there with `mmw site adopt PATH`); the setting is "
                   "ignored and goes the next time the config is saved", file=sys.stderr)
+        if (isinstance(net, dict) and (retired := [k for k in _RETIRED_NETWORK_RETENTION if k in net])
+                and (str(path), name) not in _SAID_RETENTION):
+            _SAID_RETENTION.add((str(path), name))          # once per process
+            import sys
+            print(f"mmw: network {name}: {' and '.join(retired)} "
+                  f"{'is' if len(retired) == 1 else 'are'} no longer used — history is kept per "
+                  "repository (`mmw keep`)", file=sys.stderr)
     cfg = Config.model_validate(data)
     for line in scheme_twins(s.identity for s in cfg.sources):
         if (str(path), line) not in _SAID_TWINS:
@@ -1671,8 +1674,6 @@ def _config_data(cfg: Config) -> dict:
             **({"dist_upgrade": True} if n.dist_upgrade else {}),
             **({"certs": False} if not n.certs else {}),
             **({"retention": n.retention} if n.retention != DEFAULT_RETENTION else {}),
-            **({"keep_points": n.keep_points} if n.keep_points != 3 else {}),
-            **({"keep_suites": dict(n.keep_suites)} if n.keep_suites else {}),
             **({"history": True} if n.history else {}),
             **({"runtime_arches": n.runtime_arches} if n.runtime_arches != ["x86_64"] else {}),
             **({"runtime_python": n.runtime_python} if n.runtime_python != DEFAULT_RUNTIME_PYTHON else {}),
@@ -1689,7 +1690,7 @@ def _config_data(cfg: Config) -> dict:
             "mirror_dir": str(cfg.settings.mirror_dir),
             "database": str(cfg.settings.database),
             "max_connections": cfg.settings.max_connections,
-            **({"keep_points": cfg.settings.keep_points} if cfg.settings.keep_points != 3 else {}),
+            **({"keep_points": cfg.settings.keep_points} if cfg.settings.keep_points != "all" else {}),
             # Omitted at the default, like the network flags above: a
             # hand-edited file should only say what was actually chosen.
             **({"theme": cfg.settings.theme}

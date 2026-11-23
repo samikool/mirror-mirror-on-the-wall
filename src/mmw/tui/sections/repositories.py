@@ -101,7 +101,7 @@ class RepositoriesPage(Page):
             "k adds your own .debs — to a folder repository, or to an upstream mirror per network;\n"
             "f shows a folder repository's sources file for clients.\n"
             "Prune drops packages no index references; wipe deletes every downloaded byte;\n"
-            "c previews network and repository keep_points costs.\n"
+            "c previews what each repository keep_points choice frees.\n"
             "t adds a past point: a Debian or Ubuntu repository as it was on a date, from its "
             "snapshot archive.\n"
             "m merges the highlighted repository into another URL of the same archive (http and https, "
@@ -466,7 +466,7 @@ class RepositoriesPage(Page):
         self._start(self._keep_costs)
 
     async def _keep_costs(self) -> None:
-        """What each network or repository keep_points choice would free."""
+        """What each repository keep_points choice would free."""
         self.set_status("Working out what each keep_points choice frees (a pool read per choice)…")
         try:
             table = await asyncio.to_thread(repositories.keep_costs, self.app.cfg)
@@ -474,7 +474,7 @@ class RepositoriesPage(Page):
             self.set_status(f"Can't say yet: {e}", "warning")
             return
         if not table:
-            self.set_status("No repository or network keeps points yet.")
+            self.set_status("No repository keeps points yet.")
             return
         from mmw.commands.prune import settings_for_costs
         nets = settings_for_costs(self.app.cfg)
@@ -487,7 +487,7 @@ class RepositoriesPage(Page):
         await self.app.push_screen_wait(ConfirmDialog(
             "What each keep_points choice frees",
             "\n".join(lines) + "\nAgainst keeping every point, the other retention rules as set. "
-                                 "Change it in Settings, the repository, or the network (Keep points).", "Close"))
+                                 "Change it in Settings or the repository (Points to keep).", "Close"))
 
     @on(Button.Pressed, "#btn-wipe-pool")
     def _wipe_pressed(self) -> None:

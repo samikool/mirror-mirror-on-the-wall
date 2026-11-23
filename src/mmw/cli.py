@@ -672,7 +672,7 @@ def cmd_prune(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the confirmation prompt (implied when not a TTY)"),
     costs: bool = typer.Option(
-        False, "--costs", help="Preview what each keep_points choice would free, per network and repository "
+        False, "--costs", help="Preview what each keep_points choice would free, per repository "
                                "(implies --dry-run; reads the pool once per choice)"),
 ):
     """Remove orphaned pool packages not referenced by any mirror."""

@@ -507,8 +507,8 @@ mmw site clean --dry-run        # what Clean up would delete, and what each free
 mmw site clean --yes
 ```
 
-History is kept because old builds need old packages. Each suite keeps the
-newest 3 points by default; `--keep` changes it for the whole mirror, and
+History is kept because old builds need old packages. Each suite keeps
+every point by default; `--keep` changes it for the whole mirror, and
 `mmw site keep` for one suite (`default` goes back to the mirror's).
 Nothing is deleted on its own: Clean up (`mmw site clean`, or `C` in the
 TUI) does it after saying what goes and what each point frees — or, with

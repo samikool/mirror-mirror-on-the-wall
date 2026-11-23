@@ -436,6 +436,8 @@ def _kind(path, parameter):
         return 'site:dates' if site else 'dates'
     if site and parameter in ('version', 'whens'):
         return 'site:points'
+    if command == 'diff' and parameter in ('a', 'b'):
+        return 'site:points' if site else 'dates'
     if site and parameter == 'when':
         return 'site:bundles'
     if site and parameter == 'to_root':

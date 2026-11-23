@@ -1242,6 +1242,17 @@ def cmd_site_history(repo: str = _REPO, root: Path = _ROOT):
     raise typer.Exit(history(repo, root))
 
 
+@site_app.command("diff")
+def cmd_site_diff(repo: str = _REPO,
+                  a: str = typer.Argument(..., help="The older point: a date, a label or its digest"),
+                  b: str = typer.Argument(None, help="The newer point (default: the next kept point after A)"),
+                  track: str = typer.Option(None, "--track", help="Only this suite"),
+                  root: Path = _ROOT):
+    """List the packages added, removed, upgraded and downgraded between two kept points."""
+    from mmw.commands.site import diff
+    raise typer.Exit(diff(repo, a, b, track, root))
+
+
 @site_app.command("verify")
 def cmd_site_verify(root: Path = _ROOT,
                     points: bool = typer.Option(False, "--points", help="Check every kept point's APT consistency"),
@@ -1359,7 +1370,7 @@ def cmd_keep(
     raise typer.Exit(run(_cfg_dir(), value, repo, suite))
 
 
-history_app = typer.Typer(help="Repository history: list the points syncs recorded, or delete some.")
+history_app = typer.Typer(help="Repository history: list the points syncs recorded, compare two, or delete some.")
 app.add_typer(history_app, name="history")
 
 
@@ -1392,6 +1403,18 @@ def cmd_history_delete(
     """Delete kept points by hand: their records stay, their files go unless something else keeps them."""
     from mmw.commands.history import run_delete
     raise typer.Exit(run_delete(_cfg_dir(), repo, when, suite=suite, before=before, yes=yes, dry_run=dry_run))
+
+
+@history_app.command("diff")
+def cmd_history_diff(
+    repo: str = typer.Argument(..., help="Repository (URL or name)"),
+    a: str = typer.Argument(..., help="The older point: a date (2026-11-03, 3nov) or a stamp"),
+    b: str = typer.Argument(None, help="The newer point (default: the next kept point after A)"),
+    suite: str = typer.Option(None, "--suite", help="Only this suite"),
+):
+    """List the packages added, removed, upgraded and downgraded between two kept points."""
+    from mmw.commands.history import run_diff
+    raise typer.Exit(run_diff(_cfg_dir(), repo, a, b, suite=suite))
 
 
 # Keep Typer's shell protocol and path handling; add saved-object suggestions.

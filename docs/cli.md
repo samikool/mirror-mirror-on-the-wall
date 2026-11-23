@@ -42,7 +42,7 @@ codes — see [far-side.md](far-side.md#exit-codes).
 | [`mmw bundle`](#mmw-bundle) | Transfer recorded points: from each repository's last transfer to its latest recorded points |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
-| [`mmw history`](#mmw-history) | Repository history: list the points syncs recorded, or delete some |
+| [`mmw history`](#mmw-history) | Repository history: list the points syncs recorded, compare two, or delete some |
 | [`mmw init`](#mmw-init) | Setup wizard, or recover mmw.toml from kept bundles |
 | [`mmw installer`](#mmw-installer) | Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh` on the far side puts mmw on the path, offline |
 | [`mmw keep`](#mmw-keep) | Set repository history retention, independently of networks |
@@ -151,7 +151,7 @@ Takes no options.
 
 ### `mmw history`
 
-Repository history: list the points syncs recorded, or delete some.
+Repository history: list the points syncs recorded, compare two, or delete some.
 
 `mmw history` lists each repository's points, grouped by suite, newest
 first: each one's date, size, and what it is — the latest sync, published at
@@ -163,7 +163,17 @@ the TUI's Sources pane shows it; with `-n NETWORK` the listing starts with
 what that network's far side has and what is newer here, as the Networks pane
 shows it. `--json` prints the same rows for scripts. The TUI's
 Repository history is the same table, with Publish as of this, Transfer to
-this and Delete acting on the row's point.
+this, Changes and Delete acting on the row's point.
+
+`mmw history diff REPO A [B] [--suite S]` lists the packages added (`+`),
+upgraded (`~`), downgraded (`↓`) and removed (`−`) from point A to point B,
+read from both points' Packages indexes; B defaults to the next kept point
+after A. A and B are dates or stamps, as for `delete`. Each suite's heading
+sums the changes up (`+3 ~37 −1`). The TUI's Changes shows what the row's
+point changed since the point before it; `mmw site diff REPO A [B] [--track S]`
+does the same on the far side. A transfer's preview says what it brings each
+suite ("brings 37 upgrades, 3 new packages") and the far side's apply review
+repeats it.
 
 `mmw history delete REPO WHEN [--suite S] [--before] [--dry-run] [--yes]`
 deletes kept points by hand (TUI: Repository history → More… → Delete

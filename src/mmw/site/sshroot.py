@@ -160,6 +160,15 @@ class SshRoot:
                 return []
             raise
 
+    def diff(self, key: str, a: str, b: str | None = None, track: str | None = None) -> list:
+        from mmw.core.point_diff import from_json
+        try:
+            return from_json(self._call("diff", key, a, b or "", track or ""))
+        except ValueError as e:
+            if "unknown verb" in str(e):
+                raise ValueError(f"{self.info.name}: its mmw is older — update it to compare points") from None
+            raise
+
     def merge_plan(self, older: str, newer: str):
         from mmw.site.merge import SiteMergePlan
         return SiteMergePlan(**self._call("merge-plan", older, newer))

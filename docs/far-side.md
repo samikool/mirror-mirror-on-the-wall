@@ -194,6 +194,7 @@ usual.
 
 ```bash
 mmw site history debian                    # each suite's points; ▶ is served
+mmw site diff debian 2026-10-28            # the packages that point changed in the next one
 mmw site serve debian 2026-10-28           # each suite as it was that day (asks; --yes to skip)
 mmw site serve debian 3f9a1c --track bookworm   # one point, by its digest
 mmw site status                            # what each repository serves: current, pinned or held
@@ -207,6 +208,13 @@ or before it. A day and month alone means the most recent one, up to today.
 Dates are the upstream `Release`'s own, in UTC (a point without one is
 dated by the bundle that brought it). `--track SUITE` limits it to one
 suite.
+
+`mmw site diff REPO A [B]` lists the packages added (`+`), upgraded (`~`),
+downgraded (`↓`) and removed (`−`) between two kept points, read from their
+Packages indexes; B defaults to the next kept point after A. In the TUI,
+**Changes** under the history shows what the selected point changed since
+the one before it. Applying a bundle says what it brings each suite
+("brings 37 upgrades, 3 new packages") before you confirm.
 
 Serving a point **pins** its suite there: later bundles store newer points
 without serving them. Other suites of the same repository keep moving.

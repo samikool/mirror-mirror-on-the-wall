@@ -308,7 +308,8 @@ class BundlePickPage(Page):
                 available = (f"; kept {day(row.available[0])} to {day(row.available[-1])}"
                              if row.available else "")
                 lines.append(f"{label} / {row.suite}: {day(row.from_date) if row.from_date else 'full'}"
-                             f" → {day(row.to_date)} · {row.points} point(s){available}")
+                             f" → {day(row.to_date)} · {row.points} point(s){available}"
+                             + (f" · {row.changes}" if row.changes else ""))
             lines.extend(plan.whole)
             lines.append(f"Sends about {plan.blobs:,} new blobs · {fmt_size(plan.bytes)}")
             lines.extend(plan.warnings)

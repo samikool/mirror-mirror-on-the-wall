@@ -115,6 +115,10 @@ class LocalRoot:
         from mmw.site import ops
         return ops.deleted_stamps(self.home, key)
 
+    def diff(self, key: str, a: str, b: str | None = None, track: str | None = None) -> list:
+        from mmw.site import ops
+        return ops.diff(self.home, key, a, b, track)
+
     def merge_plan(self, older: str, newer: str):
         from mmw.site.merge import plan
         return plan(self.home, older, newer)

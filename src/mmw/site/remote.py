@@ -266,6 +266,11 @@ def _history(root, args, stdin):
             for t, rows in root.history(args[0])]
 
 
+def _diff(root, args, stdin):
+    from mmw.core.point_diff import to_json
+    return to_json(root.diff(args[0], args[1], args[2] or None, args[3] or None))
+
+
 def _break_lock(root, args, stdin):
     return {"removed": root.break_lock()}
 
@@ -328,6 +333,7 @@ _VERBS = {
     "details": _simple(lambda r, a, i: r.details()),
     "deleted": _simple(lambda r, a, i: {"stamps": r.deleted(a[0])}),
     "narrowing": _simple(lambda r, a, i: {"lines": r.narrowing(a[0])}),
+    "diff": _simple(_diff),
     "merge-plan": _simple(lambda r, a, i: __import__("dataclasses").asdict(r.merge_plan(a[0], a[1]))),
     "merge": _simple(lambda r, a, i: {"lines": r.merge(a[0], a[1], confirmed="--confirmed" in a[2:])}),
     "csr": _simple(_csr),

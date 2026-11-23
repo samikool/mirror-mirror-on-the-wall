@@ -613,6 +613,48 @@ def history(home: Path, ref: str) -> list[tuple[TrackInfo, list[tuple[PointInfo,
         return out
 
 
+def diff(home: Path, ref: str, a: str, b: str | None = None, track: str | None = None) -> list:
+    """Per suite (`track`: just that one) with a point `a` names: what changed
+    from it to the point `b` names — by default the next kept point after it."""
+    from mmw.core.point_diff import SuiteDiff, diff as compare, packages_of
+    from mmw.site.versionref import resolve_point
+    roots = _roots(home)
+    with SiteDB(home) as db:
+        repo = resolve_repo(db, ref)
+        state = db.repo_state(repo)
+        store = roots.store(roots.of(state))
+
+        def packages(point):
+            files = db.point_files(point.id)
+
+            def read(path):
+                checksum = files.get(path)
+                try:
+                    return disk_io.ops.read_bytes(store.path(checksum)) if checksum else None
+                except OSError:
+                    return None
+            return packages_of(files, read)
+
+        out, last, refused = [], [], None
+        for t in [_track_named(db, repo, track)] if track else db.tracks(repo):
+            kept = sorted(db.points(t.id), key=lambda p: (p.date, p.stamp, p.ident))
+            try:
+                old = resolve_point(kept, a)
+                new = resolve_point(kept, b) if b is not None else next(iter(kept[kept.index(old) + 1:]), None)
+            except ValueError as e:          # not in this suite: said only if no suite has it
+                refused = refused or e
+                continue
+            if new is None:
+                last.append(suite_of(t))
+                continue
+            out.append(SuiteDiff(state.label, suite_of(t), old.date, new.date, compare(packages(old), packages(new))))
+    if not out:
+        if last and b is None:
+            raise LookupError(f"{a} is the newest point of {', '.join(last)} kept here — nothing after it to compare")
+        raise refused or LookupError(f"{state.label}: no point {a!r} here")
+    return out
+
+
 def _expected(db: SiteDB, roots: Roots) -> dict[str, dict[str, str]]:
     """Root name → {path: checksum} it should serve."""
     out: dict[str, dict[str, str]] = {r.name: {**roots.network_files(db, r), **roots.generated(db, r)}

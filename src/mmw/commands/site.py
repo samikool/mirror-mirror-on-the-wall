@@ -541,6 +541,17 @@ def history(repo: str, root: Path | None = None) -> int:
     return 0
 
 
+def diff(repo: str, a: str, b: str | None = None, track: str | None = None, root: Path | None = None) -> int:
+    """`mmw site diff`: the packages that changed between two kept points."""
+    from mmw.core.point_diff import describe
+    try:
+        r_, key = _repo(root, repo)
+        print(describe(r_.diff(key, a, b, track)))
+    except _ERRORS as e:
+        return _fail(e)
+    return 0
+
+
 def merge(older: str, newer: str, dry_run: bool = False, yes: bool = False, root: Path | None = None) -> int:
     """Make one repository of an archive held here under two URLs: `older`'s
     points join `newer`'s history, `newer` serves, `older` is forgotten."""

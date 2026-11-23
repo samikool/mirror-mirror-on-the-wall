@@ -130,7 +130,8 @@ def run(cfg_dir: Path = Path("."), network: str | None = None,
                     say(f"  {repository_label(row.repo, cfg)} / {row.suite}: "
                         f"{day(row.from_date) if row.from_date else 'full'} → {day(row.to_date)} "
                         f"· {row.points} point(s)"
-                        + (f"; kept {day(row.available[0])} to {day(row.available[-1])}" if row.available else ""))
+                        + (f"; kept {day(row.available[0])} to {day(row.available[-1])}" if row.available else "")
+                        + (f" · {row.changes}" if row.changes else ""))
                 for line in plan.whole:
                     say(f"  {line}")
                 say(f"  Sends about {plan.blobs:,} new blobs · {_fmt_size(plan.bytes)}")

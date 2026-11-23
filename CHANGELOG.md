@@ -6,6 +6,53 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.6]
+
+History now belongs to the repository, not to the network that synced it. Any
+network that selects a repository can send all of its points, and a far side
+fed by several networks keeps serving everything each of them brought.
+
+### Added
+
+- `mmw merge` and `mmw site merge` (**Merge into…** under More in the TUI, on
+  both sides) fold one repository's history into another's when they are the
+  same archive under two URLs.
+- `mmw bundle --whole` and `mmw stage --whole` (**Send whole** when transferring
+  in the TUI) send part of a repository in full, whatever `--since` says. For
+  example, `--whole ubuntu:arches=i386` when the far side never had i386 and no
+  record of what was sent survives.
+
+### Changed
+
+- History from before points (old snapshots) now belongs to its repository: any
+  network that selects it can send those dates.
+- Applying a bundle and `site status` say when a suite now serves fewer
+  architectures or components than before, and how to combine them.
+
+### Fixed
+
+- `--since` after rebuilding a connected side no longer leaves out an
+  architecture, component or suite the network added after the kept bundle it
+  starts from. What that bundle didn't carry is sent whole, and the preview says
+  so.
+- An adopted tree is recognised as the same repository when a bundle brings it,
+  from any network, whether its URL uses http or https, and from a renamed host
+  that serves the same Releases. Adding a source that differs from one already
+  configured only by http/https merges into it. Two sources already configured
+  that way are pointed out when mmw starts and in the repository editor.
+- Prune no longer drops points a `history = true` network hasn't sent yet.
+- A far side now serves files that a later bundle adds to a Release it already
+  has (a new architecture, or a second network's selection).
+- A network with a package layer on one repository keeps date ranges and
+  `--since` for its other repositories.
+- Applying another network's bundle to a single mirror root imports history only
+  for repositories that root already mirrors, and keeps its network
+  configuration.
+- A far side fed by several networks no longer stops serving a suite one network
+  brought when another network's bundle doesn't list it.
+- Previewing an adoption while the site dashboard is still loading a mirror for
+  the first time now works on slow storage.
+
 ## [1.5.5]
 
 ### Added

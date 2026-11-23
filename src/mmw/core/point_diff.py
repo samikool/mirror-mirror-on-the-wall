@@ -239,3 +239,61 @@ def from_json(data) -> list[SuiteDiff]:
                       PointDiff(*([tuple(c) for c in d["changes"].get(k, [])]
                                   for k in ("added", "removed", "upgraded", "downgraded"))))
             for d in data]
+
+
+# ── one package through a suite's history ─────────────────────────────────────
+
+@dataclass(frozen=True)
+class PackageEvent:
+    """A point where a package's version changed: it arrived, moved to
+    another version, or left (`version` None)."""
+    label: str                 # the repository, as the user knows it
+    suite: str
+    date: str                  # the point's date (a stamp)
+    version: "str | None"
+    point: int = 0
+
+
+def version_in(name: str, packages: dict) -> "str | None":
+    """`name`'s version in one `packages_of` — the highest across its arches."""
+    best = None
+    for (package, _arch), v in packages.items():
+        if package == name and (best is None or version_cmp(v, best) > 0):
+            best = v
+    return best
+
+
+def package_events(name: str, kept, packages) -> list:
+    """(point, version or None) for each of `kept` (one suite's points, oldest
+    first) where `name`'s version differs from the point before: the first
+    that has it, each new version, and each point it left. `packages(point)`
+    gives a point's `packages_of`; a point whose index can't be read is skipped."""
+    out, last = [], None
+    for p in kept:
+        try:
+            v = version_in(name, packages(p))
+        except ValueError:
+            continue
+        if v != last:
+            out.append((p, v))
+        last = v
+    return out
+
+
+def describe_package(name: str, events) -> str:
+    """`alpha  1.1  jammy-updates 2026-10-01`, a line per event, by suite —
+    the repository named too when there are several."""
+    from mmw.site.versionref import day
+    several = len({e.label for e in events}) > 1
+    width = max(len(e.version or "removed") for e in events)
+    return "\n".join(f"{name}  {(e.version or 'removed'):<{width}}  "
+                     f"{f'{e.label} / ' if several else ''}{e.suite} {day(e.date)}" for e in events)
+
+
+def events_to_json(events) -> list[dict]:
+    return [{"label": e.label, "suite": e.suite, "date": e.date, "version": e.version, "point": e.point}
+            for e in events]
+
+
+def events_from_json(data) -> list:
+    return [PackageEvent(d["label"], d["suite"], d["date"], d.get("version"), d.get("point", 0)) for d in data]

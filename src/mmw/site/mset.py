@@ -119,6 +119,10 @@ class LocalRoot:
         from mmw.site import ops
         return ops.diff(self.home, key, a, b, track)
 
+    def package_history(self, key: str, name: str) -> list:
+        from mmw.site import ops
+        return ops.package_history(self.home, key, name)
+
     def merge_plan(self, older: str, newer: str):
         from mmw.site.merge import plan
         return plan(self.home, older, newer)

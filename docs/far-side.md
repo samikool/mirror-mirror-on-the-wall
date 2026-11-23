@@ -195,6 +195,7 @@ usual.
 ```bash
 mmw site history debian                    # each suite's points; ▶ is served
 mmw site diff debian 2026-10-28            # the packages that point changed in the next one
+mmw site history debian --package openssl  # when each openssl version arrived
 mmw site serve debian 2026-10-28           # each suite as it was that day (asks; --yes to skip)
 mmw site serve debian 3f9a1c --track bookworm   # one point, by its digest
 mmw site status                            # what each repository serves: current, pinned or held
@@ -215,6 +216,13 @@ Packages indexes; B defaults to the next kept point after A. In the TUI,
 **Changes** under the history shows what the selected point changed since
 the one before it. Applying a bundle says what it brings each suite
 ("brings 37 upgrades, 3 new packages") before you confirm.
+
+`mmw site history REPO --package NAME` shows when each version of a package
+arrived: a line per kept point where its version changed
+(`openssl  3.0.2-0ubuntu1.18  jammy-updates 2026-10-01`), and `removed`
+where it left. A point whose files aren't all here is skipped. In the TUI,
+Find (`/`, under More…) narrows the history to those points, each with the
+version it arrived at; Esc shows every point again.
 
 `mmw site history` (and the TUI's history table) leads each point with what
 it changed since the kept point before it in its suite — `+3 ~37 −1` is 3

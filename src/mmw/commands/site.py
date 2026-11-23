@@ -564,6 +564,17 @@ def diff(repo: str, a: str, b: str | None = None, track: str | None = None, root
     return 0
 
 
+def package_history(repo: str, name: str, root: Path | None = None) -> int:
+    """`mmw site history REPO --package NAME`: when each version arrived."""
+    from mmw.core.point_diff import describe_package
+    try:
+        r_, key = _repo(root, repo)
+        print(describe_package(name, r_.package_history(key, name)))
+    except _ERRORS as e:
+        return _fail(e)
+    return 0
+
+
 def merge(older: str, newer: str, dry_run: bool = False, yes: bool = False, root: Path | None = None) -> int:
     """Make one repository of an archive held here under two URLs: `older`'s
     points join `newer`'s history, `newer` serves, `older` is forgotten."""

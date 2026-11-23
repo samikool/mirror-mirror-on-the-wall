@@ -1236,10 +1236,12 @@ def cmd_site_status(root: Path = _ROOT):
 
 
 @site_app.command("history")
-def cmd_site_history(repo: str = _REPO, root: Path = _ROOT):
+def cmd_site_history(repo: str = _REPO, root: Path = _ROOT,
+                     package: str = typer.Option(None, "--package",
+                                                 help="When each version of this package arrived (and left)")):
     """A repository's kept versions, with what each takes and would free."""
-    from mmw.commands.site import history
-    raise typer.Exit(history(repo, root))
+    from mmw.commands.site import history, package_history
+    raise typer.Exit(package_history(repo, package, root) if package else history(repo, root))
 
 
 @site_app.command("diff")
@@ -1381,11 +1383,16 @@ def cmd_history(
     repo: list[str] = typer.Option(None, "--repo", help="Repository name or URL (repeatable)"),
     since: str = typer.Option(None, "--since", help="Show points on or after DATE"),
     as_json: bool = typer.Option(False, "--json", help="Print the rows as JSON, for scripts"),
+    package: str = typer.Option(None, "--package", help="When each version of this package arrived (and left)"),
 ):
     """List repository-owned points: each one's size and whether it is the latest sync,
     published, sent, waiting to be sent or due to be pruned."""
     if ctx.invoked_subcommand is not None:
         return
+    if package:
+        from mmw.commands.history import run_package
+        raise typer.Exit(run_package(_cfg_dir(), package, network=network, repos=repo, since=since,
+                                     as_json_output=as_json))
     from mmw.commands.history import run
     raise typer.Exit(run(_cfg_dir(), network=network, repos=repo, since=since, as_json_output=as_json))
 

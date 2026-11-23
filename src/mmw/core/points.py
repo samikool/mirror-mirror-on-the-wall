@@ -279,8 +279,8 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
                     if not complete:
                         continue
                 try:
-                    recorded = record_repository(pool, repo, mine, mirror_dir, stamp, refs=None if view is pool else view, complete_suites=complete)
-                    set_current_repository_points(pool, repo, recorded, replace=complete is None or len(complete) == len({u.suite for u in mine}))
+                    recorded = record_repository(pool, repo, mine, mirror_dir, stamp, refs=None if view is pool else view, complete_suites=complete, say=say)
+                    set_current_repository_points(pool, repo, recorded, replace=False)
                     new = [_say(repo, d, cfg) for _, created, d in recorded if created]
                     if new:
                         say("New repository point(s) — " + ", ".join(new))

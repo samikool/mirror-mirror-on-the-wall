@@ -9,15 +9,50 @@ from __future__ import annotations
 import json
 
 
-def _project(rows):
-    """Canonical conflicts resolve before by-hash, exactly as publish_group."""
+def _project(rows, read=None, groups=()):
+    """Resolve canonical files before by-hash, choosing trust roots by Date."""
     from mmw.core.publisher.links import _wants_by_hash
+    from mmw.core.point_check import newest_release
+    rows = list(rows)
     chosen, shared = {}, {}
+    variants = {}
+    for path, checksum, *_ in rows:
+        if path.endswith(("/Release", "/InRelease")):
+            variants.setdefault(path, []).append(checksum)
+    roots, omitted = {}, set()
+    if read:
+        from mmw.core.apt_index import release_body
+        suites = {}
+        for path, checksums in variants.items():
+            suites.setdefault(path.rsplit('/', 1)[0], {})[path] = checksums
+        for directory, suite_variants in suites.items():
+            winner = newest_release(suite_variants, read)
+            body = release_body(read(winner) or b'')
+            for path, checksums in suite_variants.items():
+                matching = [cs for cs in checksums if release_body(read(cs) or b'') == body]
+                if matching:
+                    roots[path] = max(matching)
+                else:
+                    omitted.add(path)
+    # A detached signature must follow its own Release, never checksum order.
+    signatures = {}
+    for group in groups:
+        for path, row in group.items():
+            if path.endswith('/Release') and roots.get(path) == row[0]:
+                sig = path + '.gpg'
+                if sig in group:
+                    signatures[sig] = max(signatures.get(sig, ""), group[sig][0])
+    if read:
+        omitted.update(path for path, *_ in rows if path.endswith('/Release.gpg')
+                       and path not in signatures)
     for path, checksum, kind, hashed, common in rows:
+        if path in omitted:
+            continue
         if common:
             shared[path] = checksum
-        elif path not in chosen or checksum > chosen[path][0]:
-            chosen[path] = (checksum, kind, hashed)
+        elif (path not in roots or roots[path] == checksum) and (path not in signatures or signatures[path] == checksum):
+            if path not in chosen or checksum > chosen[path][0]:
+                chosen[path] = (checksum, kind, hashed)
     out = {path: value[0] for path, value in chosen.items()}
     for path, (checksum, kind, hashed) in chosen.items():
         if hashed and _wants_by_hash(path, kind):
@@ -25,6 +60,19 @@ def _project(rows):
             out[f'{parent}/by-hash/SHA256/{checksum}'] = checksum
     out.update(shared)
     return out
+
+
+def _blob_reader(pool):
+    from functools import lru_cache
+    from mmw.core import disk_io
+    @lru_cache(maxsize=64)
+    def read(checksum):
+        path = pool.blob_file(checksum)
+        try:
+            return disk_io.ops.read_bytes(path) if path is not None else None
+        except OSError:
+            return None
+    return read
 
 
 def slice_files(pool, point_id: int, units: list[tuple[str, dict[str, str]]]) -> dict[str, str]:
@@ -49,15 +97,20 @@ def slice_files(pool, point_id: int, units: list[tuple[str, dict[str, str]]]) ->
                 "LEFT JOIN units u ON u.id = m.unit WHERE m.point = ?", (point_id,)).fetchall()
             return {path: checksum for path, checksum, repo, dims, unit in rows
                     if unit == 0 or (repo, dims) in wanted}
-    return _project((path, checksum, kind, hashed, unit == 0)
-                    for path, checksum, kind, hashed, unit, repo, dims in variants
-                    if unit == 0 or (repo, dims) in wanted)
+    selected = [row for row in variants if row[4] == 0 or (row[5], row[6]) in wanted]
+    groups = {}
+    for path, checksum, kind, hashed, unit, *_ in selected:
+        groups.setdefault(unit, {})[path] = (checksum, kind, hashed)
+    return _project(((path, checksum, kind, hashed, unit == 0)
+                     for path, checksum, kind, hashed, unit, *_ in selected),
+                    _blob_reader(pool), groups.values())
 
 
-def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, complete_suites=None):
+def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, complete_suites=None, say=None):
     """Freeze an accumulated suite state, preserving each unit's own metadata."""
     from dataclasses import replace
-    from mmw.core.points import split_repo
+    from mmw.core.points import split_repo, _reader
+    from mmw.core.point_check import check_suite
     from mmw.core.publisher.links import publish_group, publish_upstream_files, upstream_files, ROOT_RELATIVE_PREFIX, _dedup_rows
     from mmw.core.snapshots import RecordingSink
     from mmw.providers import get_provider
@@ -97,12 +150,13 @@ def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, comple
         if errors := publish_upstream_files(extra_sink, extra):
             raise ValueError('; '.join(errors))
     shared = {p: (cs, 'meta', False) for p, cs in extra_sink.rows.items()}
-    full = _project((p, cs, k, h, False) for _, raw, _ in members for p, (cs, k, h) in raw.items())
+    read_blob = _blob_reader(pool)
+    full = _project(((p, cs, k, h, False) for _, raw, _ in members for p, (cs, k, h) in raw.items()),
+                    read_blob, [raw for _, raw, _ in members])
     full.update(extra_sink.rows)
     recorded = []
     for draft in split_repo(pool, repo, full, settings, stamp):
         memberships = []
-        dates = []
         for unit, raw, drafts in members:
             own = drafts.get(draft.track)
             paths = set(own.files) if own is not None else set()
@@ -110,16 +164,30 @@ def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, comple
             mine = {p: row for p, row in raw.items() if p in paths}
             if mine:
                 memberships.append((unit.dims, mine))
-                if own is not None:
-                    dates.append(own.date)
         common = {p: row for p, row in shared.items() if p in draft.files}
         if common:
             memberships.append((None, common))
-        projection = _project((p, cs, k, h, dims is None) for dims, raw in memberships
-                              for p, (cs, k, h) in raw.items())
+        projection = _project(((p, cs, k, h, dims is None) for dims, raw in memberships
+                               for p, (cs, k, h) in raw.items()), read_blob, [raw for _, raw in memberships])
+        problems = check_suite(projection, draft.track, _reader(pool, projection))
+        if problems:
+            if say is not None:
+                warned = set()
+                for unit, raw, drafts in members:
+                    own = drafts.get(draft.track)
+                    if own is None:
+                        continue
+                    stale = any(p.endswith(('/Release', '/InRelease')) and p in projection
+                                and projection[p] != row[0] for p, row in raw.items())
+                    label = unit.component or unit.name
+                    if stale and label not in warned:
+                        say(f'  ⚠ {label} synced against an older Release — sync it again')
+                        warned.add(label)
+                say(f'  ⚠ {draft.fields.get("Suite") or draft.track}: point not recorded — ' + '; '.join(problems[:5]))
+            continue
         identity = content_ident({json.dumps([dims, p, k, bool(h)], sort_keys=True): cs
                                   for dims, raw in memberships for p, (cs, k, h) in raw.items()})
-        state = replace(draft, ident='state:' + identity, files=projection, date=max(dates, default=draft.date))
+        state = replace(draft, ident='state:' + identity, files=projection)
         pid, new = pool.record_point(repo, state, stamp)
         pool.record_unit_files(pid, repo, memberships)
         recorded.append((pid, new, state))
@@ -197,12 +265,16 @@ def current_ref_projection(pool, units, shared):
     for unit in units:
         groups.setdefault(unit.mirror_base, []).append(unit)
     rows = []
+    release_groups = []
     for base, members in groups.items():
         hashed = any(get_provider(u.provider).by_hash for u in members)
-        rows.extend((f'{base}/{path}', cs, kind, hashed, False)
-                    for path, _, _, kind, cs in pool.mirror_files([u.name for u in members])
-                    if not path.startswith(ROOT_RELATIVE_PREFIX))
-    projected = _project(rows)
+        for unit in members:
+            raw = {f'{base}/{path}': (cs, kind, hashed)
+                   for path, _, _, kind, cs in pool.mirror_files([unit.name])
+                   if not path.startswith(ROOT_RELATIVE_PREFIX)}
+            release_groups.append(raw)
+            rows.extend((path, cs, kind, h, False) for path, (cs, kind, h) in raw.items())
+    projected = _project(rows, _blob_reader(pool), release_groups)
     projected.update(shared)
     return projected
 

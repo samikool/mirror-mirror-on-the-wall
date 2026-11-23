@@ -358,6 +358,7 @@ First syncs and full replacements still require substantial database writes.
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--points` |  | Check every kept point’s APT consistency |
 | `--network`, `-n` |  | Verify only this network's mirrors |
 | `--stat` |  | Also stat every blob (slow: one stat per file) |
 | `--hash` |  | Also re-hash every blob (slowest: reads the whole pool) |

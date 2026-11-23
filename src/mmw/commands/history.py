@@ -89,6 +89,7 @@ def prepare(cfg, *, network=None, repos=None, since=None):
     rows = []
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
         published = _published(pool)
+        labels = pool.point_labels()
         drops = set(retention_plan(pool, cfg.networks, cfg=cfg))
         owned = {p.id: pool.track_of_point(p.id).repo for p in pool.repository_points()}
         sent = {n.name: (pool.sent_point_ids(n.name), pool.sent_dates_by_track(n.name),
@@ -135,6 +136,8 @@ def prepare(cfg, *, network=None, repos=None, since=None):
                         marks.append(f'sent:{name}')
                     elif point.id in waiting or point.id in current:
                         marks.append(f'unsent:{name}')
+                if point.id in labels:
+                    marks.append('labelled')
                 if point.id in drops:
                     marks.append('drops')
                 if not _consistent(pool, point, track):
@@ -142,7 +145,7 @@ def prepare(cfg, *, network=None, repos=None, since=None):
                 rows.append(HistoryRow(repo, track.suite or track.name or 'files', date, point.ident,
                                        point.held, sizes.get(point.id, 0),
                                        pool.points_frees([point.id]) if point.held else 0,
-                                       tuple(marks), None, point.id, point.legacy))
+                                       tuple(marks), labels.get(point.id), point.id, point.legacy))
     # Grouped by repository and suite; newest first within each.
     rows.sort(key=lambda r: (r.date, r.ident), reverse=True)
     rows.sort(key=lambda r: (repository_label(r.repo, cfg), r.repo, r.suite))
@@ -323,6 +326,8 @@ def _why_kept(row, unsent) -> str | None:
         reasons.append('the latest sync')
     reasons += [f'published at {m.partition(":")[2]}' for m in row.marks if m.startswith('published:')]
     reasons += [f'not yet sent to {name} (history = true)' for name, ids in unsent.items() if row.point in ids]
+    if row.label:
+        reasons.append(f'labelled {row.label}')
     return '; '.join(reasons) or None
 
 
@@ -369,9 +374,13 @@ def delete(cfg, items, progress=None) -> int:
         sources = sorted({*pool.ref_sources(), *(s.identity for s in cfg.sources)}) or ['']
         ids = [i.point for i in items]
 
+        named = pool.point_labels()
+
         def stub(locked):
             for pid in ids:
                 locked.stub_point(pid)
+                if pid in named:                # its name goes with its files
+                    locked.set_point_label(pid, None)
         return pool.prune_orphans(sources, (), progress=progress, before=stub)[1]
     finally:
         pool.close()
@@ -418,6 +427,94 @@ def run_delete(cfg_dir, repo, when, *, suite=None, before=False, yes=False, dry_
         eprint(str(exc))
         return 1
     print(f'deleted {len(items)} point(s); freed {fmt_size(freed)} (their records stay in history)')
+    return 0
+
+
+# ── naming points ────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class LabelItem:
+    repo: str
+    suite: str
+    date: str
+    point: int
+    was: str | None            # its name before
+    moved_from: str | None     # the date of the suite's point that had the name, which loses it
+    moved_point: int | None = None
+
+
+def label_plan(pool, cfg, repo, when, name, suite=None) -> list[LabelItem]:
+    """Per suite of `repo`, its newest kept point dated `when`, to be named
+    `name` (None: cleared). A suite's name is on one point: another point
+    of the suite that has it loses it."""
+    from mmw.site.versionref import check_label
+    if name is not None:
+        name = check_label(name)
+    rows = [r for r in prepare(cfg, repos=[repo]) if r.held]
+    if suite is not None:
+        rows = [r for r in rows if _in_suite(pool, r, suite)]
+    out = []
+    for s in sorted({r.suite for r in rows}):
+        mine = [r for r in rows if r.suite == s]
+        row = _pick(mine, when)
+        if row is None:
+            continue
+        other = next((r for r in mine if name is not None and r.label == name and r.point != row.point), None)
+        out.append(LabelItem(row.repo, s, row.date, row.point, row.label,
+                             other.date if other else None, other.point if other else None))
+    if not out:
+        raise LookupError(f'no kept point of {repo} is dated {when}' + (f' in {suite}' if suite else '')
+                          + ' — see mmw history')
+    return out
+
+
+def label(cfg, items, name) -> None:
+    """Name each item's point `name` (None: clear it)."""
+    from mmw.site.versionref import check_label
+    name = check_label(name) if name is not None else None
+    with Pool(cfg.settings.mirror_dir) as pool:
+        for i in items:
+            if i.moved_point is not None:
+                pool.set_point_label(i.moved_point, None)
+            pool.set_point_label(i.point, name)
+
+
+def describe_label(cfg, items, name) -> str:
+    """What `mmw history label` and the TUI say once it is done."""
+    from mmw.core.repos import repository_label
+    from mmw.site.versionref import day, day_time
+    lines = []
+    for i in items:
+        what = f'{repository_label(i.repo, cfg)} / {i.suite} {day_time(i.date)}'
+        if name is None:
+            lines.append(f'{what}: name {i.was} cleared' if i.was else f'{what}: had no name')
+        else:
+            lines.append(f'{what}: labelled {name}' + (f' (moved from {day(i.moved_from)})' if i.moved_from else '')
+                         + ' — kept whatever the retention, and named so on far sides')
+    return '\n'.join(lines)
+
+
+def run_label(cfg_dir, repo, when, name, *, suite=None, clear=False) -> int:
+    import sqlite3
+    from mmw.commands.common import eprint, load_config_or_none
+    from mmw.core.pool import PoolBusy
+    cfg = load_config_or_none(cfg_dir)
+    if cfg is None:
+        return 1
+    if clear and name:
+        eprint('give a NAME or --clear, not both')
+        return 2
+    if not clear and not name:
+        eprint('give the point a NAME, or --clear its name')
+        return 2
+    try:
+        with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+            items = label_plan(pool, cfg, repo, when, None if clear else name, suite=suite)
+        label(cfg, items, None if clear else name)
+    except (ValueError, LookupError, OSError, sqlite3.Error, PoolBusy) as exc:
+        eprint(str(exc))
+        return 1
+    print(describe_label(cfg, items, None if clear else name.strip()))
     return 0
 
 

@@ -203,8 +203,9 @@ mmw site status                            # what each repository serves: curren
 
 A point is named by its date (`28oct`, `oct 28`, `28 October`, `28/10` — day
 first — or `2026-10-28`), the start of a stamp (`20261028T09`), its bundle's
-label, or six or more characters of its digest (`mmw site history` shows
-them). A date means **as of** that day: each suite's newest point dated on
+label, the point's own name (`mmw history label` on the connected side,
+`mmw site label` here), or six or more characters of its digest
+(`mmw site history` shows them). A date means **as of** that day: each suite's newest point dated on
 or before it. A day and month alone means the most recent one, up to today.
 Dates are the upstream `Release`'s own, in UTC (a point without one is
 dated by the bundle that brought it). `--track SUITE` limits it to one
@@ -534,6 +535,8 @@ serve here cannot also come from a local instance (its versions would fork).
 ```bash
 mmw site space                  # each point's size, and what deleting it frees
 mmw site delete debian 2026-09-01 --track bookworm   # its files go; its record stays
+mmw site label debian 2026-10-28 golden-q4           # a name: kept whatever the setting
+mmw site label debian golden-q4 --clear              # the name off again
 mmw site settings               # what is kept, and what each choice would free
 mmw site settings --keep 10     # the newest 10 points per suite (or: all, or an age: 90d)
 mmw site keep debian --track bookworm all            # one suite keeps everything
@@ -555,6 +558,13 @@ a point that is pinned, the one each suite served before its current one
 (kept for rolling back), or one a switch is part-way through. The point
 being served can be deleted by hand — it warns, names what that suite then
 serves, and needs `--yes`.
+
+A labelled point (`mmw site label REPO POINT NAME [--track S]`, or Label… in
+the TUI's More…) is kept by Clean up whatever the setting, and deleting it by
+hand warns and needs `--yes`; `mmw site serve REPO NAME` serves it. A suite's
+name is on one point: naming another the same moves it. Names given on the
+connected side (`mmw history label`) arrive with the next bundle and win over
+one given here, a cleared name included.
 
 ## Dated URLs
 

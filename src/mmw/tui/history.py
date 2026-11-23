@@ -26,7 +26,8 @@ class HistoryPage(Page):
             'filled in. Changes lists the packages the row\'s point changed since the point before it '
             '(mmw history diff). Delete drops the row\'s point: its record stays, its files go unless '
             'something else keeps them. Delete points… (More…) drops every point on or before a date '
-            '(mmw history delete).\n'
+            '(mmw history delete). Label… (More…) names the row\'s point: it is never pruned, and its name '
+            'travels to the far side (mmw history label).\n'
             'Find (/) takes a package name: the table narrows to the points where its version changed, '
             'each with the version it arrived at (mmw history --package). Esc clears it.')
     BINDINGS = [Binding('p', 'publish_row', 'Publish as of this'),
@@ -34,8 +35,9 @@ class HistoryPage(Page):
                 Binding('c', 'changes_row', 'Changes'),
                 Binding('d', 'delete_row', 'Delete'),
                 Binding('slash', 'find', 'Find package'),
-                Binding('D', 'delete_points', 'Delete points…', show=False)]     # under More…
-    MORE = ('delete_points',)
+                Binding('l', 'label_row', 'Label…', show=False),                # under More…
+                Binding('D', 'delete_points', 'Delete points…', show=False)]
+    MORE = ('label_row', 'delete_points')
 
     def __init__(self, *, network=None, repos=None):
         super().__init__()
@@ -316,6 +318,36 @@ class HistoryPage(Page):
         self.app.notify(f'Deleted 1 point; freed {fmt_size(freed)}.')
         await self._load()
 
+    def action_label_row(self) -> None:
+        self.start_flow(self._label_row)
+
+    async def _label_row(self) -> None:
+        """Name the row's point (mmw history label REPO WHEN NAME --suite S)."""
+        from mmw.core.pool import Pool, PoolBusy
+        from mmw.site.versionref import day_time
+        from mmw.tui.label_page import LabelPage
+        row = self._picked('label')
+        if row is None:
+            return
+        name = await self.app.push_screen_wait(LabelPage(f'{row.suite} {day_time(row.date)}', row.label))
+        if name is None:
+            return
+        cfg = self.app.cfg
+
+        def go():
+            with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+                items = [i for i in command.label_plan(pool, cfg, row.repo, row.date, name or None, suite=row.suite)
+                         if i.point == row.point]
+            command.label(cfg, items, name or None)
+            return command.describe_label(cfg, items, name or None)
+        try:
+            said = await asyncio.to_thread(go)
+        except (ValueError, LookupError, OSError, PoolBusy) as exc:
+            self.set_status(str(exc), 'error')
+            return
+        self.app.notify(said)
+        await self._load()
+
     def action_delete_points(self) -> None:
         def done(deleted):
             if deleted:
@@ -330,7 +362,7 @@ class DeletePointsPage(Page):
     TITLE = 'Delete points'
     HELP = ('Kept points of one repository, on a date or before it. Their records stay in the history; '
             'their files go unless another kept point or the latest sync uses them. The latest sync, '
-            'published points and points a history network has not been sent yet are protected: '
+            'published and labelled points, and points a history network has not been sent yet are protected: '
             'deleting them asks again.')
 
     def __init__(self, repo=None):

@@ -180,6 +180,21 @@ def is_when(text: str, today: date | None = None) -> bool:
         return False
 
 
+_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}")
+
+
+def check_label(name: str) -> str:
+    """A point's name as both sides take it — a word that never reads as a
+    date, a version or a digest — or ValueError saying why not."""
+    name = name.strip()
+    if not _LABEL.fullmatch(name):
+        raise ValueError(f"{name!r} can't name a point — use letters, digits and . _ + - "
+                         "(up to 64, no spaces), e.g. golden-q4")
+    if is_when(name) or _NUMBER.fullmatch(name) or (_HEX.fullmatch(name) and len(name) >= 6):
+        raise ValueError(f"{name!r} reads as a date, a version or a digest — pick a word, e.g. golden-q4")
+    return name
+
+
 def day(stamp: str) -> str:
     return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}" if len(stamp) >= 8 else stamp
 

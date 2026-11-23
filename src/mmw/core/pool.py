@@ -230,6 +230,9 @@ CREATE TABLE IF NOT EXISTS published_points (
     point INTEGER NOT NULL,
     PRIMARY KEY (root, point)
 ) WITHOUT ROWID;
+-- A point's name (`mmw history label`): protected from pruning and carried
+-- to far sides. NULL: cleared — kept so the clear travels too.
+CREATE TABLE IF NOT EXISTS point_labels (point INTEGER PRIMARY KEY, label TEXT);
 CREATE TABLE IF NOT EXISTS history_upgrades (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS published_legacy_holds (root TEXT PRIMARY KEY);
 
@@ -2705,6 +2708,21 @@ class Pool:
                 return {r[0] for r in c.execute('SELECT DISTINCT point FROM published_points')}
             except sqlite3.OperationalError:  # Read-only databases from before this index.
                 return set()
+
+    def set_point_label(self, point_id: int, label: str | None) -> None:
+        """Name a point, or (None) clear its name."""
+        with self._lock:
+            self._conn.execute('INSERT OR REPLACE INTO point_labels VALUES (?, ?)', (point_id, label))
+            self._conn.commit()
+
+    def point_labels(self, *, cleared: bool = False) -> dict[int, str | None]:
+        """Point → its name; with `cleared`, the points whose name was cleared too (None)."""
+        with self._read() as c:
+            try:
+                rows = c.execute('SELECT point, label FROM point_labels').fetchall()
+            except sqlite3.OperationalError:  # Read-only databases from before labels.
+                return {}
+        return {p: label for p, label in rows if cleared or label is not None}
 
     def legacy_publish_notes(self) -> list[str]:
         with self._read() as c:

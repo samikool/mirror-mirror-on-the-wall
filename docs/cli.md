@@ -42,7 +42,7 @@ codes — see [far-side.md](far-side.md#exit-codes).
 | [`mmw bundle`](#mmw-bundle) | Transfer recorded points: from each repository's last transfer to its latest recorded points |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
-| [`mmw history`](#mmw-history) | Repository history: list the points syncs recorded, compare two, or delete some |
+| [`mmw history`](#mmw-history) | Repository history: list the points syncs recorded, compare two, name some or delete some |
 | [`mmw init`](#mmw-init) | Setup wizard, or recover mmw.toml from kept bundles |
 | [`mmw installer`](#mmw-installer) | Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh` on the far side puts mmw on the path, offline |
 | [`mmw keep`](#mmw-keep) | Set repository history retention, independently of networks |
@@ -151,19 +151,29 @@ Takes no options.
 
 ### `mmw history`
 
-Repository history: list the points syncs recorded, compare two, or delete some.
+Repository history: list the points syncs recorded, compare two, name some or delete some.
 
 `mmw history` lists each repository's points, grouped by suite, newest
 first: each one's date, size, and what it is — the latest sync, published at
 a root, sent (or not yet sent) to a network, pruned next under `keep_points`,
-or inconsistent (its Release disagrees with an index it keeps; see
+labelled, or inconsistent (its Release disagrees with an index it keeps; see
 `mmw verify --points`). Each repository's heading sums it up — each suite's
 newest point, how many are kept, their size together and the keep rule, as
 the TUI's Sources pane shows it; with `-n NETWORK` the listing starts with
 what that network's far side has and what is newer here, as the Networks pane
 shows it. `--json` prints the same rows for scripts. The TUI's
 Repository history is the same table, with Publish as of this, Transfer to
-this, Changes and Delete acting on the row's point.
+this, Changes and Delete acting on the row's point, and Label… under More….
+
+`mmw history label REPO WHEN NAME [--suite S]` names a kept point — each
+suite's newest dated WHEN, or one suite's with `--suite` (TUI: Repository
+history → More… → Label…). A name is a word such as `golden-q4` (letters,
+digits and `. _ + -`), never a date, a version or a digest. A labelled point
+is never pruned, whatever `keep_points` says, and deleting it by hand needs
+`--yes`. A suite's name is on one point: naming another point the same moves
+it there. `--clear` takes the name off. The name travels to the far side with
+the next bundle — given or cleared, sent before or not — where
+`mmw site serve REPO NAME` serves that point.
 
 `mmw history diff REPO A [B] [--suite S]` lists the packages added (`+`),
 upgraded (`~`), downgraded (`↓`) and removed (`−`) from point A to point B,
@@ -190,8 +200,8 @@ points…). WHEN is a date (`2026-11-03`, `3nov`) or a point's stamp;
 `--before` takes every kept point dated before it instead. It lists each
 point with what it frees, then stubs them: their records stay in the history,
 their files go unless another kept point or the latest sync uses them. The
-latest sync, a published point, and a point a `history = true` network has
-not been sent yet are protected: listed with the reason, and deleted only
+latest sync, a published point, a labelled point, and a point a
+`history = true` network has not been sent yet are protected: listed with the reason, and deleted only
 with `--yes`. `--dry-run` lists without deleting.
 
 | Option | Default | Description |

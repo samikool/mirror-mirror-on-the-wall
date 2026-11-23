@@ -607,11 +607,16 @@ def combine(repo: str, track: str, whens: list[str], key: str, yes: bool = False
     return 0
 
 
-def verify(root: Path | None = None, repair: bool = False, break_lock: bool = False) -> int:
+def verify(root: Path | None = None, repair: bool = False, break_lock: bool = False, points: bool = False) -> int:
     from mmw.site import ops
     from mmw.site.lock import LockHeld
     try:
         mset = _set(root, break_lock)
+        if points:
+            from mmw.commands.verify import describe_points
+            found = check_points(mset)
+            print(describe_points(found))
+            return int(bool(found))
         if repair:
             fixed = sum(ops.set_verify(mset, repair_too=True).values())
             print(f"put {fixed} file(s) back from the store")
@@ -1250,3 +1255,8 @@ def adopted(root: Path | None = None, remove: Path | None = None, yes: bool = Fa
         return 0
     eprint(f"{target} is not an adopted tree — `mmw site adopted` lists them")
     return 1
+
+
+def check_points(mset):
+    """One command door for local and SSH roots, shared with the site TUI."""
+    return [p for root in mset.roots for p in root.verify_points()]

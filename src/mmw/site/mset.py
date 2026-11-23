@@ -152,6 +152,10 @@ class LocalRoot:
         from mmw.site import ops
         return ops.space(self.home)
 
+    def verify_points(self):
+        from mmw.site import ops
+        return ops.verify_points(self.home)
+
     def verify(self, repair: bool = False):
         from mmw.site import ops
         return ops.repair(self.home) if repair else ops.verify(self.home)

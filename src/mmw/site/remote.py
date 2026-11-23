@@ -317,7 +317,7 @@ _VERBS = {
     "delete": _simple(lambda r, a, i: {"freed": r.delete(a[0], a[1], a[2] or None if len(a) > 2 else None,
                                                          "--force" in a[3:])}),
     "space": _simple(lambda r, a, i: r.space()),
-    "verify": _simple(lambda r, a, i: r.verify(bool(a and a[0] == "--repair"))),
+    "verify": _simple(lambda r, a, i: r.verify_points() if "--points" in a else r.verify(bool(a and a[0] == "--repair"))),
     "keep": _simple(lambda r, a, i: r.keep(a[0]) or {"ok": True}),
     "keep-policy": _simple(lambda r, a, i: r.keep(a[0]) or {"ok": True}),
     "break-lock": _simple(_break_lock),

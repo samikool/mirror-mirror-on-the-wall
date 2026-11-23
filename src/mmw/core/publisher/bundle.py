@@ -462,6 +462,11 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
                                 "stamp": pool.network_point_stamp(network.name, pid) or p.stamp,
                                 "snap_label": None,
                                 "fields": {k: v for k, v in wire.fields.items() if k in ("Suite", "Codename")}})
+                from mmw.core.point_check import check_suite
+                from mmw.core.points import _reader
+                problems = check_suite(files[pid], t.name, _reader(pool, files[pid])) if t.name != 'network' else []
+                if problems:
+                    entries[-1]['problems'] = problems
             header_points[repo] = {"label": label, "bases": repo_bases.get(repo, []), "points": entries}
             suites = []
             for t in sorted({known[pid].track for pid in current[repo]}):

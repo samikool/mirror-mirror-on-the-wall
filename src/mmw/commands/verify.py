@@ -62,7 +62,7 @@ def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
 
 @interruptible
 def run(cfg_dir: Path = Path("."), network: str | None = None, stat_blobs: bool = False,
-        hash_blobs: bool = False, repair: bool = False) -> int:
+        hash_blobs: bool = False, repair: bool = False, points: bool = False) -> int:
     """Verify pool completeness for one or all mirrors. Returns a process exit code.
 
     `stat_blobs` stats every blob, `hash_blobs` (implies `stat_blobs`) hashes it;
@@ -74,6 +74,15 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, stat_blobs: bool 
     if network and not any(n.name == network for n in cfg.networks):
         eprint(f"Network '{network}' not found.")
         return 1
+
+    if points:
+        try:
+            problems = check_points(cfg, network)
+        except (OSError, ValueError) as e:
+            eprint(str(e))
+            return 1
+        print(describe_points(problems))
+        return int(bool(problems))
 
     stat_blobs = stat_blobs or hash_blobs or repair
     try:
@@ -126,3 +135,45 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, stat_blobs: bool 
     # wrong on an incomplete pool is worse than one that fails loudly. A
     # repaired pool is still short until the next sync.
     return 0 if ok else 1
+
+
+def verify_points(pool, repos=None):
+    """Check every held APT point, including retained pre-upgrade points."""
+    from mmw.core.point_check import PointProblem, check_suite
+    from mmw.core.points import _reader
+    from mmw.site.versionref import day
+    with pool._read() as conn:
+        ids = [r[0] for r in conn.execute('SELECT id FROM points WHERE held = 1')]
+    problems = []
+    for point in pool.points_of(ids).values():
+        track = pool.track_of_point(point.id)
+        if repos is not None and track.repo not in repos:
+            continue
+        if not track.name or track.name == 'network':
+            continue
+        files = pool.point_files(point.id)
+        found = check_suite(files, track.name, _reader(pool, files))
+        if found:
+            problems.append(PointProblem(track.repo, track.suite or track.name.rsplit('/', 1)[-1],
+                                         day(point.date), found))
+    return problems
+
+
+def describe_points(problems):
+    if not problems:
+        return 'every kept point is consistent'
+    return '\n'.join(f'{p.repo}: {p.suite} {p.date}: {problem}'
+                     for p in problems for problem in p.problems)
+
+
+def check_points(cfg, network=None):
+    """Shared command used by the CLI and the Sources TUI."""
+    from mmw.core.points import prepare_history
+    from mmw.core.repos import repository_key
+    prepare_history(cfg.settings.mirror_dir)
+    repos = None
+    if network:
+        net = next(n for n in cfg.networks if n.name == network)
+        repos = {repository_key(u) for u in resolve.network_mirrors(net, cfg, cfg.settings.mirror_dir)}
+    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        return verify_points(pool, repos)

@@ -1,4 +1,5 @@
 """APT consistency checks shared by recording, verification and previews."""
+import lzma
 import posixpath
 from dataclasses import dataclass
 
@@ -58,7 +59,7 @@ def check_suite(files: dict[str, str], track: str, read) -> list[str]:
             try:
                 lines = decompress(data, path).decode('utf-8', 'replace').splitlines()
                 names = _referenced(lines, stem.rsplit('/', 1)[-1], base)
-            except (OSError, EOFError, ValueError):
+            except (OSError, EOFError, lzma.LZMAError, ValueError):
                 continue
             problems.extend(f'{p[len(base) + 1:]} is missing' for p in sorted(names) if p not in files)
             break

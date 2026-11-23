@@ -641,6 +641,35 @@ def _wrong(root: Path, store: Store, expected: dict[str, str]):
             yield rel, checksum, "differs from what the site serves"
 
 
+def verify_points(home: Path, ref: str | None = None):
+    """Check all kept points using their owning root's immutable store."""
+    from mmw.core.point_check import PointProblem, check_suite
+    from mmw.site.versionref import day
+    roots = _roots(home)
+    problems = []
+    with SiteDB(home) as db:
+        selected = resolve_repo(db, ref) if ref is not None else None
+        for state in db.repo_states():
+            if selected is not None and state.repo != selected:
+                continue
+            store = roots.store(roots.of(state))
+            for track in db.tracks(state.repo):
+                if not track.name:
+                    continue
+                for point in db.points(track.id):
+                    files = db.point_files(point.id)
+                    def read(path):
+                        checksum = files.get(path)
+                        try:
+                            return disk_io.ops.read_bytes(store.path(checksum)) if checksum else None
+                        except OSError:
+                            return None
+                    found = check_suite(files, track.name, read)
+                    if found:
+                        problems.append(PointProblem(state.repo, suite_of(track), day(point.date), found))
+    return problems
+
+
 def verify(home: Path) -> list[str]:
     """Every served file present and exactly what the site says it serves.
     The problems found (none: the tree is right)."""

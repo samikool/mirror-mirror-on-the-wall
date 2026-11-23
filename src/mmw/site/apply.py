@@ -369,7 +369,7 @@ class RootApply:
                                header.created, header.created_label))
             planned[repo] = {"meta": {"label": pmeta["label"], "bases": pmeta["bases"],
                                       "changes": pmeta.get("changes")}, "rows": mine,
-                             "points": drafts}
+                             "points": drafts, "names": pmeta.get("labels") or []}
         for repo, meta in sorted((header.repos or {}).items() if header.format != 3 else ()):
             mine = by_repo.get(repo, [])
             # Out of order or missing its start: never refused — its points
@@ -443,6 +443,7 @@ class RootApply:
                                          arrived)
                 if header.selection:
                     db.set_present(repo, {d.track for d, _st, _lb in plan["points"]}, network=header.network)
+                _take_names(db, repo, plan["names"])
             else:
                 outcomes = import_rows(db, store, repo, meta["label"], meta["bases"], rows, known,
                                        header.created, header.created_label, arrived, own=not self.foreign,
@@ -616,6 +617,19 @@ class RootApply:
         if "runtime" in self.seen:
             result.actions.append(RUNTIME_NOTE)
         return result
+
+
+def _take_names(db, repo: str, names: list[dict]) -> None:
+    """The names the connected side gave (or cleared) on points this side
+    has, by track and ident: theirs win over a name given here."""
+    tracks = {t.name: t.id for t in db.tracks(repo)}
+    for n in names:
+        tid = tracks.get(n.get("track"))
+        if tid is None:
+            continue
+        p = next((p for p in db.points(tid, stubs=True) if p.ident == n.get("ident")), None)
+        if p is not None and p.snap_label != n.get("label"):
+            db.set_snap_label(p.id, n.get("label"))
 
 
 def _rebase_to(db, repo: str, plan: dict, result) -> None:

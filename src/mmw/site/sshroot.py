@@ -209,6 +209,9 @@ class SshRoot:
     def delete(self, key: str, when: str, track: str | None = None, force: bool = False, progress=None) -> int:
         return self._call("delete", key, when, track or "", *(["--force"] if force else []))["freed"]
 
+    def label(self, key: str, when: str, name: str | None, track: str | None = None) -> list[str]:
+        return self._call("label", key, when, name or "", track or "")["lines"]
+
     def space(self):
         return _ns(self._call("space"))
 

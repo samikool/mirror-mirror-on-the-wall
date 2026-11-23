@@ -1165,6 +1165,18 @@ def cmd_site_delete(repo: str = _REPO, version: str = typer.Argument(..., help=_
     raise typer.Exit(delete(repo, version, root, yes, break_lock, track=track))
 
 
+@site_app.command("label")
+def cmd_site_label(repo: str = _REPO, version: str = typer.Argument(..., help=_VERSION_HELP),
+                   name: str = typer.Argument(None, help="The name, e.g. golden-q4"),
+                   clear: bool = typer.Option(False, "--clear", help="Clear the point's name instead"),
+                   track: str = _TRACK, root: Path = _ROOT, break_lock: bool = _BREAK_LOCK):
+    """Name a kept point: Clean up keeps it whatever the retention, and
+    `mmw site serve REPO NAME` serves it. Names given on the connected side
+    arrive with bundles and win."""
+    from mmw.commands.site import label
+    raise typer.Exit(label(repo, version, name, root, clear, break_lock, track=track))
+
+
 @site_app.command("settings")
 def cmd_site_settings(root: Path = _ROOT,
                       keep: str = typer.Option(None, "--keep", help="History per suite: N points, all, or an "
@@ -1372,7 +1384,8 @@ def cmd_keep(
     raise typer.Exit(run(_cfg_dir(), value, repo, suite))
 
 
-history_app = typer.Typer(help="Repository history: list the points syncs recorded, compare two, or delete some.")
+history_app = typer.Typer(help="Repository history: list the points syncs recorded, compare two, name some "
+                                "or delete some.")
 app.add_typer(history_app, name="history")
 
 
@@ -1410,6 +1423,20 @@ def cmd_history_delete(
     """Delete kept points by hand: their records stay, their files go unless something else keeps them."""
     from mmw.commands.history import run_delete
     raise typer.Exit(run_delete(_cfg_dir(), repo, when, suite=suite, before=before, yes=yes, dry_run=dry_run))
+
+
+@history_app.command("label")
+def cmd_history_label(
+    repo: str = typer.Argument(..., help="Repository (URL or name)"),
+    when: str = typer.Argument(..., help="A date (2026-11-03, 3nov) or a point's stamp"),
+    name: str = typer.Argument(None, help="The name, e.g. golden-q4"),
+    suite: str = typer.Option(None, "--suite", help="Only this suite's point"),
+    clear: bool = typer.Option(False, "--clear", help="Clear the point's name instead"),
+):
+    """Name a kept point (each suite's newest that day): it is never pruned, and its
+    name travels to the far side, where `mmw site serve REPO NAME` serves it."""
+    from mmw.commands.history import run_label
+    raise typer.Exit(run_label(_cfg_dir(), repo, when, name, suite=suite, clear=clear))
 
 
 @history_app.command("diff")

@@ -258,6 +258,31 @@ def hold(home: Path, ref: str) -> str:
         return db.repo_state(repo).label
 
 
+def label_point(home: Path, ref: str, when: str, name: str | None, track: str | None = None) -> list[str]:
+    """Name the point `when` names in each suite (or `track`) — None clears
+    its name. A suite's name is on one point: another that had it loses it.
+    A named point is kept whatever the retention. What changed, in words."""
+    from mmw.site.versionref import check_label, day
+    name = check_label(name) if name is not None else None
+    with _session(home) as (db, _roots_):
+        repo = resolve_repo(db, ref)
+        label = db.repo_state(repo).label
+        out = []
+        for t, p in _targets(db, repo, when, track, as_of=False):
+            what = f"{label} {suite_of(t)} {day(p.date)}"
+            if name is None:
+                out.append(f"{what}: name {p.snap_label} cleared" if p.snap_label else f"{what}: had no name")
+                db.set_snap_label(p.id, None)
+                continue
+            moved = [q for q in db.points(t.id, stubs=True) if q.id != p.id and q.snap_label == name]
+            for q in moved:
+                db.set_snap_label(q.id, None)
+            db.set_snap_label(p.id, name)
+            out.append(f"{what}: labelled {name}" + (f" (moved from {day(moved[0].date)})" if moved else "")
+                       + " — kept whatever the retention")
+        return out
+
+
 # ── space ────────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -344,6 +369,9 @@ def _protected(db: SiteDB, repo: str, track: TrackInfo, point: PointInfo) -> tup
         nxt = next((p for p in db.points(track.id) if p.id != point.id), None)
         return "served", (f"{what} is being served — pass --yes to delete it anyway; {suite_of(track)} then "
                           f"serves {day(nxt.date) if nxt else 'nothing'}")
+    if point.snap_label:
+        return "labelled", (f"{what} is labelled {point.snap_label} — pass --yes to delete it anyway; "
+                            "its name goes with it")
     return None
 
 
@@ -359,9 +387,11 @@ def delete_point(home: Path, ref: str, when: str, track: str | None = None, forc
                              f"({', '.join(suite_of(t) for t, _p in found)}) — say which: --track SUITE")
         t, p = found[0]
         why = _protected(db, repo, t, p)
-        if why and not (why[0] == "served" and force):
+        if why and not (why[0] in ("served", "labelled") and force):
             raise ValueError(why[1])
         db.stub_point(p.id)
+        if p.snap_label:
+            db.set_snap_label(p.id, None)
         if why and why[0] == "served":
             # Serve nothing only when nothing of it is kept any more: kept points
             # whose files are missing here keep what is served, never unserve it.

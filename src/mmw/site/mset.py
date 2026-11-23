@@ -156,6 +156,10 @@ class LocalRoot:
         from mmw.site import ops
         return ops.delete_point(self.home, key, when, track, force, progress)
 
+    def label(self, key: str, when: str, name: str | None, track: str | None = None) -> list[str]:
+        from mmw.site import ops
+        return ops.label_point(self.home, key, when, name, track)
+
     def space(self):
         from mmw.site import ops
         return ops.space(self.home)

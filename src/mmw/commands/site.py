@@ -310,6 +310,25 @@ def hold(repo: str, root: Path | None = None, break_lock: bool = False) -> int:
     return 0
 
 
+def label(repo: str, version: str, name: str | None, root: Path | None = None, clear: bool = False,
+          break_lock: bool = False, track: str | None = None) -> int:
+    from mmw.site.lock import LockHeld
+    if clear and name:
+        eprint("give a NAME or --clear, not both")
+        return 2
+    if not clear and not name:
+        eprint("give the point a NAME, or --clear its name")
+        return 2
+    try:
+        r_, key = _repo(root, repo, break_lock)
+        lines = r_.label(key, version, None if clear else name, track)
+    except (LockHeld, *_ERRORS) as e:
+        return _fail(e)
+    for line in lines:
+        print(line)
+    return 0
+
+
 def space(root: Path | None = None) -> int:
     from mmw.core.format import fmt_size
     from mmw.site import ops

@@ -99,6 +99,23 @@ def _write_checksum_file(target: Path, digest: str | None = None) -> Path:
     return dest
 
 
+def _point_names(pool, repo, names, settings) -> list[dict]:
+    """{track, ident, label} for `repo`'s points named (or cleared) here
+    that this network's selection holds, as the far side knows them."""
+    from mmw.core.repository_points import files_for_settings, wire_draft
+    out = []
+    for pid in sorted(names):
+        t = pool.track_of_point(pid)
+        if t is None or t.repo != repo:
+            continue
+        p = pool.points_of([pid]).get(pid)
+        files = files_for_settings(pool, pid, settings) if p is not None and p.held and not p.legacy else {}
+        if files:
+            out.append({"track": t.name, "ident": wire_draft(pool, pid, files, settings, p.stamp).ident,
+                        "label": names[pid]})
+    return out
+
+
 def _far_nginx(settings: str, certs: bool, *, previous: bool = False) -> dict[str, bytes]:
     """Fixed container config, or the legacy previous-manifest form.
 
@@ -455,6 +472,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
                         {t for t in sent_dates if t in tracks and tracks[t].repo == repo}) - now
                        for repo, now in listed_tracks.items())
         summaries = []
+        names = pool.point_labels(cleared=True)
         for repo, ids in listing.items():
             label = repository_label(repo, cfg)
             entries = []
@@ -465,7 +483,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
                 wire = wire_draft(pool, pid, files[pid], settings, p.stamp)
                 entries.append({"track": t.name, "ident": wire.ident, "date": wire.date,
                                 "stamp": pool.network_point_stamp(network.name, pid) or p.stamp,
-                                "snap_label": None,
+                                "snap_label": names.get(pid),
                                 "fields": {k: v for k, v in wire.fields.items() if k in ("Suite", "Codename")}})
                 from mmw.core.point_check import check_suite
                 from mmw.core.points import _reader
@@ -473,6 +491,11 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
                 if problems:
                     entries[-1]['problems'] = problems
             header_points[repo] = {"label": label, "bases": repo_bases.get(repo, []), "points": entries}
+            # Every name given or cleared here, sent before or not: the far
+            # side's points by the same ident take it (`mmw history label`).
+            named = _point_names(pool, repo, names, settings)
+            if named:
+                header_points[repo]["labels"] = named
             # Per suite, what the newest point it brings changes from what the
             # far side was last sent: the apply review says it before applying.
             from mmw.core.transfer_ranges import sent_changes

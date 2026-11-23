@@ -584,6 +584,7 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
                 if (i == 0 or p.id in current or keep == "all" or (isinstance(keep, int) and i < keep)
                         or (cutoff is not None and ends[p.id] >= cutoff)):
                     kept.add(p.id)
+    kept |= set(pool.point_labels())          # a named point is never pruned
     return sorted(candidates - kept)
 
 

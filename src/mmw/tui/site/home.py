@@ -74,6 +74,8 @@ class SiteHomePage(Page):
             "s: what the mirror keeps (and what each choice frees); e: a suite's own keep;\n"
             "g: check adopted points' signatures; o: trees adopted from; v: verify (and repair).\n"
             "w (Changes): the packages a point changed since the one before it (mmw site diff).\n"
+            "l (Label…): name a point — Clean up keeps it, and serve can name it (mmw site label);\n"
+            "names given on the connected side arrive with bundles and win.\n"
             "/ (Find package): the points where a package's version changed, each with the\n"
             "version it arrived at (mmw site history REPO --package NAME); esc clears it.")
     BINDINGS = [
@@ -103,10 +105,11 @@ class SiteHomePage(Page):
         Binding("v", "verify", "Verify", show=False),
         Binding("w", "changes", "Changes", show=False),      # the pane's Changes button
         Binding("slash", "find", "Find package", show=False),
+        Binding("l", "label", "Label…", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
     MORE = ("certs", "adopt", "adopted", "clean_up", "combine", "merge_into", "packages", "signing_keys", "local_update",
-            "settings", "suite_keep", "check_signatures", "verify", "find", "refresh")
+            "settings", "suite_keep", "label", "check_signatures", "verify", "find", "refresh")
 
     def __init__(self):
         super().__init__()
@@ -698,6 +701,29 @@ class SiteHomePage(Page):
                       self.app.root_of(repo).forward, repo)
             return
         self._switch([self._step(repo, {}, {}, forward=True)], "Forwarding")
+
+    def action_label(self) -> None:
+        """Name the selected point (mmw site label REPO POINT NAME --track S)."""
+        from mmw.site.versionref import name_of
+        from mmw.tui.label_page import LabelPage
+        repo, picked = self.selected_repo(), self.selected_point()
+        if repo is None or picked is None:
+            self.set_status("Pick a point in the history first.", "error")
+            return
+        track, point, mark = picked
+        if mark == "stub":
+            self.set_status("That point was deleted here — only its record is kept.", "error")
+            return
+        label = next(s.label for s in self._states if s.repo == repo)
+        suite, when = ops.suite_of(track), _date(point.date)
+        root = self.app.root_of(repo)
+
+        def chosen(name) -> None:
+            if name is None:
+                return
+            done = f"{label} {suite} {when}: " + (f"labelled {name}" if name else "name cleared")
+            self._act(done, root.label, repo, name_of(point), name or None, track.name or None)
+        self.app.push_screen(LabelPage(f"{label} {suite} {when}", point.snap_label), chosen)
 
     def action_hold(self) -> None:
         repo = self.selected_repo()

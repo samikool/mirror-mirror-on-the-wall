@@ -537,6 +537,11 @@ class SiteDB:
         self._conn.execute("UPDATE points SET held = 0 WHERE id = ?", (point_id,))
         self._conn.commit()
 
+    def set_snap_label(self, point_id: int, label: str | None) -> None:
+        """Name a point (None: clear its name)."""
+        self._conn.execute("UPDATE points SET snap_label = ? WHERE id = ?", (label, point_id))
+        self._conn.commit()
+
     def set_track_keep(self, track_id: int, keep: str | None) -> None:
         self._conn.execute("UPDATE tracks SET keep = ? WHERE id = ?", (keep, track_id))
         self._conn.commit()

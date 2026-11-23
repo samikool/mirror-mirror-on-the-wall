@@ -99,3 +99,19 @@ def test_corrupt_retained_index_is_reported_as_unreadable():
     r.suite('jammy', '21 Apr 2022 17:16:08 UTC', [])
     r.put('dists/jammy/main/binary-amd64/Packages.xz', b'corrupt')
     assert any('unreadable' in p for p in check_suite(r.rows, r.base + '/dists/jammy', r.read))
+
+
+@pytest.mark.parametrize('mixed', [False, True])
+def test_history_marks_an_inconsistent_point(point_pool, mixed):
+    from mmw.commands import history
+    from mmw.core.repository_points import set_current_repository_points
+    cfg, r, folder = point_pool
+    record(cfg, r, mixed)
+    with Pool(cfg.settings.mirror_dir) as pool:            # as a sync leaves it
+        [point] = pool.repository_points()
+        pool.record_point_units(point.id, KEY, [(u.dims, list(r.rows)) for u in cfg.sources[0].to_mirrors()])
+        set_current_repository_points(pool, KEY, [(point.id, True, None)])
+    rows = history.prepare(cfg)
+    assert rows and all(('inconsistent' in row.marks) == mixed for row in rows)
+    out = CliRunner().invoke(app, ['--config', str(folder), 'history']).output
+    assert ('inconsistent — see mmw verify --points' in out) == mixed, out

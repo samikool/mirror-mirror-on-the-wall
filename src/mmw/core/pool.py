@@ -2857,6 +2857,31 @@ class Pool:
                             [*params, *([released] if released is not None else [])]).fetchone()
         return (int(row[0]), int(row[1])) if row else (0, 0)
 
+    def points_frees(self, point_ids) -> int:
+        """Bytes releasing `point_ids` would free: their blobs no ref, no
+        other held point, no snapshot and no layer wants. Scoped to those
+        points' blobs, so asking per point never scans the whole pool."""
+        ids = sorted(set(point_ids))
+        if not ids or not (self._has_point_files and self._has_snapshot_blobs):
+            return 0
+        rows = ("(SELECT point, blob FROM point_files UNION ALL SELECT point, blob FROM point_unit_files)"
+                if self._has_point_unit_files else "point_files")
+        wanted = json.dumps(ids)
+        sql = (self._orphans_sql("1", "COALESCE(SUM(size), 0)", released=True)
+               + f" AND checksum IN (SELECT b.checksum FROM snapshot_blobs b JOIN {rows} f ON f.blob = b.id "
+               "WHERE f.point IN (SELECT value FROM json_each(?)))")
+        with self._read() as c:
+            row = c.execute(sql, (wanted, wanted)).fetchone()
+        return int(row[0]) if row else 0
+
+    def ref_sources(self) -> list[str]:
+        """Every repository some ref names: a prune against all of them drops
+        no ref, only files nothing wants."""
+        if not self._has_source:
+            return []
+        with self._read() as c:
+            return [r[0] for r in c.execute("SELECT DISTINCT source FROM refs WHERE source != ''")]
+
     def _prune_orphans_locked(self, configured_sources: list[str],
                               dropped_mirrors: list[str], *, stop_event=None,
                               progress=None) -> tuple[int, int]:

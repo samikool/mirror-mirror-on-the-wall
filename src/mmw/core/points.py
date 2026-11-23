@@ -479,6 +479,22 @@ def orphaned_histories(pool, cfg) -> list[tuple[str, int]]:
                   if repo not in configured and ids <= gone)
 
 
+def unsent_points(pool: Pool, network: NetworkConfig, owned: dict[int, str] | None = None) -> set[int]:
+    """The points a `history = true` network observed since its last
+    transfer and has not been sent: its next bundle still needs them.
+    `owned`: point → repository (every repository point when omitted)."""
+    if not network.history:
+        return set()
+    by_repo, fallback = history_since(pool, network.name)
+    if fallback is None:
+        return set()
+    if owned is None:
+        owned = {p.id: pool.track_of_point(p.id).repo for p in pool.repository_points()}
+    sent = pool.sent_point_ids(network.name)
+    return {pid for pid, (first, _) in pool.network_point_stamps(network.name).items()
+            if pid in owned and pid not in sent and first > by_repo.get(owned[pid], fallback)}
+
+
 def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None = None, cfg: Config | None = None) -> list[int]:
     """The held points no configured network keeps any more (none dropped)."""
     from mmw.core.publisher.manifest import now_stamp
@@ -504,15 +520,7 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
         kept.difference_update(owned)
         # A history network still needs points observed since its last transfer.
         for n in networks:
-            if not n.history:
-                continue
-            by_repo, fallback = history_since(pool, n.name)
-            if fallback is None:
-                continue
-            sent = pool.sent_point_ids(n.name)
-            for pid, (first, _) in pool.network_point_stamps(n.name).items():
-                if pid in owned and pid not in sent and first > by_repo.get(owned[pid], fallback):
-                    kept.add(pid)
+            kept |= unsent_points(pool, n, owned)
         kept |= pool.published_point_ids()
         # Before publish destinations recorded exact point IDs, an as-of
         # deployment was identified by its saved network recording instead.

@@ -1359,15 +1359,37 @@ def cmd_keep(
     raise typer.Exit(run(_cfg_dir(), value, repo, suite))
 
 
-@app.command("history")
+history_app = typer.Typer(help="Repository history: list the points syncs recorded, or delete some.")
+app.add_typer(history_app, name="history")
+
+
+@history_app.callback(invoke_without_command=True)
 def cmd_history(
+    ctx: typer.Context,
     network: str = typer.Option(None, "--network", "-n", help="Limit to this network's current selection"),
     repo: list[str] = typer.Option(None, "--repo", help="Repository name or URL (repeatable)"),
     since: str = typer.Option(None, "--since", help="Show points on or after DATE"),
 ):
     """List repository-owned points; no snapshot or network history import is needed."""
+    if ctx.invoked_subcommand is not None:
+        return
     from mmw.commands.history import run
     raise typer.Exit(run(_cfg_dir(), network=network, repos=repo, since=since))
+
+
+@history_app.command("delete")
+def cmd_history_delete(
+    repo: str = typer.Argument(..., help="Repository (URL or name)"),
+    when: str = typer.Argument(..., help="A date (2026-11-03, 3nov) or a point's stamp"),
+    suite: str = typer.Option(None, "--suite", help="Only this suite's points"),
+    before: bool = typer.Option(False, "--before", help="Every kept point dated before WHEN, not on it"),
+    yes: bool = typer.Option(False, "--yes", help="Don't ask; also delete protected points "
+                                                  "(the latest sync, published, not yet sent)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would go and what it frees"),
+):
+    """Delete kept points by hand: their records stay, their files go unless something else keeps them."""
+    from mmw.commands.history import run_delete
+    raise typer.Exit(run_delete(_cfg_dir(), repo, when, suite=suite, before=before, yes=yes, dry_run=dry_run))
 
 
 # Keep Typer's shell protocol and path handling; add saved-object suggestions.

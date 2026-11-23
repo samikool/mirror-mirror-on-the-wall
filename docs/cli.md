@@ -42,7 +42,7 @@ codes — see [far-side.md](far-side.md#exit-codes).
 | [`mmw bundle`](#mmw-bundle) | Transfer recorded points: from each repository's last transfer to its latest recorded points |
 | [`mmw certs`](#mmw-certs) | Generate (or refresh) TLS key/CSR material for `certs = true` networks, and sign it with your CA |
 | [`mmw dry-run`](#mmw-dry-run) | Show what would be downloaded without fetching anything |
-| [`mmw history`](#mmw-history) | List repository-owned points; no snapshot or network history import is needed |
+| [`mmw history`](#mmw-history) | Repository history: list the points syncs recorded, or delete some |
 | [`mmw init`](#mmw-init) | Setup wizard, or recover mmw.toml from kept bundles |
 | [`mmw installer`](#mmw-installer) | Write mmw's installer on its own: `tar -xf mmw-….tar && sh mmw-…/install.sh` on the far side puts mmw on the path, offline |
 | [`mmw keep`](#mmw-keep) | Set repository history retention, independently of networks |
@@ -151,7 +151,17 @@ Takes no options.
 
 ### `mmw history`
 
-List repository-owned points; no snapshot or network history import is needed.
+Repository history: list the points syncs recorded, or delete some.
+
+`mmw history delete REPO WHEN [--suite S] [--before] [--dry-run] [--yes]`
+deletes kept points by hand (TUI: Repository history → More… → Delete
+points…). WHEN is a date (`2026-11-03`, `3nov`) or a point's stamp;
+`--before` takes every kept point dated before it instead. It lists each
+point with what it frees, then stubs them: their records stay in the history,
+their files go unless another kept point or the latest sync uses them. The
+latest sync, a published point, and a point a `history = true` network has
+not been sent yet are protected: listed with the reason, and deleted only
+with `--yes`. `--dry-run` lists without deleting.
 
 | Option | Default | Description |
 |--------|---------|-------------|

@@ -119,7 +119,7 @@ class AptLocalProvider(BaseProvider):
                             gpg_key_name=f"{source.key}.gpg")
         return ResolvedSource(source, [unit], [], [])
 
-    def fetch_all(self, mirror_config, client, status_callback=None, history=None):
+    def fetch_all(self, mirror_config, client, status_callback=None, history=None, releases=None):
         return build(mirror_config)
 
     def verify_witness(self, unit, pool, say=None, stop_event=None):
@@ -144,7 +144,7 @@ class AptLocalProvider(BaseProvider):
     def fetch_packages(self, mirror_config, client, status_callback=None):
         return build(mirror_config)[0]
 
-    def fetch_metadata(self, mirror_config, client):
+    def fetch_metadata(self, mirror_config, client, releases=None):
         return build(mirror_config)[1]
 
 

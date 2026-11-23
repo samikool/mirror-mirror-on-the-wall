@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from mmw.core.release_snapshots import ReleaseSnapshots
 from mmw.core.config import MirrorConfig
 from mmw.core.downloader import (
     ChunkCallback,
@@ -262,6 +263,7 @@ async def sync_mirror(
     items_session: ItemProgressSession | None = None,
     downloads: DownloadCoordinator | None = None,
     commit_refs: bool = True,
+    releases: ReleaseSnapshots | None = None,
 ) -> MirrorSummary:
     """Full pipeline for one mirror: fetch index → download → metadata → GPG keys.
 
@@ -284,7 +286,8 @@ async def sync_mirror(
     packages, metadata = await loop.run_in_executor(
         executor,
         lambda: fetch_all_threaded(provider, mirror, status_callback=events.phase,
-                                   history=history, stop_event=stop_event),
+                                   history=history, stop_event=stop_event,
+                                   **({"releases": releases} if releases is not None else {})),
     )
 
     def item_finished(event: ItemResult) -> None:
@@ -306,9 +309,17 @@ async def sync_mirror(
         """Re-read the upstream index. Called only when the snapshot we started
         from went stale during a long package phase. A provider that carries
         state forward needs its history here too, or the refetch drops it."""
+        if releases is not None:
+            root = next((f for f in metadata if f.is_release and f.content
+                         and not f.repo_path.endswith(".gpg")), None)
+            if root is not None:
+                from mmw.core.http import request_scope
+                with request_scope(stop_event):
+                    releases.refresh(_thread_client(), root.url.rsplit("/", 1)[0], root.content)
+        extra = {"releases": releases} if releases is not None else {}
         if provider.carries_history:
-            return fetch_all_threaded(provider, mirror, history=history, stop_event=stop_event)[1]
-        return fetch_metadata_threaded(provider, mirror, stop_event=stop_event)
+            return fetch_all_threaded(provider, mirror, history=history, stop_event=stop_event, **extra)[1]
+        return fetch_metadata_threaded(provider, mirror, stop_event=stop_event, **extra)
 
     # The pool is the authority on what exists; remember what this mirror is so
     # publish can reconstruct it offline without re-resolving architectures.

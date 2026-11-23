@@ -157,7 +157,11 @@ Repository history: list the points syncs recorded, or delete some.
 first: each one's date, size, and what it is — the latest sync, published at
 a root, sent (or not yet sent) to a network, pruned next under `keep_points`,
 or inconsistent (its Release disagrees with an index it keeps; see
-`mmw verify --points`). `--json` prints the same rows for scripts. The TUI's
+`mmw verify --points`). Each repository's heading sums it up — each suite's
+newest point, how many are kept, their size together and the keep rule, as
+the TUI's Sources pane shows it; with `-n NETWORK` the listing starts with
+what that network's far side has and what is newer here, as the Networks pane
+shows it. `--json` prints the same rows for scripts. The TUI's
 Repository history is the same table, with Publish as of this, Transfer to
 this and Delete acting on the row's point.
 

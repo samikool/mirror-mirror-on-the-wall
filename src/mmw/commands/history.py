@@ -7,18 +7,52 @@ from mmw.core.pool import Pool
 
 @dataclass(frozen=True)
 class HistoryRow:
+    """One point, as both sides' history tables and `mmw history` show it.
+
+    `marks` ⊆ {current, published:ROOT, sent:NETWORK, unsent:NETWORK, drops,
+    labelled, inconsistent}. `size`: the point's distinct files; `frees`:
+    what deleting it alone frees (0 for a stub)."""
     repo: str
     suite: str
     date: str
-    held: bool
-    current: bool
     ident: str
-    legacy: bool
+    held: bool
+    size: int
+    frees: int
+    marks: tuple[str, ...]
+    label: str | None = None
     point: int = 0
+    legacy: bool = False
+
+    @property
+    def current(self) -> bool:
+        return 'current' in self.marks
+
+
+def _published(pool) -> dict[int, list[str]]:
+    import sqlite3
+    out: dict[int, list[str]] = {}
+    with pool._read() as c:
+        try:
+            for root, pid in c.execute('SELECT root, point FROM published_points ORDER BY root'):
+                out.setdefault(pid, []).append(root)
+        except sqlite3.OperationalError:          # a pool from before published points
+            pass
+    return out
+
+
+def _consistent(pool, point, track) -> bool:
+    """The Release agrees with every index the point keeps (one read)."""
+    from mmw.core.point_check import release_mismatches
+    from mmw.core.points import _reader
+    if point.legacy or not point.held or not track.name or '/dists/' not in track.name:
+        return True
+    files = pool.point_files(point.id)
+    return not release_mismatches(files, track.name, _reader(pool, files))
 
 
 def prepare(cfg, *, network=None, repos=None, since=None):
-    from mmw.core.points import prepare_history, prepare_recordings, resolve_when
+    from mmw.core.points import prepare_history, prepare_recordings, resolve_when, retention_plan, unsent_points
     from mmw.core.repository_points import current_repository_points, selected_point_files, wire_draft
     from mmw.site.tracks import content_ident
     from mmw.core.resolve import available_mirrors, network_mirrors
@@ -42,14 +76,23 @@ def prepare(cfg, *, network=None, repos=None, since=None):
                    if pool.snapshots(name) and not pool.points_converted(name)]
     for name in convert:
         prepare_recordings(cfg.settings.mirror_dir, name)
+    # Which networks carry each repository: only theirs say sent / unsent.
+    carried = {n.name: {repository_key(u) for u in network_mirrors(n, cfg, cfg.settings.mirror_dir)}
+               for n in cfg.networks}
     rows = []
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        published = _published(pool)
+        drops = set(retention_plan(pool, cfg.networks, cfg=cfg))
+        owned = {p.id: pool.track_of_point(p.id).repo for p in pool.repository_points()}
+        sent = {n.name: (pool.sent_point_ids(n.name), pool.sent_dates_by_track(n.name),
+                         unsent_points(pool, n, owned)) for n in cfg.networks}
         for repo in chosen:
             current = set(current_repository_points(pool, repo))
             seen = set()
             with pool._read() as c:
                 ids = [r[0] for r in c.execute('SELECT p.id FROM points p JOIN tracks t ON t.id = p.track '
                                                'WHERE t.repo = ?', (repo,))]
+            found = []
             for point in sorted(pool.points_of(ids).values(),
                                 key=lambda p: (p.id in current, p.date, p.stamp, p.id), reverse=True):
                 track = pool.track_of_point(point.id)
@@ -70,27 +113,91 @@ def prepare(cfg, *, network=None, repos=None, since=None):
                     date = wire_draft(pool, point.id, files, settings, point.stamp).date
                 if cutoff and date < cutoff:
                     continue
-                rows.append(HistoryRow(repo, track.suite or track.name or 'files', date,
-                                       point.held, point.id in current, point.ident, point.legacy, point.id))
-    return tuple(sorted(rows, key=lambda r: (r.repo, r.suite, r.date, r.ident), reverse=True))
+                found.append((point, track, date))
+            sizes = pool.points_sizes([p.id for p, _, _ in found])
+            for point, track, date in found:
+                marks = []
+                if point.id in current:
+                    marks.append('current')
+                marks += [f'published:{root}' for root in published.get(point.id, ())]
+                for name, (ids_sent, dates, waiting) in sent.items():
+                    if repo not in carried[name]:
+                        continue
+                    last = dates.get(point.track)
+                    if point.id in ids_sent or (last is not None and point.date <= last):
+                        marks.append(f'sent:{name}')
+                    elif point.id in waiting or point.id in current:
+                        marks.append(f'unsent:{name}')
+                if point.id in drops:
+                    marks.append('drops')
+                if not _consistent(pool, point, track):
+                    marks.append('inconsistent')
+                rows.append(HistoryRow(repo, track.suite or track.name or 'files', date, point.ident,
+                                       point.held, sizes.get(point.id, 0),
+                                       pool.points_frees([point.id]) if point.held else 0,
+                                       tuple(marks), None, point.id, point.legacy))
+    # Grouped by repository and suite; newest first within each.
+    rows.sort(key=lambda r: (r.date, r.ident), reverse=True)
+    rows.sort(key=lambda r: (repository_label(r.repo, cfg), r.repo, r.suite))
+    return tuple(rows)
+
+
+def mark_text(mark: str, row: HistoryRow | None = None) -> str:
+    """A mark in words, as `mmw history` prints it."""
+    from mmw.core.format import fmt_size
+    kind, _, arg = mark.partition(':')
+    return {'current': 'latest sync',
+            'published': f'published at {arg}',
+            'sent': f'sent to {arg}',
+            'unsent': f'not yet sent to {arg}',
+            'drops': 'pruned next' + (f' (frees {fmt_size(row.frees)})' if row and row.frees else ''),
+            'labelled': f'labelled {row.label}' if row and row.label else 'labelled',
+            'inconsistent': 'inconsistent — see mmw verify --points'}.get(kind, mark)
 
 
 def describe(cfg, rows):
+    """`mmw history`: per repository, `suite  date  size  marks`, newest first."""
+    from mmw.core.format import fmt_size
     from mmw.core.repos import repository_label
     from mmw.site.versionref import day_time
-    return '\n'.join(f'{repository_label(r.repo, cfg)} / {r.suite}: {day_time(r.date)} '
-                     f'· {"kept" if r.held else "no longer kept"}'
-                     + (' · latest sync' if r.current else '')
-                     + (' · legacy history' if r.legacy else '') for r in rows) or 'No repository points recorded yet.'
+    if not rows:
+        return 'No repository points recorded yet.'
+    width = max(len(r.suite) for r in rows)
+    lines, last_repo, last_suite = [], None, None
+    for r in rows:
+        if r.repo != last_repo:
+            if lines:
+                lines.append('')
+            label = repository_label(r.repo, cfg)
+            lines.append(label if label == r.repo else f'{label} ({r.repo})')
+            last_repo, last_suite = r.repo, None
+        words = [mark_text(m, r) for m in r.marks]
+        if not r.held:
+            words.append('no longer kept')
+        if r.legacy:
+            words.append('legacy history')
+        size = fmt_size(r.size) if r.held else '—'
+        suite = r.suite if r.suite != last_suite else ''
+        last_suite = r.suite
+        lines.append(f'  {suite:<{width}}  {day_time(r.date)}  {size:>9}  {" · ".join(words)}'.rstrip())
+    return '\n'.join(lines)
 
 
-def run(cfg_dir, *, network=None, repos=None, since=None):
+def as_json(rows) -> str:
+    from dataclasses import asdict
+    return json.dumps([{**asdict(r), 'marks': list(r.marks)} for r in rows], indent=2)
+
+
+def run(cfg_dir, *, network=None, repos=None, since=None, as_json_output=False):
     from mmw.commands.common import eprint, load_config_or_none
     cfg = load_config_or_none(cfg_dir)
     if cfg is None:
         return 1
     try:
-        print(render(cfg, network=network, repos=repos, since=since))
+        if as_json_output:
+            print(as_json(prepare(cfg, network=network, repos=repos, since=since)))
+        else:
+            print(render(cfg, network=network, repos=repos, since=since))
     except (ValueError, LookupError, OSError) as exc:
         eprint(str(exc))
         return 1
@@ -128,11 +235,11 @@ def _matches(text: str, before: bool):
     return (lambda date: date == end) if exact else (lambda date: date[:8] == end[:8])
 
 
-def _why_kept(row, published, unsent) -> str | None:
+def _why_kept(row, unsent) -> str | None:
     reasons = []
     if row.current:
         reasons.append('the latest sync')
-    reasons += [f'published at {root}' for root in published.get(row.point, ())]
+    reasons += [f'published at {m.partition(":")[2]}' for m in row.marks if m.startswith('published:')]
     reasons += [f'not yet sent to {name} (history = true)' for name, ids in unsent.items() if row.point in ids]
     return '; '.join(reasons) or None
 
@@ -140,7 +247,6 @@ def _why_kept(row, published, unsent) -> str | None:
 def delete_plan(pool, cfg, repo, when, suite=None, before=False) -> list[DeleteItem]:
     """The kept points of `repo` dated `when` (or before it, with `before`),
     optionally in one suite, each with what it frees and why it is protected."""
-    import sqlite3
     from mmw.core.points import unsent_points
     matches = _matches(when, before)
     rows = [r for r in prepare(cfg, repos=[repo]) if r.held and matches(r.date)]
@@ -149,16 +255,8 @@ def delete_plan(pool, cfg, repo, when, suite=None, before=False) -> list[DeleteI
             t = pool.track_of_point(r.point)
             return {r.suite, t.suite, t.codename, t.name, t.name.rsplit('/', 1)[-1] if t.name else None}
         rows = [r for r in rows if suite in names(r)]
-    with pool._read() as c:
-        try:
-            published = {}
-            for root, pid in c.execute('SELECT root, point FROM published_points'):
-                published.setdefault(pid, []).append(root)
-        except sqlite3.OperationalError:          # a pool from before published points
-            published = {}
     unsent = {n.name: unsent_points(pool, n) for n in cfg.networks if n.history}
-    return [DeleteItem(r.repo, r.suite, r.date, r.point, pool.points_frees([r.point]),
-                       _why_kept(r, published, unsent)) for r in rows]
+    return [DeleteItem(r.repo, r.suite, r.date, r.point, r.frees, _why_kept(r, unsent)) for r in rows]
 
 
 def describe_plan(cfg, items) -> str:

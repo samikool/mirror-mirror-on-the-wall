@@ -1369,12 +1369,14 @@ def cmd_history(
     network: str = typer.Option(None, "--network", "-n", help="Limit to this network's current selection"),
     repo: list[str] = typer.Option(None, "--repo", help="Repository name or URL (repeatable)"),
     since: str = typer.Option(None, "--since", help="Show points on or after DATE"),
+    as_json: bool = typer.Option(False, "--json", help="Print the rows as JSON, for scripts"),
 ):
-    """List repository-owned points; no snapshot or network history import is needed."""
+    """List repository-owned points: each one's size and whether it is the latest sync,
+    published, sent, waiting to be sent or due to be pruned."""
     if ctx.invoked_subcommand is not None:
         return
     from mmw.commands.history import run
-    raise typer.Exit(run(_cfg_dir(), network=network, repos=repo, since=since))
+    raise typer.Exit(run(_cfg_dir(), network=network, repos=repo, since=since, as_json_output=as_json))
 
 
 @history_app.command("delete")

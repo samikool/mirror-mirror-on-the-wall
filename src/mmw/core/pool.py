@@ -2857,6 +2857,20 @@ class Pool:
                             [*params, *([released] if released is not None else [])]).fetchone()
         return (int(row[0]), int(row[1])) if row else (0, 0)
 
+    def points_sizes(self, point_ids) -> dict[int, int]:
+        """Each point's size: the bytes of its distinct files (0 for a stub)."""
+        ids = sorted(set(point_ids))
+        if not ids or not (self._has_point_files and self._has_snapshot_blobs):
+            return {pid: 0 for pid in ids}
+        rows = ("(SELECT point, blob FROM point_files UNION SELECT point, blob FROM point_unit_files)"
+                if self._has_point_unit_files else "(SELECT DISTINCT point, blob FROM point_files)")
+        sql = (f"SELECT f.point, COALESCE(SUM(k.size), 0) FROM {rows} f "
+               "JOIN snapshot_blobs b ON b.id = f.blob JOIN packages k ON k.checksum = b.checksum "
+               "WHERE f.point IN (SELECT value FROM json_each(?)) GROUP BY f.point")
+        with self._read() as c:
+            found = dict(c.execute(sql, (json.dumps(ids),)).fetchall())
+        return {pid: int(found.get(pid, 0)) for pid in ids}
+
     def points_frees(self, point_ids) -> int:
         """Bytes releasing `point_ids` would free: their blobs no ref, no
         other held point, no snapshot and no layer wants. Scoped to those

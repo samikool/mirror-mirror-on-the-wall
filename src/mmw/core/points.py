@@ -136,6 +136,44 @@ def seed_recordings(pool: Pool, network: str, now: str | None = None) -> int:
     return done
 
 
+def partial_sync_note(pool, repo, current, recorded, now) -> str:
+    """What a sync left half done, said plainly: the architectures (or
+    components) whose indexes don't match the suite's Release now, and the
+    date the suite stays at until they sync — "arm64 didn't sync — jammy
+    stays at 2022-04-21 until it does"."""
+    import re
+    from mmw.core.point_check import check_suite
+    from mmw.core.repository_points import _blob_reader
+    from mmw.site.versionref import day
+    blob = _blob_reader(pool)
+    changed = {p for p in recorded.keys() | now.keys() if recorded.get(p) != now.get(p)}
+    tracks = {}
+    for point in pool.points_of(current).values():
+        track = pool.track_of_point(point.id)
+        if track is not None and track.name and '/dists/' in track.name:
+            tracks[track.name] = point
+    notes = []
+    for name, point in sorted(tracks.items()):
+        if not any(p.startswith(name + '/') for p in changed):
+            continue
+        suite, date = name.rsplit('/dists/', 1)[1], day(point.date)
+        problems = check_suite(now, name, lambda path: blob(now[path]) if path in now else None)
+        behind = set()
+        for problem in problems:
+            arch = re.search(r'(?:binary|Contents|installer|Components)-([A-Za-z0-9_]+)', problem)
+            if arch:
+                behind.add(arch.group(1))
+            elif problem.endswith(' is missing'):
+                behind.add('packages')            # an index names a file that never arrived
+            else:
+                behind.add(problem.split('/', 1)[0].split(' ', 1)[0])
+        if behind:
+            notes.append(f"{repo}: {', '.join(sorted(behind))} didn't sync — {suite} stays at {date} until it does")
+        else:
+            notes.append(f"{repo}: {suite} changed without a new point — it stays at {date} until a sync completes")
+    return '; '.join(notes) or f"{repo}: files changed without a new point — it stays at its last point until a sync completes"
+
+
 def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, *, stamp: str | None = None,
                           progress=None, stop_event=None, after_sync: bool = False) -> PointsReport:
     """Walk `network` and record its points; the ones new to it are said."""
@@ -159,7 +197,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
                           for path, cs in selected_point_files(pool, pid, selected).items()}
             actual = current_ref_projection(pool, [u for u in selected if u.source == repo], shared_files(pool, candidates))
             if projection != actual:
-                note = f"{repo}: current files need a complete sync before bundling; retaining the last recorded state"
+                note = partial_sync_note(pool, repo, candidates, projection, actual)
                 if not after_sync:
                     raise ValueError(note)
                 report.warnings.append(note)
@@ -187,7 +225,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
                 slices = {pid: selected_point_files(pool, pid, selected) for pid in candidates}
                 projection = {path: cs for files in slices.values() for path, cs in files.items()}
                 if projection != mine:
-                    note = f"{repo}: current files need a complete sync before bundling; retaining the last recorded state"
+                    note = partial_sync_note(pool, repo, candidates, projection, mine)
                     if not after_sync:
                         raise ValueError(note)
                     report.warnings.append(note)

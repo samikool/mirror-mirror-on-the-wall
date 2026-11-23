@@ -13,6 +13,7 @@ from mmw.tui.app import MmwApp
 from pickers import confirm_picker
 from test_dry_run_totals import SHARED, _index, two_mirrors  # noqa: F401 — the shared pool fixture
 from waiting import shows, until
+from test_transfer_repository_selection import synced  # noqa: F401
 
 
 def _move_on(mirror_dir):
@@ -207,3 +208,29 @@ def test_bundle_pick_mmw_has_repos_and_stage(two_mirrors, tmp_path):  # noqa: F8
     import json
     header = json.loads((staged / ".mmw/manifest.jsonl").read_text().splitlines()[0])
     assert {m["label"] for m in header["points"].values()} == {"a"}       # b left out
+
+
+def test_activity_and_transfer_from_read_dates(synced, tmp_path, monkeypatch):  # noqa: F811
+    """Activity: `last transferred 23 Nov (points to 01 Nov)`; From: the date, never a stamp."""
+    import re
+    from mmw.core import snapshots
+    from mmw.core.publisher.bundle import bundle_network
+    from mmw.site.versionref import short_day
+    cfg, net, mirror_dir, _units = synced
+    monkeypatch.setattr(snapshots, "now_stamp", lambda: "20261123T015441Z")
+    bundle_network(net, cfg, mirror_dir, out_path=tmp_path / "first.tar")
+
+    async def check(app, pilot):
+        def activity():
+            return next((str(lbl.render()) for lbl in app.screen.query(".detail-meta")
+                         if "Activity" in str(lbl.render()) and "transferred" in str(lbl.render())), "")
+        await until(pilot, activity)
+        nov23, nov01 = short_day("20261123T015441Z"), short_day("20261101T000000Z")
+        assert f"last transferred {nov23} (points to {nov01})" in activity(), activity()
+        assert not re.search(r"\d{8}T\d{6}Z", activity())
+        await pilot.press("t")
+        await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage" and app.screen.query("#pick-from"))
+        labels = [str(p) for p, _v in app.screen.query_one("#pick-from", Select)._options]
+        assert labels[0] == f"Where the last transfer went — {nov23}", labels
+        assert not any(re.search(r"\d{8}T\d{6}Z", label) for label in labels), labels
+    _run(cfg, tmp_path, check)

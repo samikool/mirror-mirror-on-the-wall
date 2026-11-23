@@ -331,15 +331,15 @@ class SnapshotStatus:
     last_bundle: BundleInfo | None
 
     def name(self, stamp: str | None) -> str:
-        """A stamp with its label, if it has one."""
+        """A stamp as a date (`23 Nov`) with its label, if it has one."""
         if stamp is None:
             return "nothing (full)"
         from mmw.core.points import AS_OF
+        from mmw.site.versionref import short_day
         if stamp.startswith(AS_OF):
-            from mmw.site.versionref import day
-            return f"the network as of {day(stamp[len(AS_OF):])}"
+            return f"the network as of {short_day(stamp[len(AS_OF):])}"
         label = next((s.label for s in self.snapshots if s.stamp == stamp and s.label), None)
-        return f"{stamp} ({label})" if label else stamp
+        return f"{short_day(stamp)} ({label})" if label else short_day(stamp)
 
 
 def snapshot_status(pool: Pool, network: str, root: Path | None) -> SnapshotStatus:

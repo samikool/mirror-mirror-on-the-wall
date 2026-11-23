@@ -59,3 +59,27 @@ def test_two_suites_show_their_headings_and_points(tmp_path, monkeypatch):
             card = str(app.screen.query_one("#site-repos", DataTable).get_row_at(0)[0])
             assert "current" in card and "2 points" not in card and "4 points" in card
     asyncio.run(go())
+
+
+def test_as_of_a_bundle_counts_repositories_not_suites(tmp_path, monkeypatch):
+    """One repository with two suites came in the 01 Nov bundle: "1 repository"."""
+    import re
+    from textual.widgets import Select
+    _two_suites(tmp_path, monkeypatch)
+
+    async def go():
+        from mmw.site.mset import open_set
+        from mmw.tui.site.app import SiteApp
+        app = SiteApp(open_set())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage"
+                        and app.screen.query_one("#site-history", DataTable).row_count == 6)
+            assert not re.search(r"\d{8}T\d{6}Z", app.export_screenshot())
+            await pilot.press("b")
+            await until(pilot, lambda: type(app.screen).__name__ == "ServeBundlePage"
+                        and app.screen.query("#bundle-pick"))
+            assert app.screen.subtitle == "every repository as that bundle left it"
+            labels = [str(p) for p, _v in app.screen.query_one("#bundle-pick", Select)._options]
+            assert len(labels) == 2 and all("1 repository changed" in label for label in labels), labels
+            assert not any(re.search(r"\d{8}T\d{6}Z", label) for label in labels)
+    asyncio.run(go())

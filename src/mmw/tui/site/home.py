@@ -63,7 +63,9 @@ class SiteHomePage(Page):
     TITLE = "Repositories"
     SCROLLS = False
     HELP = ("Every repository this site serves. Its history is on the right, by suite: every\n"
-            "point kept here (one upstream Release, by its date), the one served marked ▶.\n"
+            "point kept here (one upstream Release, by its date), the one served marked ▶,\n"
+            "and what it changed since the one before (+new ~upgraded −removed). Under it,\n"
+            "the selected point's sources.list line for its dated URL.\n"
             "Serving a point pins its suite there — bundles then store newer ones without\n"
             "serving them, until you forward it.\n"
             "k: local .debs this site adds to the repository, and how it is then signed;\n"
@@ -113,6 +115,7 @@ class SiteHomePage(Page):
         self._said = 0                                             # messages shown so far (see _loaded)
         self._history = []
         self._history_repo = None
+        self._point_rows: dict[int, dict] = {}      # point id → root.point_rows: changes, covers, dated
 
     def compose_actions(self) -> ComposeResult:
         # The mirror's own actions; a version's sit under its table (the
@@ -205,7 +208,7 @@ class SiteHomePage(Page):
         t = self.query_one("#site-repos", DataTable)
         t.show_header = False
         t.add_column("Repository")
-        self.query_one("#site-history", DataTable).add_columns("Point", "Date", "Size", "")
+        self._history_columns(covers=False)
         t.focus()
         self.action_refresh()
 
@@ -348,6 +351,24 @@ class SiteHomePage(Page):
             if layer_details is not None:
                 details.update(layer_details(repo))
         self.app.call_from_thread(self._history_loaded, repo, rows, details)
+        if repo is not None:
+            self._load_point_rows(repo)
+
+    @work(thread=True, exclusive=True, group="site-point-rows", exit_on_error=False)
+    def _load_point_rows(self, repo: str) -> None:
+        """What each point changed, covers and is dated as: reading indexes
+        (over ssh, a round trip) — after the table, never holding it up."""
+        try:
+            got = self.app.root_of(repo).point_rows(repo)
+        except Exception:  # noqa: BLE001 — extra: the history shows without them
+            return
+        self.app.call_from_thread(self._point_rows_loaded, repo, got)
+
+    def _point_rows_loaded(self, repo: str, got: dict) -> None:
+        if not self.is_attached or repo != self._history_repo:
+            return
+        self._point_rows = got
+        self._render_history()
 
     def _detail_text(self, repo: str | None, rows, details: dict) -> str:
         """The selected repository, in full: where, what it serves, what's kept."""
@@ -407,25 +428,81 @@ class SiteHomePage(Page):
             flat.append((t, None, 0, 0, ""))
             flat += [(t, p, total, frees, mark) for p, total, frees, mark in points]
         self._history = flat
+        if repo != self._history_repo:
+            self._point_rows = {}               # another repository's: its own come after the table
+        self._render_history()
+
+    def _history_columns(self, covers: bool) -> None:
         t = self.query_one("#site-history", DataTable)
+        t.clear(columns=True)
+        t.add_column("Date", key="date")
+        t.add_column("Changes", key="changes")
+        t.add_column("Size", key="size")
+        t.add_column("", key="mark")
+        if covers:
+            t.add_column("Covers", key="covers")
+        self._covers_shown = covers
+
+    def _render_history(self) -> None:
+        """The history table from self._history and self._point_rows: a
+        heading per suite, then its points — date (▶ served), what it
+        changed since the point before it, size, mark; what each covers only
+        when a suite's points differ."""
+        from mmw.core.point_diff import summary_counts
+        t = self.query_one("#site-history", DataTable)
+        repo = self.selected_repo()
         # The same repository again (a reload): keep the row the user is on.
         same = repo == self._history_repo
-        keep = t.cursor_row if same else None
+        keep = t.cursor_row if same and t.row_count else None
         self._history_repo = repo
-        t.clear()
-        for track, p, total, frees, mark in flat:
+        extra = self._point_rows
+        covers = any("covers" in r for r in extra.values())
+        if covers != getattr(self, "_covers_shown", None):
+            self._history_columns(covers)
+        else:
+            t.clear()
+        for track, p, total, frees, mark in self._history:
             if p is None:
-                t.add_row(Text(ops.suite_of(track), style="bold"), "", "", "", key=f"t{track.id}")
+                t.add_row(Text(ops.suite_of(track), style="bold"), "", "", "", *([""] if covers else []),
+                          key=f"t{track.id}")
                 continue
-            from mmw.site.versionref import short
-            date = _date(p.date) + (f" {p.snap_label}" if p.snap_label else "")
+            row = extra.get(p.id, {})
+            date = f"{'▶ ' if mark == 'serving' else '  '}{_date(p.date)}" + (f" {p.snap_label}" if p.snap_label else "")
+            changes = summary_counts(row["changes"]) if row.get("changes") is not None else ""
             tail = mark or f"frees {fmt_size(frees)}"
-            t.add_row(f"{'▶ ' if mark == 'serving' else '  '}{short(p.ident)}", Text(date),
-                      fmt_size(total) if mark != "stub" else "—", tail, key=f"p{p.id}")
+            t.add_row(Text(date), changes, fmt_size(total) if mark != "stub" else "—", tail,
+                      *([row.get("covers", "")] if covers else []), key=f"p{p.id}")
             if mark == "serving" and keep is None:
                 t.move_cursor(row=t.row_count - 1)
         if keep is not None and t.row_count:
             t.move_cursor(row=min(keep, t.row_count - 1))
+        self._show_point()
+
+    @on(DataTable.RowHighlighted, "#site-history")
+    def _point_highlighted(self, _event) -> None:
+        self._show_point()
+
+    def _show_point(self) -> None:
+        """The point at the history's cursor, in full: its date and time,
+        digest and slice, and the sources.list line of its dated URL."""
+        from mmw.site.dated import sources_line
+        from mmw.site.versionref import day_time, short
+        out = self.query_one("#site-point", Static)
+        picked = self.selected_point()
+        if picked is None:
+            out.update("")
+            return
+        track, p, _mark = picked
+        row = self._point_rows.get(p.id, {})
+        head = f"[dim]point[/]  {day_time(p.date)} · {short(p.ident)}"
+        if row.get("covers"):
+            head += f" · {_esc(row['covers'])}"
+        lines = [head]
+        if row.get("dated"):                     # a suite: the line that pins a client; else the URL
+            pin = (sources_line(row["dated"], ops.suite_of(track), row.get("components") or []) if track.name
+                   else row["dated"] + "/")
+            lines.append("[dim]pin[/]    " + _esc(pin))
+        out.update("\n".join(lines))
 
     def selected_point(self):
         """(track, point, mark) at the history's cursor; None on a suite heading."""
@@ -1612,6 +1689,7 @@ class _HistoryPane(Static):
     def compose(self) -> ComposeResult:
         yield Static("", id="site-detail")
         yield DataTable(cursor_type="row", zebra_stripes=True, id="site-history")
+        yield Static("", id="site-point")
         with Horizontal(id="site-version-actions"):
             yield Button("Serve", id="btn-site-serve", compact=True)
             yield Button("Forward", id="btn-site-forward", compact=True)

@@ -327,6 +327,10 @@ class LocalRoot:
         from mmw.site.combine import combine
         return combine(self.home, repo, track, whens, key, progress)
 
+    def point_rows(self, repo: str) -> dict[int, dict]:
+        from mmw.site import ops
+        return ops.point_rows(self.home, repo)
+
     def point_notes(self, repo: str) -> dict[int, str]:
         from mmw.site.combine import notes
         from mmw.site.db import SiteDB

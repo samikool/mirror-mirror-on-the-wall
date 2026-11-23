@@ -4,7 +4,7 @@ import threading
 
 from textual.widgets import DataTable, Static
 
-from site_points import nth
+from site_points import nth, row_of
 from mmw.site import ops
 from test_site_tui import _rows, _run, _three, env  # noqa: F401
 from test_dry_run_totals import two_mirrors  # noqa: F401
@@ -27,9 +27,9 @@ async def _pick_version(app, pilot, label, point):
     home = app.screen
     t = home.query_one("#site-repos", DataTable)
     t.move_cursor(row=[r[0] for r in _rows(app, "site-repos")].index(label))
-    await until(pilot, lambda: any(r[0].strip().lstrip("▶ ") == point for r in _rows(app, "site-history")))
+    await until(pilot, lambda: row_of(app.screen, point) is not None)
     h = home.query_one("#site-history", DataTable)
-    h.move_cursor(row=[r[0].strip().lstrip("▶ ") for r in _rows(app, "site-history")].index(point))
+    h.move_cursor(row=row_of(app.screen, point))
     return home
 
 

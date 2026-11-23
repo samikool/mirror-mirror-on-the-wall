@@ -233,6 +233,14 @@ class SshRoot:
         body = {"keep": keep, "auto_clean": auto_clean, "dated": dated}
         self._call("set-options", input=json.dumps(body).encode())
 
+    def point_rows(self, repo: str) -> dict[int, dict]:
+        try:
+            return {int(k): v for k, v in self._call("point-rows", repo).items()}
+        except ValueError as e:
+            if "unknown verb" in str(e):    # an older mmw there: the history shows without them
+                return {}
+            raise
+
     def point_notes(self, repo: str) -> dict[int, str]:
         return {int(k): v for k, v in self._call("point-notes", repo).items()}
 

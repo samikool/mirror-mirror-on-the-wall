@@ -216,6 +216,24 @@ Packages indexes; B defaults to the next kept point after A. In the TUI,
 the one before it. Applying a bundle says what it brings each suite
 ("brings 37 upgrades, 3 new packages") before you confirm.
 
+`mmw site history` (and the TUI's history table) leads each point with what
+it changed since the kept point before it in its suite — `+3 ~37 −1` is 3
+new packages, 37 upgraded, 1 removed (`↓N` when some went down) — and, when
+that day's dated tree is built, the `sources.list` line that pins a client
+to it:
+
+```
+jammy
+▶ 2026-11-03 00:00:00 UTC  9c41e2  +0 ~1 −0       4.6 KB  serving
+    deb https://deb.example.org/ubuntu/@2026-11-03 jammy main
+  2026-11-02 00:00:00 UTC  51ab07  +1 ~1 −1       4.5 KB  previous
+    deb https://deb.example.org/ubuntu/@2026-11-02 jammy main
+```
+
+The TUI shows the selected point's line under the table, and a **Covers**
+column when a suite's points don't all cover the same architectures and
+components.
+
 Serving a point **pins** its suite there: later bundles store newer points
 without serving them. Other suites of the same repository keep moving.
 `mmw site forward debian` (or `--all`) clears the pins and serves each
@@ -253,9 +271,9 @@ slice, and when an older point has one the newest lacks:
 
 ```
 stable
-▶ 2026-11-02 00:00  9c41e2   …  serving
+▶ 2026-11-02 00:00:00 UTC  9c41e2   …  serving
     amd64 · main
-  2026-11-01 00:00  51ab07   …  previous
+  2026-11-01 00:00:00 UTC  51ab07   …  previous
     arm64 · main · has arm64; the newest doesn't
 ```
 

@@ -34,8 +34,8 @@ class PublishPickPage(Page):
     def compose_body(self) -> ComposeResult:
         targets = [("Latest repository points", "live"),
                    ("A date — repository points at or before then", "date")]
-        from mmw.site.versionref import day
-        targets += [(f"{day(stamp)} {stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]} UTC — retained point",
+        from mmw.site.versionref import day_time
+        targets += [(f"{day_time(stamp)} — retained point",
                      f"point:{stamp}") for stamp in self._available_dates]
         dirs = ([(escape(f"The network's root — {self._net.root}"), "root")]
                 if self._net.root is not None else []) + [("Another directory", "other")]
@@ -144,8 +144,8 @@ class BundlePickPage(Page):
         froms += [("Nothing — send everything", "none"),
                   ("A date — what the far side had then", "date")]
         tos = [("Latest recorded points", "now"), ("A date — newest point by then, per suite", "date")]
-        from mmw.site.versionref import day
-        dates = [(f"{day(stamp)} {stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]} UTC — retained point",
+        from mmw.site.versionref import day_time
+        dates = [(f"{day_time(stamp)} — retained point",
                   f"point:{stamp}") for stamp in self._available_dates]
         froms += dates
         tos += dates

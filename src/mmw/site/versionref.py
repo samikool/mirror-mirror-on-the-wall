@@ -184,6 +184,25 @@ def day(stamp: str) -> str:
     return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}" if len(stamp) >= 8 else stamp
 
 
+def day_time(stamp: str) -> str:
+    """20261120T000000Z → 2026-11-20 00:00:00 UTC (a CLI line's date and time)."""
+    try:
+        t = time.strptime(stamp, "%Y%m%dT%H%M%SZ")
+    except ValueError:
+        return day(stamp)
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", t)
+
+
+def short_day(stamp: str) -> str:
+    """20261024T101500Z → 24 Oct (with its year when not this one), as TUI
+    tables show a date."""
+    try:
+        t = time.strptime(stamp[:8], "%Y%m%d") if len(stamp) == 8 else time.strptime(stamp, "%Y%m%dT%H%M%SZ")
+    except ValueError:
+        return stamp
+    return time.strftime("%d %b" + ("" if t.tm_year == time.gmtime().tm_year else " %Y"), t)
+
+
 def name_of(point) -> str:
     """A point's full digest: what a program passes to name it — six hex
     characters can read as a date (123dec), the whole digest never can."""

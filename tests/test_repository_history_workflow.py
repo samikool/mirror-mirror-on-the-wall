@@ -215,3 +215,12 @@ def test_publish_picker_lists_points_instead_of_snapshots(synced, tmp_path):  # 
         await until(pilot, lambda: _finished(app))
         assert app.active_transfer.outcome == 'ok', app.notes
     _run(cfg, md.parent, check)
+
+
+def test_history_line_reads_a_date_and_time(synced):  # noqa: F811
+    import re
+    cfg, net, md, _ = synced
+    result = CliRunner().invoke(app, ['--config', str(md.parent), 'history', '-n', net.name])
+    assert result.exit_code == 0, result.output
+    assert ': 2026-11-01 00:00:00 UTC · kept' in result.output, result.output
+    assert not re.search(r'\d{8}T\d{6}Z|\b\d{6} UTC', result.output)

@@ -77,9 +77,9 @@ def prepare(cfg, *, network=None, repos=None, since=None):
 
 def describe(cfg, rows):
     from mmw.core.repos import repository_label
-    from mmw.site.versionref import day
-    return '\n'.join(f'{repository_label(r.repo, cfg)} / {r.suite}: {day(r.date)} '
-                     f'{r.date[9:15]} UTC · {"kept" if r.held else "no longer kept"}'
+    from mmw.site.versionref import day_time
+    return '\n'.join(f'{repository_label(r.repo, cfg)} / {r.suite}: {day_time(r.date)} '
+                     f'· {"kept" if r.held else "no longer kept"}'
                      + (' · latest sync' if r.current else '')
                      + (' · legacy history' if r.legacy else '') for r in rows) or 'No repository points recorded yet.'
 
@@ -165,11 +165,10 @@ def describe_plan(cfg, items) -> str:
     """The listing both `mmw history delete` and the TUI show before deleting."""
     from mmw.core.format import fmt_size
     from mmw.core.repos import repository_label
-    from mmw.site.versionref import day
+    from mmw.site.versionref import day_time
     if not items:
         return 'No kept point matches.'
-    lines = [f'{repository_label(i.repo, cfg)} / {i.suite}: {day(i.date)} '
-             f'{i.date[9:11]}:{i.date[11:13]}:{i.date[13:15]} UTC'
+    lines = [f'{repository_label(i.repo, cfg)} / {i.suite}: {day_time(i.date)}'
              f' · frees {fmt_size(i.frees)}' + (f' · protected: {i.protected}' if i.protected else '')
              for i in items]
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:

@@ -43,8 +43,10 @@ def _on_off(flag: bool) -> str:
     return "[$mmw-ok]on[/]" if flag else "[dim]off[/]"
 
 
-def snapshot_line(status) -> str:
-    """"3 · serving live · last bundled A → B on <date>" (markup, escaped)."""
+def snapshot_line(status, points_to: str | None = None) -> str:
+    """"serving live · last transferred 23 Nov (points to 01 Nov)" (markup,
+    escaped): when the last transfer was made, and the newest point it
+    carried (`points_to`, a point's date) — else the stamp it went to, as a date."""
     if status.serving is None and status.last_bundle is None:
         return "[dim]no publishes or transfers yet[/]"
     parts = []
@@ -54,9 +56,9 @@ def snapshot_line(status) -> str:
         parts.append(f"+{status.other_dirs} other dir{'s' if status.other_dirs > 1 else ''}")
     b = status.last_bundle
     if b is not None:
-        day = f"{b.made[:4]}-{b.made[4:6]}-{b.made[6:8]}"
-        parts.append(f"last transferred {escape(status.name(b.from_stamp))} → "
-                     f"{escape(status.name(b.to_stamp))} on {day}")
+        from mmw.site.versionref import short_day
+        to = short_day(points_to) if points_to else status.name(b.to_stamp)
+        parts.append(f"last transferred {escape(short_day(b.made))} (points to {escape(to)})")
     return " · ".join(parts)
 
 
@@ -249,7 +251,10 @@ class NetworkDetail(Widget):
         try:
             with Pool(mirror_dir, read_only=True) as pool:
                 status = snapshot_status(pool, net.name, net.root)
-            line = snapshot_line(status)
+                points_to = None
+                if status.last_bundle is not None:      # the newest point it took over
+                    points_to = max(pool.sent_dates_by_track(net.name).values(), default=None)
+            line = snapshot_line(status, points_to)
             # The bundle log first (it knows a backwards bundle is the latest);
             # a network last bundled before snapshots existed has only its
             # ledger file.

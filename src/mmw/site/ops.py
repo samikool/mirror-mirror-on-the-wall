@@ -1119,6 +1119,9 @@ def root_details(home: Path) -> dict:
     if applied:
         created, _prev, kind, _at = applied[0]
         out["last_apply"], out["last_apply_kind"] = created, kind
+    # Every bundle applied here, newest first — what "As of a bundle" offers.
+    out["applied"] = sorted({created for created, _p, kind, _a in applied if kind in ("full", "delta")},
+                            reverse=True)
     return out
 
 

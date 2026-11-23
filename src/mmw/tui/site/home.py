@@ -55,11 +55,8 @@ def _bundle_when(stamp: str, stamps: list[str]) -> str:
 def _date(stamp: str) -> str:
     """20261024T101500Z → 24 Oct (with its year when not this one: an
     upstream Release can be years old)"""
-    try:
-        t = time.strptime(stamp, "%Y%m%dT%H%M%SZ")
-    except ValueError:
-        return stamp
-    return time.strftime("%d %b" + ("" if t.tm_year == time.gmtime().tm_year else " %Y"), t)
+    from mmw.site.versionref import short_day
+    return short_day(stamp)
 
 
 class SiteHomePage(Page):
@@ -239,6 +236,8 @@ class SiteHomePage(Page):
                     continue
                 if d.get("last_apply") and (last is None or d["last_apply"] > last[0]):
                     last = (d["last_apply"], d.get("last_apply_kind") or "")
+                for stamp in d.get("applied", ()):
+                    bundles.setdefault(stamp, (None, set()))
             for name, st in rows:
                 states.append(st)
                 root_of[st.repo] = name
@@ -247,9 +246,9 @@ class SiteHomePage(Page):
                 points = [(p, total) for _t, rows in history for p, total, _f, mark in rows if mark != "stub"]
                 # For the card: how many points are kept here, and the biggest.
                 kept[st.repo] = (len(points), max((total for _p, total in points), default=0))
-                for p, _total in points:         # every bundle still kept here, for Serve bundle…
-                    _stamp, label, count = bundles.get(p.stamp, (p.stamp, p.snap_label, 0))
-                    bundles[p.stamp] = (p.stamp, label, count + 1)
+                for p, _total in points:         # the repositories each bundle changed, for Serve bundle…
+                    label, repos = bundles.get(p.stamp, (None, set()))
+                    bundles[p.stamp] = (label or p.snap_label, repos | {st.repo})
             from mmw.commands.site import conversion_notices
             notices = conversion_notices(self.app.mset)
         except Exception as e:  # noqa: BLE001 — shown on the page
@@ -257,7 +256,8 @@ class SiteHomePage(Page):
             return
         self._last_apply = last
         self.app.call_from_thread(self._loaded, states, newest, done, root_of, kept,
-                                  sorted(bundles.values(), reverse=True), kind, said)
+                                  sorted(((stamp, label, len(repos)) for stamp, (label, repos) in bundles.items()),
+                                         reverse=True), kind, said)
         if notices:
             self.app.call_from_thread(self._converted, notices)
 
@@ -1284,14 +1284,15 @@ class ServeBundlePage(Page):
 
     def __init__(self, bundles: list[tuple[str, str | None, int]]):
         super().__init__()
-        self.subtitle = "every repository at its newest version from then"
+        self.subtitle = "every repository as that bundle left it"
         self._bundles = bundles
 
     def compose_body(self) -> ComposeResult:
         from mmw.tui.ui.form import ChoiceField, Form
         stamps = [b[0] for b in self._bundles]
         options = [(" · ".join([_bundle_when(stamp, stamps), *([label] if label else []),
-                                f"{n} repositor{'y' if n == 1 else 'ies'}"]), stamp)
+                                f"{n} repositor{'y' if n == 1 else 'ies'} changed" if n
+                                else "no repository changed"]), stamp)
                    for stamp, label, n in self._bundles]
         yield Form(ChoiceField("Bundle", options, self._bundles[0][0], id="bundle-pick",
                                hint="A repository the bundle didn't change serves its version from before it."))

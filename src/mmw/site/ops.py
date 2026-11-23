@@ -644,6 +644,29 @@ def diff(home: Path, ref: str, a: str, b: str | None = None, track: str | None =
     return out
 
 
+def package_history(home: Path, ref: str, name: str) -> list:
+    """Per suite, oldest first: each point kept here where `name`'s version
+    changed — the version it arrived with, each new one, and the point it
+    left (version None). A point whose files aren't all here is skipped."""
+    from mmw.core.point_diff import PackageEvent, package_events
+    from mmw.site.timeline import is_complete
+    roots = _roots(home)
+    with SiteDB(home) as db:
+        repo = resolve_repo(db, ref)
+        state = db.repo_state(repo)
+        store = roots.store(roots.of(state))
+        packages = _packages_reader(db, store)
+        out = []
+        for t in db.tracks(repo):
+            kept = [p for p in sorted(db.points(t.id), key=lambda p: (p.date, p.stamp, p.id))
+                    if not is_complete(db, store, p.id)]
+            out += [PackageEvent(state.label, suite_of(t), p.date, v, p.id)
+                    for p, v in package_events(name, kept, packages)]
+    if not out:
+        raise LookupError(f"{name} isn't in any kept point")
+    return out
+
+
 def _packages_reader(db: SiteDB, store: Store):
     """point → its (package, arch) → version, read from `store`."""
     from mmw.core.point_diff import packages_of

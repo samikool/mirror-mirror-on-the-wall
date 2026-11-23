@@ -8,7 +8,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Input, Static
 from textual.worker import WorkerState
 
 from mmw.core.format import fmt_size
@@ -73,7 +73,9 @@ class SiteHomePage(Page):
             "u: bring in the mmw instances this site serves locally (mmw site local);\n"
             "s: what the mirror keeps (and what each choice frees); e: a suite's own keep;\n"
             "g: check adopted points' signatures; o: trees adopted from; v: verify (and repair).\n"
-            "w (Changes): the packages a point changed since the one before it (mmw site diff).")
+            "w (Changes): the packages a point changed since the one before it (mmw site diff).\n"
+            "/ (Find package): the points where a package's version changed, each with the\n"
+            "version it arrived at (mmw site history REPO --package NAME); esc clears it.")
     BINDINGS = [
         # Short, so the footer fits 80 columns; the buttons say the rest.
         Binding("enter", "serve", "Serve", show=False),
@@ -100,10 +102,11 @@ class SiteHomePage(Page):
         Binding("o", "adopted", "Adopted trees", show=False),
         Binding("v", "verify", "Verify", show=False),
         Binding("w", "changes", "Changes", show=False),      # the pane's Changes button
+        Binding("slash", "find", "Find package", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
     MORE = ("certs", "adopt", "adopted", "clean_up", "combine", "merge_into", "packages", "signing_keys", "local_update",
-            "settings", "suite_keep", "check_signatures", "verify", "refresh")
+            "settings", "suite_keep", "check_signatures", "verify", "find", "refresh")
 
     def __init__(self):
         super().__init__()
@@ -116,6 +119,9 @@ class SiteHomePage(Page):
         self._history = []
         self._history_repo = None
         self._point_rows: dict[int, dict] = {}      # point id → root.point_rows: changes, covers, dated
+        self._visible: list[int] = []               # per history table row: its index in self._history
+        self._found: dict[int, str | None] | None = None    # a find's points → the version each arrived at
+        self._found_name = ""
 
     def compose_actions(self) -> ComposeResult:
         # The mirror's own actions; a version's sit under its table (the
@@ -147,7 +153,63 @@ class SiteHomePage(Page):
         # in Textual's eyes while its thread carries on, and their messages race.
         if action in self._BUTTONS.values() and self._acting():
             return False
+        if action == "back" and self.is_mounted:
+            box = self.query_one("#site-find", Input)
+            if box.value or self.focused is box:
+                return True      # Esc clears the find box (q still quits)
         return super().check_action(action, parameters)
+
+    def action_back(self) -> None:
+        box = self.query_one("#site-find", Input)
+        if box.value or self.focused is box:
+            box.value = ""
+            self.query_one("#site-history", DataTable).focus()
+            if self._found is not None:
+                self._found, self._found_name = None, ""
+                self.set_status("")
+                self._render_history()
+            return
+        super().action_back()
+
+    # ── find a package ───────────────────────────────────────────────────────
+
+    def action_find(self) -> None:
+        self.query_one("#site-find", Input).focus()
+
+    @on(Input.Submitted, "#site-find")
+    def _find_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.query_one("#site-history", DataTable).focus()
+        self._find(event.value.strip())
+
+    def _find(self, name: str) -> None:
+        repo = self.selected_repo()
+        if not name or repo is None:
+            self._found, self._found_name = None, ""
+            self._render_history()
+            return
+        self.set_status(f"Finding {name}…")
+        self._find_package(repo, name)
+
+    @work(thread=True, exclusive=True, group="site-find", exit_on_error=False)
+    def _find_package(self, repo: str, name: str) -> None:
+        try:                                     # over ssh, a round trip: never on the screen's thread
+            events = self.app.root_of(repo).package_history(repo, name)
+        except Exception as e:  # noqa: BLE001 — not there, or an older mmw: said on the page
+            self.app.call_from_thread(self._found_loaded, repo, name, None, str(e))
+            return
+        self.app.call_from_thread(self._found_loaded, repo, name, events, None)
+
+    def _found_loaded(self, repo: str, name: str, events, error: str | None) -> None:
+        if not self.is_attached or repo != self.selected_repo():
+            return
+        if error is not None:
+            self._found, self._found_name = None, ""
+            self.set_status(error, "error")
+        else:
+            self._found, self._found_name = {e.point: e.version for e in events}, name
+            self.set_status(f"{name}: {len(events)} point(s) where it changed — esc shows every point.")
+        self._render_history()
 
     def on_worker_state_changed(self, event) -> None:
         if event.worker.group == "site-act":
@@ -430,6 +492,9 @@ class SiteHomePage(Page):
         self._history = flat
         if repo != self._history_repo:
             self._point_rows = {}               # another repository's: its own come after the table
+            if self._found is not None:         # and its own points where the package changed
+                self._found = None
+                self._find(self._found_name)
         self._render_history()
 
     def _history_columns(self, covers: bool) -> None:
@@ -461,14 +526,25 @@ class SiteHomePage(Page):
             self._history_columns(covers)
         else:
             t.clear()
-        for track, p, total, frees, mark in self._history:
+        found = self._found
+        self._visible = []
+        for at, (track, p, total, frees, mark) in enumerate(self._history):
             if p is None:
+                if found is not None and not any(q is not None and q.id in found and u.id == track.id
+                                                 for u, q, *_ in self._history):
+                    continue
                 t.add_row(Text(ops.suite_of(track), style="bold"), "", "", "", *([""] if covers else []),
                           key=f"t{track.id}")
+                self._visible.append(at)
                 continue
+            if found is not None and p.id not in found:
+                continue
+            self._visible.append(at)
             row = extra.get(p.id, {})
             date = f"{'▶ ' if mark == 'serving' else '  '}{_date(p.date)}" + (f" {p.snap_label}" if p.snap_label else "")
             changes = summary_counts(row["changes"]) if row.get("changes") is not None else ""
+            if found is not None:
+                changes = f"{self._found_name} {found[p.id] or 'removed'}"
             tail = mark or f"frees {fmt_size(frees)}"
             t.add_row(Text(date), changes, fmt_size(total) if mark != "stub" else "—", tail,
                       *([row.get("covers", "")] if covers else []), key=f"p{p.id}")
@@ -507,9 +583,9 @@ class SiteHomePage(Page):
     def selected_point(self):
         """(track, point, mark) at the history's cursor; None on a suite heading."""
         t = self.query_one("#site-history", DataTable)
-        if not self._history or t.row_count == 0:
+        if not self._visible or t.row_count == 0:
             return None
-        track, p, _total, _frees, mark = self._history[min(t.cursor_row, len(self._history) - 1)]
+        track, p, _total, _frees, mark = self._history[self._visible[min(t.cursor_row, len(self._visible) - 1)]]
         return (track, p, mark) if p is not None else None
 
     # ── acting on versions ───────────────────────────────────────────────────
@@ -1688,6 +1764,8 @@ class _HistoryPane(Static):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="site-detail")
+        yield Input(placeholder="find a package: the points where it changed — enter finds, esc clears",
+                    id="site-find", compact=True)
         yield DataTable(cursor_type="row", zebra_stripes=True, id="site-history")
         yield Static("", id="site-point")
         with Horizontal(id="site-version-actions"):

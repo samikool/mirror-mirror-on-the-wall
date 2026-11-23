@@ -5,7 +5,7 @@ from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Input, Static
 
 from mmw.commands import history as command
 from mmw.tui.ui.form import ChoiceField, Form, TextField, ToggleField
@@ -26,11 +26,14 @@ class HistoryPage(Page):
             'filled in. Changes lists the packages the row\'s point changed since the point before it '
             '(mmw history diff). Delete drops the row\'s point: its record stays, its files go unless '
             'something else keeps them. Delete points… (More…) drops every point on or before a date '
-            '(mmw history delete).')
+            '(mmw history delete).\n'
+            'Find (/) takes a package name: the table narrows to the points where its version changed, '
+            'each with the version it arrived at (mmw history --package). Esc clears it.')
     BINDINGS = [Binding('p', 'publish_row', 'Publish as of this'),
                 Binding('t', 'transfer_row', 'Transfer to this'),
                 Binding('c', 'changes_row', 'Changes'),
                 Binding('d', 'delete_row', 'Delete'),
+                Binding('slash', 'find', 'Find package'),
                 Binding('D', 'delete_points', 'Delete points…', show=False)]     # under More…
     MORE = ('delete_points',)
 
@@ -40,9 +43,14 @@ class HistoryPage(Page):
         self.repos = repos
         self._rows: list = []           # per table row: a HistoryRow, or None on a heading
         self._carried: dict[str, set[str]] = {}
+        self._shown: tuple = ((), [])   # the rows and notes last read, before a find narrows them
+        self._found: dict[int, str | None] | None = None    # a find's points → the version each arrived at
+        self._found_name = ''
 
     def compose_body(self) -> ComposeResult:
         yield Static('Reading repository history…', id='history-found', markup=False)
+        yield Input(placeholder='find a package: the points where it changed — enter finds, esc clears',
+                    id='history-find', compact=True)
         yield DataTable(cursor_type='row', zebra_stripes=True, id='history-table')
 
     def compose_actions(self) -> ComposeResult:
@@ -52,7 +60,9 @@ class HistoryPage(Page):
         yield Button('Delete', id='btn-history-delete', variant='error', compact=True)
 
     def on_mount(self):
-        self.query_one('#history-table', DataTable).add_columns('', 'Date', 'Size', '')
+        t = self.query_one('#history-table', DataTable)
+        t.add_columns('', 'Date', 'Size', '')
+        t.focus()                       # not the find box: it would swallow p, t, c and d
         self.start_flow(self._load)
 
     def on_screen_resume(self):
@@ -75,7 +85,60 @@ class HistoryPage(Page):
             rows, notes, carried = (), [str(exc)], {}
         if self.is_mounted:
             self._carried = carried
-            self._show(rows, notes)
+            self._shown = (rows, notes)
+            if self._found is not None:              # a reload: find again, its points may have gone
+                await self._find(self.query_one('#history-find', Input).value.strip())
+            else:
+                self._show(rows, notes)
+
+    # ── find a package ───────────────────────────────────────────────────────
+
+    def action_find(self) -> None:
+        self.query_one('#history-find', Input).focus()
+
+    @on(Input.Submitted, '#history-find')
+    def _find_submitted(self, event: Input.Submitted) -> None:
+        name = event.value.strip()
+        self.query_one('#history-table', DataTable).focus()
+        self.start_flow(lambda: self._find(name))
+
+    async def _find(self, name: str) -> None:
+        """Narrow the table to the points where `name`'s version changed;
+        an empty name shows every point again."""
+        self._found = None
+        if name:
+            cfg = self.app.cfg
+            self.set_status(f'Finding {name}…')
+            try:
+                events = await asyncio.to_thread(command.package_plan, cfg, name,
+                                                 network=self.network, repos=self.repos)
+            except (ValueError, LookupError, OSError) as exc:
+                self.set_status(str(exc), 'error')
+            else:
+                self._found = {e.point: e.version for e in events}
+                self._found_name = name
+                self.set_status(f'{name}: {len(events)} point(s) where it changed — esc shows every point.')
+        if self.is_mounted:
+            self._show(*self._shown)
+
+    def action_back(self) -> None:
+        box = self.query_one('#history-find', Input)
+        if box.value or self.focused is box:
+            box.value = ''
+            self.query_one('#history-table', DataTable).focus()
+            if self._found is not None:
+                self._found = None
+                self.set_status('')
+                self._show(*self._shown)
+            return
+        super().action_back()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == 'back' and self.is_mounted:
+            box = self.query_one('#history-find', Input)
+            if box.value or self.focused is box:
+                return True      # Esc clears the find box first
+        return super().check_action(action, parameters)
 
     def _show(self, rows, notes) -> None:
         from mmw.core.format import fmt_size
@@ -87,6 +150,9 @@ class HistoryPage(Page):
                  f'{sum(r.held for r in rows)} kept · {fmt_size(sum(r.size for r in rows if r.held))}'
                  if rows else 'No repository points recorded yet.')
         self.query_one('#history-found', Static).update('\n'.join([found, *notes]))
+        name, found_at = self._found_name, self._found
+        if found_at is not None:
+            rows = [r for r in rows if r.point in found_at and r.held]
         t = self.query_one('#history-table', DataTable)
         keep = t.cursor_row if self._rows else None
         t.clear()
@@ -104,6 +170,8 @@ class HistoryPage(Page):
             date = short_day(r.date) + (f' {r.date[9:11]}:{r.date[11:13]}'
                                         if days[(r.repo, r.suite, r.date[:8])] > 1 and len(r.date) >= 13 else '')
             words = [command.mark_text(m, r, short=True) for m in r.marks]
+            if found_at is not None:
+                words.insert(0, f'{name} {found_at[r.point] or "removed"}')
             if not r.held:
                 words.append('no longer kept')
             if r.legacy:

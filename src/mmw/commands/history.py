@@ -480,3 +480,40 @@ def run_diff(cfg_dir, repo, a, b=None, *, suite=None) -> int:
         eprint(str(exc))
         return 1
     return 0
+
+
+# ── when a package changed ───────────────────────────────────────────────────
+
+def package_plan(cfg, name: str, *, network=None, repos=None, since=None) -> list:
+    """Each kept point where `name`'s version changed, per repository and
+    suite, oldest first: the version it arrived with, each new one, and the
+    point it left (version None)."""
+    from mmw.core.point_diff import PackageEvent, package_events
+    from mmw.core.repos import repository_label
+    rows = [r for r in prepare(cfg, network=network, repos=repos, since=since) if r.held and not r.legacy]
+    out = []
+    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        for repo, suite in sorted({(r.repo, r.suite) for r in rows},
+                                  key=lambda k: (repository_label(k[0], cfg), k[0], k[1])):
+            kept = sorted((r for r in rows if (r.repo, r.suite) == (repo, suite)), key=lambda r: (r.date, r.ident))
+            for r, version in package_events(name, kept, lambda r: point_packages(pool, r.point)):
+                out.append(PackageEvent(repository_label(repo, cfg), suite, r.date, version, r.point))
+    if not out:
+        raise LookupError(f"{name} isn't in any kept point")
+    return out
+
+
+def run_package(cfg_dir, name: str, *, network=None, repos=None, since=None, as_json_output=False) -> int:
+    import sqlite3
+    from mmw.core.point_diff import describe_package, events_to_json
+    from mmw.commands.common import eprint, load_config_or_none
+    cfg = load_config_or_none(cfg_dir)
+    if cfg is None:
+        return 1
+    try:
+        events = package_plan(cfg, name, network=network, repos=repos, since=since)
+    except (ValueError, LookupError, OSError, sqlite3.Error) as exc:
+        eprint(str(exc))
+        return 1
+    print(json.dumps(events_to_json(events), indent=2) if as_json_output else describe_package(name, events))
+    return 0

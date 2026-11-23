@@ -169,6 +169,15 @@ class SshRoot:
                 raise ValueError(f"{self.info.name}: its mmw is older — update it to compare points") from None
             raise
 
+    def package_history(self, key: str, name: str) -> list:
+        from mmw.core.point_diff import events_from_json
+        try:
+            return events_from_json(self._call("package-history", key, name))
+        except ValueError as e:
+            if "unknown verb" in str(e):
+                raise ValueError(f"{self.info.name}: its mmw is older — update it to find packages") from None
+            raise
+
     def merge_plan(self, older: str, newer: str):
         from mmw.site.merge import SiteMergePlan
         return SiteMergePlan(**self._call("merge-plan", older, newer))

@@ -175,6 +175,15 @@ does the same on the far side. A transfer's preview says what it brings each
 suite ("brings 37 upgrades, 3 new packages") and the far side's apply review
 repeats it.
 
+`mmw history --package NAME` shows when each version of a package arrived:
+a line per kept point where its version changed (`alpha  1.1  jammy-updates
+2026-10-01`), by suite, and `removed` where it left. `--repo`, `-n` and
+`--since` narrow it as they narrow the history; `--json` prints the same
+lines for scripts. In the TUI, Find (`/`) above Repository history takes a
+package name and narrows the table to those points, each with the version it
+arrived at; Esc shows every point again. `mmw site history REPO --package
+NAME` does the same on the far side.
+
 `mmw history delete REPO WHEN [--suite S] [--before] [--dry-run] [--yes]`
 deletes kept points by hand (TUI: Repository history → More… → Delete
 points…). WHEN is a date (`2026-11-03`, `3nov`) or a point's stamp;
@@ -191,6 +200,7 @@ with `--yes`. `--dry-run` lists without deleting.
 | `--repo` |  | Repository name or URL (repeatable) |
 | `--since` |  | Show points on or after DATE |
 | `--json` |  | Print the rows as JSON, for scripts |
+| `--package` |  | When each version of this package arrived (and left) |
 
 ### `mmw init`
 

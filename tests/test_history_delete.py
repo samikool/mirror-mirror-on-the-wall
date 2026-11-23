@@ -98,8 +98,8 @@ def test_dry_listing_matches_tui(synced):  # noqa: F811
         from mmw.tui.history import HistoryPage
         app.push_screen(HistoryPage())
         await until(pilot, lambda: type(app.screen).__name__ == 'HistoryPage' and app.screen.is_mounted)
-        assert ('delete_points', 'Delete points…', 'd', True) in app.screen.more_entries()
-        await pilot.press('d')
+        assert ('delete_points', 'Delete points…', 'D', True) in app.screen.more_entries()
+        await pilot.press('D')
         await until(pilot, lambda: type(app.screen).__name__ == 'DeletePointsPage' and app.screen.is_mounted)
         app.screen.query_one('#delete-when', Input).value = '2026-11-02'
         app.screen.query_one('#delete-before').value = True

@@ -42,7 +42,9 @@ def test_history_cli_and_tui_read_points_without_attaching_them(synced):  # noqa
     async def check(app, pilot):
         await pilot.press('h')
         await until(pilot, lambda: type(app.screen).__name__ == 'HistoryPage' and app.screen.is_mounted)
-        await shows(pilot, lambda: app.screen.query_one('#history-found').render(), '2026-11-01', '2026-11-02')
+        table = app.screen.query_one('#history-table')
+        await shows(pilot, lambda: ' '.join(str(table.get_row_at(i)[1]) for i in range(table.row_count)),
+                    '01 Nov', '02 Nov')
         assert not app.screen.query('#btn-history-add')
     _run(cfg, md.parent, check)
     assert _state(md, net) == before

@@ -62,7 +62,7 @@ def test_points_screens_show_no_raw_stamps(synced, tmp_path, monkeypatch):  # no
             await until(pilot, lambda: type(app.screen).__name__ == "NetworksPage")
         await pilot.press("h")
         await until(pilot, lambda: type(app.screen).__name__ == "HistoryPage"
-                    and "2026" in str(app.screen.query_one("#history-found").render()))
+                    and app.screen.query_one("#history-table").row_count > 1)
         seen["History"] = app.export_screenshot()
     _run(cfg, tmp_path, check)
     assert len(seen) == 4

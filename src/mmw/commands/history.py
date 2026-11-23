@@ -51,6 +51,14 @@ def _consistent(pool, point, track) -> bool:
     return not release_mismatches(files, track.name, _reader(pool, files))
 
 
+def carried_by(cfg) -> dict[str, set[str]]:
+    """Network name → the repositories it carries."""
+    from mmw.core.repos import repository_key
+    from mmw.core.resolve import network_mirrors
+    return {n.name: {repository_key(u) for u in network_mirrors(n, cfg, cfg.settings.mirror_dir)}
+            for n in cfg.networks}
+
+
 def prepare(cfg, *, network=None, repos=None, since=None):
     from mmw.core.points import prepare_history, prepare_recordings, resolve_when, retention_plan, unsent_points
     from mmw.core.repository_points import current_repository_points, selected_point_files, wire_draft
@@ -77,8 +85,7 @@ def prepare(cfg, *, network=None, repos=None, since=None):
     for name in convert:
         prepare_recordings(cfg.settings.mirror_dir, name)
     # Which networks carry each repository: only theirs say sent / unsent.
-    carried = {n.name: {repository_key(u) for u in network_mirrors(n, cfg, cfg.settings.mirror_dir)}
-               for n in cfg.networks}
+    carried = carried_by(cfg)
     rows = []
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
         published = _published(pool)
@@ -142,10 +149,14 @@ def prepare(cfg, *, network=None, repos=None, since=None):
     return tuple(rows)
 
 
-def mark_text(mark: str, row: HistoryRow | None = None) -> str:
-    """A mark in words, as `mmw history` prints it."""
+def mark_text(mark: str, row: HistoryRow | None = None, *, short: bool = False) -> str:
+    """A mark in words, as `mmw history` prints it (`short`: a TUI table's
+    cell, a root by its directory's name)."""
     from mmw.core.format import fmt_size
     kind, _, arg = mark.partition(':')
+    if short and kind == 'published':
+        from pathlib import PurePath
+        arg = PurePath(arg).name or arg
     return {'current': 'latest sync',
             'published': f'published at {arg}',
             'sent': f'sent to {arg}',

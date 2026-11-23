@@ -93,6 +93,14 @@ def costs_of_keeping(cfg, mirror_dir: Path, presets=(1, 3, 10, "all")) -> dict[s
     return out
 
 
+def history_loss_lines(cfg):
+    """Shared CLI/TUI warning for repositories losing their whole history."""
+    from mmw.core.points import orphaned_histories
+    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        return [f'{repo}: every point ({count}) goes — its source is no longer configured'
+                for repo, count in orphaned_histories(pool, cfg)]
+
+
 def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, costs: bool = False) -> int:
     """Remove pool blobs no configured repository's refs want. Exit code.
     `costs`: a preview (implies `dry_run`) of what each keep_points choice frees."""
@@ -129,6 +137,7 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
         eprint(f"Cannot read the pool in {mirror_dir}: {e}")
         return 1
 
+    losses = history_loss_lines(cfg) if releasing else []
     dropping = len(releasing)
     try:
         dropped, removable, freeable = _plan(cfg, mirror_dir, releasing)
@@ -141,6 +150,8 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
         print(f"  {len(dropped)} synced mirror(s) are no longer in the config "
               f"(a suite, component or arch was removed): "
               f"{', '.join(dropped[:5])}{' …' if len(dropped) > 5 else ''}")
+    for line in losses:
+        print(f'  ⚠ {line}')
     if dropping:
         print(f"  {dropping:,} old point(s) no retention rule keeps (keep_points) "
               f"{'would be' if dry_run else 'will be'} dropped — their files freed with the rest")

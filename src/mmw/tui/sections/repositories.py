@@ -505,10 +505,13 @@ class RepositoriesPage(Page):
         what = (f"It removes {files:,} file(s), freeing {fmt_size(size)}"
                 + (f" — {dropping:,} old point(s) past their retention rules go first." if dropping else ".")
                 if files or dropping else "Nothing is orphaned now.")
+        from mmw.commands.prune import history_loss_lines
+        losses = await asyncio.to_thread(history_loss_lines, self.app.cfg)
+        loss_note = ''.join(f'⚠ {line}\n' for line in losses)
         if not await self.app.push_screen_wait(ConfirmDialog(
                 "Prune the package pool",
                 "Remove pool packages no configured repository's index references?\n"
-                f"{what}\n"
+                f"{what}\n{loss_note}"
                 "Refs of repositories removed from the config are cleaned up too.\n"
                 "Published network trees keep their own hardlinks until republished.",
                 "Prune")):

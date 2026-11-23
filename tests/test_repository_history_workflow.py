@@ -53,7 +53,10 @@ def test_network_removal_preserves_repository_history(synced):  # noqa: F811
     before = history.prepare(cfg)
     with Pool(md) as pool:
         pool.forget_network(net.name)
-    assert history.prepare(cfg.model_copy(update={'networks': []})) == before
+    def own(rows):          # what each network was sent goes with the network
+        return [r.__class__(**{**r.__dict__, 'marks': tuple(m for m in r.marks if 'sent:' not in m)})
+                for r in rows]
+    assert own(history.prepare(cfg.model_copy(update={'networks': []}))) == own(before)
 
 
 def test_upgrade_retires_snapshot_gc_holds_without_losing_history(synced):  # noqa: F811
@@ -222,5 +225,5 @@ def test_history_line_reads_a_date_and_time(synced):  # noqa: F811
     cfg, net, md, _ = synced
     result = CliRunner().invoke(app, ['--config', str(md.parent), 'history', '-n', net.name])
     assert result.exit_code == 0, result.output
-    assert ': 2026-11-01 00:00:00 UTC · kept' in result.output, result.output
+    assert 'stable  2026-11-01 00:00:00 UTC' in result.output, result.output
     assert not re.search(r'\d{8}T\d{6}Z|\b\d{6} UTC', result.output)

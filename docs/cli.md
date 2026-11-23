@@ -168,6 +168,7 @@ with `--yes`. `--dry-run` lists without deleting.
 | `--network`, `-n` |  | Limit to this network's current selection |
 | `--repo` |  | Repository name or URL (repeatable) |
 | `--since` |  | Show points on or after DATE |
+| `--json` |  | Print the rows as JSON, for scripts |
 
 ### `mmw init`
 

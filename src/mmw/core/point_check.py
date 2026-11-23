@@ -30,15 +30,9 @@ def newest_release(variants: dict[str, list[str]], read) -> str:
     return max(choices, key=order)
 
 
-def check_suite(files: dict[str, str], track: str, read) -> list[str]:
-    """Check present indexes against the Release and their package references.
-
-    A narrowed suite may omit indexes. A canonical index with a different
-    digest is safe only when this Release's by-hash copy is also retained.
-    `read(path)` reads a path within this immutable point.
-    """
-    if not track:
-        return []
+def release_mismatches(files: dict[str, str], track: str, read) -> list[str]:
+    """The cheap half of `check_suite`: present indexes against the Release
+    alone (one read), for listings that mark every point."""
     from mmw.providers.apt import _parse_release_files
     release = next((data for name in ('Release', 'InRelease')
                     if (path := f'{track}/{name}') in files and (data := read(path))), None)
@@ -50,6 +44,21 @@ def check_suite(files: dict[str, str], track: str, read) -> list[str]:
         by_hash = posixpath.join(posixpath.dirname(canonical), 'by-hash/SHA256', checksum)
         if canonical in files and files[canonical] != checksum and files.get(by_hash) != checksum:
             problems.append(f'{path} does not match its Release')
+    return problems
+
+
+def check_suite(files: dict[str, str], track: str, read) -> list[str]:
+    """Check present indexes against the Release and their package references.
+
+    A narrowed suite may omit indexes. A canonical index with a different
+    digest is safe only when this Release's by-hash copy is also retained.
+    `read(path)` reads a path within this immutable point.
+    """
+    if not track:
+        return []
+    problems = release_mismatches(files, track, read)
+    if problems == ['Release is missing or unreadable']:
+        return problems
     base = track.split('/dists/', 1)[0] if '/dists/' in track else track
     for stem, variants in _indexes(files, track).items():
         for path in variants:

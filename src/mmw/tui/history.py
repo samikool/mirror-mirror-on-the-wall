@@ -23,11 +23,13 @@ class HistoryPage(Page):
             'or transferring; no snapshot or history import into a network is needed. '
             'Retention is configured in Sources and Settings.\n'
             'Publish as of this and Transfer to this open the network\'s form with the row\'s date '
-            'filled in. Delete drops the row\'s point: its record stays, its files go unless '
+            'filled in. Changes lists the packages the row\'s point changed since the point before it '
+            '(mmw history diff). Delete drops the row\'s point: its record stays, its files go unless '
             'something else keeps them. Delete points… (More…) drops every point on or before a date '
             '(mmw history delete).')
     BINDINGS = [Binding('p', 'publish_row', 'Publish as of this'),
                 Binding('t', 'transfer_row', 'Transfer to this'),
+                Binding('c', 'changes_row', 'Changes'),
                 Binding('d', 'delete_row', 'Delete'),
                 Binding('D', 'delete_points', 'Delete points…', show=False)]     # under More…
     MORE = ('delete_points',)
@@ -46,6 +48,7 @@ class HistoryPage(Page):
     def compose_actions(self) -> ComposeResult:
         yield Button('Publish as of this', id='btn-history-publish', compact=True)
         yield Button('Transfer to this', id='btn-history-transfer', compact=True)
+        yield Button('Changes', id='btn-history-changes', compact=True)
         yield Button('Delete', id='btn-history-delete', variant='error', compact=True)
 
     def on_mount(self):
@@ -174,6 +177,28 @@ class HistoryPage(Page):
     @on(Button.Pressed, '#btn-history-transfer')
     def _transfer_pressed(self) -> None:
         self.action_transfer_row()
+
+    @on(Button.Pressed, '#btn-history-changes')
+    def _changes_pressed(self) -> None:
+        self.action_changes_row()
+
+    def action_changes_row(self) -> None:
+        """What the row's point changed since the kept point before it in its suite."""
+        from mmw.site.versionref import day_time
+        from mmw.tui.changes import ChangesPage
+        row = self._picked('changes')
+        if row is None:
+            return
+        at = self._rows.index(row)
+        before = next((r for r in self._rows[at + 1:] if r is not None and r.repo == row.repo
+                       and r.suite == row.suite and r.held and not r.legacy), None)
+        if before is None:
+            self.set_status(f'The oldest kept point of {row.suite} — nothing before it to compare with.', 'error')
+            return
+        cfg = self.app.cfg
+        self.app.push_screen(ChangesPage(
+            lambda: command.diff_plan(cfg, row.repo, before.date, row.date, suite=row.suite),
+            f'{row.suite}: {day_time(before.date)} → {day_time(row.date)}'))
 
     @on(Button.Pressed, '#btn-history-delete')
     def _delete_pressed(self) -> None:

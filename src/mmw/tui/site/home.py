@@ -70,7 +70,8 @@ class SiteHomePage(Page):
             "K: this site's signing keys (carried ones from the connected side included);\n"
             "u: bring in the mmw instances this site serves locally (mmw site local);\n"
             "s: what the mirror keeps (and what each choice frees); e: a suite's own keep;\n"
-            "g: check adopted points' signatures; o: trees adopted from; v: verify (and repair).")
+            "g: check adopted points' signatures; o: trees adopted from; v: verify (and repair).\n"
+            "w (Changes): the packages a point changed since the one before it (mmw site diff).")
     BINDINGS = [
         # Short, so the footer fits 80 columns; the buttons say the rest.
         Binding("enter", "serve", "Serve", show=False),
@@ -96,6 +97,7 @@ class SiteHomePage(Page):
         Binding("g", "check_signatures", "Check signatures", show=False),
         Binding("o", "adopted", "Adopted trees", show=False),
         Binding("v", "verify", "Verify", show=False),
+        Binding("w", "changes", "Changes", show=False),      # the pane's Changes button
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
     MORE = ("certs", "adopt", "adopted", "clean_up", "combine", "merge_into", "packages", "signing_keys", "local_update",
@@ -487,6 +489,34 @@ class SiteHomePage(Page):
 
     def _switch(self, steps, title: str, total: int | None = None) -> None:
         self.app.push_screen(SwitchRunPage(steps, title, total), lambda _: self._load())
+
+    @on(Button.Pressed, "#btn-site-changes")
+    def _changes_pressed(self, event) -> None:
+        event.stop()
+        self.action_changes()
+
+    def action_changes(self) -> None:
+        """What the selected point changed since the kept point before it in its suite."""
+        from mmw.site.versionref import day_time, name_of
+        from mmw.tui.changes import ChangesPage
+        repo, picked = self.selected_repo(), self.selected_point()
+        if repo is None or picked is None:
+            self.set_status("Pick a point in the history first.", "error")
+            return
+        track, point, mark = picked
+        if mark == "stub":
+            self.set_status("That point was deleted here — only its record is kept.", "error")
+            return
+        at = next(i for i, row in enumerate(self._history) if row[1] is not None and row[1].id == point.id)
+        before = next((p for t, p, _total, _frees, m in self._history[at + 1:]
+                       if p is not None and t.id == track.id and m != "stub"), None)
+        suite = ops.suite_of(track)
+        if before is None:
+            self.set_status(f"The oldest point of {suite} kept here — nothing before it to compare with.", "error")
+            return
+        root = self.app.root_of(repo)
+        self.app.push_screen(ChangesPage(lambda: root.diff(repo, name_of(before), name_of(point), suite),
+                                         f"{suite}: {day_time(before.date)} → {day_time(point.date)}"))
 
     def action_forward(self) -> None:
         repo = self.selected_repo()
@@ -1586,4 +1616,5 @@ class _HistoryPane(Static):
             yield Button("Serve", id="btn-site-serve", compact=True)
             yield Button("Forward", id="btn-site-forward", compact=True)
             yield Button("Hold", id="btn-site-hold", compact=True)
+            yield Button("Changes", id="btn-site-changes", compact=True)
             yield Button("Delete", id="btn-site-delete", variant="error", compact=True)

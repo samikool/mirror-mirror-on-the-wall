@@ -198,6 +198,29 @@ def point_date(pool, point, settings):
     return wire_draft(pool, point.id, files, settings, point.stamp).date if files else point.date
 
 
+def sent_changes(pool, network, track, point, known, settings, since):
+    """What `point` changes from the newest kept point of its suite dated at
+    or before `since` (what the far side was last sent): a PointDiff, or None
+    when there is none to compare with (a first transfer, an older one gone)."""
+    from mmw.core.point_diff import diff, packages_of
+    from mmw.core.points import _reader
+    if since is None:
+        return None
+    retained = [(point_date(pool, p, settings), p.stamp, p.ident, p)
+                for p in retained_track_points(pool, network, track, known, settings) if p.held and not p.legacy]
+    base = max((item for item in retained if item[0] <= since), key=lambda item: item[:3], default=None)
+    if base is None or base[3].id == point.id:
+        return None
+
+    def packages(pid):
+        files = files_for_settings(pool, pid, settings)
+        return packages_of(files, _reader(pool, files))
+    try:
+        return diff(packages(base[3].id), packages(point.id))
+    except ValueError:                     # an unreadable index: the preview still shows the rest
+        return None
+
+
 def transferred_slice(pool, network, point, settings):
     """Recover the selected slice named by the last-transfer convenience record.
 
@@ -515,6 +538,7 @@ class RangeRow:
     to_date: str
     points: int
     available: tuple[str, ...]
+    changes: str = ''          # 'brings 37 upgrades, 3 new packages' since From ('': nothing to compare)
 
 
 @dataclass(frozen=True)
@@ -625,8 +649,11 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
                     eligible = [point_date(pool, p, settings) for p in retained
                                 if point_date(pool, p, settings) <= min(since_stamp, to_date)]
                     from_date = max(eligible, default=since_stamp)
+                from mmw.core.point_diff import brings
+                changed = sent_changes(pool, net.name, tid, point, known, settings, from_date)
                 rows.append(RangeRow(repo, track.suite or track.name.rsplit('/', 1)[-1] or 'files',
                                      from_date, to_date,
-                                     sum(known[p].track == tid for p in ids), available))
+                                     sum(known[p].track == tid for p in ids), available,
+                                     brings(changed) if changed is not None else ''))
         return TransferPreview(tuple(rows), len(payload), sum(sizes[c] for c in payload),
                                'everything' if full else source, tuple(warnings), tuple(whole_notes))

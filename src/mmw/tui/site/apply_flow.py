@@ -67,6 +67,9 @@ def _row_text(r, location: str) -> str:
     ranges = "; ".join(f"{suite}: " + (min(ds) if min(ds) == max(ds) else f"{min(ds)} to {max(ds)}")
                        for suite, ds in sorted(dates.items()))
     detail = f" · {ranges}" if ranges else ""
+    changes = getattr(r, "changes", ())
+    if changes:
+        detail += " · " + "; ".join(changes)
     if getattr(r, "points", None) is not None:          # another far side's points (format 3)
         return (f"{r.label}  +{r.points} point(s){detail}  ·  {r.files_sent:,} files  "
                 f"{fmt_size(r.bytes_sent)}  ·  {where(location)}")

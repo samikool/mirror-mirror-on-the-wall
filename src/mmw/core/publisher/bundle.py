@@ -473,6 +473,19 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
                 if problems:
                     entries[-1]['problems'] = problems
             header_points[repo] = {"label": label, "bases": repo_bases.get(repo, []), "points": entries}
+            # Per suite, what the newest point it brings changes from what the
+            # far side was last sent: the apply review says it before applying.
+            from mmw.core.transfer_ranges import sent_changes
+            changes = {}
+            for tid in sorted({known[pid].track for pid in ids}):
+                newest = max((known[pid] for pid in ids if known[pid].track == tid),
+                             key=lambda p: (point_date(pool, p, settings), p.stamp, p.ident))
+                changed = sent_changes(pool, network.name, tid, newest, known, settings, sent_dates.get(tid))
+                if changed is not None:
+                    t = tracks.get(tid) or pool.track_of_point(newest.id)
+                    changes[t.suite or (t.name.rsplit("/", 1)[-1] if t.name else "files")] = list(changed.counts)
+            if changes:
+                header_points[repo]["changes"] = changes
             suites = []
             for t in sorted({known[pid].track for pid in current[repo]}):
                 track = tracks.get(t) or pool.track_of_point(next(p for p in current[repo] if known[p].track == t))

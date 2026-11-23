@@ -326,6 +326,12 @@ def _why_kept(row, unsent) -> str | None:
     return '; '.join(reasons) or None
 
 
+def _in_suite(pool, row, suite) -> bool:
+    """`suite` names the row's suite: its Suite, Codename or directory."""
+    t = pool.track_of_point(row.point)
+    return suite in {row.suite, t.suite, t.codename, t.name, t.name.rsplit('/', 1)[-1] if t.name else None}
+
+
 def delete_plan(pool, cfg, repo, when, suite=None, before=False) -> list[DeleteItem]:
     """The kept points of `repo` dated `when` (or before it, with `before`),
     optionally in one suite, each with what it frees and why it is protected."""
@@ -333,10 +339,7 @@ def delete_plan(pool, cfg, repo, when, suite=None, before=False) -> list[DeleteI
     matches = _matches(when, before)
     rows = [r for r in prepare(cfg, repos=[repo]) if r.held and matches(r.date)]
     if suite is not None:
-        def names(r):
-            t = pool.track_of_point(r.point)
-            return {r.suite, t.suite, t.codename, t.name, t.name.rsplit('/', 1)[-1] if t.name else None}
-        rows = [r for r in rows if suite in names(r)]
+        rows = [r for r in rows if _in_suite(pool, r, suite)]
     unsent = {n.name: unsent_points(pool, n) for n in cfg.networks if n.history}
     return [DeleteItem(r.repo, r.suite, r.date, r.point, r.frees, _why_kept(r, unsent)) for r in rows]
 
@@ -415,4 +418,65 @@ def run_delete(cfg_dir, repo, when, *, suite=None, before=False, yes=False, dry_
         eprint(str(exc))
         return 1
     print(f'deleted {len(items)} point(s); freed {fmt_size(freed)} (their records stay in history)')
+    return 0
+
+
+# ── what changed between two points ──────────────────────────────────────────
+
+def _pick(rows, when: str):
+    """The newest of `rows` dated `when` (that day, or that exact stamp)."""
+    matches = _matches(when, False)
+    return max((r for r in rows if matches(r.date)), key=lambda r: (r.date, r.ident), default=None)
+
+
+def point_packages(pool, point: int) -> dict:
+    from mmw.core.point_diff import packages_of
+    from mmw.core.points import _reader
+    files = pool.point_files(point)
+    return packages_of(files, _reader(pool, files))
+
+
+def diff_plan(cfg, repo, a, b=None, suite=None) -> list:
+    """Per suite of `repo` with a kept point dated `a`: what changed from it
+    to the point dated `b` — by default the next kept point after it."""
+    from mmw.core.point_diff import SuiteDiff, diff
+    from mmw.core.repos import repository_label
+    rows = [r for r in prepare(cfg, repos=[repo]) if r.held]
+    if not rows:
+        raise LookupError(f'{repo} has no kept points — see mmw history')
+    out, last = [], []
+    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        if suite is not None:
+            rows = [r for r in rows if _in_suite(pool, r, suite)]
+        for name in sorted({r.suite for r in rows}):
+            mine = sorted((r for r in rows if r.suite == name), key=lambda r: (r.date, r.ident))
+            old = _pick(mine, a)
+            if old is None:
+                continue
+            new = _pick(mine, b) if b is not None else next(iter(mine[mine.index(old) + 1:]), None)
+            if new is None:
+                last.append(name)
+                continue
+            out.append(SuiteDiff(repository_label(old.repo, cfg), name, old.date, new.date,
+                                 diff(point_packages(pool, old.point), point_packages(pool, new.point))))
+    if not out:
+        if last and b is None:
+            raise LookupError(f'{a} is the newest kept point of {", ".join(last)} — nothing after it to compare')
+        raise LookupError(f'no kept point of {repo} is dated {a}' + (f' and {b}' if b else '')
+                          + (f' in {suite}' if suite else '') + ' — see mmw history')
+    return out
+
+
+def run_diff(cfg_dir, repo, a, b=None, *, suite=None) -> int:
+    import sqlite3
+    from mmw.core.point_diff import describe as changes_text
+    from mmw.commands.common import eprint, load_config_or_none
+    cfg = load_config_or_none(cfg_dir)
+    if cfg is None:
+        return 1
+    try:
+        print(changes_text(diff_plan(cfg, repo, a, b, suite)))
+    except (ValueError, LookupError, OSError, sqlite3.Error) as exc:
+        eprint(str(exc))
+        return 1
     return 0

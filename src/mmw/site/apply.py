@@ -367,7 +367,8 @@ class RootApply:
                 # Their own track: never newer than, so never hiding, the repo's own loose files.
                 drafts.append((PointDraft("keys", content_ident(loose), header.created, {}, loose),
                                header.created, header.created_label))
-            planned[repo] = {"meta": {"label": pmeta["label"], "bases": pmeta["bases"]}, "rows": mine,
+            planned[repo] = {"meta": {"label": pmeta["label"], "bases": pmeta["bases"],
+                                      "changes": pmeta.get("changes")}, "rows": mine,
                              "points": drafts}
         for repo, meta in sorted((header.repos or {}).items() if header.format != 3 else ()):
             mine = by_repo.get(repo, [])
@@ -388,6 +389,7 @@ class RootApply:
             for repo, plan in planned.items():
                 result.lines.append(f"  {plan['meta']['label']}  would take {len(plan['points'])} point(s)"
                                     if "points" in plan else f"  {plan['meta']['label']}  would go to v{plan['meta']['to']}")
+                result.lines.extend(f"  {plan['meta']['label']}  {line}" for line in changes_said(plan['meta']))
             if "runtime" in self.seen:
                 result.lines.append(f"  {RUNTIME_NOTE}")
         self._checked = (header, rows, result, planned, network, sizes)
@@ -777,6 +779,7 @@ class PlanRow:
     serving_date: str | None = None  # the newest upstream date it serves (a stamp; else when it was stored)
     point_dates: tuple[tuple[str, str], ...] = ()  # arriving (suite/track, upstream date) pairs
     problems: tuple[str, ...] = ()
+    changes: tuple[str, ...] = ()    # per suite: 'jammy: brings 37 upgrades, …' (see `changes_said`)
 
 
 @dataclass(frozen=True)
@@ -909,7 +912,8 @@ def plan_apply(target, src: str) -> ApplyPlan:
                            bool(st and st.serving and meta["digest"] and st.serving.digest == meta["digest"]),
                            root, meta.get("points"), meta.get("to_date") or header.created,
                            served_dates.get(repo) or (st.serving.stamp if st and st.serving else None),
-                           tuple(meta.get("point_dates", ())), tuple(meta.get("problems", ()))))
+                           tuple(meta.get("point_dates", ())), tuple(meta.get("problems", ())),
+                           tuple(meta.get("changes", ()))))
     network = sum(1 for _p, _c, r in rows if r is None)
     return ApplyPlan(header.created, header.network, out, network,
                      sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))
@@ -1311,9 +1315,23 @@ def _repo_meta(header) -> dict[str, dict]:
                                              or (p.get("fields") or {}).get("Codename")
                                              or p["track"].rsplit("/", 1)[-1] or "files", p["date"])
                                             for p in m["points"]}),
-                    "to_date": max((p["date"] for p in m["points"]), default=None)}
+                    "to_date": max((p["date"] for p in m["points"]), default=None),
+                    "changes": changes_said(m)}
                 for k, m in (header.points or {}).items()}
     return header.repos or {}
+
+
+def changes_said(meta: dict) -> list[str]:
+    """'jammy: brings 37 upgrades, 3 new packages' per suite, from what the
+    connected side counted (a bundle's `changes`). An older bundle, or a
+    malformed entry, says nothing."""
+    from mmw.core.point_diff import brings_counts
+    changes = meta.get("changes")
+    if not isinstance(changes, dict):
+        return []
+    return [f"{suite}: {brings_counts(counts)}" for suite, counts in sorted(changes.items())
+            if isinstance(suite, str) and isinstance(counts, list) and len(counts) == 4
+            and all(isinstance(n, int) and n >= 0 for n in counts)]
 
 
 def _check_points(header) -> None:

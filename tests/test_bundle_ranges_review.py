@@ -40,8 +40,8 @@ def _a_dates(header, cfg):
 
 def test_a_partial_bundle_does_not_skip_other_repositories_history(mmw_net, tmp_path, monkeypatch):
     cfg, net, md = mmw_net
-    net = net.model_copy(update={"history": True, "keep_points": 1})
-    cfg = cfg.model_copy(update={"networks": [net]})
+    net = net.model_copy(update={"history": True})
+    cfg = cfg.model_copy(update={"networks": [net], "settings": cfg.settings.model_copy(update={"keep_points": 1})})
     _clock(monkeypatch, "20300101T000000Z", "20300104T000000Z", "20300105T000000Z")
     bundle_network(net, cfg, md, out_path=tmp_path / "1.tar")
     for d in (2, 3):
@@ -54,7 +54,7 @@ def test_a_partial_bundle_does_not_skip_other_repositories_history(mmw_net, tmp_
                     for p in pool.network_points(net.name, t.id)
                     if p.id not in pool.sent_point_ids(net.name)]
         assert a_points
-        assert not set(points.retention_plan(pool, [net])) & set(a_points)   # a's history is still due
+        assert not set(points.retention_plan(pool, [net], cfg=cfg)) & set(a_points)   # a's history is still due
     r = bundle_network(net, cfg, md, out_path=tmp_path / "3.tar")
     assert _a_dates(_header(r.out_path), cfg) == ["20261102", "20261103"]
 
@@ -81,14 +81,14 @@ def test_a_stub_point_is_never_listed(mmw_net, tmp_path):
 
 def test_retention_keeps_the_current_point_whatever_its_date(mmw_net, tmp_path):
     cfg, net, md = mmw_net
-    net = net.model_copy(update={"keep_points": 1})
+    cfg = cfg.model_copy(update={"settings": cfg.settings.model_copy(update={"keep_points": 1})})
     set_a(md, 3)
     points.record_network_points(net, cfg, md, stamp="20300101T000000Z")
     set_a(md, 2)                                        # upstream moved back a day
     points.record_network_points(net, cfg, md, stamp="20300102T000000Z")
     with Pool(md, read_only=True) as pool:
         current = {p for ids in points.current_points(pool, net.name).values() for p in ids}
-        assert not set(points.retention_plan(pool, [net])) & current
+        assert not set(points.retention_plan(pool, [net], cfg=cfg)) & current
 
 
 def test_from_a_label_bounds_history_by_its_stamp(mmw_net, tmp_path):

@@ -51,9 +51,10 @@ def _plan(cfg, mirror_dir: Path, released: list[int] = ()) -> tuple[list[str], i
 
 @interruptible
 def costs_of_keeping(cfg, mirror_dir: Path, presets=(1, 3, 10, "all")) -> dict[str, list[tuple]]:
-    """Per network: (choice, points dropped, bytes freed) for each `keep_points`
-    preset and its own setting — what that network's choice frees, against
-    it keeping everything, with the other networks as configured."""
+    """Per repository: (choice, points dropped, bytes freed) for each
+    `keep_points` preset and its own setting — what that repository's choice
+    frees, against it keeping everything, the other rules as configured.
+    Networks have no retention of their own, so they have no rows."""
     from mmw.core import points
     configured = [s.identity for s in cfg.sources]
     out: dict[str, list[tuple]] = {}
@@ -61,18 +62,6 @@ def costs_of_keeping(cfg, mirror_dir: Path, presets=(1, 3, 10, "all")) -> dict[s
         from mmw.core.resolve import uncovered_mirror_names
         dropped = uncovered_mirror_names(cfg, pool)
 
-        def frees(net, choice) -> tuple[int, int]:
-            nets = [n.model_copy(update={"keep_points": choice}) if n.name == net.name else n
-                    for n in cfg.networks]
-            plan = points.retention_plan(pool, nets, cfg=cfg)
-            return len(plan), pool.prune_preview(configured, dropped, plan)[1]
-        for net in cfg.networks:
-            n_all, base = frees(net, "all")
-            rows = []
-            for choice in dict.fromkeys([*presets, net.keep_points]):
-                n, size = (n_all, base) if choice == "all" else frees(net, choice)
-                rows.append((choice, n - n_all, size - base))
-            out[net.name] = rows
         for source in cfg.sources:
             if not hasattr(source, "keep_points"):
                 continue
@@ -165,16 +154,16 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
             eprint(f"Cannot read the pool in {mirror_dir}: {e}")
             return 1
         if table:
-            print("  What each network and repository keep_points choice frees, against keeping all "
+            print("  What each repository keep_points choice frees, against keeping all "
                   "(the other retention rules as set):")
         for name, rows in table.items():
-            net = settings_for_costs(cfg)[name]
-            said = " · ".join(f"{c}: {_fmt_size(b)}" + (" (now)" if c == net.keep_points else "")
+            rule = settings_for_costs(cfg)[name]
+            said = " · ".join(f"{c}: {_fmt_size(b)}" + (" (now)" if c == rule.keep_points else "")
                               for c, _n, b in rows)
             print(f"    {name}  {said}")
-            if net.keep_suites:
+            if rule.keep_suites:
                 print(f"    {' ' * len(name)}  (suites set on their own keep their setting: "
-                      f"{', '.join(f'{k} {v}' for k, v in net.keep_suites.items())})")
+                      f"{', '.join(f'{k} {v}' for k, v in rule.keep_suites.items())})")
     if dry_run:
         if removable == 0:
             print("Pool is clean — no orphaned packages found. (dry run)")
@@ -226,7 +215,6 @@ def run(cfg_dir: Path = Path("."), dry_run: bool = False, yes: bool = False, cos
 def settings_for_costs(cfg):
     """Labels and effective rules shared by CLI and TUI cost presentations."""
     from types import SimpleNamespace
-    return {**{n.name: n for n in cfg.networks},
-            **{f"repository {s.name}": SimpleNamespace(
+    return {f"repository {s.name}": SimpleNamespace(
                 keep_points=s.keep_points if s.keep_points is not None else cfg.settings.keep_points,
-                keep_suites=s.keep_suites) for s in cfg.sources if hasattr(s, "keep_points")}}
+                keep_suites=s.keep_suites) for s in cfg.sources if hasattr(s, "keep_points")}

@@ -19,8 +19,10 @@ def _own_state(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
 
-def _days(env, days, tmp_path):  # noqa: F811
+def _days(env, days, tmp_path, keep=None):  # noqa: F811
     cfg, net, md, home = env
+    if keep is not None:
+        ops.keep_here(home, keep)
     for d in days:
         set_a(md, d)
         _apply(home, _bundle(cfg, net, md, tmp_path / f"b{d}"))
@@ -33,14 +35,15 @@ def _held_days(home, repo):
         return sorted(p.date[6:8] for p in db.points(t.id))
 
 
-def test_default_keeps_three_and_never_cleans_on_apply(env, tmp_path):  # noqa: F811
+def test_default_keeps_all_and_never_cleans_on_apply(env, tmp_path):  # noqa: F811
     cfg, home = _days(env, range(1, 6), tmp_path)
-    assert H.load_site(home).keep == 3 and not H.load_site(home).auto_clean
+    assert H.load_site(home).keep == "all" and not H.load_site(home).auto_clean
+    assert ops.clean_plan_here(home) == []
     assert _held_days(home, _key(cfg, "a")) == ["01", "02", "03", "04", "05"]   # nothing went on its own
 
 
 def test_clean_plan_says_what_each_point_frees(env, tmp_path):  # noqa: F811
-    cfg, home = _days(env, range(1, 6), tmp_path)
+    cfg, home = _days(env, range(1, 6), tmp_path, keep=3)
     plan = ops.clean_plan_here(home)
     assert [(i.suite, i.date) for i in plan] == [("stable", "2026-11-02"), ("stable", "2026-11-01")]
     assert all(i.frees >= 0 for i in plan) and plan[0].frees > 0          # day 2's a2.deb is only its own
@@ -56,7 +59,7 @@ def test_clean_never_touches_protected_points(env, tmp_path):  # noqa: F811
 
 
 def test_a_suite_override_keeps_its_history(env, tmp_path):  # noqa: F811
-    cfg, home = _days(env, range(1, 6), tmp_path)
+    cfg, home = _days(env, range(1, 6), tmp_path, keep=3)
     ops.set_track_keep(home, "a", "stable", "all")
     assert ops.clean_plan_here(home) == []
     ops.set_track_keep(home, "a", "stable", None)        # back to the site's setting
@@ -82,7 +85,7 @@ def test_old_keep_versions_migrates_to_auto_clean(env, tmp_path):  # noqa: F811
 
 
 def test_cli_clean_dry_run_and_yes(env, tmp_path):  # noqa: F811
-    cfg, home = _days(env, range(1, 6), tmp_path)
+    cfg, home = _days(env, range(1, 6), tmp_path, keep=3)
     root = str(home.parent.parent)
     r = CliRunner().invoke(cli.app, ["site", "clean", "--root", root, "--dry-run"])
     assert r.exit_code == 0 and "2026-11-02" in r.output and "frees" in r.output, r.output
@@ -95,7 +98,7 @@ def test_cli_clean_dry_run_and_yes(env, tmp_path):  # noqa: F811
 
 
 def test_settings_show_what_each_preset_costs(env, tmp_path):  # noqa: F811
-    cfg, home = _days(env, range(1, 6), tmp_path)
+    cfg, home = _days(env, range(1, 6), tmp_path, keep=3)
     costs = ops.keep_costs_here(home)
     assert set(costs) == {1, 3, 10, "all"} and costs["all"] == 0 and costs[1] >= costs[3] >= costs[10] >= 0
     r = CliRunner().invoke(cli.app, ["site", "settings", "--root", str(home.parent.parent)])

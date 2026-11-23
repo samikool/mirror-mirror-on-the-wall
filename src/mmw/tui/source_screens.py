@@ -28,7 +28,6 @@ from textual.widgets import Checkbox, Input, Select, TextArea
 from mmw.core import config
 from mmw.core.draft import DIMENSIONS, SourceDraft
 from mmw.tui.key_modal import KeyPage, apply_key, key_summary
-from mmw.tui.network_screens import format_keep_suites, parse_keep_suites
 from mmw.tui.pick import PickPage
 from mmw.tui.repositories import edited_source, format_overrides, parse_overrides  # noqa: F401
 from mmw.tui.ui.form import (
@@ -333,3 +332,18 @@ class EditSourcePage(Page):
             self.set_status(str(e), "error")
             return
         self.dismiss(source)
+
+
+def format_keep_suites(keep: dict) -> str:
+    return " ".join(f"{suite}={value}" for suite, value in keep.items())
+
+
+def parse_keep_suites(text: str) -> dict[str, int | str]:
+    """`keep_suites` as typed: `bookworm=all sid=1` (commas allowed); empty → none."""
+    out: dict[str, int | str] = {}
+    for item in text.replace(",", " ").split():
+        suite, sep, value = item.partition("=")
+        if not sep or not suite or not value:
+            raise ValueError(f"keep per suite is suite=setting, like bookworm=all — not {item!r}")
+        out[suite] = config.check_keep(int(value) if value.isdigit() else value, f"keep for {suite}")
+    return out

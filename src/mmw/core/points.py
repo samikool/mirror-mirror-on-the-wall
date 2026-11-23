@@ -408,8 +408,8 @@ def moment_rows(pool: Pool, network: str, stamp: str):
     stubs = [p for p in pool.points_of(ids).values() if not p.held]
     if stubs:
         raise ValueError(f"{len(stubs)} point(s) {network} had on {day(stamp)} are no longer kept "
-                         f"(retention dropped their files) — raise keep_points on {network} to keep "
-                         "older dates, or publish a later one")
+                         f"(retention dropped their files) — raise the repositories' keep_points "
+                         "(`mmw keep`) to keep older dates, or publish a later one")
     from mmw.core.repository_points import files_for_settings
     settings = pool.settings_at(network, stamp) or "{}"
     files: dict[str, str] = {}
@@ -441,45 +441,19 @@ def history_since(pool: Pool, network: str) -> tuple[dict[str, str], str | None]
     return pool.last_sent_by_repo(network), (bundles[0].to_stamp if bundles else None)
 
 
-def keep_for(network: NetworkConfig, track) -> int | str:
-    """The network's setting for one suite: its `keep_suites` entry (by suite,
-    codename, the track's last path part or its whole path), else `keep_points`."""
+def keep_for(rule, track) -> int | str:
+    """A repository's setting for one suite: its `keep_suites` entry (by
+    suite, codename, the track's last path part or its whole path), else its
+    `keep_points`. `rule` is a source with both resolved."""
     names = (track.suite, track.codename, track.name.rsplit("/", 1)[-1] if track.name else None, track.name)
-    return next((network.keep_suites[n] for n in names if n and n in network.keep_suites), network.keep_points)
+    return next((rule.keep_suites[n] for n in names if n and n in rule.keep_suites), rule.keep_points)
 
 
-def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
-    """The points `network` keeps: per track the newest `keep_points` (or
-    those it saw within the age), what it is on now, every point a snapshot
-    holds, and — once it has been bundled — every point it first saw after
-    its repository was last bundled."""
-    by_repo, fallback = history_since(pool, network.name)
-    cursors = pool.transfer_dates(network.name)
-    sent_points = pool.sent_point_ids(network.name) if cursors else set()
-    current = {pid for ids in current_points(pool, network.name).values() for pid in ids}
-    # Only a complete snapshot holds: a history-only one stopped holding its files.
-    held_by_snapshots = {pid for s in pool.snapshots(network.name) if s.complete
-                         for pid in pool.snapshot_point_ids(s.id)}
-    published = {pid for p in pool.published(network.name) if p.target.startswith(AS_OF)
-                 for ids in pool.points_at(network.name, p.target[len(AS_OF):]).values() for pid in ids}
-    kept: set[int] = held_by_snapshots | published
-    stamps = pool.network_point_stamps(network.name)
-    for t in pool.network_tracks(network.name):
-        keep = keep_for(network, t)
-        cutoff = _cutoff(now, int(keep[:-1])) if isinstance(keep, str) and keep != "all" else None
-        last_sent = by_repo.get(t.repo, fallback)
-        for i, p in enumerate(pool.network_points(network.name, t.id)):
-            first, seen = stamps.get(p.id, (None, None))
-            first = first or p.stamp
-            # An age counts from when the network last had it; what it's on now always stays.
-            seen = seen or first
-            if (i == 0 or p.id in current or keep == "all" or (isinstance(keep, int) and i < keep)
-                    or (cutoff is not None and seen >= cutoff)
-                    or p.id in held_by_snapshots or p.id in published or (last_sent is not None and first > last_sent)
-                    or (t.id in cursors and p.id not in sent_points
-                        and (pool.network_slice_date(network.name, p.id) or p.date) > cursors[t.id])):
-                kept.add(p.id)
-    return kept
+def _kept_by(pool: Pool, network: NetworkConfig) -> set[int]:
+    """Every point `network` recorded. Networks have no retention of their
+    own: a point the network walk recorded (one no repository owns) stays
+    while the network does; repository-owned points follow their rule."""
+    return {p.id for t in pool.network_tracks(network.name) for p in pool.network_points(network.name, t.id)}
 
 
 def superseded_at(points_newest_first, now=None) -> dict[int, str]:
@@ -511,7 +485,7 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
     now = now or now_stamp()
     kept: set[int] = set()
     for n in networks:
-        kept |= _kept_by(pool, n, now)
+        kept |= _kept_by(pool, n)
     kept |= pool.published_point_ids()
     # Every held point any network saw: one only a removed network saw is kept by none.
     candidates = set(pool.linked_held_points())

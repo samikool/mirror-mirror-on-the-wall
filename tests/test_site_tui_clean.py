@@ -1,7 +1,7 @@
 """Clean up from the far-side TUI: C lists what would go, Clean up does it."""
 import asyncio
 
-from mmw.site import recents
+from mmw.site import ops, recents
 from mmw.site.db import SiteDB
 
 from test_dry_run_totals import two_mirrors  # noqa: F401
@@ -16,6 +16,7 @@ def test_clean_up_from_the_tui(env, tmp_path, monkeypatch):  # noqa: F811
     from mmw.tui.site.app import SiteApp
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     cfg, net, md, home = env
+    ops.keep_here(home, 3)
     for d in range(1, 6):
         set_a(md, d)
         _apply(home, _bundle(cfg, net, md, tmp_path / f"b{d}"))

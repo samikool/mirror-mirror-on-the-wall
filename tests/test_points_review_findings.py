@@ -26,6 +26,26 @@ def _draft(day, files):
     return PointDraft("h/dists/sid", f"release:{day}", f"202611{day:02d}T000000Z", {"Suite": "sid"}, files)
 
 
+REPO = "https://h.test/debian"
+
+
+def _cfg(tmp_path, keep=3, **source):
+    return config.Config(settings=config.Settings(mirror_dir=tmp_path, keep_points=keep),
+                         sources=[config.SourceConfig(url=REPO, **source)])
+
+
+def _synced(two_mirrors, monkeypatch, keep=3):  # noqa: F811
+    """Two syncs of `a` (days 1 and 2), each recording repository points."""
+    cfg, net, md = two_mirrors
+    cfg = cfg.model_copy(update={"settings": cfg.settings.model_copy(update={"keep_points": keep})})
+    for day in (1, 2):
+        set_a(md, day)
+        with monkeypatch.context() as patches:
+            patches.setattr("mmw.core.publisher.manifest.now_stamp", lambda d=day: f"2026110{d}T120000Z")
+            points.record_points_after_sync(cfg, md, {s.identity for s in cfg.sources})
+    return cfg, net, md
+
+
 # 1 ── deleting a snapshot never strips a held point's files
 
 def test_deleting_a_snapshot_keeps_held_points_files(tmp_path):
@@ -89,38 +109,20 @@ def test_tui_prune_while_busy_drops_nothing(two_mirrors, monkeypatch):  # noqa: 
         assert len(pool.network_points(net.name)) == 5
 
 
-# 3 ── an age keeps what a network is on, counted from when it last saw it
-
-def test_age_keeps_the_current_point(tmp_path):
-    with Pool(tmp_path) as pool:
-        pid, _ = pool.record_point("R", _draft(1, {"h/dists/sid/Release": "c1"}), "20260901T000000Z")
-        pool.link_network_point("oak", pid, "20260901T000000Z")
-        pool.link_network_point("oak", pid, "20261114T000000Z")             # seen again by today's sync
-        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points="30d")],
-                                     now="20261115T000000Z") == []
-
-
-def test_age_always_keeps_a_tracks_newest(tmp_path):
-    with Pool(tmp_path) as pool:
-        pid, _ = pool.record_point("R", _draft(1, {"h/dists/sid/Release": "c1"}), "20260901T000000Z")
-        pool.link_network_point("oak", pid, "20260901T000000Z")
-        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points="30d")],
-                                     now="20261115T000000Z") == []
-
-
 # 4 ── a history-only snapshot holds nothing
 
 def test_a_demoted_snapshot_holds_no_points(tmp_path):
     with Pool(tmp_path) as pool:
         ids = []
         for d in range(1, 6):
-            pid, _ = pool.record_point("R", _draft(d, {"h/dists/sid/Release": f"c{d}"}), f"s{d}")
+            pid, _ = pool.record_point(REPO, _draft(d, {"h/dists/sid/Release": f"c{d}"}), f"s{d}")
             pool.link_network_point("oak", pid, f"202611{d:02d}T000000Z")
             ids.append(pid)
         sid = pool.create_snapshot("oak", "20261101T000000Z", kind="manual", rows=[])
         pool.link_snapshot_points(sid, [ids[0]])
         pool.demote_snapshot(sid)
-        assert ids[0] in points.retention_plan(pool, [config.NetworkConfig(name="oak")], now="20261120T000000Z")
+        assert ids[0] in points.retention_plan(pool, [config.NetworkConfig(name="oak")],
+                                               now="20261120T000000Z", cfg=_cfg(tmp_path))
 
 
 # 5 ── a network removed from the config keeps nothing
@@ -190,7 +192,7 @@ def test_a_new_snapshot_lists_its_points(two_mirrors):  # noqa: F811
 @pytest.mark.parametrize("bad", [True, 3.0, "1000000d", 10_000_001])
 def test_keep_points_bounds(bad):
     with pytest.raises(ValueError, match="keep_points"):
-        config.NetworkConfig(name="oak", keep_points=bad)
+        config.Settings(mirror_dir="m", keep_points=bad)
 
 
 def test_retention_reads_each_networks_stamps_once(tmp_path, monkeypatch):
@@ -198,35 +200,33 @@ def test_retention_reads_each_networks_stamps_once(tmp_path, monkeypatch):
     with Pool(tmp_path) as pool:
         ids = []
         for day in (1, 2, 3):
-            pid, _ = pool.record_point("R", _draft(day, {"h/dists/sid/Release": f"c{day}"}), f"202609{day:02d}T000000Z")
+            pid, _ = pool.record_point(REPO, _draft(day, {"h/dists/sid/Release": f"c{day}"}), f"202609{day:02d}T000000Z")
             pool.link_network_point("oak", pid, f"202609{day:02d}T000000Z")
             ids.append(pid)
+        pool.record_bundle("oak", None, "20260801T000000Z", "oak.tar", 0, 0, 0)
         monkeypatch.setattr(Pool, "network_point_stamp", lambda *a: pytest.fail("a query per point"))
         monkeypatch.setattr(Pool, "network_point_last_seen", lambda *a: pytest.fail("a query per point"))
-        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points="30d")],
-                                     now="20261115T000000Z") == ids[:2]
+        net = config.NetworkConfig(name="oak")
+        assert points.retention_plan(pool, [net], now="20261115T000000Z", cfg=_cfg(tmp_path, "30d")) == ids[:2]
 
 
 # ── per-suite keep, and what each choice frees ───────────────────────────────
 
 def test_keep_suites_is_checked_like_keep_points():
-    config.NetworkConfig(name="oak", keep_suites={"sid": "all", "bookworm": 5, "trixie": "90d"})
+    config.SourceConfig(url=REPO, keep_suites={"sid": "all", "bookworm": 5, "trixie": "90d"})
     with pytest.raises(ValueError, match="keep_suites.sid"):
-        config.NetworkConfig(name="oak", keep_suites={"sid": 0})
+        config.SourceConfig(url=REPO, keep_suites={"sid": 0})
 
 
 def test_a_suite_set_on_its_own_keeps_its_own_count(tmp_path):
     with Pool(tmp_path) as pool:
         ids = []
         for day in (1, 2, 3):
-            pid, _ = pool.record_point("R", _draft(day, {"h/dists/sid/Release": f"c{day}"}), f"202609{day:02d}T000000Z")
-            pool.link_network_point("oak", pid, f"202609{day:02d}T000000Z")
+            pid, _ = pool.record_point(REPO, _draft(day, {"h/dists/sid/Release": f"c{day}"}), f"202609{day:02d}T000000Z")
             ids.append(pid)
-        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points=1)]) == ids[:2]
-        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points=1,
-                                                                 keep_suites={"sid": "all"})]) == []
-        assert points.retention_plan(pool, [config.NetworkConfig(name="oak", keep_points="all",
-                                                                 keep_suites={"h/dists/sid": 2})]) == ids[:1]
+        assert points.retention_plan(pool, [], cfg=_cfg(tmp_path, 1)) == ids[:2]
+        assert points.retention_plan(pool, [], cfg=_cfg(tmp_path, 1, keep_suites={"sid": "all"})) == []
+        assert points.retention_plan(pool, [], cfg=_cfg(tmp_path, "all", keep_suites={"h/dists/sid": 2})) == ids[:1]
 
 
 def test_the_preview_counts_what_dropped_points_free(tmp_path):
@@ -242,40 +242,36 @@ def test_prune_costs_say_each_choice(two_mirrors, monkeypatch, capsys):  # noqa:
     import re
 
     from mmw.commands import prune
-    cfg, net, md = two_mirrors
-    for day in (1, 2):
-        set_a(md, day)
-        points.record_network_points(net, cfg, md, stamp=f"2026110{day}T000000Z")
+    cfg, net, md = _synced(two_mirrors, monkeypatch)
     monkeypatch.setattr(prune, "load_config_or_none", lambda d: cfg)
     assert prune.run(costs=True) == 0                                   # a preview: deletes nothing
-    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.strip().startswith(f"{net.name}  1: "))
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if ln.strip().startswith("repository a  1: "))
     one = re.search(r"1: ([\d.]+) B", line)
     assert one and float(one[1]) > 0 and "3: 0.0 B (now)" in line           # the day-1 index goes with keep 1
+    assert not any(ln.strip().startswith(f"{net.name} ") for ln in out.splitlines())
 
-    net = net.model_copy(update={"keep_suites": {"stable": "all"}})
-    monkeypatch.setattr(prune, "load_config_or_none", lambda d: cfg.model_copy(update={"networks": [net]}))
+    a = cfg.sources[0].model_copy(update={"keep_suites": {"stable": "all"}})
+    monkeypatch.setattr(prune, "load_config_or_none",
+                        lambda d: cfg.model_copy(update={"sources": [a, *cfg.sources[1:]]}))
     assert prune.run(dry_run=True, costs=True) == 0
     assert "stable all" in capsys.readouterr().out
 
 
 def test_keep_suites_survives_saving_the_config(tmp_path):
-    cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path / "m"),
-                        networks=[config.NetworkConfig(name="oak", keep_suites={"bookworm": "all", "sid": 1})])
+    cfg = _cfg(tmp_path / "m", keep_suites={"bookworm": "all", "sid": 1})
     config.save(cfg, tmp_path)
-    (net,) = config.load(tmp_path).networks
-    assert net.keep_suites == {"bookworm": "all", "sid": 1}
+    (source,) = config.load(tmp_path).sources
+    assert source.keep_suites == {"bookworm": "all", "sid": 1}
 
 
-def test_the_tuis_prune_preview_and_keep_costs(two_mirrors):  # noqa: F811
+def test_the_tuis_prune_preview_and_keep_costs(two_mirrors, monkeypatch):  # noqa: F811
     from mmw.tui import repositories
-    cfg, net, md = two_mirrors
-    for day in (1, 2):
-        set_a(md, day)
-        points.record_network_points(net, cfg, md, stamp=f"2026110{day}T000000Z")
-    keep1 = cfg.model_copy(update={"networks": [net.model_copy(update={"keep_points": 1})]})
+    cfg, net, md = _synced(two_mirrors, monkeypatch)
+    keep1 = cfg.model_copy(update={"settings": cfg.settings.model_copy(update={"keep_points": 1})})
     dropping, files, size = repositories.prune_preview(keep1)
     assert dropping == 1 and files >= 1 and size > 0
     table = repositories.keep_costs(cfg)
-    assert set(table) == {net.name, *(f"repository {s.name}" for s in cfg.sources)}
+    assert set(table) == {f"repository {s.name}" for s in cfg.sources}
     for rows in table.values():
         assert {c for c, _n, _b in rows} >= {1, 3, 10, "all"}

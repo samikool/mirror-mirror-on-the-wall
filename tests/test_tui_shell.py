@@ -260,7 +260,7 @@ def test_starting_section_builds_completely_under_app_run(tmp_path, section):
                           ("settings-disk-write-threads", "8"),
                           ("settings-disk-read-threads", "16"),
                           ("settings-disk-readahead", "16"),
-                          ("settings-keep-points", "3")]
+                          ("settings-keep-points", "all")]
 
 
 def test_page_hint_line_follows_focus(tmp_path):

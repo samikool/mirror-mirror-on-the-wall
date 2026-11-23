@@ -282,8 +282,7 @@ def test_edit_persists_every_networkconfig_field(tmp_path):
         nginx=False, retention="30d",
         runtime_arches=["aarch64"], runtime_python="3.13",
         layers=[config.NetworkLayer(source="https://deb.example.com/debian", signing="unsigned")],
-        carry_keys=["tools"], keep_points="all", history=True,
-        keep_suites={"bookworm": "all", "sid": 1},
+        carry_keys=["tools"], history=True,
     )
     defaults = config.NetworkConfig(name="x")
     unchanged = [f for f in config.NetworkConfig.model_fields
@@ -420,7 +419,7 @@ def test_add_page_refuses_a_bad_name_at_the_first_step():
 
 def test_keep_per_suite_is_typed_as_suite_equals_setting():
     import pytest
-    from mmw.tui.network_screens import format_keep_suites, parse_keep_suites
+    from mmw.tui.source_screens import format_keep_suites, parse_keep_suites
     assert parse_keep_suites("bookworm=all, sid=1 trixie=90d") == {"bookworm": "all", "sid": 1, "trixie": "90d"}
     assert parse_keep_suites("  ") == {}
     assert format_keep_suites({"bookworm": "all", "sid": 1}) == "bookworm=all sid=1"

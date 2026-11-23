@@ -360,8 +360,8 @@ mmw publish -n lab --as-of 2026-11-03             # or 3nov, or a full stamp
 mmw publish -n lab                                # back to now
 ```
 
-APT history is kept by repository rules (`[settings] keep_points`, default 3,
-with source overrides in `keep_points` / `keep_suites`). A network selects
+APT history is kept by repository rules (`[settings] keep_points`, default
+`all`, with source overrides in `keep_points` / `keep_suites`). A network selects
 from it when publishing or transferring; creating a network does not need
 another sync. `mmw prune --dry-run --costs` previews retention. Points an
 actual published directory serves stay protected until that directory advances.

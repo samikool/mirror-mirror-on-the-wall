@@ -276,7 +276,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def fetch_metadata(
-        self, mirror_config, client: httpx.Client
+        self, mirror_config, client: httpx.Client, releases=None
     ) -> list[MetadataFile]:
         """Return metadata files to sync exactly as-is (signatures preserved)."""
         ...
@@ -284,7 +284,7 @@ class BaseProvider(ABC):
     def fetch_all(
         self, mirror_config, client: httpx.Client,
         status_callback: Callable[[str], None] | None = None,
-        history=None,
+        history=None, releases=None,
     ) -> tuple[list[PackageInfo], list[MetadataFile]]:
         """Fetch packages and metadata from one consistent upstream snapshot.
 

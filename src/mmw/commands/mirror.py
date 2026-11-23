@@ -111,6 +111,8 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
         eprint(f"Cannot use mirror_dir {mirror_dir}: {e.strerror or e}")
         return 1
 
+    from mmw.core.release_snapshots import ReleaseSnapshots
+    releases = ReleaseSnapshots()
     keys_coord = KeySyncCoordinator(mirror_dir)
 
     mirrors, resolve_errors = resolve_and_report(cfg)
@@ -146,6 +148,7 @@ async def _mirror_all_inner(cfg, mirror_dir, summaries, mirror_errors, executor)
                     executor=executor,
                     events=events,
                     keys=keys_coord,
+                    releases=releases,
                     items_session=items,
                     downloads=downloads,
                 )

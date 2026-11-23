@@ -661,6 +661,8 @@ class SyncView(Vertical):
         # Shared across all download_mirror calls: at most max_connections
         # package downloads in flight globally, competed for fairly.
         self._sem = asyncio.Semaphore(connections)
+        from mmw.core.release_snapshots import ReleaseSnapshots
+        self._releases = ReleaseSnapshots()
         self._keys_coord = KeySyncCoordinator(self._cfg.settings.mirror_dir)
         self._ticker = self.set_interval(1 / 60, self._tick)
         # Opening the pool is disk work (mkdir, SQLite connect, schema script,
@@ -1039,7 +1041,8 @@ class SyncView(Vertical):
         try:
             runner = retry_failed_mirror if self._retry_failed else sync_mirror
             extra = {} if self._retry_failed else {
-                "mirror_dir": self._cfg.settings.mirror_dir, "keys": self._keys_coord}
+                "mirror_dir": self._cfg.settings.mirror_dir, "keys": self._keys_coord,
+                "releases": self._releases}
             if self._past is not None:
                 extra = {"mirror_dir": self._cfg.settings.mirror_dir, "commit_refs": False}
             summary = await runner(

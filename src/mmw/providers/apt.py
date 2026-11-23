@@ -314,7 +314,7 @@ class AptFlatProvider(_AptCommon):
             return result
         return _check_checksums(pool, result, checksums)
 
-    def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None, history=None):
+    def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None, history=None, releases=None):
         """One fetch of the index, handed to both halves.
 
         A flat repository has no Release checksum block, so there is no
@@ -371,7 +371,7 @@ class AptFlatProvider(_AptCommon):
                 continue
         raise ValueError(f"Could not fetch Packages from {base}/Packages[.xz/.gz]")
 
-    def fetch_metadata(self, mirror_config, client: httpx.Client) -> list[MetadataFile]:
+    def fetch_metadata(self, mirror_config, client: httpx.Client, releases=None) -> list[MetadataFile]:
         """Release files fetched (not just HEADed) and every index variant
         tied to the hash the Release gives it.
 
@@ -444,6 +444,13 @@ def _segment_arch(seg: str) -> str | None:
         if (seg == a or seg.endswith("-" + a)) and (best is None or len(a) > len(best)):
             best = a
     return best
+
+
+class StaleReleaseIndex(ValueError):
+    """Enumeration could not read an index named by its Release."""
+    def __init__(self, message, seen):
+        super().__init__(message)
+        self.seen = seen
 
 
 def _fetch_verified_index(mf: MetadataFile, client: httpx.Client) -> bytes:
@@ -590,7 +597,7 @@ class AptProvider(_AptCommon):
         from mmw.core import discover
         return discover.detect_repository(url)
 
-    def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None, history=None):
+    def fetch_all(self, mirror_config, client: httpx.Client, status_callback=None, history=None, releases=None):
         """Packages and metadata from ONE upstream snapshot, and one fetch.
 
         The inherited default calls `fetch_packages()` then `fetch_metadata()`,
@@ -621,6 +628,19 @@ class AptProvider(_AptCommon):
         mirror that is already far larger, so it is the cheaper half of what a
         sync holds.
         """
+        from mmw.core.release_snapshots import release_content
+        try:
+            return self._fetch_all_snapshot(mirror_config, client, status_callback, releases)
+        except StaleReleaseIndex as error:
+            if releases is None:
+                raise
+            dist_base = f"{mirror_config.fetch_url().rstrip('/')}/dists/{mirror_config.suite}"
+            refreshed = releases.refresh(client, dist_base, error.seen)
+            if release_content(refreshed) == error.seen:
+                raise
+            return self._fetch_all_snapshot(mirror_config, client, status_callback, releases)
+
+    def _fetch_all_snapshot(self, mirror_config, client, status_callback, releases):
         base = mirror_config.fetch_url().rstrip("/")
         component = mirror_config.component or "main"
         arch = mirror_config.arch
@@ -629,7 +649,7 @@ class AptProvider(_AptCommon):
         # Called first so that failure is what the caller sees, rather than a
         # generic "Could not fetch Packages file" from a package fetch that was
         # only ever going to fail for the same underlying reason.
-        files = self.fetch_metadata(mirror_config, client)
+        files = self.fetch_metadata(mirror_config, client, releases=releases)
 
         packages: list[PackageInfo] = []
         wanted = [(f"{component}/binary-{arch}/Packages", _parse_packages)]
@@ -671,7 +691,11 @@ class AptProvider(_AptCommon):
                 )
             if status_callback:
                 status_callback(f"Reading {mf.repo_path}...")
-            content = _fetch_verified_index(mf, client)
+            try:
+                content = _fetch_verified_index(mf, client)
+            except ValueError as error:
+                from mmw.core.release_snapshots import release_content
+                raise StaleReleaseIndex(str(error), release_content(files)) from error
             # Handed to the metadata phase as-is: `_fetch_metadata_content`
             # takes pre-fetched content and re-verifies it against
             # `expected_sha256`, so this saves the GET without skipping a check.
@@ -696,58 +720,18 @@ class AptProvider(_AptCommon):
 
         return packages
 
-    def fetch_metadata(self, mirror_config, client: httpx.Client) -> list[MetadataFile]:
+    def fetch_metadata(self, mirror_config, client: httpx.Client, releases=None) -> list[MetadataFile]:
         base = mirror_config.fetch_url().rstrip("/")
         suite = mirror_config.suite
         component = mirror_config.component or "main"
         arch = mirror_config.arch
         dist_base = f"{base}/dists/{suite}"
 
-        files: list[MetadataFile] = []
-
-        # Fetch InRelease, Release, AND Release.gpg with content= in one pass so
-        # all three describe the same upstream snapshot.  Fetching Release at
-        # write time (hours later) could capture a newer publish whose hashes
-        # don't match the indexes we verified against InRelease.
-        release_text = ""
-        release_checksums: dict[str, str] = {}  # path → sha256
-        # Why every failure is recorded rather than `continue`d: this loop is
-        # the only thing that produces `release_text`, and the caller reports a
-        # per-file problem purely by *omission*. So a 503 on both InRelease and
-        # Release — which Ubuntu really does return under load — used to yield
-        # an empty metadata list that `download_mirror` treated as a clean
-        # index, reconciling the mirror's refs down to packages alone and
-        # deleting every index and release ref it had, at exit 0. A missing
-        # Release file is a hard failure for an apt repository, and the reason
-        # has to travel with it.
-        release_failures: list[str] = []
-        for name in ("InRelease", "Release", "Release.gpg"):
-            url = f"{dist_base}/{name}"
-            try:
-                r = client.get(url)
-            except Exception as e:
-                release_failures.append(f"{name}: {type(e).__name__}")
-                continue
-            if r.status_code != 200:
-                release_failures.append(f"{name}: http {r.status_code}")
-                continue
-            files.append(MetadataFile(url=url, repo_path=f"dists/{suite}/{name}",
-                                      content=r.content, is_release=True))
-            if name in ("InRelease", "Release") and not release_text:
-                release_text = r.text
-                release_checksums = {path: cs for cs, path, _ in _parse_release_files(release_text)}
-
-        if not release_text:
-            # Raising, not returning a short list: an apt repository always has
-            # a Release file, so "I could not read it" means either the
-            # repository is unreachable or the suite is wrong — never "this
-            # mirror legitimately has no index". The sync frontends treat a
-            # provider exception as a failed mirror and report it; an empty
-            # return was indistinguishable from success.
-            raise RuntimeError(
-                f"no usable Release file at {dist_base} — "
-                + ("; ".join(release_failures) if release_failures else "nothing served")
-            )
+        from mmw.core.release_snapshots import fetch_release_files, release_content
+        files = (releases.get(client, dist_base) if releases is not None
+                 else fetch_release_files(client, dist_base))
+        release_text = release_content(files).decode("utf-8", errors="replace")
+        release_checksums = {path: cs for cs, path, _ in _parse_release_files(release_text)}
 
         other_arches = KNOWN_ARCHES - {arch}
         include_sources = getattr(mirror_config, "include_sources", False)

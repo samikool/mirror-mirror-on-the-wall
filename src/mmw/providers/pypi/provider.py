@@ -426,7 +426,7 @@ class PypiProvider(BaseProvider):
     def progress_unit(self, mirror) -> ProgressUnit:
         return ProgressUnit("releases", mirror.source)
 
-    def fetch_all(self, mirror_config, client, status_callback=None, history=None):
+    def fetch_all(self, mirror_config, client, status_callback=None, history=None, releases=None):
         cat = self.catalog.get(mirror_config.source)
         if cat is None:
             raise RuntimeError(f"{mirror_config.name}: the PyPI selection was not resolved "
@@ -505,7 +505,7 @@ class PypiProvider(BaseProvider):
     def fetch_packages(self, mirror_config, client, status_callback=None):
         return self.fetch_all(mirror_config, client, status_callback)[0]
 
-    def fetch_metadata(self, mirror_config, client):
+    def fetch_metadata(self, mirror_config, client, releases=None):
         return self.fetch_all(mirror_config, client)[1]
 
     def repair_packages(self, unit, pool, *, status_callback=None, stop_event=None):

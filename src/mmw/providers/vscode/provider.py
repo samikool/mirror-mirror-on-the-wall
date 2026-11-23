@@ -454,7 +454,7 @@ class VscodeProvider(BaseProvider):
             return ProgressUnit("extensions", mirror.source)
         return ProgressUnit("builds")
 
-    def fetch_all(self, mirror_config, client, status_callback=None, history=None):
+    def fetch_all(self, mirror_config, client, status_callback=None, history=None, releases=None):
         history = history or UnitHistory.empty()
         kind = mirror_config.dims.get("kind")
         if kind == "extensions":
@@ -667,5 +667,5 @@ class VscodeProvider(BaseProvider):
     def fetch_packages(self, mirror_config, client, status_callback=None):
         return self.fetch_all(mirror_config, client, status_callback=status_callback)[0]
 
-    def fetch_metadata(self, mirror_config, client):
+    def fetch_metadata(self, mirror_config, client, releases=None):
         return self.fetch_all(mirror_config, client)[1]

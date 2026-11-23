@@ -146,18 +146,20 @@ def fetch_packages_threaded(provider, mirror_config, status_callback=None) -> li
     return provider.fetch_packages(mirror_config, _thread_client(), status_callback=status_callback)
 
 
-def fetch_metadata_threaded(provider, mirror_config, stop_event=None) -> list[MetadataFile]:
+def fetch_metadata_threaded(provider, mirror_config, stop_event=None, releases=None) -> list[MetadataFile]:
     """Submit to an executor — calls provider.fetch_metadata with the thread-local client."""
     with request_scope(stop_event):
-        return provider.fetch_metadata(mirror_config, _thread_client())
+        return provider.fetch_metadata(mirror_config, _thread_client(),
+                                       **({"releases": releases} if releases is not None else {}))
 
 
 def fetch_all_threaded(provider, mirror_config, status_callback=None,
-                       history=None, stop_event=None) -> tuple[list[PackageInfo], list[MetadataFile]]:
+                       history=None, stop_event=None, releases=None) -> tuple[list[PackageInfo], list[MetadataFile]]:
     """Submit to an executor — calls provider.fetch_all with the thread-local client."""
     with request_scope(stop_event):
         return provider.fetch_all(mirror_config, _thread_client(), status_callback=status_callback,
-                                  history=history)
+                                  history=history,
+                                  **({"releases": releases} if releases is not None else {}))
 
 
 _BY_HASH_RETRIES = 5

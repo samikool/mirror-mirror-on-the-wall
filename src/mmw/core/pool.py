@@ -2857,6 +2857,25 @@ class Pool:
                             [*params, *([released] if released is not None else [])]).fetchone()
         return (int(row[0]), int(row[1])) if row else (0, 0)
 
+    def points_footprint(self, point_ids, *, unsent_to: str | None = None) -> int:
+        """The bytes of the distinct files of `point_ids` together — shared
+        files once. `unsent_to`: only files that network was never sent."""
+        ids = sorted(set(point_ids))
+        if not ids or not (self._has_point_files and self._has_snapshot_blobs):
+            return 0
+        rows = ("(SELECT point, blob FROM point_files UNION SELECT point, blob FROM point_unit_files)"
+                if self._has_point_unit_files else "point_files")
+        sql = ("SELECT COALESCE(SUM(k.size), 0) FROM packages k WHERE k.checksum IN ("
+               f"SELECT b.checksum FROM {rows} f JOIN snapshot_blobs b ON b.id = f.blob "
+               "WHERE f.point IN (SELECT value FROM json_each(?)))")
+        params: list = [json.dumps(ids)]
+        if unsent_to is not None:
+            sql += " AND k.checksum NOT IN (SELECT checksum FROM sent_blobs WHERE network = ?)"
+            params.append(unsent_to)
+        with self._read() as c:
+            row = c.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
+
     def points_sizes(self, point_ids) -> dict[int, int]:
         """Each point's size: the bytes of its distinct files (0 for a stub)."""
         ids = sorted(set(point_ids))

@@ -6,7 +6,7 @@ it and turns keys into calls on it.
 import asyncio
 from urllib.parse import urlparse
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.markup import escape
@@ -132,20 +132,26 @@ class RepositoriesPage(Page):
         from mmw.tui.check_points import CheckPointsPage
         self.app.push_screen(CheckPointsPage(lambda: check_points(self.app.cfg)))
 
+    def _repo_of(self, row) -> str | None:
+        """The repository a Sources row's history belongs to."""
+        from mmw.core.repos import repository_key
+        if row is None:
+            return None
+        if row.kind == 'mirror':
+            return repository_key(row.mirror)
+        provider = get_provider(row.source.provider)
+        return provider.name if provider.repository_scope == 'provider' else row.source.identity
+
     def action_history(self):
         from mmw.tui.history import HistoryPage
-        from mmw.core.repos import repository_key
-        row = self.highlighted()
-        repo = repository_key(row.mirror) if row and row.kind == 'mirror' else None
-        if row and row.kind == 'source':
-            provider = get_provider(row.source.provider)
-            repo = provider.name if provider.repository_scope == 'provider' else row.source.identity
+        repo = self._repo_of(self.highlighted())
         self.app.push_screen(HistoryPage(repos=[repo] if repo else None))
 
     def __init__(self):
         super().__init__()
         self.model: RepositoryList | None = None
         self._rows: list[Row] = []
+        self._history_lines: dict[str, str] = {}     # repository → its History line, once read
         # Rebuilds come from handlers and workers alike (a keypress during the
         # 3 s pool read); interleaved clear/extend pairs collide on row ids.
         self._rebuild_lock = asyncio.Lock()
@@ -179,6 +185,7 @@ class RepositoriesPage(Page):
         await asyncio.to_thread(self.model.refresh)
         if not self.is_attached:
             return              # replaced while the pool was read (a settings save rebuilds the sections)
+        self._history_lines.clear()       # the pool may have changed: a sync, a delete, a prune
         await self.refresh_rows()
         self._status_selection()
 
@@ -232,13 +239,38 @@ class RepositoriesPage(Page):
         detail = self.query_one("#repo-detail", Static)
         if row is None:
             detail.update("[dim]Nothing highlighted.[/]")
-        elif row.kind == "source":
-            detail.update(source_detail(self.model, row.source))
-        else:
-            detail.update(mirror_detail(row.mirror))
+            return
+        text = source_detail(self.model, row.source) if row.kind == "source" else mirror_detail(row.mirror)
+        repo = self._repo_of(row)
+        history = self._history_lines.get(repo)
+        detail.update(text + "\n\n" + _meta("History")
+                      + (escape(history) if history is not None else "[dim]…[/]"))
+        if history is None and repo is not None:
+            self._load_history_line(repo)
+
+    @work(thread=True, exit_on_error=False, group="repo-history-line")
+    def _load_history_line(self, repo: str) -> None:
+        """`mmw history`'s one-line summary of `repo`, off the screen's thread."""
+        from mmw.commands.history import repo_line
+        try:
+            line = repo_line(self.app.cfg, repo)
+        except Exception as e:  # noqa: BLE001 — a pane line, never a crash
+            line = f"unreadable: {e}"
+        self.app.call_from_thread(self._got_history_line, repo, line)
+
+    def _got_history_line(self, repo: str, line: str) -> None:
+        if not self.is_attached:
+            return
+        self._history_lines[repo] = line
+        if self._repo_of(self.highlighted()) == repo:
+            self._show_detail()
 
     def on_screen_resume(self) -> None:
         super().on_screen_resume()
+        # Back from History (a delete) or a sync: read the History line again.
+        if self._history_lines and self.model is not None:
+            self._history_lines.clear()
+            self._show_detail()
         # Settings may have pointed mmw at a different pool since this page
         # last looked: re-read so the counts describe the pool now in use.
         if self.model is not None and self.model.cfg is not self.app.cfg:

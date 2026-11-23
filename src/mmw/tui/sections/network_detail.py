@@ -128,6 +128,7 @@ class NetworkDetail(Widget):
         self._bundle_mtime: float | None = None
         self._bundle_loaded = False
         self._snapshots: str | None = None        # the one-line summary, once loaded
+        self._far_side: str | None = None         # what its far side has, once loaded
         self._detail_gen = 0
         self._progress: tuple[int, int] | None = None      # indexes read / total
         self._hosts: list[str] = []
@@ -155,6 +156,7 @@ class NetworkDetail(Widget):
         self._bundle_mtime = None
         self._bundle_loaded = False
         self._snapshots = None
+        self._far_side = None
         self._progress = None
         self._hosts = []
         self._detail_gen += 1
@@ -162,7 +164,7 @@ class NetworkDetail(Widget):
         if network is None or cfg is None:
             return
         self._load(self._detail_gen, network, cfg)
-        self._load_history(self._detail_gen, cfg.settings.mirror_dir, network)
+        self._load_history(self._detail_gen, cfg.settings.mirror_dir, network, cfg)
 
     # ── loading (off the loop) ───────────────────────────────────────────────
 
@@ -237,7 +239,8 @@ class NetworkDetail(Widget):
         self._rebuild()
 
     @work(thread=True, exit_on_error=False, group="network-detail-bundle")
-    def _load_history(self, gen: int, mirror_dir: Path, net: config.NetworkConfig) -> None:
+    def _load_history(self, gen: int, mirror_dir: Path, net: config.NetworkConfig,
+                      cfg: config.Config | None = None) -> None:
         """When this network was last bundled, and its snapshot line. The
         directory and network are passed in, not read off `self`: the worker
         outlives the selection."""
@@ -247,7 +250,7 @@ class NetworkDetail(Widget):
         from mmw.core.pool import Pool
         from mmw.core.publisher.manifest import TS_FORMAT, latest_manifest_path
         from mmw.core.snapshots import snapshot_status
-        mtime, line = None, None
+        mtime, line, far = None, None, None
         try:
             with Pool(mirror_dir, read_only=True) as pool:
                 status = snapshot_status(pool, net.name, net.root)
@@ -266,14 +269,21 @@ class NetworkDetail(Widget):
                     mtime = disk_io.ops.stat(path).st_mtime
         except Exception:  # noqa: BLE001 — an unreadable pool: no age, not a crash
             pass
-        self.app.call_from_thread(self._on_history, gen, mtime, line)
+        if net.bundle_dir is not None and cfg is not None:
+            from mmw.commands.history import far_side_line
+            try:
+                far = far_side_line(cfg, net.name)
+            except Exception as e:  # noqa: BLE001 — a pane line, never a crash
+                far = f"unreadable: {e}"
+        self.app.call_from_thread(self._on_history, gen, mtime, line, far)
 
-    def _on_history(self, gen: int, mtime: float | None, line: str | None) -> None:
+    def _on_history(self, gen: int, mtime: float | None, line: str | None, far: str | None = None) -> None:
         if gen != self._detail_gen:
             return
         self._bundle_mtime = mtime
         self._bundle_loaded = True
         self._snapshots = line
+        self._far_side = far
         self._rebuild()
 
     # ── rendering ────────────────────────────────────────────────────────────
@@ -331,6 +341,8 @@ class NetworkDetail(Widget):
             else:
                 when = _fmt_age(self._bundle_mtime)
             self.mount(self._meta("Last transfer", when))
+            self.mount(self._meta("Far side has", "…" if not self._bundle_loaded
+                                  else escape(self._far_side or "nothing yet")))
         self.mount(self._meta("Activity", "…" if not self._bundle_loaded
                               else self._snapshots or "[dim]unreadable[/]"))
         # What it selects — an empty dimension meaning "all" is exactly what a

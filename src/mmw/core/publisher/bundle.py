@@ -446,7 +446,12 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         # A suite gone since the last bundle listed it is news too: the far side retires it.
         listed_tracks = {repo: {known[p].track for p in ids if p in known} for repo, ids in listing.items()}
         before = pool.listed_tracks(network.name)
-        retiring = any((before.get(repo) if repo in before else
+        # A repository an earlier bundle listed that the network no longer
+        # brings: named, so the far side stops serving it. Only a whole,
+        # current transfer can tell (a --repo or dated one lists a part).
+        left = (sorted(r for r, was in before.items() if was and r not in listing and not r.startswith("network:"))
+                if repos is None and until is None and to_ref == "now" else [])
+        retiring = bool(left) or any((before.get(repo) if repo in before else
                         {t for t in sent_dates if t in tracks and tracks[t].repo == repo}) - now
                        for repo, now in listed_tracks.items())
         summaries = []
@@ -479,7 +484,8 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     result.repos = summaries
 
     header = ManifestHeader(network=network.name, created=stamp, previous=since, full=full,
-                            format=3, selection=True, points=header_points, settings=settings)
+                            format=3, selection=True, points=header_points, settings=settings,
+                            left=left or None)
     signing_files = _carried_keys(network, mirror_dir)
     name = stamp if since is None else f"{since}-to-{stamp}"
     target = _free_stage_dir(network, name, out_path) if stage else _free_target(network, name, out_path)
@@ -550,7 +556,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
                          slices={pid: content_ident(f) for pid, f in files.items()},
                          targets={known[pid].track: (repo, point_date(pool, known[pid], settings))
                                   for repo in listing for pid in current[repo]})
-        pool.set_listed_tracks(network.name, listed_tracks)
+        pool.set_listed_tracks(network.name, {**listed_tracks, **{r: set() for r in left}})
         pool.record_bundle(network.name, since, stamp, str(target), sink.sent, sink.sent_bytes, 0,
                            kind="stage" if stage else "stream" if streaming else "bundle")
     if installer and not (stop_event is not None and stop_event.is_set()):

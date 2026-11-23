@@ -103,6 +103,10 @@ class ManifestHeader:
     # for the repositories it names (its far side applies the network's
     # files and retires a suite it no longer has). Absent on an export.
     selection: bool | None = None
+    # Format 3 selection: repositories an earlier bundle listed that the
+    # network no longer brings (its far side stops serving each once no
+    # other network brings it). Written only when some left.
+    left: list[str] | None = None
 
 
 def write_manifest(path: Path, header: ManifestHeader,
@@ -119,7 +123,7 @@ def write_manifest(path: Path, header: ManifestHeader,
     try:
         with disk_io.ops.open_file(tmp, "w", encoding="utf-8") as out:
             fields = asdict(header)
-            for optional in ("format", "repos", "settings", "points", "selection"):
+            for optional in ("format", "repos", "settings", "points", "selection", "left"):
                 if fields[optional] is None:
                     del fields[optional]
             out.write(json.dumps(fields, sort_keys=True) + "\n")

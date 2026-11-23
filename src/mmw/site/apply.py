@@ -465,6 +465,19 @@ class RootApply:
                     result.lines.append(f"  {label}  {what} stored, incomplete: {o.missing} file(s) missing — "
                                         f"bring them: {fix}")
 
+        # A repository the network's earlier bundle listed and this one says
+        # left: no longer this network's — retired once no network brings it.
+        for repo in (header.left or []) if header.selection else ():
+            state = db.repo_state(repo)
+            if repo in planned or state is None:
+                continue
+            db.set_present(repo, set(), network=header.network)
+            still = any(not t.gone for t in db.tracks(repo))
+            result.lines.append(f"  {state.label}  no longer in {header.network} — "
+                                + ("still served for another network" if still else "stops being served"))
+            planned[repo] = {"meta": {"label": state.label, "bases": state.bases}, "rows": []}
+            recorded[repo] = []
+
         if not self.network_files:
             result.network_changed = False     # nothing of the network's was touched
         if self.network_files:
@@ -1378,7 +1391,7 @@ def _filtered_manifest(header, rows, repos: set[str], k_of: dict | None = None) 
         head = replace(header, repos={k: v for k, v in (header.repos or {}).items() if k in repos},
                        file_count=None)
     fields = asdict(head)
-    for optional in ("format", "repos", "settings", "points", "selection"):
+    for optional in ("format", "repos", "settings", "points", "selection", "left"):
         if fields[optional] is None:
             del fields[optional]
     out = [json.dumps(fields, sort_keys=True)]

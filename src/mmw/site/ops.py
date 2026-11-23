@@ -541,6 +541,56 @@ def set_track_keep(home: Path, ref: str, track: str, keep) -> None:
         db.set_track_keep(_track_named(db, repo, track).id, value)
 
 
+def set_track_lag(home: Path, ref: str, track: str, lag) -> None:
+    """A suite's own lag: "Nd", "none" (no lag, whatever the site's), or
+    None (the site's) — served by at once."""
+    from mmw.site.home import parse_lag
+    value = None if lag is None else (parse_lag(lag) or "none")
+    with _session(home) as (db, roots):
+        repo = resolve_repo(db, ref)
+        db.set_track_lag(_track_named(db, repo, track).id, value)
+        _catch_up(db, roots, [repo])
+
+
+def _catch_up(db: SiteDB, roots: Roots, repos: "list[str] | None" = None) -> list[str]:
+    """Serve what the timeline chooses now where only time (a lag) or a lag
+    setting moved it — never a held repository (by a person or its site
+    layer), one mid-move, or one whose root isn't mounted. The repositories moved."""
+    from mmw.site.timeline import choose
+    moved = []
+    for st in db.repo_states():
+        if (repos is not None and st.repo not in repos) or st.held or st.serving is None \
+                or db.get_meta(f"hold:{st.repo}") or db.get_meta(f"moving_in:{st.repo}"):
+            continue
+        try:
+            roots.check_mounted(roots.of(st))
+        except (OSError, ValueError):
+            continue
+        chosen = choose(db, roots.store(roots.of(st)), st.repo)[0]
+        if not chosen or set(chosen.values()) == set(_served_points(db, st.repo).values()):
+            continue
+        _reserve(db, roots, st.repo)
+        moved.append(st.repo)
+    if moved:
+        _render(roots, db)
+    return moved
+
+
+def catch_up(home: Path) -> list[str]:
+    """With a lag anywhere here: serve each suite's newest point old enough
+    now. Skipped (nothing moved) while another run holds the site."""
+    from mmw.site.lock import LockHeld
+    from mmw.site.timeline import lagging
+    try:
+        with SiteDB(home) as db:
+            if not db.get_meta("timeline") or not lagging(db):
+                return []
+        with _session(home) as (db, roots):
+            return _catch_up(db, roots)
+    except LockHeld:
+        return []
+
+
 # ── status, history, verify ──────────────────────────────────────────────────
 
 def _ensure_migrated(home: Path) -> None:
@@ -584,8 +634,10 @@ def conversion_backups(home: Path) -> list[str]:
 
 
 def status(home: Path):
-    """Every repository's state, by label."""
+    """Every repository's state, by label — a suite serving with a lag moved
+    on first, if time has made a newer point old enough."""
     _ensure_migrated(home)
+    catch_up(home)
     with SiteDB(home) as db:
         return db.repo_states()
 
@@ -928,18 +980,25 @@ def set_keep(mset, keep) -> None:
         root.keep(keep)
 
 
-def keep_here(home: Path, keep, auto_clean: bool | None = None, dated: bool | None = None) -> None:
-    from mmw.site.home import parse_keep, save_settings
+def keep_here(home: Path, keep, auto_clean: bool | None = None, dated: bool | None = None,
+              lag: "str | None" = None) -> None:
+    """Change the site's settings — `lag` "none" clears it; a changed lag
+    serves by it at once."""
+    from mmw.site.home import parse_keep, parse_lag, save_settings
     with _session(home) as (db, roots):
         settings = load_site(home)
         update = {}
         if keep is not None:
             update["keep"] = parse_keep(keep)
+        if lag is not None:
+            update["lag"] = parse_lag(lag)
         if auto_clean is not None:
             update["auto_clean"] = auto_clean
         if dated is not None:
             update["dated"] = dated
         save_settings(home, settings.model_copy(update=update))
+        if lag is not None:
+            _catch_up(db, roots)
         if dated is not None:
             from mmw.site.dated import refresh
             refresh(db, _roots(home))                    # with the settings just saved

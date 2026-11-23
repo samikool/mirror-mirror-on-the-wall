@@ -23,13 +23,13 @@ from mmw.core.served_tree import (
 )
 from mmw.site import ops
 from mmw.site.db import SiteDB
-from mmw.site.home import load_site
+from mmw.site.home import lag_words, load_site
 from mmw.site.lock import SiteLock
 from mmw.site.reader import SourceError, open_source
 from mmw.site.store import ChecksumMismatch, Store
 from mmw.site.roots import Roots
 from mmw.site.switch import resume_switches, switch_in
-from mmw.site.timeline import choose, ensure_state, import_points, import_rows, migrate
+from mmw.site.timeline import choose, ensure_state, import_points, import_rows, lag_of, migrate, site_lag
 from mmw.site.tracks import PointDraft, content_ident
 
 
@@ -544,6 +544,14 @@ class RootApply:
                         result.stored_held.append(repo)
                         result.lines.append(f"  {label}  stored, still serving {was} (pinned — mmw site "
                                             f"forward '{label}' to move on)")
+                    elif any(o.status in ("new", "refilled") and o.point is not None
+                             and lag_of(site_lag(db), db.track(db.point(o.point).track))
+                             for o in recorded[repo]):
+                        lags = {lag_of(site_lag(db), db.track(db.point(o.point).track))
+                                for o in recorded[repo] if o.point is not None} - {None}
+                        result.lines.append(f"  {label}  stored, still serving {was} "
+                                            f"({', '.join(lag_words(x) for x in sorted(lags))} — it moves "
+                                            "on once a newer point is old enough)")
                     elif not any(o.status in ("new", "widened", "refilled", "incomplete", "conflict")
                                  for o in recorded[repo]):
                         result.lines.append(f"  {label}  already serving this")

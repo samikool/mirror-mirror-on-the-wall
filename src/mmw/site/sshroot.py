@@ -241,8 +241,22 @@ class SshRoot:
     def set_track_keep(self, repo: str, track: str, keep) -> None:
         self._call("set-track-keep", repo, track, "" if keep is None else str(keep))
 
-    def set_options(self, *, keep=None, auto_clean: bool | None = None, dated: bool | None = None) -> None:
+    def set_track_lag(self, repo: str, track: str, lag) -> None:
+        self._call("set-track-lag", repo, track, "" if lag is None else str(lag))
+
+    def lag_setting(self) -> str | None:
+        try:
+            return self._call("lag-setting")["lag"]
+        except ValueError as e:
+            if "unknown verb" in str(e):    # an older mmw there: it serves with no lag
+                return None
+            raise
+
+    def set_options(self, *, keep=None, auto_clean: bool | None = None, dated: bool | None = None,
+                    lag: str | None = None) -> None:
         body = {"keep": keep, "auto_clean": auto_clean, "dated": dated}
+        if lag is not None:
+            body["lag"] = lag
         self._call("set-options", input=json.dumps(body).encode())
 
     def point_rows(self, repo: str) -> dict[int, dict]:

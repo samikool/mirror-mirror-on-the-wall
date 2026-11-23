@@ -104,6 +104,7 @@ class TrackInfo:
     origin: str | None = None
     label: str | None = None
     keep: str | None = None   # this suite's own history setting (else the site's)
+    lag: str | None = None    # this suite's own lag: "Nd", "none" (else the site's)
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,8 @@ class SiteDB:
             self._conn.execute("ALTER TABLE tracks ADD COLUMN gone INTEGER NOT NULL DEFAULT 0")
         if "keep" not in {r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")}:
             self._conn.execute("ALTER TABLE tracks ADD COLUMN keep TEXT")
+        if "lag" not in {r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")}:
+            self._conn.execute("ALTER TABLE tracks ADD COLUMN lag TEXT")   # "Nd", "none", NULL: the site's
         # Completeness, once known: every file of the point is in the store
         # (NULL: not checked since its files or the store last changed).
         point_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(points)")}
@@ -320,7 +323,7 @@ class SiteDB:
 
     # ── tracks and points ────────────────────────────────────────────────────
 
-    _T = "id, repo, name, suite, codename, pinned, previous, gone, origin, label, keep"
+    _T = "id, repo, name, suite, codename, pinned, previous, gone, origin, label, keep, lag"
     _P = "id, track, ident, date, stamp, snap_label, held"
 
     def rename_repo(self, old: str, new: str, label: str, bases: list[str]) -> None:
@@ -402,12 +405,12 @@ class SiteDB:
         return tid
 
     def tracks(self, repo: str) -> list[TrackInfo]:
-        return [TrackInfo(*r[:7], bool(r[7]), r[8], r[9], r[10]) for r in self._conn.execute(
+        return [TrackInfo(*r[:7], bool(r[7]), r[8], r[9], r[10], r[11]) for r in self._conn.execute(
             f"SELECT {self._T} FROM tracks WHERE repo = ? ORDER BY name", (repo,)).fetchall()]
 
     def track(self, track_id: int) -> TrackInfo | None:
         row = self._conn.execute(f"SELECT {self._T} FROM tracks WHERE id = ?", (track_id,)).fetchone()
-        return TrackInfo(*row[:7], bool(row[7]), row[8], row[9], row[10]) if row else None
+        return TrackInfo(*row[:7], bool(row[7]), row[8], row[9], row[10], row[11]) if row else None
 
     def set_present(self, repo: str, names: set[str], *, network: str, commit: bool = True) -> None:
         """Record a network's selection, retiring tracks only after all contributors drop them."""
@@ -544,6 +547,10 @@ class SiteDB:
 
     def set_track_keep(self, track_id: int, keep: str | None) -> None:
         self._conn.execute("UPDATE tracks SET keep = ? WHERE id = ?", (keep, track_id))
+        self._conn.commit()
+
+    def set_track_lag(self, track_id: int, lag: str | None) -> None:
+        self._conn.execute("UPDATE tracks SET lag = ? WHERE id = ?", (lag, track_id))
         self._conn.commit()
 
     def set_pin(self, track_id: int, point_id: int | None) -> None:

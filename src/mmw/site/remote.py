@@ -317,6 +317,8 @@ _VERBS = {
     "clean": _simple(lambda r, a, i: {"freed": r.clean(_json_in(i).get("points"))}),
     "keep-costs": _simple(lambda r, a, i: {str(k): v for k, v in r.keep_costs().items()}),
     "set-track-keep": _simple(lambda r, a, i: r.set_track_keep(a[0], a[1], a[2] or None) or {"ok": True}),
+    "set-track-lag": _simple(lambda r, a, i: r.set_track_lag(a[0], a[1], a[2] or None) or {"ok": True}),
+    "lag-setting": _simple(lambda r, a, i: {"lag": r.lag_setting()}),
     "set-options": _simple(lambda r, a, i: r.set_options(**_json_in(i)) or {"ok": True}),
     "point-rows": _simple(lambda r, a, i: {str(k): v for k, v in r.point_rows(a[0]).items()}),
     "point-notes": _simple(lambda r, a, i: {str(k): v for k, v in r.point_notes(a[0]).items()}),

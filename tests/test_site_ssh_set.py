@@ -175,3 +175,17 @@ def test_retention_keep_and_notes_work_over_ssh(hosts, tmp_path):  # noqa: F811
     assert load_site(read_root(str(r2)).home).auto_clean
     assert isinstance(far.point_notes(st.repo), dict)
     assert "farhost" in (tmp_path / "ssh.log").read_text()
+
+
+def test_lag_over_ssh(hosts, tmp_path):  # noqa: F811
+    """An ssh root takes the site's lag and a suite's own, and says its lag."""
+    from mmw.site.home import load_site
+    from mmw.site.sshroot import SshRoot
+    cfg, net, md, r1, r2 = _split(hosts, tmp_path)
+    far = next(r for r in open_set().roots if isinstance(r, SshRoot))
+    (st,) = far.status()
+    assert far.lag_setting() is None
+    far.set_options(lag="7d")
+    assert far.lag_setting() == "7d" and load_site(read_root(str(r2)).home).lag == "7d"
+    with pytest.raises(ValueError, match="has no suite"):          # the far side's own answer, relayed
+        far.set_track_lag(st.repo, "bookworm", "none")

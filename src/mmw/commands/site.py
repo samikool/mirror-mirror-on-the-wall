@@ -388,23 +388,30 @@ def _keep_words(keep) -> str:
 
 
 def settings(root: Path | None = None, keep: str | None = None, keep_all: bool = False,
-             auto_clean: bool | None = None, dated: bool | None = None, costs: bool = False) -> int:
+             auto_clean: bool | None = None, dated: bool | None = None, costs: bool = False,
+             lag: str | None = None) -> int:
     from mmw.core.format import fmt_size
     from mmw.site import ops
+    from mmw.site.home import lag_words, parse_lag
     from mmw.site.lock import LockHeld
     try:
+        if lag is not None:
+            parse_lag(lag)                            # said before any root changes
         mset = _set(root)
         if keep_all:
             keep = "all"
         if keep is not None:
             ops.set_keep(mset, keep)
         for r in mset.roots:
+            if lag is not None:
+                r.set_options(lag=lag)
             if auto_clean is not None or dated is not None:
                 if hasattr(r, "set_options"):
                     r.set_options(auto_clean=auto_clean, dated=dated)
                 else:
                     print(f"root {r.info.name}: over ssh — run mmw site settings there for --auto-clean/--dated")
-            print(f"root {r.info.name} ({r.info.location}): keeps {_keep_words(r.keep_setting())} per suite")
+            print(f"root {r.info.name} ({r.info.location}): keeps {_keep_words(r.keep_setting())} per suite"
+                  f" · serves {lag_words(r.lag_setting())}")
             if hasattr(r, "site_settings"):
                 s = r.site_settings()
                 print(f"  {'cleans after each apply' if s.auto_clean else 'cleans only when asked: mmw site clean'}"
@@ -474,6 +481,21 @@ def keep_suite(repo: str, track: str, value: str, root: Path | None = None) -> i
     return 0
 
 
+def lag_suite(repo: str, track: str, value: str, root: Path | None = None) -> int:
+    """One suite's own lag: "Nd", "none" (no lag, whatever the site's), or
+    "default" (the site's)."""
+    from mmw.site.home import lag_words, parse_lag
+    from mmw.site.lock import LockHeld
+    try:
+        lag = None if value == "default" else (parse_lag(value) or "none")
+        r, key = _repo(root, repo)
+        r.set_track_lag(key, track, lag)
+    except (LockHeld, *_ERRORS) as e:
+        return _fail(e)
+    print(f"{repo} {track}: serves {'by the site setting' if lag is None else lag_words(None if lag == 'none' else lag)}")
+    return 0
+
+
 def status(root: Path | None = None) -> int:
     from mmw.site import ops
     try:
@@ -490,17 +512,26 @@ def status(root: Path | None = None) -> int:
     from mmw.site.versionref import day
     dated_by_root: dict[str, list] = {}
     expired_by_root: dict[str, list] = {}
+    from mmw.site.home import lag_words
+    from mmw.site.timeline import lag_of
+    lag_by_root: dict[str, str | None] = {}
     for name, s in rows:
         hist = roots_by[name].history(s.repo)
-        served, newer, pinned = [], False, False
+        if name not in lag_by_root:
+            lag_by_root[name] = roots_by[name].lag_setting()
+        served, newer, pinned, lags = [], False, False, set()
         for t, points in hist:
             pinned = pinned or t.pinned is not None
+            if lag_of(lag_by_root[name], t):
+                lags.add(lag_of(lag_by_root[name], t))
             for i, (p, _total, _frees, mark) in enumerate(points):
                 if mark == "serving":
                     served.append(f"{suite_of(t)} {day(p.date)}")
                     newer = newer or any(m in ("", "previous") for _p, _t, _f, m in points[:i])
         serving = ", ".join(served) or "nothing"
-        state = ("held" if s.held else "pinned" if pinned else "newer stored" if newer else "current")
+        state = ("held" if s.held else "pinned" if pinned
+                 else ", ".join(lag_words(x) for x in sorted(lags)) if lags
+                 else "newer stored" if newer else "current")
         where = f"{name:<10} " if several else ""
         layer = getattr(roots_by[name], "layer_details", None)        # a local root's only
         extra = layer(s.repo) if layer is not None else {}

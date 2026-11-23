@@ -40,6 +40,28 @@ def parse_keep(value) -> int | str:
     raise ValueError(f"keep {value!r}: a number of points, all, or an age like 90d")
 
 
+def parse_lag(value) -> str | None:
+    """A lag: an age ("7d") — each suite serves its newest point at least
+    that old — or none (None, "none", "0d")."""
+    import re
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("none", "0d", ""):
+        return None
+    if re.fullmatch(r"\d+d", text):
+        return text
+    raise ValueError(f"lag {value!r}: an age like 7d, or none")
+
+
+def lag_words(lag: str | None) -> str:
+    """A lag, said: "no lag", "7 days behind"."""
+    if not lag:
+        return "no lag"
+    n = int(lag[:-1])
+    return f"{n} day{'' if n == 1 else 's'} behind"
+
+
 class SiteSettings(BaseModel):
     roots: list[RootConfig]             # the first is the primary
     # History kept per suite: the newest N, "all", or an age ("90d"). Acts
@@ -51,6 +73,13 @@ class SiteSettings(BaseModel):
     @classmethod
     def _keep_reads(cls, value):
         return parse_keep(value)
+    # Serve each suite's newest point at least this old ("7d"); None: the newest.
+    lag: str | None = None
+
+    @field_validator("lag", mode="before")
+    @classmethod
+    def _lag_reads(cls, value):
+        return parse_lag(value)
     dated: bool = True                  # every held point at {base}/@YYYY-MM-DD/
     # The site's CA, by path only: mmw never copies the key, never keeps its passphrase.
     ca_cert: Path | None = None
@@ -121,6 +150,8 @@ def save_settings(home: Path, settings: SiteSettings) -> None:
         data["hosts_at"] = settings.hosts_at
     if settings.keep != "all":
         data["keep"] = settings.keep
+    if settings.lag:
+        data["lag"] = settings.lag
     if settings.auto_clean:
         data["auto_clean"] = True
     if not settings.dated:

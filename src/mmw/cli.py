@@ -1244,11 +1244,12 @@ def cmd_site_history(repo: str = _REPO, root: Path = _ROOT):
 
 @site_app.command("verify")
 def cmd_site_verify(root: Path = _ROOT,
+                    points: bool = typer.Option(False, "--points", help="Check every kept point's APT consistency"),
                     repair: bool = typer.Option(False, "--repair", help="Put wrong or missing files back"),
                     break_lock: bool = _BREAK_LOCK):
     """Hash every served file against what the mirror says it serves."""
     from mmw.commands.site import verify
-    raise typer.Exit(verify(root, repair, break_lock))
+    raise typer.Exit(verify(root, repair, break_lock, points=points))
 
 
 @site_app.command("manage")
@@ -1331,6 +1332,7 @@ def cmd_update(yes: bool = typer.Option(False, "--yes", help="Don't ask")):
 
 @app.command("verify")
 def cmd_verify(
+    points: bool = typer.Option(False, "--points", help="Check every kept point’s APT consistency"),
     network: str = typer.Option(None, "--network", "-n", help="Verify only this network's mirrors"),
     stat_blobs: bool = typer.Option(False, "--stat",
                                     help="Also stat every blob (slow: one stat per file)"),
@@ -1343,7 +1345,7 @@ def cmd_verify(
     """Check the pool holds every blob its mirrors' refs want (read-only unless --repair)."""
     from mmw.commands.verify import run
     raise typer.Exit(run(_cfg_dir(), network=network, stat_blobs=stat_blobs,
-                         hash_blobs=hash_blobs, repair=repair))
+                         hash_blobs=hash_blobs, repair=repair, points=points))
 
 
 @app.command("keep")

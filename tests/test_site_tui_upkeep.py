@@ -84,6 +84,8 @@ def test_verify_then_repair(mirror):
 
     async def check(app, pilot):
         await pilot.press("v")
+        await until(pilot, lambda: app.screen.query("#btn-verify-served"))
+        await pilot.click("#btn-verify-served")
         await until(pilot, lambda: type(app.screen).__name__ == "ActionRunPage"
                     and "problem(s)" in run_done(app))
         app.screen.query_one("#btn-run-close").press()

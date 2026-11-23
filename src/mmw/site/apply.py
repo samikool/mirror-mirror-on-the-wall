@@ -763,6 +763,7 @@ class PlanRow:
     to_date: str | None = None       # the newest date it brings (a stamp)
     serving_date: str | None = None  # the newest upstream date it serves (a stamp; else when it was stored)
     point_dates: tuple[tuple[str, str], ...] = ()  # arriving (suite/track, upstream date) pairs
+    problems: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -895,7 +896,7 @@ def plan_apply(target, src: str) -> ApplyPlan:
                            bool(st and st.serving and meta["digest"] and st.serving.digest == meta["digest"]),
                            root, meta.get("points"), meta.get("to_date") or header.created,
                            served_dates.get(repo) or (st.serving.stamp if st and st.serving else None),
-                           tuple(meta.get("point_dates", ()))))
+                           tuple(meta.get("point_dates", ())), tuple(meta.get("problems", ()))))
     network = sum(1 for _p, _c, r in rows if r is None)
     return ApplyPlan(header.created, header.network, out, network,
                      sum(v for k, v in sizes.items() if not k.startswith(".mmw/")))
@@ -1291,6 +1292,8 @@ def _repo_meta(header) -> dict[str, dict]:
     if header.format == 3:
         return {k: {"label": m["label"], "bases": m["bases"], "from": None, "to": len(m["points"]),
                     "digest": None, "points": len(m["points"]),
+                    "problems": [f"{p['track'].rsplit('/', 1)[-1]} {_day(p['date'])}: {problem}"
+                                 for p in m["points"] for problem in p.get("problems", [])],
                     "point_dates": sorted({((p.get("fields") or {}).get("Suite")
                                              or (p.get("fields") or {}).get("Codename")
                                              or p["track"].rsplit("/", 1)[-1] or "files", p["date"])
@@ -1314,6 +1317,9 @@ def _check_points(header) -> None:
                 and isinstance(meta.get("points"), list)):
             raise ApplyError(2, f"bundle is malformed: repository {repo!r} lacks a label, bases or points")
         for pt in meta["points"]:
+            if 'problems' in pt and not (isinstance(pt['problems'], list)
+                                         and all(isinstance(p, str) for p in pt['problems'])):
+                raise ApplyError(2, "bundle is malformed: a point's problems aren't a list of messages")
             if not (isinstance(pt, dict)
                     and all(isinstance(pt.get(k), str) for k in ("track", "ident", "date", "stamp"))
                     and isinstance(pt.get("fields") or {}, dict)):

@@ -122,9 +122,15 @@ class RepositoriesPage(Page):
         Binding("c", "keep_costs", "Keep costs", show=False),
         Binding("t", "past_point", "Add a past point…", show=False),
         Binding("h", "history", "History", show=False),
+        Binding("v", "check_points", "Check points", show=False),
         Binding("m", "merge_into", "Merge into…", show=False),
     ]
-    MORE = ("add_packages", "sources_file", "past_point", "history", "keep_costs", "merge_into")
+    MORE = ("add_packages", "sources_file", "past_point", "history", "keep_costs", "merge_into", "check_points")
+
+    def action_check_points(self):
+        from mmw.commands.verify import check_points
+        from mmw.tui.check_points import CheckPointsPage
+        self.app.push_screen(CheckPointsPage(lambda: check_points(self.app.cfg)))
 
     def action_history(self):
         from mmw.tui.history import HistoryPage

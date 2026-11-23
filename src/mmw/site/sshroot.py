@@ -235,6 +235,10 @@ class SshRoot:
     def forget_export(self, target: str, stamp: str) -> None:
         self._call("forget-export", input=json.dumps({"target": target, "stamp": stamp}).encode())
 
+    def verify_points(self):
+        from mmw.core.point_check import PointProblem
+        return [PointProblem(**p) for p in self._call("verify", "--points")]
+
     def verify(self, repair: bool = False):
         return self._call("verify", *(["--repair"] if repair else []))
 

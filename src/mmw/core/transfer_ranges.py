@@ -583,6 +583,14 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
         files = {p: files_for_settings(pool, p, settings) for ids in listing.values() for p in ids}
         for p in targets.get(f'network:{net.name}', []):
             files[p] = pool.point_files(p)
+        from mmw.core.point_check import check_suite
+        from mmw.core.points import _reader
+        from mmw.site.versionref import day
+        for pid, mine in files.items():
+            track = pool.track_of_point(pid)
+            if track.name and track.name != 'network':
+                for problem in check_suite(mine, track.name, _reader(pool, mine)):
+                    warnings.append(f'{track.repo}: {track.suite or track.name} {day(known[pid].date)}: {problem}')
         checksums = {cs for f in files.values() for cs in f.values()}
         checksums.update(extras.values())
         info = pool.blob_info(checksums)

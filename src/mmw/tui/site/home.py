@@ -998,6 +998,18 @@ class SiteHomePage(Page):
                 lambda freed: f"removed {o.path} — {fmt_size(freed)} freed"))
 
     def action_verify(self) -> None:
+        from mmw.tui.check_points import VerifyPickPage
+        self.app.push_screen(VerifyPickPage(), self._verify_picked)
+
+    def _verify_picked(self, choice):
+        if choice == 'points':
+            from mmw.commands.site import check_points
+            from mmw.tui.check_points import CheckPointsPage
+            self.app.push_screen(CheckPointsPage(lambda: check_points(self.app.mset)))
+        elif choice == 'served':
+            self._verify_served()
+
+    def _verify_served(self) -> None:
         """Every served file present and what the site says it serves."""
         if self.app.mset is None:
             return

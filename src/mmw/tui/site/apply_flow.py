@@ -116,7 +116,7 @@ class ApplyReviewPage(Page):
         self.query_one("#review-notes", Static).update(self._notes(picked))
 
     def _notes(self, picked: set[str]) -> Text:
-        notes = []
+        notes = [f"⚠ {r.label}: {problem}" for r in self._plan.rows for problem in r.problems]
         for r in self._changed:
             serving = _on(r.serving_date, "nothing")
             if r.held and r.repo not in picked:

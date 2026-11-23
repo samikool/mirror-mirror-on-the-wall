@@ -482,6 +482,29 @@ def _kept_by(pool: Pool, network: NetworkConfig, now: str) -> set[int]:
     return kept
 
 
+def superseded_at(points_newest_first, now=None) -> dict[int, str]:
+    """When each state stopped being current, independently for each track."""
+    from mmw.core.publisher.manifest import now_stamp
+    now = now or now_stamp()
+    newer, ends = {}, {}
+    for point in points_newest_first:
+        ends[point.id] = newer.get(point.track, now)
+        newer[point.track] = point.stamp
+    return ends
+
+
+def orphaned_histories(pool, cfg) -> list[tuple[str, int]]:
+    """Removed repositories whose entire held history the prune releases."""
+    configured = {s.identity for s in cfg.sources}
+    gone = set(retention_plan(pool, cfg.networks, cfg=cfg))
+    by_repo = {}
+    for point in pool.repository_points():
+        repo = pool.track_of_point(point.id).repo
+        by_repo.setdefault(repo, set()).add(point.id)
+    return sorted((repo, len(ids)) for repo, ids in by_repo.items()
+                  if repo not in configured and ids <= gone)
+
+
 def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None = None, cfg: Config | None = None) -> list[int]:
     """The held points no configured network keeps any more (none dropped)."""
     from mmw.core.publisher.manifest import now_stamp
@@ -536,9 +559,10 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
             keep = keep_for(rule, pool.track_of_point(ps[0].id))
             cutoff = _cutoff(now, int(keep[:-1])) if isinstance(keep, str) and keep != "all" else None
             current = set(current_repository_points(pool, repo))
+            ends = superseded_at(ps, now)
             for i, p in enumerate(ps):
                 if (i == 0 or p.id in current or keep == "all" or (isinstance(keep, int) and i < keep)
-                        or (cutoff is not None and p.stamp >= cutoff)):
+                        or (cutoff is not None and ends[p.id] >= cutoff)):
                     kept.add(p.id)
     return sorted(candidates - kept)
 

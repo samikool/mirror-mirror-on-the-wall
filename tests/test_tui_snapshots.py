@@ -243,6 +243,17 @@ async def _list_ready(pilot, list_id="#repo-list"):
     await until(pilot, lambda: len(pilot.app.screen.query(list_id)) == 1
                 and len(pilot.app.screen.query_one(list_id).children) >= 2)
     await pilot.app.workers.wait_for_complete()
+    if list_id == "#repo-list":
+        await _history_line(pilot)
+
+
+async def _history_line(pilot):
+    """The Sources pane's History line is read off the screen's thread: wait
+    for it, or the capture races "…" against the loaded line."""
+    page = pilot.app.screen
+    await until(pilot, lambda: page.highlighted() is None
+                or page._repo_of(page.highlighted()) in page._history_lines)
+    await pilot.pause()
 
 
 async def _then_settle(pilot, n=3):
@@ -262,6 +273,7 @@ async def _tick_first(pilot):
     lst.index = 1
     await pilot.press("space")
     await until(pilot, lambda: "✓" in str(lst.children[1].query_one("Label").render()))
+    await _history_line(pilot)
     await _then_settle(pilot)
 
 

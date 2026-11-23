@@ -166,8 +166,10 @@ def mark_text(mark: str, row: HistoryRow | None = None, *, short: bool = False) 
             'inconsistent': 'inconsistent — see mmw verify --points'}.get(kind, mark)
 
 
-def describe(cfg, rows):
-    """`mmw history`: per repository, `suite  date  size  marks`, newest first."""
+def describe(cfg, rows, *, network=None):
+    """`mmw history`: per repository a heading with its summary, then
+    `suite  date  size  marks`, newest first. With `network`, first what its
+    far side has."""
     from mmw.core.format import fmt_size
     from mmw.core.repos import repository_label
     from mmw.site.versionref import day_time
@@ -175,12 +177,16 @@ def describe(cfg, rows):
         return 'No repository points recorded yet.'
     width = max(len(r.suite) for r in rows)
     lines, last_repo, last_suite = [], None, None
+    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        summaries = {repo: repo_summary(cfg, repo, rows, pool) for repo in {r.repo for r in rows}}
+        if network is not None:
+            lines += [f'{network}: far side has {far_side_summary(network, rows, pool)}', '']
     for r in rows:
         if r.repo != last_repo:
-            if lines:
+            if last_repo is not None:
                 lines.append('')
             label = repository_label(r.repo, cfg)
-            lines.append(label if label == r.repo else f'{label} ({r.repo})')
+            lines.append((label if label == r.repo else f'{label} ({r.repo})') + f' — {summaries[r.repo]}')
             last_repo, last_suite = r.repo, None
         words = [mark_text(m, r) for m in r.marks]
         if not r.held:
@@ -192,6 +198,71 @@ def describe(cfg, rows):
         last_suite = r.suite
         lines.append(f'  {suite:<{width}}  {day_time(r.date)}  {size:>9}  {" · ".join(words)}'.rstrip())
     return '\n'.join(lines)
+
+
+# ── one-line summaries: the Sources and Networks panes, `mmw history`'s headings
+
+def _suites(pairs, limit=3) -> str:
+    """'jammy 20 Nov, jammy-updates 21 Nov' (+N more) from (suite, date) pairs."""
+    from mmw.site.versionref import short_day
+    out = [f'{suite} {short_day(date)}' for suite, date in pairs]
+    return ', '.join(out[:limit]) + (f' +{len(out) - limit} more' if len(out) > limit else '')
+
+
+def _newest(rows) -> list[tuple[str, str]]:
+    newest: dict[str, str] = {}
+    for r in rows:
+        if r.date > newest.get(r.suite, ''):
+            newest[r.suite] = r.date
+    return sorted(newest.items())
+
+
+def keep_text(cfg, repo) -> str:
+    """'keep all (default)', or the repository's own rule."""
+    source = next((s for s in cfg.sources if s.identity == repo), None)
+    own = getattr(source, 'keep_points', None) if source is not None else None
+    return f'keep {own}' if own is not None else f'keep {cfg.settings.keep_points} (default)'
+
+
+def repo_summary(cfg, repo, rows, pool) -> str:
+    """'jammy 20 Nov · 4 kept · 18.0 KB · keep all (default)': each suite's
+    newest kept point, how many are kept and what they take together."""
+    from mmw.core.format import fmt_size
+    kept = [r for r in rows if r.repo == repo and r.held]
+    if not kept:
+        return 'nothing recorded yet · ' + keep_text(cfg, repo)
+    return (f'{_suites(_newest(kept))} · {len(kept)} kept · '
+            f'{fmt_size(pool.points_footprint([r.point for r in kept]))} · {keep_text(cfg, repo)}')
+
+
+def far_side_summary(network, rows, pool) -> str:
+    """'jammy 01 Nov · newer here: 20 Nov (1 point, 14.0 KB)': each suite's
+    newest point sent to `network`, then what is waiting to be sent and the
+    bytes it was never sent. 'nothing yet' before any transfer."""
+    from mmw.core.format import fmt_size
+    from mmw.site.versionref import short_day
+    sent = [r for r in rows if f'sent:{network}' in r.marks]
+    waiting = [r for r in rows if f'unsent:{network}' in r.marks and r.held]
+    text = _suites(_newest(sent)) if sent else 'nothing yet'
+    if waiting:
+        size = pool.points_footprint([r.point for r in waiting], unsent_to=network)
+        text += (f' · newer here: {short_day(max(r.date for r in waiting))} '
+                 f'({len(waiting)} point{"s" if len(waiting) != 1 else ""}, {fmt_size(size)})')
+    return text
+
+
+def repo_line(cfg, repo) -> str:
+    """The Sources pane's History line for one repository."""
+    rows = prepare(cfg, repos=[repo])
+    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        return repo_summary(cfg, repo, rows, pool)
+
+
+def far_side_line(cfg, network) -> str:
+    """The Networks pane's Far side has line for one network."""
+    rows = prepare(cfg, network=network)
+    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        return far_side_summary(network, rows, pool)
 
 
 def as_json(rows) -> str:
@@ -219,7 +290,7 @@ def render(cfg, **selection):
     rows = prepare(cfg, **selection)
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
         notes = pool.legacy_publish_notes()
-    return '\n'.join([describe(cfg, rows), *notes])
+    return '\n'.join([describe(cfg, rows, network=selection.get('network')), *notes])
 
 
 # ── deleting points by hand ──────────────────────────────────────────────────

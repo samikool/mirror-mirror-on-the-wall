@@ -68,7 +68,7 @@ def test_a_suites_own_keep(mirror):
         await until(pilot, lambda: t.row_count >= 2)
         t.move_cursor(row=next(i for i, (tr, p, *_x) in enumerate(page._history) if p is not None and tr.name))
         await pilot.press("e")
-        await until(pilot, lambda: type(app.screen).__name__ == "SuiteKeepPage")
+        await until(pilot, lambda: type(app.screen).__name__ == "SuiteSettingsPage")
         app.screen.query_one("#suite-keep").value = "all"
         app.screen.query_one("#btn-suite-save").press()
         await until(pilot, lambda: type(app.screen).__name__ == "SiteHomePage" and "every point" in _status(app))

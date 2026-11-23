@@ -566,6 +566,24 @@ name is on one point: naming another the same moves it. Names given on the
 connected side (`mmw history label`) arrive with the next bundle and win over
 one given here, a cleared name included.
 
+### Serving with a lag
+
+```bash
+mmw site settings --lag 7d                    # every suite serves its newest point at least a week old
+mmw site lag debian --track bookworm none     # this suite serves its newest, whatever the mirror's lag
+mmw site lag debian --track bookworm default  # back to the mirror's
+mmw site settings --lag none
+```
+
+A test network takes each new point as it arrives; production can run a
+week behind it, from the same bundles. With a lag, each suite serves its
+newest complete point dated at least that long ago. When none is old enough
+yet, the suite keeps what it serves — or, serving nothing yet, serves its
+oldest point. Time alone moves it on: the next apply, or the next status
+(`mmw site status`, or the TUI's refresh), serves the newest point old
+enough by then. A pinned suite and a held repository stay where they are;
+`mmw site status` says how far behind a lagging repository serves.
+
 ## Dated URLs
 
 Every point a suite keeps is also served, read-only, at a dated path beside
@@ -628,9 +646,9 @@ another root, **b** serves the whole mirror as of a bundle, **c** manages
 certificates, **t** tidies, **A** adopts trees mmw didn't make, **C**
 cleans up (after saying what each point frees), **j** combines slices from
 different days of a suite, **s** opens the settings (what the mirror keeps,
-Clean up after each apply, dated URLs — and what each keep would free),
-**e** sets the selected suite's own keep, **v** verifies every served file
-(and offers to repair what is wrong), **g** checks the signatures of points
+Clean up after each apply, dated URLs, the lag — and what each keep would
+free), **e** opens the selected suite's own settings (its keep and lag),
+**v** verifies every served file (and offers to repair what is wrong), **g** checks the signatures of points
 adopted without a key, **o** lists the trees adopted from (and removes one),
 **ctrl+r** refreshes. The buttons along the bottom do the ones used most.
 

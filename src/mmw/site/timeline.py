@@ -150,11 +150,52 @@ def import_points(db, store, repo: str, label: str, bases: list[str], points, si
     return out
 
 
-def choose(db, store, repo: str) -> tuple[dict[int, int], list[str]]:
-    """{track id: point id}: the pinned point, else the newest complete one.
-    A track with no complete point is left out."""
+def _now() -> str:
+    from mmw.core.publisher.manifest import now_stamp
+    return now_stamp()
+
+
+def site_lag(db) -> str | None:
+    """The site's lag setting (None: none, or no settings beside this database)."""
+    from mmw.site.home import load_site
+    try:
+        return load_site(db.home).lag
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def lag_of(site: str | None, track) -> str | None:
+    """A suite's lag: its own ("none" clears the site's), else the site's."""
+    own = getattr(track, "lag", None)
+    if own:
+        return None if own == "none" else own
+    return site
+
+
+def _cutoff(lag: str, now: str) -> str:
+    from datetime import datetime, timedelta, timezone
+    at = datetime.strptime(now, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    return (at - timedelta(days=int(lag[:-1]))).strftime("%Y%m%dT%H%M%SZ")
+
+
+def lagging(db) -> bool:
+    """Whether any suite here serves with a lag — so time alone can move it."""
+    if site_lag(db):
+        return True
+    return any(t.lag and t.lag != "none" for st in db.repo_states() for t in db.tracks(st.repo))
+
+
+def choose(db, store, repo: str, *, lag: str | None = None,
+           now: str | None = None) -> tuple[dict[int, int], list[str]]:
+    """{track id: point id}: the pinned point, else the newest complete one —
+    with a lag, the newest complete one at least that old; none old enough
+    keeps what the suite serves, or (serving nothing) takes its oldest.
+    A track with no complete point is left out. `lag`: the site's (read
+    from its settings when not given; "none" for no lag)."""
     chosen: dict[int, int] = {}
     warnings: list[str] = []
+    site = site_lag(db) if lag is None else (None if lag == "none" else lag)
+    served: dict[int, int] | None = None
     for t in db.tracks(repo):
         if t.gone and t.pinned is None:
             continue                         # all contributing networks dropped this track
@@ -163,13 +204,27 @@ def choose(db, store, repo: str) -> tuple[dict[int, int], list[str]]:
             if pinned is not None and pinned.held and not is_complete(db, store, pinned.id, cached=False):
                 chosen[t.id] = pinned.id
                 continue
-        # Newest first: the first complete one is it — no need to look further.
-        newest = next((p for p in db.points(t.id) if not is_complete(db, store, p.id, cached=False)), None)
-        if newest is not None:
+        behind = lag_of(site, t)
+        if behind is None or t.pinned is not None:
+            # Newest first: the first complete one is it — no need to look further.
+            pick = next((p for p in db.points(t.id) if not is_complete(db, store, p.id, cached=False)), None)
+        else:
+            cutoff = _cutoff(behind, now or _now())
+            complete = [p for p in db.points(t.id) if not is_complete(db, store, p.id, cached=False)]
+            pick = next((p for p in complete if p.date <= cutoff), None)
+            if pick is None and complete:
+                if served is None:
+                    state = db.repo_state(repo)
+                    served = {} if state is None or state.serving is None else {
+                        pt.track: pt.id for pt in map(db.point, db.state_points(state.serving.id)) if pt}
+                here = served.get(t.id)
+                # Nothing old enough: keep what the suite serves, else its oldest.
+                pick = next((p for p in complete if p.id == here), None) or complete[-1]
+        if pick is not None:
             if t.pinned is not None:
                 warnings.append(f"{_suite({'Suite': t.suite or ''}, t.name) or 'files'}: the pinned point is not "
-                                f"complete here — serving {newest.date[:8]} instead")
-            chosen[t.id] = newest.id
+                                f"complete here — serving {pick.date[:8]} instead")
+            chosen[t.id] = pick.id
     return chosen, warnings
 
 

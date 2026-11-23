@@ -180,9 +180,14 @@ class LocalRoot:
         from mmw.site.home import load_site
         return load_site(self.home)
 
-    def set_options(self, *, keep=None, auto_clean: bool | None = None, dated: bool | None = None) -> None:
+    def set_options(self, *, keep=None, auto_clean: bool | None = None, dated: bool | None = None,
+                    lag: str | None = None) -> None:
         from mmw.site import ops
-        ops.keep_here(self.home, keep, auto_clean, dated)
+        ops.keep_here(self.home, keep, auto_clean, dated, lag)
+
+    def lag_setting(self) -> str | None:
+        from mmw.site.home import load_site
+        return load_site(self.home).lag
 
     def clean_plan(self):
         from mmw.site import ops
@@ -203,6 +208,10 @@ class LocalRoot:
     def set_track_keep(self, repo: str, track: str, keep) -> None:
         from mmw.site import ops
         ops.set_track_keep(self.home, repo, track, keep)
+
+    def set_track_lag(self, repo: str, track: str, lag) -> None:
+        from mmw.site import ops
+        ops.set_track_lag(self.home, repo, track, lag)
 
     def dated_expired(self) -> list[tuple[str, str]]:
         from mmw.site.dated import expired

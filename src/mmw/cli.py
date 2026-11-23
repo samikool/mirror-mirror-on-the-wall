@@ -1187,11 +1187,13 @@ def cmd_site_settings(root: Path = _ROOT,
                       dated: bool = typer.Option(None, "--dated/--no-dated",
                                                  help="Every held point at HOST/PATH/@YYYY-MM-DD/"),
                       costs: bool = typer.Option(False, "--costs", help="Also say what each setting would "
-                                                 "free (reads every point's file list)")):
-    """Show or change what the mirror keeps (in every root here); --costs
-    says what each choice would free."""
+                                                 "free (reads every point's file list)"),
+                      lag: str = typer.Option(None, "--lag", help="Serve each suite's newest point at least "
+                                                                  "this old (7d), or none")):
+    """Show or change what the mirror keeps and how far behind it serves (in
+    every root here); --costs says what each choice would free."""
     from mmw.commands.site import settings
-    raise typer.Exit(settings(root, keep, keep_all, auto_clean, dated, costs))
+    raise typer.Exit(settings(root, keep, keep_all, auto_clean, dated, costs, lag))
 
 
 @site_app.command("clean")
@@ -1238,6 +1240,16 @@ def cmd_site_keep(repo: str = _REPO,
     """One suite's own history setting."""
     from mmw.commands.site import keep_suite
     raise typer.Exit(keep_suite(repo, track, value, root))
+
+
+@site_app.command("lag")
+def cmd_site_lag(repo: str = _REPO,
+                 track: str = typer.Option(..., "--track", help="The suite"),
+                 value: str = typer.Argument(..., help="An age like 7d, none, or default (the site's)"),
+                 root: Path = _ROOT):
+    """One suite's own lag: it serves its newest point at least that old."""
+    from mmw.commands.site import lag_suite
+    raise typer.Exit(lag_suite(repo, track, value, root))
 
 
 @site_app.command("status")

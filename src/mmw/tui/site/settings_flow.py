@@ -1,6 +1,7 @@
 """The far side's settings and upkeep in the TUI, as `mmw site settings`,
 `keep`, `check-signatures` and `adopted` are on the command line: what the
-mirror keeps (and what each choice would free), a suite's own keep, checking
+mirror keeps (and what each choice would free) and how far behind it serves,
+a suite's own keep and lag, checking
 adopted points' signatures, and the trees adopted from."""
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
 
-from mmw.site.home import keep_words  # noqa: E402 — one way to say a keep, here and in the CLI
+from mmw.site.home import keep_words, lag_words  # noqa: E402 — one way to say them, here and in the CLI
 
 
 def parse_keep_text(text: str):
@@ -32,19 +33,23 @@ class SiteSettingsPage(Page):
     TITLE = "Settings"
     HELP = ("History per suite: a number of points, all, or an age like 90d. Clean up (C) applies\n"
             "it; with Clean after each apply on, every apply does. What each would free reads every\n"
-            "kept point's files — it can take a moment on a big mirror.")
+            "kept point's files — it can take a moment on a big mirror. Lag: each suite serves its\n"
+            "newest point at least that old — a test network none, production 7d.")
 
-    def __init__(self, roots, keep, auto_clean: bool | None, dated: bool | None):
+    def __init__(self, roots, keep, auto_clean: bool | None, dated: bool | None, lag: str | None = None):
         """`auto_clean`/`dated` None: not known here (only roots over ssh) —
         those stay as each root has them."""
         super().__init__()
         self._roots = roots
         self.subtitle = ", ".join(r.info.name for r in roots)
-        self._keep, self._auto, self._dated = keep, auto_clean, dated
+        self._keep, self._auto, self._dated, self._lag = keep, auto_clean, dated, lag
 
     def compose_body(self) -> ComposeResult:
         fields = [TextField("Keep", str(self._keep), id="set-keep",
-                            hint=f"now: {keep_words(self._keep)} per suite — N, all, or an age like 90d")]
+                            hint=f"now: {keep_words(self._keep)} per suite — N, all, or an age like 90d"),
+                  TextField("Lag", self._lag or "none", id="set-lag",
+                            hint=f"now: {lag_words(self._lag)} — each suite serves its newest point at "
+                                 "least this old (7d), or none")]
         if self._auto is not None:
             fields += [ToggleField("Clean after each apply", self._auto, id="set-auto",
                                    hint="Off: nothing is deleted until you Clean up (C)"),
@@ -88,9 +93,11 @@ class SiteSettingsPage(Page):
 
     @on(Button.Pressed, "#btn-set-save")
     def _save(self) -> None:
+        from mmw.site.home import parse_lag
         values = self.query_one(Form).values()
         try:
             keep = parse_keep_text(values["set-keep"])
+            lag = parse_lag(values["set-lag"])
         except ValueError as e:
             self.set_status(str(e), "error")
             return
@@ -98,6 +105,8 @@ class SiteSettingsPage(Page):
         changed = {}
         if keep != self._keep:
             changed["keep"] = keep
+        if lag != self._lag:
+            changed["lag"] = lag or "none"
         if self._auto is not None and bool(values["set-auto"]) != self._auto:
             changed["auto_clean"] = bool(values["set-auto"])
         if self._dated is not None and bool(values["set-dated"]) != self._dated:
@@ -105,20 +114,27 @@ class SiteSettingsPage(Page):
         self.dismiss(changed)
 
 
-class SuiteKeepPage(Page):
-    """One suite's own history setting; empty: the mirror's."""
+class SuiteSettingsPage(Page):
+    """One suite's own settings — what it keeps and how far behind it
+    serves; each left empty: the mirror's."""
 
-    TITLE = "Keep for this suite"
+    TITLE = "Suite settings"
 
-    def __init__(self, label: str, suite: str, keep, site_keep):
+    def __init__(self, label: str, suite: str, keep, site_keep, lag: str | None = None,
+                 site_lag: str | None = None):
         super().__init__()
         self.subtitle = f"{label} · {suite}"
         self._keep, self._site = keep, site_keep
+        self._lag, self._site_lag = lag, site_lag
 
     def compose_body(self) -> ComposeResult:
         yield Form(TextField("Keep", "" if self._keep is None else str(self._keep), id="suite-keep",
                              placeholder=f"the mirror's: {keep_words(self._site)}",
-                             hint="N, all, or an age like 90d — empty: what the mirror keeps"))
+                             hint="N, all, or an age like 90d — empty: what the mirror keeps"),
+                   TextField("Lag", self._lag or "", id="suite-lag",
+                             placeholder=f"the mirror's: {lag_words(self._site_lag)}",
+                             hint="An age like 7d (serve the newest point at least that old), "
+                                  "none — empty: the mirror's"))
 
     def compose_actions(self) -> ComposeResult:
         yield Button("Cancel", id="btn-suite-cancel", compact=True)
@@ -130,14 +146,22 @@ class SuiteKeepPage(Page):
 
     @on(Button.Pressed, "#btn-suite-save")
     def _save(self) -> None:
-        text = self.query_one(Form).values()["suite-keep"].strip()
-        if not text:
-            self.dismiss(("site",))
-            return
+        """Dismisses what changed: {"keep": value | "site", "lag": "Nd" | "none" | "site"}."""
+        from mmw.site.home import parse_lag
+        values = self.query_one(Form).values()
+        keep_text, lag_text = values["suite-keep"].strip(), values["suite-lag"].strip().lower()
         try:
-            self.dismiss((parse_keep_text(text),))
+            keep = "site" if not keep_text else parse_keep_text(keep_text)
+            lag = "site" if not lag_text else (parse_lag(lag_text) or "none")
         except ValueError as e:
             self.set_status(str(e), "error")
+            return
+        changed = {}
+        if keep != ("site" if self._keep is None else parse_keep_text(str(self._keep))):
+            changed["keep"] = keep
+        if lag != (self._lag or "site"):
+            changed["lag"] = lag
+        self.dismiss(changed)
 
 
 class CheckSignaturesPage(Page):

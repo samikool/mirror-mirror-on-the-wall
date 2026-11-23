@@ -71,7 +71,7 @@ class SiteHomePage(Page):
             "k: local .debs this site adds to the repository, and how it is then signed;\n"
             "K: this site's signing keys (carried ones from the connected side included);\n"
             "u: bring in the mmw instances this site serves locally (mmw site local);\n"
-            "s: what the mirror keeps (and what each choice frees); e: a suite's own keep;\n"
+            "s: what the mirror keeps (and what each choice frees) and its lag; e: a suite's own keep and lag;\n"
             "g: check adopted points' signatures; o: trees adopted from; v: verify (and repair).\n"
             "w (Changes): the packages a point changed since the one before it (mmw site diff).\n"
             "l (Label…): name a point — Clean up keeps it, and serve can name it (mmw site label);\n"
@@ -99,7 +99,7 @@ class SiteHomePage(Page):
         Binding("j", "combine", "Combine", show=False),
         Binding("M", "merge_into", "Merge into…", show=False),
         Binding("s", "settings", "Settings", show=False),
-        Binding("e", "suite_keep", "Suite keep", show=False),
+        Binding("e", "suite_settings", "Suite settings", show=False),
         Binding("g", "check_signatures", "Check signatures", show=False),
         Binding("o", "adopted", "Adopted trees", show=False),
         Binding("v", "verify", "Verify", show=False),
@@ -109,7 +109,7 @@ class SiteHomePage(Page):
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
     MORE = ("certs", "adopt", "adopted", "clean_up", "combine", "merge_into", "packages", "signing_keys", "local_update",
-            "settings", "suite_keep", "label", "check_signatures", "verify", "find", "refresh")
+            "settings", "suite_settings", "label", "check_signatures", "verify", "find", "refresh")
 
     def __init__(self):
         super().__init__()
@@ -1099,7 +1099,7 @@ class SiteHomePage(Page):
     @work(thread=True, exclusive=True, group="site-settings", exit_on_error=False)
     def _settings_read(self, roots) -> None:
         try:
-            keep = roots[0].keep_setting()
+            keep, lag = roots[0].keep_setting(), roots[0].lag_setting()
             local = next((r for r in roots if hasattr(r, "site_settings")), None)
             s = local.site_settings() if local is not None else None
         except Exception as e:  # noqa: BLE001 — said on the page
@@ -1107,7 +1107,7 @@ class SiteHomePage(Page):
             return
         auto, dated = (s.auto_clean, s.dated) if s is not None else (None, None)   # ssh only: not known here
         from mmw.tui.site.settings_flow import SiteSettingsPage
-        self.app.call_from_thread(self.app.push_screen, SiteSettingsPage(roots, keep, auto, dated),
+        self.app.call_from_thread(self.app.push_screen, SiteSettingsPage(roots, keep, auto, dated, lag),
                                   lambda c: self._settings_save(roots, c) if c else
                                   (c == {} and self.set_status("Nothing changed.")))
 
@@ -1115,51 +1115,68 @@ class SiteHomePage(Page):
     def _settings_save(self, roots, c: dict) -> None:
         try:
             for r in roots:
-                r.set_options(keep=c.get("keep"), auto_clean=c.get("auto_clean"), dated=c.get("dated"))
+                r.set_options(keep=c.get("keep"), auto_clean=c.get("auto_clean"), dated=c.get("dated"),
+                              lag=c.get("lag"))
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._load, str(e), "error")
             return
-        from mmw.site.home import keep_words
+        from mmw.site.home import keep_words, lag_words, parse_lag
         said = ([f"keeps {keep_words(c['keep'])} per suite"] if "keep" in c else []) + \
+               ([f"serves {lag_words(parse_lag(c['lag']))}"] if "lag" in c else []) + \
                ([f"cleans {'after each apply' if c['auto_clean'] else 'only when asked'}"]
                 if "auto_clean" in c else []) + \
                ([f"dated URLs {'on' if c['dated'] else 'off'}"] if "dated" in c else [])
         self.app.call_from_thread(self._load, " · ".join(said))
 
-    def action_suite_keep(self) -> None:
-        """The selected suite's own history setting."""
+    def action_suite_settings(self) -> None:
+        """The selected suite's own settings: what it keeps, how far behind it serves."""
         repo, picked = self.selected_repo(), self.selected_point()
         if repo is None or picked is None:
             self.set_status("Pick a point of the suite in the history first.", "error")
             return
         track = picked[0]
         if not track.name:
-            self.set_status("Those are files no Release names — they have no suite to keep by.", "error")
+            self.set_status("Those are files no Release names — they have no suite settings.", "error")
             return
-        self._suite_keep_read(repo, track)
+        self._suite_settings_read(repo, track)
 
-    @work(thread=True, exclusive=True, group="site-suite-keep", exit_on_error=False)
-    def _suite_keep_read(self, repo: str, track) -> None:
-        """The mirror's keep, from the root (over ssh, a round trip: never on the screen's thread)."""
-        from mmw.site.home import keep_words
-        from mmw.tui.site.settings_flow import SuiteKeepPage
+    @work(thread=True, exclusive=True, group="site-suite-settings", exit_on_error=False)
+    def _suite_settings_read(self, repo: str, track) -> None:
+        """The mirror's keep and lag, from the root (over ssh, round trips: never on the screen's thread)."""
+        from mmw.site.home import keep_words, lag_words
+        from mmw.tui.site.settings_flow import SuiteSettingsPage
         root = self.app.root_of(repo)
         try:
-            site_keep = root.keep_setting()
+            site_keep, site_lag = root.keep_setting(), root.lag_setting()
         except Exception as e:  # noqa: BLE001 — an ssh host out of reach: said
             self.app.call_from_thread(self.set_status, str(e), "error")
             return
         label = next(s.label for s in self._states if s.repo == repo)
         suite = ops.suite_of(track)
 
-        def chosen(c) -> None:
-            if not c:
-                return
-            keep = None if c[0] == "site" else c[0]
-            said = "what the mirror keeps" if keep is None else keep_words(keep)
+        def save(c: dict):
             # By the track's own name: two suites never mistaken for each other.
-            self._act(f"{label} {suite} keeps {said}", root.set_track_keep, repo, track.name, keep)
-        self.app.call_from_thread(self.app.push_screen, SuiteKeepPage(label, suite, track.keep, site_keep), chosen)
+            if "keep" in c:
+                root.set_track_keep(repo, track.name, None if c["keep"] == "site" else c["keep"])
+            if "lag" in c:
+                root.set_track_lag(repo, track.name, None if c["lag"] == "site" else c["lag"])
+
+        def chosen(c) -> None:
+            if c is None:
+                return
+            if not c:
+                self.set_status("Nothing changed.")
+                return
+            said = []
+            if "keep" in c:
+                said.append(f"keeps {'what the mirror keeps' if c['keep'] == 'site' else keep_words(c['keep'])}")
+            if "lag" in c:
+                said.append("serves as the mirror does" if c["lag"] == "site"
+                            else f"serves {lag_words(None if c['lag'] == 'none' else c['lag'])}")
+            self._act(f"{label} {suite} {' and '.join(said)}", save, c)
+        self.app.call_from_thread(self.app.push_screen,
+                                  SuiteSettingsPage(label, suite, track.keep, site_keep,
+                                                    getattr(track, "lag", None), site_lag), chosen)
 
     def action_check_signatures(self) -> None:
         roots = [r for r in (self.app.mset.roots if self.app.mset else []) if r.is_local]

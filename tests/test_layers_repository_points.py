@@ -8,7 +8,7 @@ from debs import make_deb
 
 from mmw.core import config, points
 from mmw.core.layers import layer_dir
-from mmw.core.pool import KIND_PKG, Pool
+from mmw.core.pool import KIND_META, KIND_PKG, Pool
 from mmw.core.publisher import publish_network
 from mmw.core.publisher.bundle import bundle_network
 from mmw.core.transfer_ranges import preview_transfer
@@ -129,22 +129,29 @@ def test_mixed_range_sends_a_package_reintroduced_after_the_start(mixed_network,
     units = plain.to_mirrors()
     unit = next(unit for unit in units if unit.arch == 'amd64')
     checksum = hashlib.sha256(PLAIN_PACKAGE).hexdigest()
+    index_path = 'dists/stable/main/binary-amd64/Packages'
     with Pool(md) as pool:
-        entries = [(cs, path, kind) for path, _, _, kind, cs in pool.mirror_files([unit.name])
-                   if path != 'pool/amd64.deb']
-        pool.reconcile_refs(unit.name, entries, unit.source)
+        entries = [(cs, path, kind) for path, _, _, kind, cs in pool.mirror_files([unit.name])]
+        # 03 Nov drops the package from the pool and from the index that listed it.
+        index = b'Package: pool/shared.deb\nFilename: pool/shared.deb\n\n'
+        index_checksum = hashlib.sha256(index).hexdigest()
+        pool.add(index, index_checksum, 'sha256', 'Packages', len(index))
+        without = [(cs, path, kind) for cs, path, kind in entries if path not in ('pool/amd64.deb', index_path)]
+        pool.reconcile_refs(unit.name, [*without, (index_checksum, index_path, KIND_META)], unit.source)
         for mirror in units:
             change_release(pool, mirror, b'Suite: stable\nDate: Tue, 03 Nov 2026 00:00:00 UTC\n')
     with monkeypatch.context() as patches:
         patches.setattr('mmw.core.publisher.manifest.now_stamp', lambda: '20261103T120000Z')
         points.record_points_after_sync(cfg, md, {plain.identity})
     with Pool(md) as pool:
-        pool.reconcile_refs(unit.name, [*entries, (checksum, 'pool/amd64.deb', KIND_PKG)], unit.source)
+        pool.reconcile_refs(unit.name, entries, unit.source)
         for mirror in units:
             change_release(pool, mirror, b'Suite: stable\nDate: Wed, 04 Nov 2026 00:00:00 UTC\n')
     with monkeypatch.context() as patches:
         patches.setattr('mmw.core.publisher.manifest.now_stamp', lambda: '20261104T120000Z')
         points.record_points_after_sync(cfg, md, {plain.identity})
+    with Pool(md) as pool:
+        assert len(pool.repository_points(plain.identity)) == 4
 
     preview = preview_transfer(net, md, cfg=cfg, since='2026-11-02')
     row = next(row for row in preview.rows if row.repo == plain.identity)

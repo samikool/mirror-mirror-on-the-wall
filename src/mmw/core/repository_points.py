@@ -268,18 +268,40 @@ def slice_of(view) -> dict[str, str]:
     return dict(cache[key])
 
 
-def network_slice(pool, network, point_id: int, settings) -> dict[str, str]:
+def network_slice(pool, network, point_id: int, settings, *, when=None) -> dict[str, str]:
     """What `network` (a name, a NetworkConfig, or None) serves of a point,
     under the selection recorded in `settings`. A provider-scoped point:
-    its provider's publish over the point, as of the point's day (D4); any
-    other: `files_for_settings`. Every reader gets this one slice."""
+    its provider's publish over the point, as of the point's day (D4); a
+    point of a repository the recorded network layers: its newest layer view
+    stamped at or before `when` (None: now), else the plain slice; a scoped
+    point: its files, to its own networks. Every reader gets this one slice."""
     point = pool.points_of([point_id]).get(point_id)
     if point is None or not point.held:
         return {}
+    data = json.loads(settings or '{}')
+    recorded = data.get('network') or {}
+    name = getattr(network, 'name', network) or recorded.get('name') or None
+    if point.legacy:
+        return scoped_files(pool, point_id, name)
     repo = pool.track_of_point(point_id).repo
-    if point.legacy or not provider_scoped(repo):
-        return files_for_settings(pool, point_id, settings)
-    return slice_of(provider_view(pool, repo, [point_id], settings=settings, network=network))
+    if provider_scoped(repo):
+        return slice_of(provider_view(pool, repo, [point_id], settings=settings, network=network))
+    from mmw.core.config import MirrorConfig
+    units = [MirrorConfig.model_validate(u) for u in data.get('mirrors', [])]
+    plain = selected_point_files(pool, point_id, units, name)
+    if plain and name and _layered(recorded, repo):
+        from mmw.core.layers import view_for
+        view = view_for(pool, name, point_id, when, plain=plain)
+        if view is not None:
+            return view
+    return plain
+
+
+def _layered(recorded_network: dict, repo: str) -> bool:
+    """Whether a recorded network (its settings' `network`) layers `repo`."""
+    from mmw.core.config import normalize_url
+    return any(normalize_url(layer.get('source') or '') == repo
+               for layer in recorded_network.get('layers') or [] if isinstance(layer, dict))
 
 
 def scoped_files(pool, point_id: int, network: str | None) -> dict[str, str]:
@@ -502,14 +524,22 @@ def set_current_repository_points(pool, repo, recorded, *, replace=True):
         pool._conn.commit()
 
 
-def selected_point_files(pool, pid, units, network=None):
+def selected_point_files(pool, pid, units, network=None, *, when=None):
     """A point outside the selected suites contributes no track-wide files.
     `network` (a name or a NetworkConfig): whose slice — a scoped point is its
-    networks' only; a provider-scoped point is narrowed by its retention."""
+    networks' only; a provider-scoped point is narrowed by its retention; a
+    NetworkConfig that layers the repository gets its newest view stamped at
+    or before `when` (a name: the plain slice, what a view is built over)."""
     track = pool.track_of_point(pid)
     point = pool.points_of([pid]).get(pid)
     if point is not None and not point.legacy and provider_scoped(track.repo):
         return slice_of(provider_view(pool, track.repo, [pid], units=units, network=network))
+    if point is not None and not point.legacy and hasattr(network, 'layer_for') \
+            and network.layer_for(track.repo) is not None:
+        plain = selected_point_files(pool, pid, units, network.name)
+        from mmw.core.layers import view_for
+        view = view_for(pool, network.name, pid, when, plain=plain) if plain else None
+        return view if view is not None else plain
     network = getattr(network, 'name', network)
     mine = [u for u in units if u.source == track.repo]
     if not mine:
@@ -521,20 +551,10 @@ def selected_point_files(pool, pid, units, network=None):
     return slice_files(pool, pid, [(u.source, coordinates(u)) for u in mine], network=network)
 
 
-def files_for_settings(pool, point_id, settings):
-    """Use the selection saved with a recording, never today's config."""
-    point = pool.points_of([point_id]).get(point_id)
-    if point is None:
-        return {}
-    data = json.loads(settings or '{}')
-    network = (data.get('network') or {}).get('name') or None    # older settings name none
-    if point.legacy:
-        return scoped_files(pool, point_id, network)
-    if provider_scoped(pool.track_of_point(point_id).repo):
-        return network_slice(pool, network, point_id, settings)
-    from mmw.core.config import MirrorConfig
-    units = [MirrorConfig.model_validate(u) for u in data.get('mirrors', [])]
-    return selected_point_files(pool, point_id, units, network)
+def files_for_settings(pool, point_id, settings, *, when=None):
+    """Use the selection saved with a recording, never today's config:
+    `network_slice` for the network it names (`when`: the moment read)."""
+    return network_slice(pool, None, point_id, settings, when=when)
 
 
 def current_ref_projection(pool, units, shared):

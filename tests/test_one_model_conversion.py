@@ -15,7 +15,7 @@ from mmw.core import config, legacy_points, points
 from mmw.core.layers import layer_dir
 from mmw.core.pool import Pool
 from mmw.core.publisher.bundle import bundle_network
-from mmw.core.repository_points import coordinates, files_for_settings
+from mmw.core.repository_points import coordinates, current_repository_points, files_for_settings
 from mmw.core.snapshots import take_snapshot
 from mmw.core.transfer_ranges import preview_transfer
 from test_pypi_publish import _src, _sync
@@ -34,7 +34,8 @@ def _forget_points(md):
                       'points_converted', 'recordings_seeded', 'snapshot_points', 'sent_migrated',
                       'network_slices', 'network_slice_dates', 'sent_slices'):
             conn.execute(f'DELETE FROM {table}')
-        for table in ('history_upgrades', 'published_points', 'point_scopes'):
+        for table in ('history_upgrades', 'published_points', 'point_scopes',
+                      'layer_views', 'layer_view_files', 'layer_signatures'):
             conn.execute(f'DROP TABLE {table}')
 
 
@@ -211,3 +212,22 @@ def test_tui_converts_on_mount_and_lists_the_points(tmp_path):
                     and tui.screen.query_one('#history-table').row_count > 1)
     _run(cfg, tmp_path, check)
     assert _markers(md) >= MARKERS and _legacy_column(md) == 0
+
+
+def test_first_sync_after_conversion_reuses_the_converted_layered_point(old_pool, tmp_path):
+    """A layered network's converted (scoped) point whose files equal the
+    first sync's view of the repository point is that point: linked again,
+    nothing sent again."""
+    cfg, md, _a, layered = old_pool
+    apt = cfg.sources[0]
+    assert points.prepare_history(md)
+    with Pool(md, read_only=True) as pool:
+        converted = pool.latest_recordings(layered.name)[apt.identity]
+        assert all(pool.point_scopes(pid) == {'l'} for pid in converted)
+    assert not bundle_network(layered, cfg, md, out_path=tmp_path / 'first.tar', full=True).errors
+    points.record_points_after_sync(cfg, md, {apt.identity}, say=lambda *_: None)
+    with Pool(md, read_only=True) as pool:
+        assert pool.latest_recordings(layered.name)[apt.identity] == converted
+        current = current_repository_points(pool, apt.identity)
+        assert current and pool.layer_views(layered.name, current[0])       # the view exists
+    assert not preview_transfer(layered, md, cfg=cfg).blobs

@@ -213,7 +213,18 @@ class NetworkPackagesPage(Page):
         except ValueError as e:
             self.set_status(str(e).splitlines()[-1] if "\n" in str(e) else str(e), "error")
             return
-        self.set_status(f"Saved — publish {self.network_name} to serve it.", "ok")
+        if await self._rebuild():
+            self.set_status(f"Saved — publish {self.network_name} to serve it.", "ok")
+
+    async def _rebuild(self) -> bool:
+        """The edit as the current points' layer views (`mmw packages` does
+        the same); a layer in error is said, and False."""
+        report = await asyncio.to_thread(layers.rebuild_current_views, self.app.cfg,
+                                         self.app.cfg.settings.mirror_dir, self.network_name)
+        if report.errors:
+            self.set_status(report.errors[0], "error")
+            return False
+        return True
 
     # ── add, remove ─────────────────────────────────────────────────────────
 
@@ -258,7 +269,8 @@ class NetworkPackagesPage(Page):
         # Only this network's layers, applied to the config as it is now.
         await self.app.save_config(lambda cur: layers.with_network_layers(cur, out.cfg, self.network_name))
         await self._list()
-        self.set_status(f"Added {len(out.copied)} package(s). " + " ".join(out.notes[-1:]), "ok")
+        if await self._rebuild():
+            self.set_status(f"Added {len(out.copied)} package(s). " + " ".join(out.notes[-1:]), "ok")
 
     @on(Button.Pressed, "#btn-pkg-remove")
     def _remove_pressed(self) -> None:
@@ -277,7 +289,8 @@ class NetworkPackagesPage(Page):
             self.set_status(str(e), "error")
             return
         await self._list()
-        self.set_status(f"Removed {name} — the next publish drops it.", "ok")
+        if await self._rebuild():
+            self.set_status(f"Removed {name} — the next publish drops it.", "ok")
 
     @on(Button.Pressed, "#btn-pkg-sources")
     def _sources_pressed(self) -> None:
@@ -385,6 +398,9 @@ class AddPackagesPage(Page):
             if out.cfg is not cfg and network:
                 await self.app.save_config(
                     lambda cur, new=out.cfg, net=network: layers.with_network_layers(cur, new, net))
+            if network:
+                report = await asyncio.to_thread(layers.rebuild_current_views, self.app.cfg, mirror_dir, network)
+                notes += [f"{_label(target)}: {e}" for e in report.errors]
             added += len(out.copied)
         self.set_status(f"Added {added} package file(s)." + (" " + " ".join(notes) if notes else ""),
                         "error" if notes else "ok")

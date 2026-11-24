@@ -1,5 +1,6 @@
 """Recording a repository's past state from an archive, as points — never as
 what the network is on now."""
+import json
 import threading
 
 import httpx
@@ -89,18 +90,26 @@ def test_same_past_state_twice_is_already_had(lab):
     assert second.fetched == 0
 
 
-def test_layered_network_is_skipped_and_named(lab):
+def test_layered_network_gets_the_past_point_through_its_layer(lab):
+    from mmw.core.layers import layer_dir
+    from mmw.core.repository_points import files_for_settings
     plain = config.NetworkConfig(name="lab", root=lab.tmp / "pub")
     layered = config.NetworkConfig(name="tools", root=lab.tmp / "pub2",
                                    layers=[config.NetworkLayer(source=lab.src.url, signing="unsigned")])
     c = lab.cfg(plain, layered)
+    make_deb(layer_dir(lab.mirror_dir, "tools", lab.src.name) / "jammy/main", "tools-ours", "1.0")
     lab.older(("hello", "2.9-1"))
     report = lab.past(c)
-    assert len(report.added) == 1
-    assert len(report.skipped) == 1 and report.skipped[0].startswith("tools adds its own debs to")
-    assert "layered" in report.skipped[0]
+    assert len(report.added) == 1 and report.skipped == []
     with Pool(lab.mirror_dir, read_only=True) as pool:
-        assert pool.network_point_stamps("tools") == {}
+        pid, = [p for p in pool.network_point_stamps("tools")]
+        point = pool.points_of([pid])[pid]
+        (_vid, _base, _digest, stamp), = pool.layer_views("tools", pid)
+        assert stamp == point.date                      # served from the point's own date
+        settings = json.dumps({"network": layered.model_dump(mode="json"),
+                               "mirrors": [u.legacy_dict() for u in lab.units]})
+        files = files_for_settings(pool, pid, settings)
+    assert any(p.endswith("pool/mmw/main/tools-ours_1.0_amd64.deb") for p in files)
 
 
 def test_files_already_in_the_pool_are_not_fetched(lab):

@@ -1,11 +1,13 @@
 """Per-network layers: custom debs a network adds to an upstream repository.
 
-The pool keeps upstream pure. A layer is built (with the pool writable) into
-replacement rows — the layer's debs, the rewritten `Packages`/`Contents`
-indexes, the rewritten `Release` and its new or dropped signatures — stored
-per (network, base) in `layer_rows`. Publish and snapshots walk the pool
-read-only and swap those rows into the group (`publish_group(overlay=…)`),
-so ordering, by-hash, prune, snapshots and bundles carry what is served.
+The pool keeps upstream pure. A layer is a view of a repository point: built
+(with the pool writable) over the point's slice into replacement rows — the
+layer's debs, the rewritten `Packages`/`Contents` indexes, the rewritten
+`Release` and its new or dropped signatures — stored per (network, point,
+inputs) in `layer_views`. At sync, on a package edit, and before a publish
+or a live bundle, the network's current points get theirs; what a network
+serves of a point at a moment is its newest view stamped by then, else the
+point plain (`view_for`).
 """
 import hashlib
 import json
@@ -45,6 +47,7 @@ class LayerReport:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     clashes: list[Clash] = field(default_factory=list)    # undecided — a person should choose
+    views: list[tuple[int, int]] = field(default_factory=list)    # (point, view) built or found
 
 
 def _work(mirror_dir: Path, network: str, name: str) -> Path:
@@ -114,113 +117,307 @@ def _release_of(rows: dict, suite: str) -> bytes | None:
     return None
 
 
-def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
-                         decisions: dict[str, str] | None = None) -> LayerReport:
-    """Build (or skip, when unchanged) every layer of `network` into the pool's
-    `layer_rows`. Needs the pool writable. Errors name the repository; a
-    repository in error keeps no layer rows (it publishes pure upstream)."""
-    from mmw.core.publisher.links import _dedup_rows
+def _layer_inputs(network, mirror_dir: Path, source, report: LayerReport):
+    """(layer, debs by (suite, component), key fingerprint) of `source`'s
+    layer on `network`, or None: no layer, or one in error (said in
+    `report`; the network then serves the repository's points plain)."""
+    layer = network.layer_for(source.url)
+    debs = layer_debs(mirror_dir, network.name, source.name)
+    if not debs and (layer is None or (layer.signing == "upstream" and not layer.drop_valid_until)):
+        return None
+    if debs and (layer is None or layer.signing == "upstream"):
+        report.errors.append(
+            f"{network.name}: {source.name} has custom packages, so its upstream signature "
+            "cannot stay — choose resign or unsigned for it (resign signs with an mmw key)")
+        return None
+    fingerprint = ""
+    if layer.signing == "resign":
+        from mmw.core.signing import Keyring, SigningError
+        keyring = Keyring(mirror_dir)
+        try:
+            fingerprint = next((k.fingerprint for k in keyring.list() if k.name == layer.key), "")
+        except SigningError as e:
+            report.errors.append(f"{network.name}: {source.name}: {e}")
+            return None
+        finally:
+            keyring.stop_agent()
+        if not fingerprint:
+            report.errors.append(f"{network.name}: {source.name}: no signing key named {layer.key!r}")
+            return None
+        # Clients fetch it from /mmw-keys/{label}/ beside upstream's own key.
+        from mmw.core.keys import write_key
+        try:
+            write_key(source.label, keyring.public_armor(layer.key), mirror_dir, layer.key)
+        finally:
+            keyring.stop_agent()
+    if layer.signing == "unsigned":
+        report.warnings.append(
+            f"{network.name}: {source.name} is served unsigned — this is unsafe; clients "
+            "need [trusted=yes] for it")
+    return layer, debs, fingerprint
+
+
+def _point_suite(track, base: str) -> str | None:
+    prefix = base + "/dists/"
+    return track.name[len(prefix):] if track is not None and track.name.startswith(prefix) else None
+
+
+def build_view(pool, network, cfg, mirror_dir: Path, point_id: int, *, stamp: str | None = None,
+               decisions: dict[str, str] | None = None, report: LayerReport | None = None,
+               inputs=None) -> tuple[int | None, dict[str, str] | None]:
+    """`network`'s layer over repository point `point_id`: (view id, the
+    files the network serves of it), built from the point's own slice (never
+    live refs) and stored keyed by its inputs' digest — the same inputs are
+    the same view, built once. (None, None) when the network has no layer
+    on the point's repository, or it is in error (said in `report`). Needs
+    the pool writable. `stamp`: when the network serves it from (now)."""
+    from mmw.core.publisher.manifest import now_stamp
+    from mmw.core.repository_points import selected_point_files
     from mmw.core.resolve import network_mirrors
+    report = report if report is not None else LayerReport()
+    point = pool.points_of([point_id]).get(point_id)
+    track = pool.track_of_point(point_id)
+    if point is None or not point.held or point.legacy or track is None:
+        return None, None
+    source = next((s for s in cfg.sources if s.identity == track.repo), None)
+    if source is None or source.provider != "apt" or network.layer_for(source.url) is None \
+            and not layer_debs(mirror_dir, network.name, source.name):
+        return None, None
+    units = [u for u in network_mirrors(network, cfg, mirror_dir) if u.source == track.repo and u.provider == "apt"]
+    if not units:
+        return None, None
+    base = units[0].mirror_base
+    suite = _point_suite(track, base)
+    if suite is None:
+        return None, None
+    inputs = inputs if inputs is not None else _layer_inputs(network, mirror_dir, source, report)
+    if inputs is None:
+        return None, None
+    layer, every_deb, fingerprint = inputs
+    plain = selected_point_files(pool, point_id, units, network.name)
+    info = pool.blob_info(plain.values())
+    rows = {path[len(base) + 1:]: (path[len(base) + 1:], str(info[cs][0]), info[cs][1], "", cs)
+            for path, cs in plain.items() if path.startswith(base + "/") and cs in info}
+    published = _published(rows)
+    debs = {(s, c): ds for (s, c), ds in every_deb.items() if s == suite}
+    missing = [f"{s}/{c}" for s, c in debs if c not in published.get(s, {})]
+    if missing:
+        report.errors.append(f"{network.name}: {source.name} has custom packages for "
+                             f"{', '.join(missing)}, which this network does not publish")
+        return None, None
+    folder = layer_dir(mirror_dir, network.name, source.name)
+    chosen = {**read_decisions(folder), **(decisions or {})}
+    digest = hashlib.sha256(json.dumps({
+        "format": LAYER_FORMAT,
+        "published": sorted((s, c, sorted(a)) for s, cs in published.items() for c, a in cs.items()),
+        "upstream": sorted((rel, r[4]) for rel, r in rows.items()
+                           if rel.startswith("dists/") and rel.rsplit("/", 1)[-1] in _RELEASE_NAMES),
+        "debs": sorted((s, c, d.path.name, d.sha256) for (s, c), ds in debs.items() for d in ds),
+        "layer": layer.model_dump(mode="json"), "key": fingerprint, "decisions": chosen,
+    }, sort_keys=True).encode()).hexdigest()
+    for (s, c), ds in debs.items():
+        for d in ds:
+            arch = d.control["Architecture"]
+            if arch != "all" and arch not in published[s][c]:
+                report.warnings.append(
+                    f"{network.name}: {source.name}: {d.path.name} is for {arch}, which this "
+                    f"network does not publish in {s}/{c} — no index lists it")
+    # Finding clashes reads every affected upstream Packages: reuse the
+    # last answer while the inputs are the same.
+    existing = pool.layer_view(network.name, point_id, digest)
+    unchanged = existing is not None and _intact(pool.layer_view_rows(existing))
+    cache = _work(mirror_dir, network.name, source.name) / f"clashes-{suite}.json"
+    cached = _read_clashes(cache, digest) if unchanged else None
+    clashes = cached if cached is not None else _clashes(source.name, rows, published, debs, chosen)
+    if cached is None:
+        _write_clashes(cache, digest, clashes)
+    report.clashes += [c for c in clashes if c.filename not in chosen]
+    for c in clashes:
+        if c.filename not in chosen:
+            what = ("the same version as upstream's, with different contents"
+                    if c.kind == "same-version" else f"older than upstream's {c.upstream_version}")
+            report.warnings.append(f"{network.name}: {source.name}: {c.filename} ({c.package} "
+                                   f"{c.version}) is {what} — kept; decide with `mmw packages add "
+                                   "--on-clash`")
+    stamp = stamp or now_stamp()
+    if unchanged:
+        views = pool.layer_views(network.name, point_id)
+        if views[-1][0] != existing:                 # back to earlier inputs: from now, again
+            existing = pool.record_layer_view(network.name, point_id, base, digest, stamp,
+                                              _stored(pool.layer_view_rows(existing).items()))
+        return existing, overlaid(plain, base, pool.layer_view_rows(existing))
+    dropped = {c.filename for c in clashes if chosen.get(c.filename) == "drop"}
+    try:
+        out = _rebuild(network.name, source.name, layer, rows, published, debs, dropped,
+                       mirror_dir, _work(mirror_dir, network.name, source.name), PoolBlobs(pool))
+    except Exception as e:  # noqa: BLE001 — one repository's failure is reported, not fatal
+        report.errors.append(f"{network.name}: {source.name}: layer not built: {e}")
+        return None, None
+    pool.flush_writes()                     # its new blobs, before anything reads the view
+    view = pool.record_layer_view(network.name, point_id, base, digest, stamp,
+                                  [(rel, cs, kind) for rel, cs, _size, kind, _fn in out])
+    return view, overlaid(plain, base, pool.layer_view_rows(view))
+
+
+def _stored(rows) -> list[tuple[str, str, str]]:
+    return [(rel, row[4] if row else "", row[3] if row else "") for rel, row in rows]
+
+
+def overlaid(plain: dict[str, str], base: str, overlay: dict) -> dict[str, str]:
+    """A point's slice as a layer view serves it: the view's rows replace the
+    slice's at the same path (None drops one), with by-hash following, as a
+    walk over the layer lays them out."""
+    from mmw.core.publisher.links import _wants_by_hash
+    out = dict(plain)
+    gone = []
+    for rel in overlay:
+        old = out.pop(f"{base}/{rel}", None)
+        if old is not None:
+            gone.append((f"{base}/{rel}".rsplit("/", 1)[0], old))
+    for rel, row in overlay.items():
+        if row is None:
+            continue
+        out[f"{base}/{rel}"] = row[4]
+        if row[3] != KIND_PKG and _wants_by_hash(rel, row[3]):
+            parent = f"{base}/{rel}".rsplit("/", 1)[0]
+            out[f"{parent}/by-hash/SHA256/{row[4]}"] = row[4]
+    if gone:
+        left = {(path.rsplit("/", 1)[0], cs) for path, cs in out.items() if "/by-hash/" not in path}
+        for parent, cs in gone:
+            if (parent, cs) not in left:
+                out.pop(f"{parent}/by-hash/SHA256/{cs}", None)
+    return out
+
+
+def view_for(pool, network: str, point_id: int, when: str | None = None, *,
+             plain: dict[str, str] | None = None) -> dict[str, str] | None:
+    """What `network` serves of a point through its layer: the newest view of
+    (network, point) stamped at or before `when` (None: now) over the
+    point's `plain` slice — or None when there is none (the network had no
+    layer then: it served the point plain)."""
+    views = [v for v in pool.layer_views(network, point_id) if when is None or v[3] <= when]
+    if not views:
+        return None
+    vid, base, _digest, _stamp = views[-1]
+    return overlaid(plain or {}, base, pool.layer_view_rows(vid))
+
+
+def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
+                         decisions: dict[str, str] | None = None, stamp: str | None = None,
+                         fresh=frozenset()) -> LayerReport:
+    """Build (or find, when unchanged) the view of every layer of `network`
+    over its repositories' current points. Needs the pool writable. Errors
+    name the repository; a repository in error gets no new view (its points
+    serve plain, or as their last view). `fresh`: points the sync that asks
+    just recorded — their first view is served from the point's own date,
+    as the point is (a later one, e.g. a package edit, from `stamp`).
+
+    A repository with no point at all (synced only by an mmw from before
+    repository points) keeps the live overlay until its next sync."""
+    from mmw.core.resolve import network_mirrors
+    from mmw.core.transfer_ranges import repository_targets
     report = LayerReport()
-    units = [m for m in network_mirrors(network, cfg, mirror_dir) if m.provider == "apt"]
-    by_source: dict[str, list] = {}
-    for u in units:
-        by_source.setdefault(u.source, []).append(u)
-    sources = {s.identity: s for s in cfg.sources}
-    built: set[str] = set()
-    for ident, members in by_source.items():
-        source = sources.get(ident)
-        if source is None:
+    units = [u for u in network_mirrors(network, cfg, mirror_dir) if u.provider == "apt"]
+    live_bases = set()
+    for source in cfg.sources:
+        members = [u for u in units if u.source == source.identity]
+        if not members:
             continue
-        base = members[0].mirror_base
-        layer = network.layer_for(source.url)
-        debs = layer_debs(mirror_dir, network.name, source.name)
-        if not debs and (layer is None or (layer.signing == "upstream" and not layer.drop_valid_until)):
+        if network.layer_for(source.url) is None and not layer_debs(mirror_dir, network.name, source.name):
             continue
-        if debs and (layer is None or layer.signing == "upstream"):
-            report.errors.append(
-                f"{network.name}: {source.name} has custom packages, so its upstream signature "
-                "cannot stay — choose resign or unsigned for it (resign signs with an mmw key)")
+        inputs = _layer_inputs(network, mirror_dir, source, report)
+        if inputs is None:
             continue
-        rows = {r[0]: r for r in _dedup_rows(pool.mirror_files([m.name for m in members]))}
-        published = _published(rows)
-        missing = [f"{s}/{c}" for s, c in debs if c not in published.get(s, {})]
+        current = repository_targets(pool, source.identity)
+        if not current:
+            live_bases.add(members[0].mirror_base)
+            _build_live(network, mirror_dir, pool, source, members, inputs, report, decisions)
+            continue
+        suites = {_point_suite(pool.track_of_point(pid), members[0].mirror_base) for pid in current}
+        missing = sorted(f"{s}/{c}" for s, c in inputs[1] if s not in suites)
         if missing:
             report.errors.append(f"{network.name}: {source.name} has custom packages for "
                                  f"{', '.join(missing)}, which this network does not publish")
             continue
-        folder = layer_dir(mirror_dir, network.name, source.name)
-        chosen = {**read_decisions(folder), **(decisions or {})}
-        fingerprint = ""
-        if layer.signing == "resign":
-            from mmw.core.signing import Keyring, SigningError
-            keyring = Keyring(mirror_dir)
-            try:
-                fingerprint = next((k.fingerprint for k in keyring.list() if k.name == layer.key), "")
-            except SigningError as e:
-                report.errors.append(f"{network.name}: {source.name}: {e}")
-                continue
-            finally:
-                keyring.stop_agent()
-            if not fingerprint:
-                report.errors.append(f"{network.name}: {source.name}: no signing key named {layer.key!r}")
-                continue
-            # Clients fetch it from /mmw-keys/{label}/ beside upstream's own key.
-            from mmw.core.keys import write_key
-            try:
-                write_key(source.label, keyring.public_armor(layer.key), mirror_dir, layer.key)
-            finally:
-                keyring.stop_agent()
-        digest = hashlib.sha256(json.dumps({
-            "format": LAYER_FORMAT,
-            "published": sorted((s, c, sorted(a)) for s, cs in published.items() for c, a in cs.items()),
-            "upstream": sorted((rel, r[4]) for rel, r in rows.items()
-                               if rel.startswith("dists/") and rel.rsplit("/", 1)[-1] in _RELEASE_NAMES),
-            "debs": sorted((s, c, d.path.name, d.sha256) for (s, c), ds in debs.items() for d in ds),
-            "layer": layer.model_dump(mode="json"), "key": fingerprint, "decisions": chosen,
-        }, sort_keys=True).encode()).hexdigest()
-        built.add(base)
-        for (s, c), ds in debs.items():
-            for d in ds:
-                arch = d.control["Architecture"]
-                if arch != "all" and arch not in published[s][c]:
-                    report.warnings.append(
-                        f"{network.name}: {source.name}: {d.path.name} is for {arch}, which this "
-                        f"network does not publish in {s}/{c} — no index lists it")
-        # Finding clashes reads every affected upstream Packages: reuse the
-        # last answer while the inputs are the same.
-        cache = _work(mirror_dir, network.name, source.name) / "clashes.json"
-        unchanged = pool.layer_digest(network.name, base) == digest and _intact(pool, network.name, base)
-        cached = _read_clashes(cache, digest) if unchanged else None
-        clashes = cached if cached is not None else _clashes(source.name, rows, published, debs, chosen)
-        if cached is None:
-            _write_clashes(cache, digest, clashes)
-        report.clashes += [c for c in clashes if c.filename not in chosen]
-        for c in clashes:
-            if c.filename not in chosen:
-                what = ("the same version as upstream's, with different contents"
-                        if c.kind == "same-version" else f"older than upstream's {c.upstream_version}")
-                report.warnings.append(f"{network.name}: {source.name}: {c.filename} ({c.package} "
-                                       f"{c.version}) is {what} — kept; decide with `mmw packages add "
-                                       "--on-clash`")
-        if layer.signing == "unsigned":
-            report.warnings.append(
-                f"{network.name}: {source.name} is served unsigned — this is unsafe; clients "
-                "need [trusted=yes] for it")
-        if unchanged:
-            continue
-        dropped = {c.filename for c in clashes if chosen.get(c.filename) == "drop"}
-        try:
-            out = _rebuild(network.name, source.name, layer, rows, published, debs, dropped,
-                           mirror_dir, _work(mirror_dir, network.name, source.name), PoolBlobs(pool))
-        except Exception as e:  # noqa: BLE001 — one repository's failure is reported, not fatal
-            report.errors.append(f"{network.name}: {source.name}: layer not built: {e}")
-            pool.clear_layer(network.name, base)
-            continue
-        pool.replace_layer(network.name, base, out, digest)
-    for base in pool.layer_bases(network.name) - built:
-        pool.clear_layer(network.name, base)             # a layer that went away
+        for pid, point in pool.points_of(current).items():
+            when = stamp
+            if pid in fresh and not pool.layer_views(network.name, pid):
+                when = min(point.date, stamp) if stamp else point.date
+            view, _ = build_view(pool, network, cfg, mirror_dir, pid, stamp=when, decisions=decisions,
+                                 report=report, inputs=inputs)
+            if view is not None:
+                report.views.append((pid, view))
+    for base in pool.layer_bases(network.name) - live_bases:
+        pool.clear_layer(network.name, base)         # the live overlay: only until a point exists
+    report.warnings = list(dict.fromkeys(report.warnings))
     return report
+
+
+def _build_live(network, mirror_dir: Path, pool, source, members, inputs, report: LayerReport,
+                decisions) -> None:
+    """The overlay before views, over live refs into `layer_rows`: for a
+    repository that has no point yet. Task 23 removes it with the table."""
+    from mmw.core.publisher.links import _dedup_rows
+    layer, debs, fingerprint = inputs
+    base = members[0].mirror_base
+    rows = {r[0]: r for r in _dedup_rows(pool.mirror_files([m.name for m in members]))}
+    published = _published(rows)
+    missing = [f"{s}/{c}" for s, c in debs if c not in published.get(s, {})]
+    if missing:
+        report.errors.append(f"{network.name}: {source.name} has custom packages for "
+                             f"{', '.join(missing)}, which this network does not publish")
+        pool.clear_layer(network.name, base)
+        return
+    chosen = {**read_decisions(layer_dir(mirror_dir, network.name, source.name)), **(decisions or {})}
+    digest = hashlib.sha256(json.dumps({
+        "format": LAYER_FORMAT,
+        "published": sorted((s, c, sorted(a)) for s, cs in published.items() for c, a in cs.items()),
+        "upstream": sorted((rel, r[4]) for rel, r in rows.items()
+                           if rel.startswith("dists/") and rel.rsplit("/", 1)[-1] in _RELEASE_NAMES),
+        "debs": sorted((s, c, d.path.name, d.sha256) for (s, c), ds in debs.items() for d in ds),
+        "layer": layer.model_dump(mode="json"), "key": fingerprint, "decisions": chosen,
+    }, sort_keys=True).encode()).hexdigest()
+    clashes = _clashes(source.name, rows, published, debs, chosen)
+    report.clashes += [c for c in clashes if c.filename not in chosen]
+    if pool.layer_digest(network.name, base) == digest and _intact(pool.layer_overlay(network.name, base)):
+        return
+    dropped = {c.filename for c in clashes if chosen.get(c.filename) == "drop"}
+    try:
+        out = _rebuild(network.name, source.name, layer, rows, published, debs, dropped,
+                       mirror_dir, _work(mirror_dir, network.name, source.name), PoolBlobs(pool))
+    except Exception as e:  # noqa: BLE001 — one repository's failure is reported, not fatal
+        report.errors.append(f"{network.name}: {source.name}: layer not built: {e}")
+        pool.clear_layer(network.name, base)
+        return
+    pool.replace_layer(network.name, base, out, digest)
+
+
+def served_files(pool, network, cfg, mirror_dir: Path) -> dict[str, dict[str, str]]:
+    """repo → what `network` serves of each repository it layers: its current
+    points through their newest views (a walk lays these out, never live refs)."""
+    from mmw.core.repository_points import selected_point_files
+    from mmw.core.resolve import network_mirrors
+    from mmw.core.transfer_ranges import repository_targets
+    units = network_mirrors(network, cfg, mirror_dir)
+    out = {}
+    for repo in {u.source for u in units if u.provider == "apt" and network.layer_for(u.source) is not None}:
+        files = {p: cs for pid in repository_targets(pool, repo)
+                 for p, cs in selected_point_files(pool, pid, units, network).items()}
+        if files:
+            out[repo] = files
+    return out
+
+
+def rebuild_current_views(cfg, mirror_dir: Path, network: str) -> LayerReport:
+    """After a package edit (`mmw packages`, the TUI's packages page): the
+    view of `network`'s layers over each current point, so the next
+    transfer or publish sends the edit. Nothing when there is no pool."""
+    from mmw.core.pool import Pool, database_path
+    net = next((n for n in cfg.networks if n.name == network), None)
+    if net is None or not disk_io.ops.exists(database_path(mirror_dir)):
+        return LayerReport()
+    with Pool(mirror_dir) as pool:
+        return build_network_layers(net, cfg, mirror_dir, pool)
 
 
 def _clashes(name, rows, published, debs, chosen) -> list[Clash]:
@@ -332,7 +529,8 @@ def _rebuild(network: str, name: str, layer, rows, published, debs, dropped, key
         add_blob(f"dists/{suite}/Release", release, KIND_RELEASE)
         if layer.signing == "resign":
             from mmw.providers.apt_local import _signatures
-            inrelease, gpg = _signatures(work / suite, layer.key, keyring_root, release)
+            inrelease, gpg = _signatures(work / suite, layer.key, keyring_root, release,
+                                         pool=getattr(store, "pool", None))
             add_blob(f"dists/{suite}/InRelease", inrelease, KIND_RELEASE)
             add_blob(f"dists/{suite}/Release.gpg", gpg, KIND_RELEASE)
         else:                                           # unsigned: nothing may vouch for the change
@@ -369,10 +567,9 @@ def _have(pool, checksum: str, filename: str) -> bool:
     return pool.contains(checksum) and disk_io.ops.exists(pool.blob_path(checksum, filename))
 
 
-def _intact(pool, network: str, base: str) -> bool:
-    """Every blob the stored overlay names is still in the pool."""
-    return all(row is None or disk_io.ops.exists(Path(row[1]))
-               for row in pool.layer_overlay(network, base).values())
+def _intact(rows: dict) -> bool:
+    """Every blob a stored view names is still in the pool."""
+    return all(row is None or disk_io.ops.exists(Path(row[1])) for row in rows.values())
 
 
 def _index_forms(release: bytes, stem: str) -> list[str]:
@@ -482,10 +679,10 @@ def _pool_file(pool, deb) -> None:
 
 
 def apply_build(network, cfg, mirror_dir: Path, pool, result) -> LayerReport:
-    """Build `network`'s layers before a walk, folding what it found into the
-    walk's result: warnings as warnings, errors as a failed "layers" entry
-    (a snapshot then refuses, a publish reports it and serves pure upstream
-    for that repository)."""
+    """Build the views of `network`'s layers over its current points before a
+    walk, folding what it found into the walk's result: warnings as
+    warnings, errors as a failed "layers" entry (a snapshot then refuses, a
+    publish reports it and serves that repository without a new view)."""
     from mmw.core.publisher.results import MirrorPublishResult
     report = build_network_layers(network, cfg, mirror_dir, pool)
     result.warnings.extend(report.warnings)

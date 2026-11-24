@@ -369,7 +369,7 @@ def move_point_rows(c, old: int, new: int) -> None:
                       (new, old))
         c.execute("DELETE FROM point_scopes WHERE point = ?", (old,))
     for table in ("network_points", "snapshot_points", "published_points", "network_slices",
-                  "network_slice_dates", "sent_slices", "sent_points"):
+                  "network_slice_dates", "sent_slices", "sent_points", "layer_views"):
         if table not in tables:
             continue
         c.execute(f"UPDATE OR IGNORE {table} SET point = ? WHERE point = ?", (new, old))

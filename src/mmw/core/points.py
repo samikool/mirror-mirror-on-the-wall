@@ -189,13 +189,21 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
         seed_recordings(pool, network.name)
         from mmw.core.repository_points import (
             current_repository_points, selected_point_files, current_ref_projection, shared_files,
+            provider_scoped, provider_view, slice_of,
         )
+        from mmw.core.repos import repository_key
         from mmw.core.resolve import network_mirrors
         selected = network_mirrors(network, cfg, mirror_dir)
-        repository_files = {}
-        for repo in {u.source for u in selected}:
+        repository_files, point_views = {}, {}
+        for repo in {repository_key(u) for u in selected}:
             candidates = current_repository_points(pool, repo)
             if not candidates or network.layer_for(repo) is not None:
+                continue
+            if provider_scoped(repo):
+                # Published from the point itself (pages too), never live refs.
+                view = provider_view(pool, repo, candidates, units=selected, network=network)
+                if view is not None:
+                    repository_files[repo], point_views[repo] = slice_of(view), view
                 continue
             projection = {path: cs for pid in candidates
                           for path, cs in selected_point_files(pool, pid, selected, network.name).items()}
@@ -206,7 +214,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
                     raise ValueError(note)
                 report.warnings.append(note)
             repository_files[repo] = projection
-        walk_options = {"repository_files": repository_files} if repository_files else {}
+        walk_options = {"repository_files": repository_files, "point_views": point_views} if repository_files else {}
         rows, settings, warnings = walk_tree(network, cfg, mirror_dir, pool, progress=progress,
                                              stop_event=stop_event, **walk_options)
         report.warnings += warnings
@@ -226,7 +234,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
             digest = content_ident(mine)
             candidates = current_repository_points(pool, repo)
             if candidates and network.layer_for(repo) is None:
-                slices = {pid: selected_point_files(pool, pid, selected, network.name) for pid in candidates}
+                slices = {pid: selected_point_files(pool, pid, selected, network) for pid in candidates}
                 projection = {path: cs for files in slices.values() for path, cs in files.items()}
                 if projection != mine:
                     note = partial_sync_note(pool, repo, candidates, projection, mine)
@@ -289,13 +297,15 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
     from mmw.core.resolve import network_mirrors
     from mmw.core.resolve import available_mirrors
     from mmw.core.repos import repository_key
-    from mmw.core.repository_points import record_repository, set_current_repository_points, accumulated_refs, coordinates
+    from mmw.core.repository_points import (
+        record_repository, set_current_repository_points, accumulated_refs, coordinates, provider_scoped,
+    )
     from mmw.core.publisher.manifest import now_stamp
     units = list({u.name: u for u in [*cfg.mirrors, *available_mirrors(cfg, mirror_dir),
                                     *(attempted or [])]}.values())
     by_repo_units = {}
     for unit in units:
-        if unit.source in synced_sources and unit.provider in ("apt", "apt-flat", "apt-local"):
+        if unit.source in synced_sources:
             by_repo_units.setdefault(repository_key(unit), []).append(unit)
     successes = {o.mirror for o in outcomes if o.ok} if outcomes is not None else None
     stamp = now_stamp()
@@ -313,7 +323,9 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
                 if not mine:
                     continue
                 complete = None
-                if successes is not None:
+                # A content track has no suites to complete: a failed unit
+                # keeps its last recorded files (accumulated_refs).
+                if successes is not None and not provider_scoped(repo):
                     requested = [u for u in (attempted or units) if repository_key(u) == repo
                                  and (attempted is not None or any(o.mirror == u.name for o in outcomes))]
                     complete = {u.suite for u in mine

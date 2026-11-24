@@ -35,9 +35,11 @@ def repository_owned(pool, current, network=None):
     return bool(ids) and all(not p.legacy for p in pool.points_of(ids).values())
 
 
-def repository_projection(pool, network, cfg, mirror_dir, *, point_ids=None):
-    """Current configured slices; legacy providers keep their existing walk."""
-    from mmw.core.repository_points import selected_point_files
+def repository_projection(pool, network, cfg, mirror_dir, *, point_ids=None, views=None):
+    """Current configured slices; legacy providers keep their existing walk.
+    `views` gets each provider-scoped repository's point view (`walk_network`'s
+    `point_views`)."""
+    from mmw.core.repository_points import provider_scoped, provider_view, selected_point_files
     from mmw.core.resolve import network_mirrors
     from mmw.core.repos import repository_key
     units = network_mirrors(network, cfg, mirror_dir)
@@ -48,7 +50,10 @@ def repository_projection(pool, network, cfg, mirror_dir, *, point_ids=None):
         ids = repository_targets(pool, repo)
         if not ids:
             continue
-        slices = {pid: selected_point_files(pool, pid, units, network.name) for pid in ids}
+        if provider_scoped(repo) and views is not None:
+            if (view := provider_view(pool, repo, ids, units=units, network=network)) is not None:
+                views[repo] = view
+        slices = {pid: selected_point_files(pool, pid, units, network) for pid in ids}
         files = {p: cs for mine in slices.values() for p, cs in mine.items()}
         if not files:
             raise ValueError(f'{repo}: selected repository point is no longer kept — verify or choose another point')
@@ -66,15 +71,18 @@ def selected_tree(pool, network, cfg, mirror_dir, settings, current, *, until=No
     targets, _, _ = select_range(pool, network.name, settings, current, until=until)
     if point_ids is not None:
         point_ids.update(pid for ids in targets.values() for pid in ids)
+    from mmw.core.repository_points import provider_scoped, provider_view
     projection = {repo: {path: cs for pid in ids for path, cs in files_for_settings(pool, pid, settings).items()}
                   for repo, ids in targets.items() if not repo.startswith('network:')}
+    views = {repo: view for repo, ids in targets.items() if provider_scoped(repo)
+             and (view := provider_view(pool, repo, ids, settings=settings, network=network.name)) is not None}
     from mmw.core.resolve import network_mirrors
     from mmw.core.repos import repository_key
     for unit in network_mirrors(network, cfg, mirror_dir):
         projection.setdefault(repository_key(unit), {})
     sink = PreviewSink(pool) if preview else RecordingSink(pool)
     rows, settings, warnings = walk_tree(
-        network, cfg, mirror_dir, pool, repository_files=projection, sink=sink,
+        network, cfg, mirror_dir, pool, repository_files=projection, sink=sink, point_views=views,
         preview=preview, build_layers=False, progress=progress, stop_event=stop_event)
     repos = recorded_repos(settings)
     extras = {p: c for p, c in rows.items() if attribute(p, repos) is None}
@@ -149,11 +157,16 @@ def recorded_selection(pool, network, mirror_dir, cfg=None, *, only=None):
         if network.layer_for(repo) is not None:
             raise ValueError(f'{repo}: no recorded state for this network\'s layer — sync it first.')
         ids = repository_targets(pool, repo)
-        selected = [pid for pid in ids if files_for_settings(pool, pid, settings)]
-        if not selected:
+        slices = {pid: files for pid in ids if (files := files_for_settings(pool, pid, settings))}
+        if not slices:
             raise ValueError(f'{repo}: no retained points match the selected suites and architectures '
                              '— sync this repository first.')
-        current[repo] = selected
+        # The recording's rule (`record_network_points`): a target whose slice
+        # is a recorded point's of the same track is that point, already sent.
+        recorded = pool.points_of(current.get(repo) or [])
+        current[repo] = [next((old.id for old in recorded.values() if old.held and old.track == point.track
+                               and files_for_settings(pool, old.id, settings) == slices[point.id]), point.id)
+                         for point in pool.points_of(list(slices)).values()]
     current = {repo: ids for repo, ids in current.items() if repo in repos or repo.startswith('network:')}
     if repository_owned(pool, current, network):
         current = {repo: ids for repo, ids in current.items() if not repo.startswith('network:')}

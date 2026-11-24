@@ -140,6 +140,7 @@ class PypiProvider(BaseProvider):
     carries_history = True
     retries_failures = True
     site_per_base = False
+    private_prefixes = (pypub.META_PREFIX,)
     fields = (
         SourceField("name", "Name", "text"),
         SourceField("label", "Label", "text"),
@@ -364,7 +365,7 @@ class PypiProvider(BaseProvider):
         network's retention), then the generated pypi.org pages."""
         from mmw.core.publisher.links import publish_by_host, reconcile_extra_prefix
         from mmw.resources import pypi_render_bytes
-        rows, recs = pypub.published_rows(ctx.pool, units, ctx.network, date.today())
+        rows, recs = pypub.published_rows(ctx.pool, units, ctx.network, ctx.today())
         results, hosts = publish_by_host(ctx, rows)
         if ctx.prune and "files.pythonhosted.org" not in hosts:
             # No file survives this network's retention: the host still has to
@@ -372,6 +373,8 @@ class PypiProvider(BaseProvider):
             ctx.sink.finalize_group("files.pythonhosted.org", set(), set(), set())
         if ctx.stop_event is not None and ctx.stop_event.is_set():
             return results, set(pypub.HOSTS)
+        if ctx.files_only:
+            return results, {"files.pythonhosted.org"}
         published = {row[0] for row in rows}
         with_metadata = {path.rsplit("/", 1)[1].removesuffix(".metadata")
                          for path in published if path.endswith(".metadata")}

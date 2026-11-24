@@ -219,6 +219,9 @@ def test_activity_and_transfer_from_read_dates(synced, tmp_path, monkeypatch):  
     cfg, net, mirror_dir, _units = synced
     monkeypatch.setattr(snapshots, "now_stamp", lambda: "20261123T015441Z")
     bundle_network(net, cfg, mirror_dir, out_path=tmp_path / "first.tar")
+    from mmw.core.pool import Pool
+    with Pool(mirror_dir) as pool:
+        made = pool.bundles(net.name)[0].made        # the pool's own clock, not the patched one
 
     async def check(app, pilot):
         def activity():
@@ -226,7 +229,7 @@ def test_activity_and_transfer_from_read_dates(synced, tmp_path, monkeypatch):  
                          if "Activity" in str(lbl.render()) and "transferred" in str(lbl.render())), "")
         await until(pilot, activity)
         nov23, nov01 = short_day("20261123T015441Z"), short_day("20261101T000000Z")
-        assert f"last transferred {nov23} (points to {nov01})" in activity(), activity()
+        assert f"last transferred {short_day(made)} (points to {nov01})" in activity(), activity()
         assert not re.search(r"\d{8}T\d{6}Z", activity())
         await pilot.press("t")
         await until(pilot, lambda: type(app.screen).__name__ == "BundlePickPage" and app.screen.query("#pick-from"))

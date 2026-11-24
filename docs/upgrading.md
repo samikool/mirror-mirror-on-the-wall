@@ -11,18 +11,18 @@ to do yourself, by where you start from. Do the connected side first.
 
 ## The connected side
 
-Install the new mmw. Existing retained points become available without another
-sync: opening history, opening a publish/transfer date picker, or previewing a
-transfer finishes any pending history upgrade. This uses retained data only;
-it does not fetch repositories or invent a new point for today's state.
-The upgrade, or the first bundle or publish, as needed, handles each network:
+Install the new mmw. The first time it starts on your pool ("Converting
+history from an older mmw…") it converts all of the old history at once, every
+network, before anything else runs; the TUI does the same when it opens. This
+uses retained data only: it does not fetch repositories or invent a new point
+for today's state. For each network it:
 
 - **Turns its snapshots into points**, once, each at its own date. One that
   can't be split is named and skipped (it stays a snapshot).
 - **Seeds its recordings from those snapshots**, so `mmw publish --as-of` reaches
   back past the upgrade. A date before the upgrade is published as the
-  snapshot before it when only legacy history is available: what synced between
-  that snapshot and the upgrade was not recorded.
+  snapshot before it: what synced between that snapshot and the upgrade was
+  not recorded.
 - **Carries over what it has sent**, so the first bundle afterwards is still
   a delta. A full bundle a forced snapshot delete had queued is sent full,
   once.
@@ -40,7 +40,10 @@ Then:
 - **APT repository history is independent of networks.** Creating or editing
   a network does not need a resync or a history import. Its current selection
   can publish or transfer retained repository points, including earlier ones.
-  PyPI, VS Code and layers retain their compatibility history adapters.
+  PyPI and VS Code keep their history the same way, and a network's own
+  packages (a layer) are kept with each point they were added to. History an
+  older mmw kept per network (its walk of PyPI, VS Code or a layered
+  repository) stays that network's own, served to it alone.
 - **Repository history is kept in full by default:** `[settings] keep_points`
   is `all` unless you set it (a pool saved with the old default of 3 now keeps
   everything), overridden in Sources with `keep_points` / `keep_suites`.
@@ -48,9 +51,8 @@ Then:
   on a network are ignored with a warning. A point an actual publish
   directory serves stays protected until that directory advances.
   `mmw prune --dry-run --costs` previews retention before deleting anything.
-  Older publish records without point IDs retain prior history conservatively;
-  `mmw history` explains when republishing that directory can replace this with
-  an exact hold. No resync or new airgap transfer is needed.
+  Older publish records without point IDs become exact holds when the history
+  converts. No resync or new airgap transfer is needed.
 - **Bundles need mmw on the far side.** Tick **Include mmw installer** (or
   `mmw bundle --installer`) for the first bundle to a far side that doesn't
   have this version yet.

@@ -50,10 +50,9 @@ def _read(bundle):
 
 
 def _current_files(md, net):
-    from mmw.core import points
     with Pool(md, read_only=True) as p:
         out = {}
-        for repo, ids in points.current_points(p, net.name).items():
+        for repo, ids in p.points_at(net.name, "99999999T999999Z").items():
             for pid in ids:
                 out.setdefault(repo, {}).update(p.point_files(pid))
         return out

@@ -145,8 +145,8 @@ def _connected_dates(cfg, ctx):
     settings = json.dumps({'mirrors': [u.legacy_dict() for u in units],
                            'repos': {repository_key(u): [u.mirror_base] for u in units}})
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
-        # Providers whose catalogs are built per network still retain legacy
-        # points. Read those through their existing history adapter.
+        # A network's own (scoped) points: their dates come from the network
+        # that walked them (or had them, converted from an older mmw).
         wanted = set(_connected_repos(cfg, ctx))
         refs = _values(ctx.params.get('repo'))
         if refs:
@@ -156,7 +156,7 @@ def _connected_dates(cfg, ctx):
             if ctx.params.get('network') and net.name != ctx.params['network']:
                 continue
             for point in pool.network_points(net.name):
-                if point.legacy and pool.track_of_point(point.id).repo in wanted:
+                if point.scoped and pool.track_of_point(point.id).repo in wanted:
                     yield day(point.date)
                     yield point.date
         for repo in {repository_key(u) for u in units}:
@@ -171,7 +171,7 @@ def _connected_dates(cfg, ctx):
                                           for u in mine):
                     continue
                 date = point.date
-                if not point.legacy and track.name:
+                if not point.scoped and track.name:
                     rows = []
                     with pool._read() as conn:
                         for unit_id in [0, *unit_ids]:

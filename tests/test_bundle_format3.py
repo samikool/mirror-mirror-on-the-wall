@@ -105,6 +105,9 @@ def test_first_format3_after_format2_is_a_delta(mmw_net, tmp_path):
         versions = pool.snapshot_repo_versions(snap.id)
         pool.record_bundle(net.name, None, snap.stamp, "old.tar", 0, 0, 0,
                            repos={repo: (None, v.id) for repo, v in versions.items()})
+        pool._conn.execute("DELETE FROM sent_migrated")             # as an older mmw left it
+        pool._conn.execute("DELETE FROM history_upgrades WHERE name = 'sent'")
+        pool._conn.commit()
     set_a(md, 2)
     names, _h, rows = _open(_bundle(cfg, net, md, tmp_path / "2.tar").out_path)
     shared = next(r["c"] for r in rows if r["p"].endswith("/shared.deb"))

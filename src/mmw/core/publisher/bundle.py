@@ -110,7 +110,7 @@ def _point_names(pool, repo, names, settings, pages) -> list[dict]:
         if t is None or t.repo != repo:
             continue
         p = pool.points_of([pid]).get(pid)
-        files = files_for_settings(pool, pid, settings) if p is not None and p.held and not p.legacy else {}
+        files = files_for_settings(pool, pid, settings) if p is not None and p.held and not p.scoped else {}
         if files:
             files = {**files, **pages(pid)}
             out.append({"track": t.name, "ident": wire_draft(pool, pid, files, settings, p.stamp).ident,
@@ -372,7 +372,6 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     from mmw.core import snapshots as _snaps            # the one clock snapshots and bundles share
     stamp = _snaps.now_stamp()
     with Pool(mirror_dir) as pool:
-        pts.migrate_sent(pool, network.name)
         since_by_repo, since = pts.history_since(pool, network.name)
         if isinstance(from_ref, str):           # a stamp, label or id: history from there, for all
             try:

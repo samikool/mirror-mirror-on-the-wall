@@ -36,14 +36,14 @@ def test_migration_preserves_legacy_and_allows_equal_repository_point(tmp_path):
     db.commit()
     db.close()
     with Pool(tmp_path) as pool:
-        assert pool.points_of([old])[old].legacy
+        assert pool.points_of([old])[old].scoped
         assert pool.network_slice('oak', old) == content_ident(draft().files)
         new, created = pool.record_point('R', draft(), 'new')
         assert created and new != old
         assert [p.id for p in pool.repository_points('R')] == [new]
     with Pool(tmp_path) as pool:
-        assert not pool.points_of([new])[new].legacy
-        assert pool.points_of([old])[old].legacy
+        assert not pool.points_of([new])[new].scoped
+        assert pool.points_of([old])[old].scoped
 
 
 def test_sent_slice_is_distinct_from_current_slice(tmp_path):
@@ -79,10 +79,10 @@ def test_pre_upgrade_schema_is_migrated_without_changing_ids(tmp_path):
     ''')
     db.close()
     with Pool(tmp_path, read_only=True) as pool:
-        assert pool.points_of([pid])[pid].legacy
+        assert pool.points_of([pid])[pid].scoped
         assert pool.repository_points('R') == []
     with Pool(tmp_path) as pool:
-        assert pool.points_of([pid])[pid].legacy
+        assert pool.points_of([pid])[pid].scoped
         assert pool.sent_slice('oak', pid) == content_ident(draft().files)
         assert pool.record_point('R', draft(), 'new')[0] != pid
         assert pool.network_points('oak')[0].id == pid
@@ -227,6 +227,15 @@ def test_plan_past_points_without_network_fetches_all_units(tmp_path):
     assert plan.networks == []
 
 
+def _moment(pool, network, stamp):
+    """The network as recorded at `stamp`: its points' slices under the
+    settings recorded then (what a dated transfer reads)."""
+    from mmw.core.repository_points import files_for_settings
+    settings = pool.settings_at(network, stamp)
+    return {p: cs for ids in pool.points_at(network, stamp).values() for pid in ids
+            for p, cs in files_for_settings(pool, pid, settings, when=stamp).items()}
+
+
 def test_replay_uses_recorded_network_slice(tmp_path):
     from mmw.core import config, points
     from mmw.core.snapshots import walk_tree
@@ -237,8 +246,7 @@ def test_replay_uses_recorded_network_slice(tmp_path):
     points.record_points_after_sync(cfg, md, {units[0].source}, say=lambda _: None)
     with Pool(md) as pool:
         expected, _, _ = walk_tree(net, cfg, md, pool)
-        rows, _ = points.moment_rows(pool, net.name, '20990101T000000Z')
-        assert {p: cs for p, cs, _, _ in rows} == expected
+        assert _moment(pool, net.name, '20990101T000000Z') == expected
 
 
 def test_bundle_lists_only_network_slice_and_widening_sends_new_blobs(tmp_path):
@@ -285,10 +293,8 @@ def test_widening_preserves_old_recordings_and_snapshot_links(tmp_path, monkeypa
     cfg = cfg.model_copy(update={'networks': [wide]})
     points.record_network_points(wide, cfg, md, stamp='20261104T120000Z')
     with Pool(md) as pool:
-        then, _ = points.moment_rows(pool, net.name, '20261103T120000Z')
-        now, _ = points.moment_rows(pool, net.name, '20261105T120000Z')
-        assert {p: c for p, c, _, _ in then} == original
-        assert 'apt.test/debian/pool/arm64.deb' in {p for p, *_ in now}
+        assert _moment(pool, net.name, '20261103T120000Z') == original
+        assert 'apt.test/debian/pool/arm64.deb' in _moment(pool, net.name, '20261105T120000Z')
 
 
 def test_network_added_later_does_not_acquire_repository_past(tmp_path):

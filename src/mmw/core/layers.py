@@ -177,7 +177,7 @@ def build_view(pool, network, cfg, mirror_dir: Path, point_id: int, *, stamp: st
     report = report if report is not None else LayerReport()
     point = pool.points_of([point_id]).get(point_id)
     track = pool.track_of_point(point_id)
-    if point is None or not point.held or point.legacy or track is None:
+    if point is None or not point.held or point.scoped or track is None:
         return None, None
     source = next((s for s in cfg.sources if s.identity == track.repo), None)
     if source is None or source.provider != "apt" or network.layer_for(source.url) is None \
@@ -313,12 +313,12 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
     as the point is (a later one, e.g. a package edit, from `stamp`).
 
     A repository with no point at all (synced only by an mmw from before
-    repository points) keeps the live overlay until its next sync."""
+    repository points) has nothing to lay a view over: it is said, and serves
+    plain until its first sync."""
     from mmw.core.resolve import network_mirrors
     from mmw.core.transfer_ranges import repository_targets
     report = LayerReport()
     units = [u for u in network_mirrors(network, cfg, mirror_dir) if u.provider == "apt"]
-    live_bases = set()
     for source in cfg.sources:
         members = [u for u in units if u.source == source.identity]
         if not members:
@@ -330,8 +330,8 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
             continue
         current = repository_targets(pool, source.identity)
         if not current:
-            live_bases.add(members[0].mirror_base)
-            _build_live(network, mirror_dir, pool, source, members, inputs, report, decisions)
+            report.warnings.append(f"{network.name}: {source.name} has no point yet — its custom packages "
+                                   "are served once it syncs")
             continue
         suites = {_point_suite(pool.track_of_point(pid), members[0].mirror_base) for pid in current}
         missing = sorted(f"{s}/{c}" for s, c in inputs[1] if s not in suites)
@@ -347,49 +347,8 @@ def build_network_layers(network, cfg, mirror_dir: Path, pool, *,
                                  report=report, inputs=inputs)
             if view is not None:
                 report.views.append((pid, view))
-    for base in pool.layer_bases(network.name) - live_bases:
-        pool.clear_layer(network.name, base)         # the live overlay: only until a point exists
     report.warnings = list(dict.fromkeys(report.warnings))
     return report
-
-
-def _build_live(network, mirror_dir: Path, pool, source, members, inputs, report: LayerReport,
-                decisions) -> None:
-    """The overlay before views, over live refs into `layer_rows`: for a
-    repository that has no point yet. Task 23 removes it with the table."""
-    from mmw.core.publisher.links import _dedup_rows
-    layer, debs, fingerprint = inputs
-    base = members[0].mirror_base
-    rows = {r[0]: r for r in _dedup_rows(pool.mirror_files([m.name for m in members]))}
-    published = _published(rows)
-    missing = [f"{s}/{c}" for s, c in debs if c not in published.get(s, {})]
-    if missing:
-        report.errors.append(f"{network.name}: {source.name} has custom packages for "
-                             f"{', '.join(missing)}, which this network does not publish")
-        pool.clear_layer(network.name, base)
-        return
-    chosen = {**read_decisions(layer_dir(mirror_dir, network.name, source.name)), **(decisions or {})}
-    digest = hashlib.sha256(json.dumps({
-        "format": LAYER_FORMAT,
-        "published": sorted((s, c, sorted(a)) for s, cs in published.items() for c, a in cs.items()),
-        "upstream": sorted((rel, r[4]) for rel, r in rows.items()
-                           if rel.startswith("dists/") and rel.rsplit("/", 1)[-1] in _RELEASE_NAMES),
-        "debs": sorted((s, c, d.path.name, d.sha256) for (s, c), ds in debs.items() for d in ds),
-        "layer": layer.model_dump(mode="json"), "key": fingerprint, "decisions": chosen,
-    }, sort_keys=True).encode()).hexdigest()
-    clashes = _clashes(source.name, rows, published, debs, chosen)
-    report.clashes += [c for c in clashes if c.filename not in chosen]
-    if pool.layer_digest(network.name, base) == digest and _intact(pool.layer_overlay(network.name, base)):
-        return
-    dropped = {c.filename for c in clashes if chosen.get(c.filename) == "drop"}
-    try:
-        out = _rebuild(network.name, source.name, layer, rows, published, debs, dropped,
-                       mirror_dir, _work(mirror_dir, network.name, source.name), PoolBlobs(pool))
-    except Exception as e:  # noqa: BLE001 — one repository's failure is reported, not fatal
-        report.errors.append(f"{network.name}: {source.name}: layer not built: {e}")
-        pool.clear_layer(network.name, base)
-        return
-    pool.replace_layer(network.name, base, out, digest)
 
 
 def served_files(pool, network, cfg, mirror_dir: Path) -> dict[str, dict[str, str]]:

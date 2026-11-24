@@ -76,20 +76,15 @@ def _free_stamp(pool: Pool, network: str) -> str:
 
 
 def walk_tree(network: NetworkConfig, cfg: Config, mirror_dir: Path, pool: Pool, *,
-              progress=None, stop_event=None, repository_files=None, sink=None,
-              preview=False, build_layers=True, point_views=None) -> tuple[dict[str, str], str, list[str]]:
+              progress=None, stop_event=None, repository_files=None, sink=None, result=None,
+              preview=False, point_views=None) -> tuple[dict[str, str], str, list[str]]:
     """`network`'s complete tree as served — layers applied, generated nginx
     left out — as (path → checksum, its settings JSON, warnings). Keys and
     upstream files are frozen into the pool on the way. The caller holds the
     pool's shared lock (see `take_snapshot`). Raises if the walk reported
     errors, and InterruptedError on a stop."""
     sink = sink or RecordingSink(pool)
-    result = NetworkPublishResult(network_name=network.name, dry_run=False)
-    from mmw.core.layers import apply_build
-    if build_layers:
-        apply_build(network, cfg, mirror_dir, pool, result)     # what the network serves, layer and all
-        from mmw.core.layers import served_files
-        repository_files = {**served_files(pool, network, cfg, mirror_dir), **(repository_files or {})}
+    result = result or NetworkPublishResult(network_name=network.name, dry_run=False)
     from mmw.core.publisher import walk_network
     mirrors = walk_network(network, cfg, mirror_dir, sink, pool, result,
                            nginx_root=None, prune=False,
@@ -141,8 +136,14 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
     them and leave a snapshot that can never be published or bundled to.
     """
     with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
+        # What the network serves, layer and all: its layers' views of the
+        # current points, built first (a layer error refuses the snapshot).
+        from mmw.core.layers import apply_build, served_files
+        result = NetworkPublishResult(network_name=network.name, dry_run=False)
+        apply_build(network, cfg, mirror_dir, pool, result)
         rows_map, settings, walk_warnings = walk_tree(network, cfg, mirror_dir, pool,
-                                                      progress=progress, stop_event=stop_event)
+                                                      progress=progress, stop_event=stop_event, result=result,
+                                                      repository_files=served_files(pool, network, cfg, mirror_dir))
         if warnings is not None:
             warnings.extend(walk_warnings)
         # Older snapshots first, so version numbers follow time even when a
@@ -155,13 +156,13 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
         pool.record_repo_versions(sid, network.name, stamp,
                                   repo_digests(rows, recorded_repos(settings)))
         # Label the repository points whose slices were actually walked.
-        # Before its first repository sync (or for layers/provider layouts),
-        # preserve the exact walk as a legacy network-owned point.
+        # Otherwise (no repository point of that slice) the exact walk is
+        # kept as the network's own (scoped) point.
         from mmw.core.points import by_repo, split_repo
         from mmw.core.repository_points import current_repository_points, files_for_settings
         ids = []
         for repo, mine in by_repo(rows_map, settings, network.name).items():
-            candidates = pool.recorded_repos(network.name).get(repo) or current_repository_points(pool, repo)
+            candidates = pool.latest_recordings(network.name).get(repo) or current_repository_points(pool, repo)
             slices = {pid: files_for_settings(pool, pid, settings) for pid in candidates}
             selected = [pid for pid, files in slices.items() if files]
             if selected and {p: c for files in slices.values() for p, c in files.items()} == mine:
@@ -446,8 +447,6 @@ def forget_snapshot(pool: Pool, mirror_dir: Path, snap: SnapshotInfo) -> bool:
         for path in disk_io.ops.iterdir(d):
             if is_manifest(path.name) and path.name.split(".", 1)[0] == snap.stamp:
                 disk_io.ops.remove(path)
-    from mmw.core.points import migrate_sent
-    migrate_sent(pool, snap.network)
     pool.forget_snapshot(snap)
     return False
 

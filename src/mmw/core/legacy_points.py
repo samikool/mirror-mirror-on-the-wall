@@ -16,8 +16,13 @@ import threading
 UPGRADE = "legacy-points"
 SENT = "sent"
 ONE_MODEL = "one-model"
+OLD_TABLES = "old-tables"
 # The one history upgrade chain, in order; each step marked in `history_upgrades`.
-CHAIN = ("manual-snapshots", UPGRADE, SENT, ONE_MODEL)
+CHAIN = ("manual-snapshots", UPGRADE, SENT, ONE_MODEL, OLD_TABLES)
+# What the network walk kept before history belonged to repositories: its
+# per-network cache of a repository's points, and the live layer overlay.
+# Read by the steps before (`_one_model`), dropped after.
+_DROPPED = ("network_repo_rows", "layer_rows", "layer_digests")
 _CHAIN_LOCK = threading.Lock()      # one run per process (the TUI's worker and a page's open)
 _APT = ("apt", "apt-flat", "apt-local")
 _SIGNATURES = ("Release", "InRelease", "Release.gpg")
@@ -33,10 +38,11 @@ def upgrade(pool) -> list[str]:
     if CHAIN_DONE <= done(pool):
         return []
     with _CHAIN_LOCK:
-        pool._retire_manual_snapshots()
+        _retire_manual_snapshots(pool)
         notes = list(promote_legacy_points(pool))
         _migrate_sent(pool)
         notes += _one_model(pool)
+        _drop_old_tables(pool)
     return notes
 
 
@@ -62,10 +68,172 @@ def _mark(pool, name: str) -> None:
 def _migrate_sent(pool) -> None:
     if SENT in done(pool):
         return
-    from mmw.core.points import migrate_sent
     for network in sorted(pool.network_names()):
         migrate_sent(pool, network)
     _mark(pool, SENT)
+
+
+def _drop_old_tables(pool) -> None:
+    """Once, last: the tables only the older steps read."""
+    if OLD_TABLES in done(pool):
+        return
+    with pool._lock:
+        c = pool._conn
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            if not c.execute("SELECT 1 FROM history_upgrades WHERE name = ?", (OLD_TABLES,)).fetchone():
+                for table in _DROPPED:
+                    c.execute(f"DROP TABLE IF EXISTS {table}")
+                c.execute("INSERT OR IGNORE INTO history_upgrades VALUES (?)", (OLD_TABLES,))
+            c.commit()
+        except BaseException:
+            c.rollback()
+            raise
+
+
+def _retire_manual_snapshots(pool) -> None:
+    """One-time upgrade: snapshots become ordinary retained point history.
+
+    Leave the old lists/settings for transfer migration. Only release a
+    snapshot's independent GC hold after all its files are in held points;
+    an unreadable/incomplete conversion keeps its old protection.
+    """
+    if pool._conn.execute("SELECT 1 FROM history_upgrades WHERE name = 'manual-snapshots'").fetchone():
+        return
+    from mmw.core.repository_points import files_for_settings
+    for network in sorted(pool.network_names()):
+        convert_snapshots(pool, network)
+        seed_recordings(pool, network)
+        deployments = pool.published(network)
+        # Older live/as-of publish records contain no exact point IDs.
+        # Preserve pre-existing history conservatively until that root is
+        # republished, when the normal path records its exact projection.
+        existing = pool.points_of(pool.linked_held_points())
+        existing.update({p.id: p for p in pool.repository_points()})
+        for deployment in deployments:
+            if deployment.target != 'live' and not deployment.target.startswith('as-of:'):
+                continue
+            ids = [p.id for p in existing.values() if p.held and p.stamp <= deployment.made]
+            if ids:
+                with pool._lock:
+                    pool._conn.executemany('INSERT OR IGNORE INTO published_points VALUES (?, ?)',
+                                           [(deployment.root, pid) for pid in ids])
+                    pool._conn.commit()
+        for snap in pool.snapshots(network):
+            if not snap.complete:
+                continue
+            ids = pool.snapshot_point_ids(snap.id)
+            try:
+                recorded = {p: cs for pid in ids
+                            for p, cs in files_for_settings(pool, pid, snap.settings).items()}
+            except (ValueError, LookupError):
+                continue  # Preserve an old state whose selection cannot be read.
+            if not ids or recorded != dict(pool.snapshot_files(snap.id)):
+                continue
+            for deployment in deployments:
+                if deployment.target == snap.stamp:
+                    with pool._lock:
+                        pool._conn.executemany('INSERT OR IGNORE INTO published_points VALUES (?, ?)',
+                                               [(deployment.root, pid) for pid in ids])
+                        pool._conn.commit()
+            pool.demote_snapshot(snap.id)
+    with pool._lock:
+        pool._conn.execute("INSERT OR IGNORE INTO history_upgrades VALUES ('manual-snapshots')")
+        pool._conn.commit()
+
+
+def convert_snapshots(pool, network: str, warnings: list[str] | None = None) -> int:
+    """Once per network: every complete snapshot taken before points, oldest
+    first, split into points — linked to the network at the snapshot's own
+    stamp and listed for the snapshot. History-only (imported) snapshots
+    have no files to split. One that cannot be split is said in `warnings`
+    and skipped — it stays a label — so it never stops the network's points.
+    How many were converted."""
+    if pool.points_converted(network):
+        return 0
+    from mmw.core.points import split_rows
+    # Inside the upgrade chain: legacy, for the later steps to convert.
+    # After it (a snapshot nothing converted yet): the network's own point.
+    scope = network if ONE_MODEL in done(pool) else None
+    converted = 0
+    for snap in reversed(pool.snapshots(network)):
+        if not snap.complete:
+            continue
+        rows = dict(pool.snapshot_files(snap.id))
+        try:
+            drafts = split_rows(pool, rows, snap.settings, network, snap.stamp)
+        except Exception as e:  # noqa: BLE001 — one old snapshot never blocks the rest
+            if warnings is not None:
+                warnings.append(f"snapshot {snap.stamp} of {network} could not be split into points ({e}) "
+                                "— it stays a label; dates before the next one fall back to it")
+            continue
+        ids = []
+        for repo, draft in drafts:
+            pid, _new = pool.record_point(repo, draft, snap.stamp, unconverted=scope is None, scope=scope)
+            pool.link_network_point(network, pid, snap.stamp)
+            ids.append(pid)
+        pool.link_snapshot_points(snap.id, ids)
+        converted += 1
+    pool.mark_points_converted(network)
+    return converted
+
+
+def seed_recordings(pool, network: str, now: str | None = None) -> int:
+    """Once per network: each complete snapshot's points, per repository, as
+    a recording at its stamp, and its settings — so a date before 3c's first
+    recording can still be published. When (`now`) is kept: a date before it
+    is only as exact as the snapshots. How many snapshots seeded."""
+    if pool.recordings_seeded(network):
+        return 0
+    from mmw.core.publisher.manifest import now_stamp
+    done = 0
+    for snap in reversed(pool.snapshots(network)):
+        if not snap.complete:
+            continue
+        ids = pool.snapshot_point_ids(snap.id)
+        if not ids:
+            continue
+        by: dict[str, list[int]] = {}
+        for pid in ids:
+            t = pool.track_of_point(pid)
+            if t is not None:
+                by.setdefault(t.repo, []).append(pid)
+        last = pool.points_at(network, snap.stamp)
+        for repo, pids in by.items():
+            if sorted(last.get(repo, [])) != sorted(pids):
+                pool.record_recording(network, repo, snap.stamp, pids)
+        for repo in set(last) - set(by):
+            pool.record_recording(network, repo, snap.stamp, [])
+        if snap.settings:
+            pool.record_settings(network, snap.stamp, snap.settings)
+        done += 1
+    pool.mark_recordings_seeded(network, (now or now_stamp()) if done else None)
+    return done
+
+
+def migrate_sent(pool, network: str) -> bool:
+    """Once per network: what its format-2 bundles sent (each repository's
+    last-sent version) as sent points and files — so the first bundle of
+    points is still a delta. Whether it ran."""
+    if pool.sent_migrated(network):
+        return False
+    convert_snapshots(pool, network)
+    if pool.full_next(network) is not None:
+        # A forced delete said the far side's state is unknown: its history
+        # isn't trusted — nothing counts as sent, so the first bundle is full.
+        pool.clear_full_next(network)
+        pool.mark_sent_migrated(network)
+        return True
+    for repo, version_id in pool.last_sent_versions(network).items():
+        holders = pool.repo_version_snapshots(version_id)
+        if not holders:
+            continue                    # its snapshot is gone: those files go again (the far side dedupes)
+        ids = [pid for pid in pool.snapshot_point_ids(holders[0])
+               if (t := pool.track_of_point(pid)) is not None and t.repo == repo]
+        files = {c for pid in ids for c in pool.point_files(pid).values()}
+        pool.record_sent(network, ids, files, "migrated")
+    pool.mark_sent_migrated(network)
+    return True
 
 
 def _one_model(pool) -> list[str]:

@@ -56,7 +56,7 @@ def lab(tmp_path):
 
 def _state(lab, network="lab"):
     with Pool(lab.mirror_dir, read_only=True) as pool:
-        return (points.current_points(pool, network), pool.latest_recordings(network),
+        return (pool.latest_recordings(network), pool.latest_recordings(network),
                 pool.ref_map(lab.units[0].name))
 
 

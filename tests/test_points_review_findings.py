@@ -131,7 +131,7 @@ def test_points_of_a_removed_network_go(tmp_path):
     with Pool(tmp_path) as pool:
         pid, _ = pool.record_point("R", _draft(1, {"h/dists/sid/Release": "c1"}), "s")
         pool.link_network_point("gone", pid, "20261101T000000Z")
-        assert points.retention_plan(pool, [config.NetworkConfig(name="oak")]) == [pid]
+        assert points.retention_plan(pool, [config.NetworkConfig(name="oak")], cfg=_cfg(tmp_path)) == [pid]
 
 
 # 6 ── an unchanged repository isn't split again

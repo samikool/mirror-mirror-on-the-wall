@@ -6,6 +6,7 @@ import tarfile
 
 import pytest
 
+from mmw.core import legacy_points
 from mmw.core import points
 from mmw.core import snapshots as S
 from mmw.core.pool import Pool
@@ -73,7 +74,7 @@ def test_a_stub_point_is_never_listed(mmw_net, tmp_path):
     cfg, net, md = mmw_net
     snap = S.take_snapshot(net, cfg, md, kind="manual")
     with Pool(md) as pool:
-        points.convert_snapshots(pool, net.name)
+        legacy_points.convert_snapshots(pool, net.name)
         pool.stub_point(pool.snapshot_point_ids(snap.id)[0])
     with pytest.raises(ValueError, match="no longer kept"):
         bundle_network(net, cfg, md, out_path=tmp_path / "1.tar", to_ref=snap.stamp)
@@ -87,7 +88,7 @@ def test_retention_keeps_the_current_point_whatever_its_date(mmw_net, tmp_path):
     set_a(md, 2)                                        # upstream moved back a day
     points.record_network_points(net, cfg, md, stamp="20300102T000000Z")
     with Pool(md, read_only=True) as pool:
-        current = {p for ids in points.current_points(pool, net.name).values() for p in ids}
+        current = {p for ids in pool.points_at(net.name, "99999999T999999Z").values() for p in ids}
         assert not set(points.retention_plan(pool, [net], cfg=cfg)) & current
 
 

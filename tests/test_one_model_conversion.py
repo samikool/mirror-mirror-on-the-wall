@@ -30,7 +30,7 @@ def _forget_points(md):
         db = pool.db_path
     with sqlite3.connect(db) as conn:
         for table in ('points', 'point_files', 'point_units', 'point_unit_files', 'repository_current',
-                      'network_points', 'network_recordings', 'network_settings', 'network_repo_rows',
+                      'network_points', 'network_recordings', 'network_settings',
                       'points_converted', 'recordings_seeded', 'snapshot_points', 'sent_migrated',
                       'network_slices', 'network_slice_dates', 'sent_slices'):
             conn.execute(f'DELETE FROM {table}')
@@ -62,6 +62,8 @@ def old_pool(tmp_path, up):
                                    layers=[config.NetworkLayer(source=apt.url, signing='unsigned')])
     cfg = cfg.model_copy(update={'sources': [apt, pypi], 'networks': [a, layered]})
     make_deb(layer_dir(md, layered.name, apt.name) / 'stable/main', 'local-tools', '1.0')
+    # A layer is a view of a point: the APT sync's, for the layered snapshot.
+    points.record_points_after_sync(cfg, md, {apt.identity}, say=lambda _: None)
     for net in (a, layered):
         take_snapshot(net, cfg, md, kind='manual')
     _forget_points(md)
@@ -95,7 +97,7 @@ def test_converted_point_serves_only_its_network(old_pool):
         mine = pool.snapshots(a.name)[0].settings
         theirs = pool.snapshots(layered.name)[0].settings
         pid = next(p for p in pool.linked_held_points() if pool.track_of_point(p).repo == 'pypi')
-        assert pool.points_of([pid])[pid].legacy                # scoped, so read as before
+        assert pool.points_of([pid])[pid].scoped                # scoped, so read as before
         assert pool.point_scopes(pid) == {'a'}
         assert files_for_settings(pool, pid, mine) == pool.point_files(pid) != {}
         assert files_for_settings(pool, pid, theirs) == {}
@@ -191,7 +193,7 @@ def test_walk_records_no_legacy_points(tmp_path, up):
     with Pool(md, read_only=True) as pool:
         ids = [p.id for p in pool.network_points(net.name)]
         assert ids and all(pool.point_scopes(pid) == {'lab'} for pid in ids)
-        assert all(p.legacy for p in pool.points_of(ids).values())
+        assert all(p.scoped for p in pool.points_of(ids).values())
 
 
 def test_tui_converts_on_mount_and_lists_the_points(tmp_path):

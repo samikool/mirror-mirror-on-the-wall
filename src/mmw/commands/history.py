@@ -22,7 +22,7 @@ class HistoryRow:
     marks: tuple[str, ...]
     label: str | None = None
     point: int = 0
-    legacy: bool = False
+    scoped: bool = False     # one network's point, served to it only
 
     @property
     def current(self) -> bool:
@@ -45,7 +45,7 @@ def _consistent(pool, point, track) -> bool:
     """The Release agrees with every index the point keeps (one read)."""
     from mmw.core.point_check import release_mismatches
     from mmw.core.points import _reader
-    if point.legacy or not point.held or not track.name or '/dists/' not in track.name:
+    if point.scoped or not point.held or not track.name or '/dists/' not in track.name:
         return True
     files = pool.point_files(point.id)
     return not release_mismatches(files, track.name, _reader(pool, files))
@@ -60,7 +60,7 @@ def carried_by(cfg) -> dict[str, set[str]]:
 
 
 def prepare(cfg, *, network=None, repos=None, since=None):
-    from mmw.core.points import prepare_history, prepare_recordings, resolve_when, retention_plan, unsent_points
+    from mmw.core.points import prepare_history, resolve_when, retention_plan, unsent_points
     from mmw.core.repository_points import current_repository_points, selected_point_files, wire_draft
     from mmw.site.tracks import content_ident
     from mmw.core.resolve import available_mirrors, network_mirrors
@@ -77,13 +77,6 @@ def prepare(cfg, *, network=None, repos=None, since=None):
     chosen = resolve_repo_refs(list(repos), names) if repos else sorted(names)
     cutoff = resolve_when(since)[:8] + 'T000000Z' if since and 'T' not in since.upper() else (
         resolve_when(since) if since else None)
-    # One-time compatibility conversion reads old retained states, never live
-    # refs: a history view must not require another sync after upgrading.
-    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
-        convert = [name for name in pool.network_names()
-                   if pool.snapshots(name) and not pool.points_converted(name)]
-    for name in convert:
-        prepare_recordings(cfg.settings.mirror_dir, name)
     # Which networks carry each repository: only theirs say sent / unsent.
     carried = carried_by(cfg)
     rows = []
@@ -109,7 +102,7 @@ def prepare(cfg, *, network=None, repos=None, since=None):
                                           or track.name == u.mirror_base for u in mine):
                     continue
                 date = point.date
-                if not point.legacy and point.held:
+                if not point.scoped and point.held:
                     files = selected_point_files(pool, point.id, mine)
                     if not files:
                         continue
@@ -145,7 +138,7 @@ def prepare(cfg, *, network=None, repos=None, since=None):
                 rows.append(HistoryRow(repo, track.suite or track.name or 'files', date, point.ident,
                                        point.held, sizes.get(point.id, 0),
                                        pool.points_frees([point.id]) if point.held else 0,
-                                       tuple(marks), labels.get(point.id), point.id, point.legacy))
+                                       tuple(marks), labels.get(point.id), point.id, point.scoped))
     # Grouped by repository and suite; newest first within each.
     rows.sort(key=lambda r: (r.date, r.ident), reverse=True)
     rows.sort(key=lambda r: (repository_label(r.repo, cfg), r.repo, r.suite))
@@ -194,8 +187,8 @@ def describe(cfg, rows, *, network=None):
         words = [mark_text(m, r) for m in r.marks]
         if not r.held:
             words.append('no longer kept')
-        if r.legacy:
-            words.append('legacy history')
+        if r.scoped:
+            words.append('network-only')
         size = fmt_size(r.size) if r.held else '—'
         suite = r.suite if r.suite != last_suite else ''
         last_suite = r.suite
@@ -585,7 +578,7 @@ def package_plan(cfg, name: str, *, network=None, repos=None, since=None) -> lis
     point it left (version None)."""
     from mmw.core.point_diff import PackageEvent, package_events
     from mmw.core.repos import repository_label
-    rows = [r for r in prepare(cfg, network=network, repos=repos, since=since) if r.held and not r.legacy]
+    rows = [r for r in prepare(cfg, network=network, repos=repos, since=since) if r.held and not r.scoped]
     out = []
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
         for repo, suite in sorted({(r.repo, r.suite) for r in rows},

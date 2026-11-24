@@ -95,7 +95,7 @@ def selected_tree(pool, network, cfg, mirror_dir, settings, current, *, until=No
     sink = PreviewSink(pool) if preview else RecordingSink(pool)
     rows, settings, warnings = walk_tree(
         network, cfg, mirror_dir, pool, repository_files=projection, sink=sink, point_views=views,
-        preview=preview, build_layers=False, progress=progress, stop_event=stop_event)
+        preview=preview, progress=progress, stop_event=stop_event)
     if unviewed:
         # A network's walk of a provider (converted, no sync since): its
         # files as recorded, its pages from the network's track then.
@@ -207,7 +207,7 @@ def retained_track_points(pool, network, track, current, settings):
     points = {p.id: p for p in current.values() if p.track == track}
     for point in pool.network_points(network, track, stubs=True):
         points.setdefault(point.id, point)
-    owned = next((p for p in points.values() if not p.legacy), None)
+    owned = next((p for p in points.values() if not p.scoped), None)
     if owned is not None:
         repo = pool.track_of_point(owned.id).repo
         for point in pool.repository_points(repo, stubs=True):
@@ -229,7 +229,7 @@ def retained_track_points(pool, network, track, current, settings):
 
 
 def point_date(pool, point, settings):
-    if point.legacy:
+    if point.scoped:
         return point.date
     if not point.held:
         return pool.network_slice_date(settings_network(settings), point.id) or point.date
@@ -246,7 +246,7 @@ def sent_changes(pool, network, track, point, known, settings, since):
     if since is None:
         return None
     retained = [(point_date(pool, p, settings), p.stamp, p.ident, p)
-                for p in retained_track_points(pool, network, track, known, settings) if p.held and not p.legacy]
+                for p in retained_track_points(pool, network, track, known, settings) if p.held and not p.scoped]
     base = max((item for item in retained if item[0] <= since), key=lambda item: item[:3], default=None)
     if base is None or base[3].id == point.id:
         return None
@@ -542,11 +542,11 @@ def select_range(pool, network, settings, current, *, until=None, history=False,
             # Imported states may be newer than the live current point.
             # Carrying history must not silently advance past the selected To.
             upper = (max(point_date(pool, known[p], settings) for p in ids if known[p].track == tid)
-                     if any(not known[p].legacy for p in ids if known[p].track == tid) else None)
+                     if any(not known[p].scoped for p in ids if known[p].track == tid) else None)
             for p in retained_track_points(pool, network, tid, known, settings):
                 first = pool.network_point_stamp(network, p.id) or p.stamp
                 after_start = start is None or first > start
-                if not p.legacy:
+                if not p.scoped:
                     lower = None if full else since if explicit_since else cursors.get(tid)
                     after_start = lower is None or point_date(pool, p, settings) > lower
                     if not explicit_since:
@@ -555,7 +555,7 @@ def select_range(pool, network, settings, current, *, until=None, history=False,
                         after_start = after_start or start is None or first > start
                 elif not explicit_since and tid in cursors:
                     after_start = after_start or point_date(pool, p, settings) > cursors[tid]
-                if (p.id not in listing[repo] and (not p.legacy or explicit_since or p.id not in sent_points)
+                if (p.id not in listing[repo] and (not p.scoped or explicit_since or p.id not in sent_points)
                         and after_start
                         and (upper is None or point_date(pool, p, settings) <= upper)
                         and (cutoff is None or point_date(pool, p, settings) <= cutoff)):

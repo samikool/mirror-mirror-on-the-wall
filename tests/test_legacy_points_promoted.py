@@ -20,7 +20,7 @@ def _forget_points(md):
         db = pool.db_path
     with sqlite3.connect(db) as conn:
         for table in ('points', 'point_files', 'point_units', 'point_unit_files', 'repository_current',
-                      'network_points', 'network_recordings', 'network_settings', 'network_repo_rows',
+                      'network_points', 'network_recordings', 'network_settings',
                       'points_converted', 'recordings_seeded', 'snapshot_points'):
             conn.execute(f'DELETE FROM {table}')
         for table in ('history_upgrades', 'published_points', 'point_scopes'):
@@ -64,7 +64,7 @@ def test_promoted_point_projects_like_a_synced_one(old):
     cfg, md, units, snap, a, _b = old
     with Pool(md) as pool:
         (promoted,) = pool.repository_points(units[0].source)
-        assert not promoted.legacy
+        assert not promoted.scoped
         settings = pool.snapshots(a.name)[0].settings
         assert files_for_settings(pool, promoted.id, settings) == dict(pool.snapshot_files(snap.id))
 
@@ -96,7 +96,7 @@ def test_unreadable_legacy_point_stays_and_warns(old):
     assert any("kept as a's only — its indexes can't be read" in w for w in caught), caught
     with Pool(md, read_only=True) as pool:
         assert not pool.repository_points(units[0].source)
-        assert any(p.legacy and p.held for p in pool.points_of(pool.linked_held_points()).values())
+        assert any(p.scoped and p.held for p in pool.points_of(pool.linked_held_points()).values())
     with Pool(md) as pool:
         assert promote_legacy_points(pool) == []          # said once, at the upgrade
 

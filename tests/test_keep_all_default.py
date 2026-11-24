@@ -70,15 +70,27 @@ def test_network_keep_fields_are_refused_in_code():
     assert 'keep_points' not in net.model_dump()
 
 
-def test_network_legacy_points_are_kept(tmp_path):
-    cfg = _four_syncs(tmp_path, keep_points=1)
+def test_a_networks_own_points_follow_the_same_rules(tmp_path):
+    # A network's own points (scoped: a walk of a repository no sync recorded,
+    # or converted from an older mmw) follow their repository's rule; the
+    # network's own track (keys, pages) the global one. No network pins them.
+    src = config.SourceConfig(url='https://apt.test/debian')
     net = config.NetworkConfig(name='oak')
     with Pool(tmp_path) as pool:
-        # A network-walk point: one no repository owns.
-        legacy = [p.id for p in pool.repository_points(cfg.sources[0].identity)]
-        for pid in legacy:
-            pool.link_network_point(net.name, pid, '20261101T120000Z')
-        assert points.retention_plan(pool, [net]) == []
+        for day in range(1, 5):
+            stamp = f'2026110{day}T120000Z'
+            draft = PointDraft('apt.test/debian/dists/stable', f'release:{day}', f'2026110{day}T000000Z',
+                               {'Suite': 'stable'}, {'path': f'blob{day}'})
+            pid, _ = pool.record_point(src.identity, draft, stamp, scope=net.name)
+            pool.link_network_point(net.name, pid, stamp)
+            own = PointDraft('network', f'net:{day}', stamp, {}, {'keys/k.asc': f'key{day}'})
+            pid, _ = pool.record_point('network:oak', own, stamp, scope=net.name)
+            pool.link_network_point(net.name, pid, stamp)
+        for keep, gone in (('all', 0), (1, 6)):
+            cfg = config.Config(settings=config.Settings(mirror_dir=tmp_path, keep_points=keep),
+                                sources=[src], networks=[net])
+            assert len(points.retention_plan(pool, [net], cfg=cfg)) == gone
+        assert len(points.retention_plan(pool, [], cfg=cfg)) == 8      # a removed network keeps nothing
 
 
 def test_site_default_keeps_all(env, tmp_path):  # noqa: F811

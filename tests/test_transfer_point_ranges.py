@@ -265,7 +265,9 @@ def test_next_history_transfer_keeps_unsent_points_beyond_older_target(mmw_net, 
     bundle_network(net, cfg, md, out_path=tmp_path / 'old.tar', until='2026-11-02', history=True)
     with Pool(md, read_only=True) as pool:
         keep1 = cfg.model_copy(update={'settings': cfg.settings.model_copy(update={'keep_points': 1})})
-        doomed = set(points.retention_plan(pool, [net], cfg=keep1))
+        # A history network keeps what it hasn't been sent (a network's own
+        # points follow their repository's rule, as repository points do).
+        doomed = set(points.retention_plan(pool, [net.model_copy(update={'history': True})], cfg=keep1))
         third = {p.id for t in pool.network_tracks(net.name) if t.repo == _key(cfg, 'a')
                  for p in pool.network_points(net.name, t.id) if p.date.startswith('20261103')}
         assert third and not third & doomed

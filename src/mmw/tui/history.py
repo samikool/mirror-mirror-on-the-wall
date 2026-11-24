@@ -173,8 +173,8 @@ class HistoryPage(Page):
                 words.insert(0, f'{name} {found_at[r.point] or "removed"}')
             if not r.held:
                 words.append('no longer kept')
-            if r.legacy:
-                words.append('legacy history')
+            if r.scoped:
+                words.append('network-only')
             t.add_row('▶' if r.current else ' ', Text(date), fmt_size(r.size) if r.held else '—',
                       ' · '.join(words), key=f'p{len(self._rows)}')
             self._rows.append(r)
@@ -258,7 +258,7 @@ class HistoryPage(Page):
             return
         at = self._rows.index(row)
         before = next((r for r in self._rows[at + 1:] if r is not None and r.repo == row.repo
-                       and r.suite == row.suite and r.held and not r.legacy), None)
+                       and r.suite == row.suite and r.held and not r.scoped), None)
         if before is None:
             self.set_status(f'The oldest kept point of {row.suite} — nothing before it to compare with.', 'error')
             return

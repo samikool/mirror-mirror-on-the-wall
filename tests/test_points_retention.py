@@ -23,10 +23,10 @@ def _cfg(tmp_path, keep=3):
                          sources=[config.SourceConfig(url=REPO)])
 
 
-def _seed(pool, days, network=None, repo=REPO, legacy=False):
+def _seed(pool, days, network=None, repo=REPO, scope=None):
     ids = {}
     for d in days:
-        pid, _ = pool.record_point(repo, _draft(d), f"202611{d:02d}T120000Z", legacy=legacy)
+        pid, _ = pool.record_point(repo, _draft(d), f"202611{d:02d}T120000Z", scope=scope)
         if network:
             pool.link_network_point(network, pid, f"202611{d:02d}T120000Z")
         ids[d] = pid
@@ -52,13 +52,18 @@ def test_keep_points_setting(tmp_path, keep, left):
         assert _kept(pool) == left
 
 
-def test_network_walk_points_stay_while_their_network_does(tmp_path):
+def test_network_walk_points_follow_their_repository(tmp_path):
+    # A walk's points (scoped to the network) keep as their repository's do;
+    # a removed repository's, or only a removed network's, go.
     cfg = _cfg(tmp_path, 1)
     net = config.NetworkConfig(name="oak")
     with Pool(tmp_path) as pool:
-        ids = _seed(pool, range(1, 6), network=net.name, repo="R", legacy=True)
-        assert points.retention_plan(pool, [net], now="20261120T000000Z", cfg=cfg) == []
+        ids = _seed(pool, range(1, 6), network=net.name, scope=net.name)
+        assert sorted(points.retention_plan(pool, [net], now="20261120T000000Z", cfg=cfg)) == \
+            sorted(ids[d] for d in range(1, 5))
         assert sorted(points.retention_plan(pool, [], now="20261120T000000Z", cfg=cfg)) == sorted(ids.values())
+        gone = _seed(pool, range(1, 3), network=net.name, repo="R", scope=net.name)
+        assert set(gone.values()) <= set(points.retention_plan(pool, [net], now="20261120T000000Z", cfg=cfg))
 
 
 def test_snapshot_and_unsent_points_are_kept(tmp_path):

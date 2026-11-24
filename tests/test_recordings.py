@@ -1,6 +1,7 @@
 """Each network's recordings over time: which points each repository had at
 every recording that changed them, and the walk's settings — what
 publishing as of a date reads."""
+from mmw.core import legacy_points
 from mmw.core import points
 from mmw.core import snapshots as S
 from mmw.core.pool import Pool
@@ -37,7 +38,7 @@ def test_unchanged_repo_adds_no_recording(two_mirrors):  # noqa: F811
     with Pool(md, read_only=True) as pool:
         n = pool._conn.execute("SELECT count(*) FROM network_recordings WHERE network = ?",
                                (net.name,)).fetchone()[0]
-        assert n == len(pool.recorded_repos(net.name))
+        assert n == len(pool.points_at(net.name, "99999999T999999Z"))
 
 
 def test_recordings_track_a_repository_leaving(two_mirrors):  # noqa: F811
@@ -49,7 +50,7 @@ def test_recordings_track_a_repository_leaving(two_mirrors):  # noqa: F811
     with Pool(md, read_only=True) as pool:
         assert _key(cfg, "b") in pool.points_at(net.name, "20300101T000000Z")
         assert _key(cfg, "b") not in pool.points_at(net.name, "20300102T000000Z")
-        assert _key(cfg, "b") not in pool.recorded_repos(net.name)
+        assert _key(cfg, "b") not in pool.points_at(net.name, "99999999T999999Z")
 
 
 def test_settings_at(two_mirrors):  # noqa: F811
@@ -69,8 +70,8 @@ def test_seeded_from_snapshots_once(two_mirrors):  # noqa: F811
         pool._conn.execute("DELETE FROM network_recordings")
         pool._conn.execute("DELETE FROM recordings_seeded")
         pool._conn.commit()
-        assert points.seed_recordings(pool, net.name) == 1
-        assert points.seed_recordings(pool, net.name) == 0
+        assert legacy_points.seed_recordings(pool, net.name) == 1
+        assert legacy_points.seed_recordings(pool, net.name) == 0
         assert set(pool.points_at(net.name, snap.stamp)) >= {_key(cfg, "a"), _key(cfg, "b")}
         assert pool.settings_at(net.name, snap.stamp) == snap.settings
 
@@ -81,15 +82,15 @@ def test_rename_and_forget_carry_points_and_sent_records(two_mirrors, tmp_path):
     set_a(md, 1)
     bundle_network(net, cfg, md, out_path=tmp_path / "1.tar")
     with Pool(md) as pool:
-        before = (pool.recorded_repos(net.name), pool.sent_point_ids(net.name),
+        before = (pool.points_at(net.name, "99999999T999999Z"), pool.sent_point_ids(net.name),
                   pool.points_at(net.name, "29991231T000000Z"))
         assert all(before)
         pool.rename_network(net.name, "elm")
-        assert (pool.recorded_repos("elm"), pool.sent_point_ids("elm"),
+        assert (pool.points_at("elm", "99999999T999999Z"), pool.sent_point_ids("elm"),
                 pool.points_at("elm", "29991231T000000Z")) == before
-        assert pool.recorded_repos(net.name) == {} and pool.sent_point_ids(net.name) == set()
+        assert pool.points_at(net.name, "99999999T999999Z") == {} and pool.sent_point_ids(net.name) == set()
         pool.forget_network("elm")
-        assert pool.recorded_repos("elm") == {} and pool.sent_point_ids("elm") == set()
+        assert pool.points_at("elm", "99999999T999999Z") == {} and pool.sent_point_ids("elm") == set()
         assert pool.points_at("elm", "29991231T000000Z") == {} and not pool.sent_migrated("elm")
 
 
@@ -103,7 +104,7 @@ def test_a_date_before_the_first_sync_says_it_comes_from_a_snapshot(two_mirrors)
         pool._conn.execute("DELETE FROM network_recordings")
         pool._conn.execute("DELETE FROM recordings_seeded")
         pool._conn.commit()
-        points.seed_recordings(pool, net.name, now="20990101T000000Z")      # the upgrade
+        legacy_points.seed_recordings(pool, net.name, now="20990101T000000Z")      # the upgrade
     with Pool(md, read_only=True) as pool:
         note = points.seeded_note(pool, net.name, "20500101T000000Z")
         assert note and f"snapshot of {snap.stamp[:4]}-" in note and "since 2099-01-01" in note
@@ -128,7 +129,7 @@ def test_a_pool_seeded_before_its_moment_was_kept_uses_its_first_sync(two_mirror
         pool._conn.execute("DELETE FROM network_recordings")
         pool._conn.execute("DELETE FROM recordings_seeded")
         pool._conn.commit()
-        points.seed_recordings(pool, net.name)
+        legacy_points.seed_recordings(pool, net.name)
         pool._conn.execute("DELETE FROM recordings_seeded_at")       # as a build before it seeded
         pool._conn.commit()
     set_a(md, 2)

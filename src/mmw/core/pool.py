@@ -356,6 +356,9 @@ CREATE TABLE IF NOT EXISTS repository_failed_units (
     repo TEXT NOT NULL, dims TEXT NOT NULL, PRIMARY KEY(repo, dims)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS repository_current (repo TEXT PRIMARY KEY, points TEXT NOT NULL);
+-- When a sync last read each repository: its points keep their Release's own
+-- date, and a sync that finds a suite unchanged adds no point.
+CREATE TABLE IF NOT EXISTS repository_synced (repo TEXT PRIMARY KEY, stamp TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS repo_points_migrated (done INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS point_files (
     point INTEGER NOT NULL, path INTEGER NOT NULL, blob INTEGER NOT NULL,

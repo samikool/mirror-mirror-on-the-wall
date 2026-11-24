@@ -13,6 +13,14 @@ from mmw.tui.ui.page import Page
 from mmw.tui.ui.widgets import Button
 
 
+def _dates_note(last: str | None) -> str:
+    """What the Released column means, with when a sync last read these repositories."""
+    from mmw.site.versionref import short_day
+    synced = f'Last sync {short_day(last)}. ' if last else ''
+    return (f'{synced}Released is the date upstream published each point; a sync that finds a suite '
+            'unchanged adds no point, so its newest point can be older than the last sync.')
+
+
 class HistoryPage(Page):
     """`mmw history` as a table, laid out like the far side's: a heading row
     per suite, then its points newest first, the latest sync marked ▶. The
@@ -63,7 +71,7 @@ class HistoryPage(Page):
 
     def on_mount(self):
         t = self.query_one('#history-table', DataTable)
-        t.add_columns('', 'Date', 'Size', '')
+        t.add_columns('', 'Released', 'Size', '')
         t.focus()                       # not the find box: it would swallow p, t, c and d
         self.start_flow(self._load)
 
@@ -77,7 +85,9 @@ class HistoryPage(Page):
 
         def read():
             rows = command.prepare(cfg, network=self.network, repos=self.repos)
-            return rows, [], command.carried_by(cfg)
+            synced = command.last_synced(cfg)
+            last = max((synced[r.repo] for r in rows if r.repo in synced), default=None)
+            return rows, [_dates_note(last)] if rows else [], command.carried_by(cfg)
         try:
             rows, notes, carried = await asyncio.to_thread(read)
         except (ValueError, LookupError, OSError) as exc:
@@ -163,7 +173,7 @@ class HistoryPage(Page):
         for r in rows:
             if (r.repo, r.suite) != group:
                 group = (r.repo, r.suite)
-                heading = r.suite if len(repos) == 1 else f'{repository_label(r.repo, cfg)} · {r.suite}'
+                heading = r.heading if len(repos) == 1 else f'{repository_label(r.repo, cfg)} · {r.heading}'
                 t.add_row(Text(heading, style='bold'), '', '', '', key=f'h{len(self._rows)}')
                 self._rows.append(None)
             date = short_day(r.date) + (f' {r.date[9:11]}:{r.date[11:13]}'

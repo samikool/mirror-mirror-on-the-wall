@@ -503,7 +503,7 @@ class SiteHomePage(Page):
     def _history_columns(self, covers: bool) -> None:
         t = self.query_one("#site-history", DataTable)
         t.clear(columns=True)
-        t.add_column("Date", key="date")
+        t.add_column("Released", key="date")
         t.add_column("Changes", key="changes")
         t.add_column("Size", key="size")
         t.add_column("", key="mark")
@@ -536,7 +536,7 @@ class SiteHomePage(Page):
                 if found is not None and not any(q is not None and q.id in found and u.id == track.id
                                                  for u, q, *_ in self._history):
                     continue
-                t.add_row(Text(ops.suite_of(track), style="bold"), "", "", "", *([""] if covers else []),
+                t.add_row(Text(ops.heading_of(track), style="bold"), "", "", "", *([""] if covers else []),
                           key=f"t{track.id}")
                 self._visible.append(at)
                 continue
@@ -578,7 +578,7 @@ class SiteHomePage(Page):
             head += f" · {_esc(row['covers'])}"
         lines = [head]
         if row.get("dated"):                     # a suite: the line that pins a client; else the URL
-            pin = (sources_line(row["dated"], ops.suite_of(track), row.get("components") or []) if track.name
+            pin = (sources_line(row["dated"], ops.dist_of(track), row.get("components") or []) if track.name
                    else row["dated"] + "/")
             lines.append("[dim]pin[/]    " + _esc(pin))
         out.update("\n".join(lines))

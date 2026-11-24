@@ -238,7 +238,7 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
     from mmw.core.resolve import available_mirrors
     from mmw.core.repos import repository_key
     from mmw.core.repository_points import (
-        record_repository, set_current_repository_points, accumulated_refs, coordinates, provider_scoped,
+        record_repository, set_current_repository_points, set_repository_synced, accumulated_refs, coordinates, provider_scoped,
     )
     from mmw.core.publisher.manifest import now_stamp
     units = list({u.name: u for u in [*cfg.mirrors, *available_mirrors(cfg, mirror_dir),
@@ -276,6 +276,7 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
                 try:
                     recorded = record_repository(pool, repo, mine, mirror_dir, stamp, refs=None if view is pool else view, complete_suites=complete, say=say)
                     set_current_repository_points(pool, repo, recorded, replace=False)
+                    set_repository_synced(pool, repo, stamp)
                     fresh.update(pid for pid, _, _ in recorded)
                     new = [_say(repo, d, cfg) for _, created, d in recorded if created]
                     if new:

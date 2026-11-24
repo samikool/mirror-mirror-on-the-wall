@@ -31,7 +31,7 @@ def test_sources_pane_shows_history(lab):  # noqa: F811
             app.screen.query_one('#repo-list').focus()
             await until(pilot, lambda: app.screen.highlighted() is not None)
             text = await shows(pilot, lambda: app.screen.query_one('#repo-detail').render(), '4 kept')
-            assert re.search(rf'History\s+stable 04 Nov · 4 kept · {re.escape(size)} · keep all \(default\)',
+            assert re.search(rf'History\s+stable 04 Nov · last sync \d\d \w{{3}} · 4 kept · {re.escape(size)} · keep all \(default\)',
                              str(text)), text
     asyncio.run(go())
 
@@ -63,4 +63,4 @@ def test_cli_history_says_the_same(lab):  # noqa: F811
     cfg, oak, md, unit, tmp_path = lab
     out = CliRunner().invoke(cli, ['--config', str(tmp_path), 'history', '-n', 'oak']).output
     assert out.splitlines()[0].startswith('oak: far side has stable 03 Nov · newer here: 04 Nov (1 point, ')
-    assert 'stable 04 Nov · 4 kept · ' in out and 'keep all (default)' in out
+    assert re.search(r'stable 04 Nov · last sync \d\d \w{3} · 4 kept · ', out) and 'keep all (default)' in out

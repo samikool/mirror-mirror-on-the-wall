@@ -34,6 +34,9 @@ def test_history_table_groups_by_suite(lab):  # noqa: F811
         t = await _open(app, pilot)
         assert t.row_count == 5                           # one heading, four points
         assert _cells(t, 0)[0] == 'stable' and _cells(t, 0)[1:] == ['', '', '']
+        assert [str(c.label) for c in t.columns.values()][1] == 'Released'
+        note = str(app.screen.query_one('#history-found').render())
+        assert 'Last sync ' in note and 'Released is the date upstream published each point' in note
         newest = _cells(t, 1)
         assert newest[0] == '▶' and newest[1].startswith('04 Nov')
         assert 'latest sync' in newest[3] and 'not yet sent to oak' in newest[3]
@@ -111,4 +114,15 @@ def test_delete_protected_row_says_why(lab):  # noqa: F811
         text = ' '.join(str(w.render()) for w in app.screen.query('Label, Static'))
         assert 'protected' in text and 'published at' in text
         await pilot.press('escape')
+    _run(cfg, tmp_path, check)
+
+
+def test_history_table_heads_a_suite_with_its_alias(lab):  # noqa: F811
+    from test_history_rows import _alias_suite
+    cfg, oak, md, unit, tmp_path = lab
+    _alias_suite(md, 'oldstable')
+
+    async def check(app, pilot):
+        t = await _open(app, pilot)
+        assert _cells(t, 0)[0] == 'stable (oldstable)'
     _run(cfg, tmp_path, check)

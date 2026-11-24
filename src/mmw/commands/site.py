@@ -576,7 +576,7 @@ def history(repo: str, root: Path | None = None) -> int:
     from mmw.core.point_diff import summary_counts
     from mmw.site.dated import sources_line
     from mmw.site.versionref import day_time
-    from mmw.site.ops import suite_of
+    from mmw.site.ops import dist_of, heading_of
     try:
         said = r_.point_notes(key) if hasattr(r_, "point_notes") else {}
     except _ERRORS:                                    # notes are extra: the history shows without them
@@ -586,7 +586,7 @@ def history(repo: str, root: Path | None = None) -> int:
     except _ERRORS:
         extra = {}
     for t, rows in tracks:
-        print(suite_of(t))
+        print(heading_of(t))
         for p, total, frees, mark in rows:
             arrow = "▶" if mark == "serving" else " "
             label = f" {p.snap_label}" if p.snap_label else ""
@@ -598,7 +598,7 @@ def history(repo: str, root: Path | None = None) -> int:
             if said.get(p.id):
                 print(f"    {said[p.id]}")
             if row.get("dated"):                     # a suite: the line that pins a client; else the URL
-                print("    " + (sources_line(row["dated"], suite_of(t), row.get("components") or []) if t.name
+                print("    " + (sources_line(row["dated"], dist_of(t), row.get("components") or []) if t.name
                                 else row["dated"] + "/"))
     return 0
 

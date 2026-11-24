@@ -67,6 +67,28 @@ def release_date(release_text: str, fallback: str) -> tuple[str, str | None]:
     return when.strftime("%Y%m%dT%H%M%SZ"), None
 
 
+def suite_names(name: str, suite: str | None, codename: str | None) -> tuple[str, str | None]:
+    """(a suite's name, the alias its Release gives it, if another) — named
+    by its dists/ directory, which sources.list uses and which never moves,
+    not by Suite: (`oldstable` is bookworm until the next release).
+    `bookworm` → ('bookworm', 'oldstable'); `stable` → ('stable', 'trixie');
+    Ubuntu's `jammy-updates` (Codename: jammy) → ('jammy-updates', None)."""
+    path = "/" + (name or "")
+    if "/dists/" not in path:
+        return suite or name or "files", None
+    d = path.rsplit("/dists/", 1)[1]
+    if suite and suite != d:
+        return d, suite
+    if codename and codename != d and not d.startswith(codename + "-"):
+        return d, codename
+    return d, None
+
+
+def suite_heading(suite: str, alias: str | None) -> str:
+    """'bookworm (oldstable)', or the bare name."""
+    return f"{suite} ({alias})" if alias else suite
+
+
 def _fields(text: str) -> dict[str, str]:
     out = {}
     for ln in text.splitlines():

@@ -92,3 +92,29 @@ def test_cli_json(lab):
     newest = data[0]
     assert set(newest) >= {'repo', 'suite', 'date', 'ident', 'held', 'size', 'frees', 'marks', 'label'}
     assert 'current' in newest['marks'] and newest['size'] == rows[0].size
+
+
+def _alias_suite(md, alias):
+    """As when Debian moves a suite on: its Release says Suite: `alias` now."""
+    with Pool(md) as pool, pool._lock:
+        pool._conn.execute('UPDATE tracks SET suite = ?', (alias,))
+        pool._conn.commit()
+
+
+def test_suite_named_by_directory_with_its_alias(lab):
+    cfg, oak, md, unit, tmp_path = lab
+    _alias_suite(md, 'oldstable')
+    rows = history.prepare(cfg)
+    assert {(r.suite, r.alias, r.heading) for r in rows} == {('stable', 'oldstable', 'stable (oldstable)')}
+    out = CliRunner().invoke(app, ['--config', str(tmp_path), 'history']).output
+    assert '  stable (oldstable)  2026-11-04' in out
+    assert 'stable 04 Nov · last sync ' in out           # the summary names the directory
+    with Pool(md, read_only=True) as pool:           # the alias still picks the suite
+        assert history.delete_plan(pool, cfg, rows[0].repo, '2026-11-01', suite='oldstable')
+
+
+def test_cli_says_what_the_dates_are(lab):
+    cfg, oak, md, unit, tmp_path = lab
+    out = CliRunner().invoke(app, ['--config', str(tmp_path), 'history']).output
+    assert out.rstrip().endswith(history.DATES_NOTE)
+    assert set(history.last_synced(cfg)) == {r.repo for r in history.prepare(cfg)}

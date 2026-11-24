@@ -21,7 +21,7 @@ from pathlib import Path
 from mmw.core import disk_io
 from mmw.core.format import fmt_size
 from mmw.core.config import Config, NetworkConfig
-from mmw.core.pool import KIND_META, KIND_PKG, Pool, holds_shared_pool_lock
+from mmw.core.pool import KIND_META, KIND_PKG, Pool, database_path, holds_shared_pool_lock
 
 from mmw.core.publisher.manifest import (
     MANIFEST_SUFFIX,
@@ -189,22 +189,30 @@ def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None, *,
 
     This side's points as of the date, projected with the selection the far
     side is assumed to hold (`transfer_ranges.assumed_selection`): a kept
-    bundle at or before the date says what it was sent; `--whole` what it lacks."""
+    bundle at or before the date says what it was sent; `--whole` what it lacks.
+    Without `cfg`, the network's recorded selection. With no points kept
+    from then: the kept bundle's manifest alone."""
     from mmw.core.points import resolve_when
     baseline, source, skipped = None, None, []
     from mmw.core.publisher.kept import state_at
     since = resolve_when(since_date)
-    if cfg is not None:
-        from mmw.core.transfer_ranges import (
-            assumed_selection, kept_state, point_date, recorded_selection, repository_owned,
-            retained_track_points)
-        from mmw.core.repository_points import files_for_settings
+    dirs = [*([network.bundle_dir] if network.bundle_dir is not None else []),
+            ledger_dir(mirror_dir, network.name), *(kept_dirs or [])]
+    from mmw.core.transfer_ranges import (
+        assumed_selection, kept_state, point_date, recorded_selection, retained_track_points, walked)
+    from mmw.core.repository_points import files_for_settings
+    if disk_io.ops.exists(database_path(mirror_dir)):
         with Pool(mirror_dir, read_only=True) as pool:
             try:
                 settings, current = recorded_selection(pool, network, mirror_dir, cfg, only=repos)
             except ValueError:
                 current = {}
-            if repository_owned(pool, current, network):
+            current = {repo: ids for repo, ids in current.items() if not repo.startswith('network:')}
+            # A walked point's far side: a kept manifest says best what it has.
+            by_walk = walked(pool, current)
+            if current and by_walk and state_at(dirs, network.name, since, skipped=[]) is not None:
+                current = {}
+            if current:
                 known = pool.points_of(pid for ids in current.values() for pid in ids)
                 selected = []
                 for tid in {p.track for p in known.values()}:
@@ -212,54 +220,57 @@ def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None, *,
                                   retained_track_points(pool, network.name, tid, known, settings)]
                     eligible = [(date, p) for date, p in candidates if date <= since]
                     if not eligible:
-                        point = next(p for p in known.values() if p.track == tid)
-                        if network.layer_for(pool.track_of_point(point.id).repo) is not None:
-                            continue  # A layer first recorded after From needs its full payload.
                         raise NothingToStandOn(f'no retained repository point at or before {since_date} '
                                                '— choose a later From date or send everything')
                     selected.append(max(eligible, key=lambda item: (item[0], item[1].stamp, item[1].ident))[1])
+                if not any(p.held for p in selected):
+                    current = {}                    # none kept from then: only a kept manifest can say
+            if current:
                 base, _ = assumed_selection(network, mirror_dir, settings, cfg=cfg, since=since,
                                             kept_dirs=kept_dirs, whole=whole)
                 baseline = {cs for p in selected if p.held for cs in files_for_settings(pool, p.id, base).values()}
                 kept = kept_state(network, mirror_dir, since, kept_dirs)
                 if kept is not None and kept.settings is None:
                     baseline &= kept.checksums      # an older manifest names no selection: trust its files
-                return since, baseline, f'repository points as of {since_date}', []
-    dirs = [*([network.bundle_dir] if network.bundle_dir is not None else []),
-            ledger_dir(mirror_dir, network.name), *(kept_dirs or [])]
+                return since, baseline, (f'the points of {since_date}' if by_walk
+                                         else f'repository points as of {since_date}'), []
     state = state_at(dirs, network.name, since, skipped=skipped)
-    if state is not None:
-        baseline = set(state.checksums)
-        source = f"{Path(state.where).name} (its manifest)"
-    else:
-        with Pool(mirror_dir, read_only=True) as pool:
-            from mmw.core.repository_points import files_for_settings, wire_draft
-            settings = pool.settings_at(network.name, since) or pool.settings_at(network.name, "99999999T999999Z") or "{}"
-            selected = []
-            for track in pool.network_tracks(network.name):
-                eligible = []
-                for p in pool.network_points(network.name, track.id, stubs=True):
-                    if p.legacy:
-                        date = p.date
-                    elif p.held:
-                        files = files_for_settings(pool, p.id, settings)
-                        date = wire_draft(pool, p.id, files, settings, p.stamp).date if files else None
-                    else:
-                        date = pool.network_slice_date(network.name, p.id)
-                    if date is not None and date <= since:
-                        eligible.append((date, p.stamp, p.ident, p))
-                if eligible:
-                    selected.append(max(eligible, key=lambda item: item[:3])[3])
-            if selected and all(p.held for p in selected):
-                baseline = {cs for p in selected for cs in files_for_settings(pool, p.id, settings).values()}
-                source = f"the points of {since_date}"
-        if baseline is None:
-            raise NothingToStandOn(
-                f"no state for {network.name} on {since_date}; searched "
-                f"{', '.join(map(str, dirs))} and this network's retained points"
-                + (f" ({'; '.join(skipped)})" if skipped else "")
-                + " — send everything with --full")
+    if state is None:
+        raise NothingToStandOn(
+            f"no state for {network.name} on {since_date}; searched "
+            f"{', '.join(map(str, dirs))} and this network's retained points"
+            + (f" ({'; '.join(skipped)})" if skipped else "")
+            + " — send everything with --full")
+    baseline = set(state.checksums)
+    source = f"{Path(state.where).name} (its manifest)"
     return since, baseline, source, skipped
+
+
+def _prepare_live(network, cfg, mirror_dir: Path, stamp: str, result, stop_event) -> dict[str, list[int]]:
+    """Before a live bundle reads the network's points: its layers' views of
+    the current points, so a layer edit travels. A repository no sync ever
+    recorded a point of has only its refs: the network's recording walks it
+    (`points.record_network_points`), as it always has. Returns those
+    repositories' points as this walk recorded them (a recording dated
+    later must not stand in for now)."""
+    from mmw.core import points as pts
+    from mmw.core.repos import repository_key
+    from mmw.core.resolve import network_mirrors
+    repos = {repository_key(u) for u in network_mirrors(network, cfg, mirror_dir)}
+    with Pool(mirror_dir, read_only=True) as pool:
+        unrecorded = any(not pool.repository_points(repo, stubs=True) for repo in repos)
+    if unrecorded:
+        report = pts.record_network_points(network, cfg, mirror_dir, stamp=stamp, stop_event=stop_event)
+        result.warnings.extend(report.warnings)
+        return report.walked
+    if network.layers:
+        from mmw.core.layers import build_network_layers
+        with Pool(mirror_dir) as pool:
+            built = build_network_layers(network, cfg, mirror_dir, pool, stamp=stamp)
+        result.warnings.extend(built.warnings)
+        if built.errors:
+            raise ValueError(f"{network.name}'s layers not built: " + "; ".join(built.errors[:5]))
+    return {}
 
 
 @holds_shared_pool_lock
@@ -362,39 +373,28 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     result = BundleResult(network_name=network.name, created=stamp, previous=since, full=full)
     result.since_source = source
     result.warnings.extend(skipped)
-    from mmw.core.transfer_ranges import recorded_selection, repository_owned, selected_tree
-    detached, extra_files = False, {}
+    from mmw.core.transfer_ranges import recorded_selection, selected_tree
+    extra_files = {}
     if to_ref == 'now':
-        with Pool(mirror_dir, read_only=True) as pool:
-            from mmw.core.resolve import network_mirrors
+        # Every bundle reads recorded points, never live refs.
+        if repos is not None:
             from mmw.core.repos import repository_key
-            repos_now = {repository_key(u) for u in network_mirrors(network, cfg, mirror_dir)}
-            chosen_now = repos_now if repos is None else repos_now.intersection(repos)
-            # A live transfer refreshes any selected layer through the same
-            # recording walk as a layer-only network. A dated transfer replays it.
-            refresh_layers = until is None and any(network.layer_for(repo) for repo in chosen_now)
-            if not refresh_layers and any(pool.repository_points(repo, stubs=True) for repo in repos_now):
-                settings, current = recorded_selection(pool, network, mirror_dir, cfg, only=repos)
-                detached = repository_owned(pool, current, network)
-    if detached:
-        bundle_output_path(network, 'x', out_path)
+            from mmw.core.resolve import network_mirrors
+            mine = sorted({repository_key(u) for u in network_mirrors(network, cfg, mirror_dir)})
+            unknown = [r for r in repos if r not in mine]
+            if unknown:
+                raise LookupError(f"unknown repository {unknown[0]!r} — this network has: {', '.join(mine)}")
+        if until is not None:
+            pts.resolve_when(until)                              # validated before anything is written
+        bundle_output_path(network, 'x', out_path)               # destination check
+        walked = _prepare_live(network, cfg, mirror_dir, stamp, result, stop_event) if until is None else {}
         with Pool(mirror_dir) as pool:
+            settings, current = recorded_selection(pool, network, mirror_dir, cfg, only=repos)
+            current.update({repo: ids for repo, ids in walked.items() if repo in current})
             _, settings, extra_files, notes, _ = selected_tree(
                 pool, network, cfg, mirror_dir, settings, current,
                 until=until, progress=progress, stop_event=stop_event)
         result.warnings.extend(notes)
-    elif until is not None:
-        from mmw.core.points import resolve_when
-        resolve_when(until)  # Validate before reading or creating output.
-        with Pool(mirror_dir, read_only=True) as pool:
-            settings, current = recorded_selection(pool, network, mirror_dir, cfg)
-    elif to_ref == "now":
-        bundle_output_path(network, "x", out_path)               # destination check
-        report = pts.record_network_points(network, cfg, mirror_dir, stamp=stamp, stop_event=stop_event)
-        result.warnings.extend(report.warnings)
-        settings = report.settings
-        with Pool(mirror_dir) as pool:
-            settings, current = recorded_selection(pool, network, mirror_dir, cfg)
     else:
         with Pool(mirror_dir) as pool:
             snap = find_snapshot(pool, network.name, to_ref)
@@ -452,9 +452,12 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             kept_dirs=kept_dirs, whole=whole)
         interval_base = range_baseline(pool, network, settings, current, since=since_date, full=full, listing=listing,
                                        base_settings=None if base is settings else base)
+        # Both are what the far side is assumed to hold: trust only what both
+        # say. The network's own files (keys, generated nginx) are no
+        # repository's: what was sent of them is there.
         if interval_base is not None:
-            # Both are what the far side is assumed to hold: trust only what both say.
-            sent = interval_base if baseline is None else interval_base & baseline
+            own = (set(net_files.values()) | gen_sums) - {c for f in files.values() for c in f.values()}
+            sent = (interval_base if baseline is None else interval_base & baseline) | (sent & own)
         missing = sorted(c for c in every if c not in info)
         if missing:
             raise ValueError(f"{len(missing)} file(s) of {network.name}'s points are no longer in the pool "

@@ -231,12 +231,12 @@ def _record_published(mirror_dir: Path, root: Path, network: str, target: str, *
         if point_ids is not None:
             ids = point_ids
         elif cfg is not None and net is not None and (target == 'live' or target.startswith('as-of:')):
-            from mmw.core.transfer_ranges import recorded_selection, repository_owned, select_range
+            from mmw.core.transfer_ranges import recorded_selection, select_range
             try:
                 settings, current = recorded_selection(pool, net, mirror_dir, cfg)
             except ValueError:
                 current = {}
-            if repository_owned(pool, current, net):
+            if current:
                 targets, _, _ = select_range(pool, network, settings, current,
                                             until=target.removeprefix('as-of:') if target != 'live' else None)
                 ids = [pid for pids in targets.values() for pid in pids]
@@ -339,29 +339,21 @@ class PublishMoment:
 
 @holds_shared_pool_lock
 def read_publish_moment(network: NetworkConfig, cfg: Config, mirror_dir: Path, when: str):
-    """Today's network selection at a repository point date; legacy views fall back."""
-    from mmw.core.points import moment_rows, prepare_recordings, resolve_when
-    from mmw.core.transfer_ranges import recorded_selection, repository_owned, selected_tree
+    """Today's network selection at a repository point date: its points,
+    as every transfer reads them."""
+    from mmw.core.points import moment_problem, prepare_recordings, resolve_when
+    from mmw.core.transfer_ranges import recorded_selection, selected_tree
     stamp = resolve_when(when)
     prepare_recordings(mirror_dir, network.name)
-    with Pool(mirror_dir, read_only=True) as pool:
-        try:
-            settings, current = recorded_selection(pool, network, mirror_dir, cfg)
-        except ValueError:
-            # Older databases may contain only snapshot-derived recordings.
-            # Their historical view remains readable without a fresh sync.
-            from mmw.core.resolve import network_mirrors
-            from mmw.core.repos import repository_key
-            if any(pool.repository_points(repository_key(u), stubs=True)
-                   for u in network_mirrors(network, cfg, mirror_dir)):
-                raise
-            return moment_rows(pool, network.name, stamp), []
-        if not repository_owned(pool, current, network):
-            return moment_rows(pool, network.name, stamp), []
     with Pool(mirror_dir) as pool:
         point_ids = set()
-        rows, settings, _, notes, _ = selected_tree(
-            pool, network, cfg, mirror_dir, settings, current, until=stamp, point_ids=point_ids)
+        try:
+            settings, current = recorded_selection(pool, network, mirror_dir, cfg)
+            rows, settings, _, notes, _ = selected_tree(
+                pool, network, cfg, mirror_dir, settings, current, until=stamp, point_ids=point_ids)
+        except ValueError as e:
+            # What the network's recordings say of that date, when they say why.
+            raise ValueError(moment_problem(pool, network.name, stamp) or str(e)) from e
         info = pool.blob_info(rows.values())
         if set(rows.values()) - info.keys():
             raise ValueError('Some files of the selected repository points are no longer in the pool')
@@ -385,7 +377,7 @@ def publish_as_of(
 ) -> NetworkPublishResult:
     """Lay `network` out at `root` as it was recorded at or before `when` (a
     date or stamp): each repository's points then, that day's settings.
-    `moment`: `moment_rows`' answer, if already read. **Blocking.**"""
+    `moment`: `read_publish_moment`'s answer, if already read. **Blocking.**"""
     from mmw.core.points import AS_OF, resolve_when, seeded_note
 
     stamp = resolve_when(when)

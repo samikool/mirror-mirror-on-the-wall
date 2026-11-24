@@ -87,10 +87,11 @@ def verify_publish_unit(mirror, network, mirror_dir, pool, **options):
     from mmw.core.transfer_ranges import repository_targets
     from mmw.core.repository_points import selected_point_files
     repo = repository_key(mirror)
-    ids = repository_targets(pool, repo) if network.layer_for(repo) is None else []
+    ids = repository_targets(pool, repo)
     if not ids:
         return verify_mirror(mirror, mirror_dir, pool, **options)
-    files = {p: cs for pid in ids for p, cs in selected_point_files(pool, pid, [mirror]).items()}
+    # What the network serves of it: a layer's view too.
+    files = {p: cs for pid in ids for p, cs in selected_point_files(pool, pid, [mirror], network).items()}
     result = VerifyResult(mirror.name, mirror.provider, total=len(files))
     if not files:
         result.error = 'no retained repository point matches this unit'

@@ -364,7 +364,6 @@ class PypiProvider(BaseProvider):
         """Files at files.pythonhosted.org/… (pool rows, narrowed by the
         network's retention), then the generated pypi.org pages."""
         from mmw.core.publisher.links import publish_by_host, reconcile_extra_prefix
-        from mmw.resources import pypi_render_bytes
         rows, recs = pypub.published_rows(ctx.pool, units, ctx.network, ctx.today())
         results, hosts = publish_by_host(ctx, rows)
         if ctx.prune and "files.pythonhosted.org" not in hosts:
@@ -375,6 +374,19 @@ class PypiProvider(BaseProvider):
             return results, set(pypub.HOSTS)
         if ctx.files_only:
             return results, {"files.pythonhosted.org"}
+        files = self._pages(rows, recs)
+        for rel, data in files.items():
+            ctx.sink.write(rel, data)
+        if ctx.prune:
+            reconcile_extra_prefix(ctx.sink, "pypi-data", set(files))
+        return results, {"files.pythonhosted.org"}
+
+    @staticmethod
+    def _pages(rows, recs) -> dict[str, bytes]:
+        """The pages are derived (spec §5.0): only their data (the shards)
+        and the renderer go through the sink; render_derived makes pypi.org/
+        from them."""
+        from mmw.resources import pypi_render_bytes
         published = {row[0] for row in rows}
         with_metadata = {path.rsplit("/", 1)[1].removesuffix(".metadata")
                          for path in published if path.endswith(".metadata")}
@@ -382,15 +394,13 @@ class PypiProvider(BaseProvider):
         for path, rec in recs.items():
             if path in published:
                 by_project.setdefault(rec.project, []).append(rec)
-        # The pages are derived (spec §5.0): only their data and the renderer
-        # go through the sink; render_derived makes pypi.org/ from them.
         files = simple.shards([simple.entry_of(p, by_project[p], with_metadata) for p in sorted(by_project)])
         files[simple.RENDERER] = pypi_render_bytes()
-        for rel, data in files.items():
-            ctx.sink.write(rel, data)
-        if ctx.prune:
-            reconcile_extra_prefix(ctx.sink, "pypi-data", set(files))
-        return results, {"files.pythonhosted.org"}
+        return files
+
+    def pages(self, ctx, units) -> dict[str, bytes]:
+        rows, recs = pypub.published_rows(ctx.pool, units, ctx.network, ctx.today())
+        return self._pages(rows, recs)
 
     def contribute(self, ctx) -> None:
         from mmw.core.publisher.links import reconcile_extra_prefix

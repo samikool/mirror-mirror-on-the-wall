@@ -268,6 +268,43 @@ def slice_of(view) -> dict[str, str]:
     return dict(cache[key])
 
 
+def point_pages(pool, point_id: int, settings, network, cfg, mirror_dir, sink) -> dict[str, str]:
+    """{path: checksum} of the pages a provider-scoped point brings for
+    `network` (a NetworkConfig): PyPI's shards and renderer, the VS Code
+    gallery's catalog, updates and notes — generated from the point through
+    the same view and context a publish over it uses, written through `sink`
+    (into the pool, or only hashed for a preview). They travel with the
+    point, so a far side serving it serves its pages. {} for any other point,
+    or one no view of this network serves (a converted point whose pages are
+    still the network's)."""
+    point = pool.points_of([point_id]).get(point_id)
+    track = pool.track_of_point(point_id)
+    if point is None or not point.held or track is None or not provider_scoped(track.repo):
+        return {}
+    repo = track.repo
+    view = provider_view(pool, repo, [point_id], settings=settings, network=network.name)
+    if view is None:
+        from mmw.core.transfer_ranges import _equal_view
+        view = _equal_view(pool, repo, network_slice(pool, network.name, point_id, settings), settings,
+                           network.name)
+    if view is None or not view.units:
+        return {}
+    from mmw.core.publisher.results import NetworkPublishResult
+    from mmw.providers import get_provider
+    from mmw.providers.base import PublishContext
+    recorded = network
+    if view.retention not in (None, network.retention):            # that day's, as its slice
+        recorded = network.model_copy(update={"retention": view.retention})
+    ctx = PublishContext(network=recorded, cfg=cfg, mirror_dir=mirror_dir, pool=view, sink=sink,
+                         result=NetworkPublishResult(network_name=network.name), units=list(view.units),
+                         as_of=view.as_of)
+    out = {}
+    for rel, data in sorted(get_provider(repo).pages(ctx, view.units).items()):
+        sink.write(rel, data)
+        out[rel] = sink.rows[rel]
+    return out
+
+
 def network_slice(pool, network, point_id: int, settings, *, when=None) -> dict[str, str]:
     """What `network` (a name, a NetworkConfig, or None) serves of a point,
     under the selection recorded in `settings`. A provider-scoped point:

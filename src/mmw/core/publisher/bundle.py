@@ -99,9 +99,10 @@ def _write_checksum_file(target: Path, digest: str | None = None) -> Path:
     return dest
 
 
-def _point_names(pool, repo, names, settings) -> list[dict]:
+def _point_names(pool, repo, names, settings, pages) -> list[dict]:
     """{track, ident, label} for `repo`'s points named (or cleared) here
-    that this network's selection holds, as the far side knows them."""
+    that this network's selection holds, as the far side knows them.
+    `pages(pid)`: the pages that travel with a point (`_pages_of`)."""
     from mmw.core.repository_points import files_for_settings, wire_draft
     out = []
     for pid in sorted(names):
@@ -111,9 +112,25 @@ def _point_names(pool, repo, names, settings) -> list[dict]:
         p = pool.points_of([pid]).get(pid)
         files = files_for_settings(pool, pid, settings) if p is not None and p.held and not p.legacy else {}
         if files:
+            files = {**files, **pages(pid)}
             out.append({"track": t.name, "ident": wire_draft(pool, pid, files, settings, p.stamp).ident,
                         "label": names[pid]})
     return out
+
+
+def _pages_of(pool, settings, network, cfg, mirror_dir, sink):
+    """pid → the pages that travel with that point (`point_pages`), each
+    point's generated once, through `sink`."""
+    from mmw.core.repository_points import point_pages, provider_scoped
+    done: dict[int, dict[str, str]] = {}
+
+    def pages(pid):
+        if pid not in done:
+            track = pool.track_of_point(pid)
+            done[pid] = (point_pages(pool, pid, settings, network, cfg, mirror_dir, sink)
+                         if track is not None and provider_scoped(track.repo) else {})
+        return done[pid]
+    return pages
 
 
 def _far_nginx(settings: str, certs: bool, *, previous: bool = False) -> dict[str, bytes]:
@@ -229,6 +246,10 @@ def resolve_since(network, mirror_dir: Path, since_date: str, kept_dirs=None, *,
                 base, _ = assumed_selection(network, mirror_dir, settings, cfg=cfg, since=since,
                                             kept_dirs=kept_dirs, whole=whole)
                 baseline = {cs for p in selected if p.held for cs in files_for_settings(pool, p.id, base).values()}
+                # And the pages that travelled with those points (only hashed here).
+                from mmw.core.transfer_ranges import PreviewSink
+                pages = _pages_of(pool, base, network, cfg, mirror_dir, PreviewSink(pool))
+                baseline |= {cs for p in selected if p.held for cs in pages(p.id).values()}
                 kept = kept_state(network, mirror_dir, since, kept_dirs)
                 if kept is not None and kept.settings is None:
                     baseline &= kept.checksums      # an older manifest names no selection: trust its files
@@ -432,11 +453,24 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             explicit_since=since_date is not None or from_ref not in (_LAST, None),
             sent_points=sent_points if not full else (), repos=chosen, warnings=result.warnings, full=full)
         when = pts.resolve_when(until) if until else None       # a layer as it was then
-        files = {pid: files_for_settings(pool, pid, settings, when=when) for ids in listing.values() for pid in ids}
+        slices = {pid: files_for_settings(pool, pid, settings, when=when) for ids in listing.values() for pid in ids}
+        # A provider's pages (PyPI's shards, the VS Code gallery) are a
+        # function of its point: they travel with it, so a far side serving
+        # an earlier point serves that point's pages. Their blobs go into the
+        # pool (a history bundle's older points were never laid out here).
+        with Pool(mirror_dir) as writable:
+            from mmw.core.snapshots import RecordingSink
+            page_sink = RecordingSink(writable)
+            pages = _pages_of(pool, settings, network, cfg, mirror_dir, page_sink)
+            files = {pid: {**mine, **pages(pid)} if mine else mine for pid, mine in slices.items()}
+            listed_pages = {p for ids in listing.values() for pid in ids for p in pages(pid)}
+            named_pages = {pid: pages(pid) for pid in pool.point_labels(cleared=True)}
         net_files: dict[str, str] = {}
         for pid in current.get(net_repo, []):
             net_files.update(pool.point_files(pid))
         net_files.update(extra_files)
+        for path in listed_pages:                   # the repository's now, not the network's
+            net_files.pop(path, None)
         from mmw.core.publisher.deployment import RETIRED
         for name in RETIRED:                         # an old snapshot's far-side scripts never travel
             net_files.pop(name, None)
@@ -456,7 +490,9 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
         # say. The network's own files (keys, generated nginx) are no
         # repository's: what was sent of them is there.
         if interval_base is not None:
-            own = (set(net_files.values()) | gen_sums) - {c for f in files.values() for c in f.values()}
+            # A provider's pages likewise: a ledger of what was sent, not a repository slice.
+            own = (set(net_files.values()) | gen_sums | {c for f in files.values() for c in f.values()}) - {
+                c for f in slices.values() for c in f.values()}
             sent = (interval_base if baseline is None else interval_base & baseline) | (sent & own)
         missing = sorted(c for c in every if c not in info)
         if missing:
@@ -497,7 +533,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             header_points[repo] = {"label": label, "bases": repo_bases.get(repo, []), "points": entries}
             # Every name given or cleared here, sent before or not: the far
             # side's points by the same ident take it (`mmw history label`).
-            named = _point_names(pool, repo, names, settings)
+            named = _point_names(pool, repo, names, settings, lambda pid: named_pages.get(pid, {}))
             if named:
                 header_points[repo]["labels"] = named
             # Per suite, what the newest point it brings changes from what the
@@ -593,7 +629,7 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
     with Pool(mirror_dir) as pool:
         listed = {pid for ids in listing.values() for pid in ids} | set(current.get(net_repo, []))
         pool.record_sent(network.name, listed, sink.sent_checksums | (baseline or set()), stamp,
-                         slices={pid: content_ident(f) for pid, f in files.items()},
+                         slices={pid: content_ident(f) for pid, f in slices.items()},
                          targets={known[pid].track: (repo, point_date(pool, known[pid], settings))
                                   for repo in listing for pid in current[repo]})
         pool.set_listed_tracks(network.name, {**listed_tracks, **{r: set() for r in left}})

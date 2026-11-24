@@ -338,10 +338,29 @@ class VscodeProvider(BaseProvider):
                 if not r[0].startswith(self.private_prefixes)]
         return publish_by_host(ctx, rows)
 
+    def _gallery(self, ctx, units, say=None) -> dict[str, bytes]:
+        """The gallery's files derived from what the units hold (its image
+        is the network's). Raises InterruptedError when stopped."""
+        from mmw.resources import gallery_script_bytes
+        d = vpub.GALLERY_DIR
+        updates = vpub.updates(ctx.pool, units)
+        catalog_json, hosts = vpub.catalog_files(
+            ctx.pool, units, ctx.mirror_dir / vpub.META_CACHE, recheck=ctx.recheck, say=say,
+            stop_event=ctx.stop_event)
+        return {
+            f"{d}/catalog.json": catalog_json,
+            f"{d}/updates.json": json.dumps(updates, sort_keys=True).encode(),
+            f"{d}/gallery.py": gallery_script_bytes(),
+            f"{d}/VSCODE.md": vpub.vscode_md(ctx.network, gallery_image.TAR_NAME, updates, hosts=hosts),
+        }
+
+    def pages(self, ctx, units) -> dict[str, bytes]:
+        units = [u for u in units if u.provider == self.name]
+        return self._gallery(ctx, units) if units else {}
+
     def contribute(self, ctx) -> None:
         from mmw.core.publisher.links import reconcile_extra_prefix
         from mmw.core.publisher.results import MirrorPublishResult
-        from mmw.resources import gallery_script_bytes
         units = [u for u in ctx.units if u.provider == self.name]
         if not units:
             if ctx.prune:
@@ -350,19 +369,10 @@ class VscodeProvider(BaseProvider):
             return
         d = vpub.GALLERY_DIR
         say = (lambda message: ctx.progress(d, f"gallery:{message}")) if ctx.progress else None
-        updates = vpub.updates(ctx.pool, units)
         try:
-            catalog_json, hosts = vpub.catalog_files(
-                ctx.pool, units, ctx.mirror_dir / vpub.META_CACHE, recheck=ctx.recheck, say=say,
-                stop_event=ctx.stop_event)
+            files = self._gallery(ctx, units, say)
         except InterruptedError:
             return                      # stopped: nothing half-built reaches the tree
-        files = {
-            f"{d}/catalog.json": catalog_json,
-            f"{d}/updates.json": json.dumps(updates, sort_keys=True).encode(),
-            f"{d}/gallery.py": gallery_script_bytes(),
-            f"{d}/VSCODE.md": vpub.vscode_md(ctx.network, gallery_image.TAR_NAME, updates, hosts=hosts),
-        }
         if say:
             say("done")
         for rel, data in files.items():

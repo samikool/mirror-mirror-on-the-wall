@@ -123,13 +123,13 @@ def publish_network(
                         prev=_open_record(network.root, network.name), recheck=recheck)
         try:
             from mmw.core.transfer_ranges import repository_projection
-            selected_ids = set()
-            projection = repository_projection(pool, network, cfg, mirror_dir, point_ids=selected_ids)
+            selected_ids, views = set(), {}
+            projection = repository_projection(pool, network, cfg, mirror_dir, point_ids=selected_ids, views=views)
             walk_network(network, cfg, mirror_dir, sink, pool, result,
                          nginx_root=str(network.root), prune=network.prune,
                          progress=progress, stop_event=stop_event,
                          mirror_start_callback=mirror_start_callback,
-                         **({'repository_files': projection} if projection else {}))
+                         **({'repository_files': projection, 'point_views': views} if projection else {}))
             if not (stop_event and stop_event.is_set()):
                 _render_derived(network.root, progress, stop_event)
                 prepare_tree(network.root, network, cfg)
@@ -553,12 +553,18 @@ def walk_network(
     mirror_start_callback=None,
     repository_files=None,
     preview=False,
+    point_views=None,
 ) -> list:
     """Lay a network's complete tree into `sink` from `pool`: every group,
     dist-upgrade, nginx (only with `nginx_root`; snapshots record its settings
     and image instead), keys and mirrored upstream files. `publish_network` passes a
     `TreeSink`; taking a snapshot passes a recording sink. Returns the mirrors
     walked.
+
+    `repository_files` lays out a repository's recorded files instead of its
+    live refs. A provider-scoped repository there is published by its own
+    provider over `point_views[repo]` (a `PointRefs`), as of the point's day:
+    its files, pages, gallery and PYPI.md all come from the point.
     """
     mirror_map = {m.name: m for m in network_mirrors(network, cfg, mirror_dir)}
     from mmw.providers import get_provider
@@ -587,6 +593,8 @@ def walk_network(
                          recheck=getattr(sink, "recheck", False))
     all_bases: set[str] = set()
     started = 0                         # groups numbered by earlier providers
+    contexts = {}                       # provider → the context its point view publishes through
+    views = point_views or {}
     for provider in all_providers():
         mine = [m for m in published_mirrors if m.provider == provider.name]
         if not mine:
@@ -600,9 +608,22 @@ def walk_network(
             )(started)
         from mmw.core.repos import repository_key
         supplied = repository_files or {}
+        view = views.get(provider.name) if provider.repository_scope == "provider" else None
+        group_results, bases = [], set()
+        if view is not None and provider.name in supplied:
+            from dataclasses import replace
+            recorded = network
+            if view.retention not in (None, network.retention):     # that day's, as its slice
+                recorded = network.model_copy(update={"retention": view.retention})
+            contexts[provider.name] = replace(
+                ctx, pool=view, as_of=view.as_of, network=recorded,
+                units=[u for u in ctx.units if u.provider != provider.name] + view.units)
+            group_results, bases = provider.publish(contexts[provider.name], view.units)
+            mine = []
         deferred = [u for u in mine if repository_key(u) in supplied]
         walked = [u for u in mine if repository_key(u) not in supplied]
-        group_results, bases = provider.publish(ctx, walked) if walked else ([], set())
+        if walked:
+            group_results, bases = provider.publish(ctx, walked)
         for repo in sorted({repository_key(u) for u in deferred}):
             files = supplied[repo]
             from mmw.core.publisher.links import publish_recorded_group
@@ -632,7 +653,7 @@ def walk_network(
 
     if not (stop_event and stop_event.is_set()):
         for provider in all_providers():
-            provider.contribute(ctx)
+            provider.contribute(contexts.get(provider.name, ctx))
 
     # Must run before sink.close(): a sink finalizes the
     # whole archive there, so anything written after close is dropped.

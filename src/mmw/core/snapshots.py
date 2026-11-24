@@ -77,7 +77,7 @@ def _free_stamp(pool: Pool, network: str) -> str:
 
 def walk_tree(network: NetworkConfig, cfg: Config, mirror_dir: Path, pool: Pool, *,
               progress=None, stop_event=None, repository_files=None, sink=None,
-              preview=False, build_layers=True) -> tuple[dict[str, str], str, list[str]]:
+              preview=False, build_layers=True, point_views=None) -> tuple[dict[str, str], str, list[str]]:
     """`network`'s complete tree as served — layers applied, generated nginx
     left out — as (path → checksum, its settings JSON, warnings). Keys and
     upstream files are frozen into the pool on the way. The caller holds the
@@ -93,7 +93,8 @@ def walk_tree(network: NetworkConfig, cfg: Config, mirror_dir: Path, pool: Pool,
                            nginx_root=None, prune=False,
                            progress=progress, stop_event=stop_event,
                            **({'preview': True} if preview else {}),
-                           **({"repository_files": repository_files} if repository_files else {}))
+                           **({"repository_files": repository_files} if repository_files else {}),
+                           **({"point_views": point_views} if point_views else {}))
     warnings = [*result.dist_upgrade_warnings, *result.warnings]      # reported, never dropped
     if stop_event is not None and stop_event.is_set():
         raise InterruptedError("snapshot stopped — nothing was recorded")

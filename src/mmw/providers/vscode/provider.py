@@ -134,6 +134,7 @@ class VscodeProvider(BaseProvider):
     carries_history = True
     retries_failures = True
     site_per_base = False
+    private_prefixes = (".vscode-meta/",)
     fields = (
         SourceField("name", "Name", "text"),
         SourceField("label", "Label", "text"),
@@ -334,7 +335,7 @@ class VscodeProvider(BaseProvider):
         is a base); provider JSON under `.vscode-meta/` is never published."""
         from mmw.core.publisher.links import _dedup_rows, publish_by_host
         rows = [r for r in _dedup_rows(ctx.pool.mirror_files([u.name for u in units]))
-                if not r[0].startswith(".vscode-meta/")]
+                if not r[0].startswith(self.private_prefixes)]
         return publish_by_host(ctx, rows)
 
     def contribute(self, ctx) -> None:

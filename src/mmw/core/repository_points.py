@@ -82,6 +82,206 @@ def coordinates(unit) -> dict:
     return get_provider(unit.provider).unit_coordinates(unit)
 
 
+def provider_scoped(repo: str) -> bool:
+    """One repository for every source of its provider (PyPI, VS Code): its
+    history is one `""` track, and a network's slice of a point is the
+    provider's own publish over it (`network_slice`)."""
+    from mmw.providers import get_provider
+    try:
+        return get_provider(repo).repository_scope == "provider"
+    except ValueError:
+        return False
+
+
+def _raw(coords: dict) -> str:
+    return json.dumps(coords, sort_keys=True, separators=(",", ":"))
+
+
+def _point_day(stamp: str):
+    from datetime import date
+    return date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
+
+
+class PointRefs:
+    """Points of a provider-scoped repository read as a pool's refs.
+
+    `mirror_files` / `resolve` / `ref_map` / `meta_refs` / `has_refs` answer
+    per unit name from the points' unit rows, by `coordinates(unit)`;
+    everything else is the pool's. A provider's `publish` / `contribute` run
+    over it lay out exactly what synced then (`as_of`: the points' day)."""
+    live = False
+
+    def __init__(self, pool, repo, point_ids, units, *, coords=None, as_of=None,
+                 retention=None, name=None):
+        self.pool, self.repo = pool, repo
+        self.point_ids = sorted(set(point_ids))
+        self.units = list(units)
+        self._coords = coords if coords is not None else {u.name: coordinates(u) for u in self.units}
+        if as_of is None and self.point_ids:
+            as_of = max(_point_day(p.stamp) for p in pool.points_of(self.point_ids).values())
+        self.as_of = as_of
+        self.retention = retention          # the network's as recorded (None: unknown — a slice keeps all)
+        self.name = name
+        self._rows: dict[str, list] = {}
+
+    def _unit_rows(self, name: str) -> list:
+        if name not in self._rows:
+            coords = self._coords.get(name)
+            found = []
+            if coords is not None and self.point_ids:
+                marks = ",".join("?" * len(self.point_ids))
+                with self.pool._read() as c:
+                    found = c.execute(
+                        "SELECT p.path, b.checksum, f.kind, k.filename, k.size FROM point_unit_files f "
+                        "JOIN units u ON u.id = f.unit JOIN snapshot_paths p ON p.id = f.path "
+                        "JOIN snapshot_blobs b ON b.id = f.blob JOIN packages k ON k.checksum = b.checksum "
+                        f"WHERE f.point IN ({marks}) AND u.repo = ? AND u.dims = ?",
+                        (*self.point_ids, self.repo, _raw(coords))).fetchall()
+            blob = self.pool._blob_strs()
+            self._rows[name] = sorted({(path, blob(cs, fn), size, kind, cs) for path, cs, kind, fn, size in found})
+        return self._rows[name]
+
+    def mirror_files(self, mirror_names, kinds=None, prefix=''):
+        rows = {row for name in mirror_names for row in self._unit_rows(name)
+                if (not kinds or row[3] in kinds) and row[0].startswith(prefix)}
+        return sorted(rows)
+
+    def resolve(self, mirror_name, repo_path):
+        from pathlib import Path
+        return next((Path(row[1]) for row in self._unit_rows(mirror_name) if row[0] == repo_path), None)
+
+    def ref_map(self, mirror_name):
+        return {row[0]: row[4] for row in self._unit_rows(mirror_name)}
+
+    def meta_refs(self, mirror_name):
+        from mmw.core.pool import KIND_META
+        return {row[0]: row[4] for row in self._unit_rows(mirror_name) if row[3] == KIND_META}
+
+    def has_refs(self, mirror_name):
+        return bool(self._unit_rows(mirror_name))
+
+    def layer_overlay(self, *_):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self.pool, name)
+
+
+def _recorded_selects(network: dict) -> list:
+    from mmw.core.config import NetworkSelect
+    selects = []
+    for sel in network.get('select') or []:
+        dims = sel.get('dims') if 'dims' in sel else {k: v for k, v in sel.items() if k != 'source'}
+        # Read, not validated: a recorded select is dumped with the dims table
+        # the config refuses (the TOML spells dimensions flat).
+        selects.append(NetworkSelect.model_construct(source=sel.get('source', ''), dims=dims or {}))
+    return selects
+
+
+def provider_view(pool, repo, point_ids, *, settings=None, units=None, network=None):
+    """A network's view of points of a provider-scoped repository, or None
+    when it selects none of it. The selection comes from recorded `settings`
+    (the network's select, its retention, the source it carried) or, live,
+    from today's `units` and `network`. Its units are the points' own, by
+    coordinate: recorded settings keep no dims, and a point is what synced."""
+    from mmw.core.config import MirrorConfig
+    from mmw.core.repos import repository_key
+    ids = [pid for pid, p in pool.points_of(point_ids).items() if p.held and not p.legacy]
+    if not ids:
+        return None
+    name = getattr(network, 'name', network)
+    if settings is not None:
+        data = json.loads(settings or '{}')
+        recorded = data.get('network') or {}
+        name = recorded.get('name') or name
+        retention = recorded.get('retention')             # older settings: none, so forever
+        sources = sorted({m.get('source') or '' for m in data.get('mirrors', []) if m.get('provider') == repo})
+        if not sources:
+            return None
+        source, selects = sources[0], _recorded_selects(recorded)
+
+        def wanted(unit, _coords):
+            return not selects or any(sel.matches(unit) for sel in selects)
+    else:
+        retention = getattr(network, 'retention', None)
+        mine = [u for u in units or [] if repository_key(u) == repo]
+        if not mine:
+            return None
+        source = mine[0].source
+        chosen = {_raw(coordinates(u)) for u in mine}
+
+        def wanted(_unit, coords):
+            return _raw(coords) in chosen
+    marks = ",".join("?" * len(ids))
+    with pool._read() as c:
+        held = [row[0] for row in c.execute(
+            f"SELECT DISTINCT u.dims FROM point_unit_files f JOIN units u ON u.id = f.unit "
+            f"WHERE f.point IN ({marks}) AND u.repo = ? ORDER BY u.dims", (*ids, repo))]
+    picked, coords = [], {}
+    for raw in held:
+        dims = json.loads(raw)
+        unit = MirrorConfig.model_validate({'name': f'{repo}:{raw}', 'provider': repo, 'source_url': source,
+                                            'source': source, 'dims': dims})
+        if wanted(unit, dims):
+            picked.append(unit)
+            coords[unit.name] = dims
+    return PointRefs(pool, repo, ids, picked, coords=coords, retention=retention, name=name)
+
+
+class _SliceSink:
+    """Records the repository's files a publish links; pages are the network's."""
+
+    def __init__(self, pool):
+        from mmw.core.snapshots import RecordingSink
+        self._inner = RecordingSink(pool)
+        self.rows, self.errors = self._inner.rows, self._inner.errors
+
+    def write(self, rel, data):
+        pass
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def slice_of(view) -> dict[str, str]:
+    """The files `view`'s provider publishes under its own bases: the
+    network's slice of those points. Cached per pool: points don't change."""
+    if view is None or not view.units:
+        return {}
+    cache = view.pool.__dict__.setdefault('_provider_slices', {})
+    key = (view.repo, tuple(view.point_ids), tuple(sorted(_raw(c) for c in view._coords.values())),
+           view.retention, view.as_of)
+    if key not in cache:
+        from types import SimpleNamespace
+        from mmw.core.publisher.results import NetworkPublishResult
+        from mmw.providers import get_provider
+        from mmw.providers.base import PublishContext
+        sink = _SliceSink(view.pool)
+        ctx = PublishContext(network=SimpleNamespace(name=view.name or '', retention=view.retention or 'forever'),
+                             cfg=None, mirror_dir=None, pool=view, sink=sink,
+                             result=NetworkPublishResult(network_name=view.name or ''), units=view.units,
+                             as_of=view.as_of, files_only=True)
+        _, bases = get_provider(view.repo).publish(ctx, view.units)
+        if sink.errors:
+            raise ValueError(f'{view.repo}: ' + '; '.join(sink.errors[:5]))
+        cache[key] = {p: cs for p, cs in sink.rows.items() if any(p.startswith(b + '/') for b in bases)}
+    return dict(cache[key])
+
+
+def network_slice(pool, network, point_id: int, settings) -> dict[str, str]:
+    """What `network` (a name, a NetworkConfig, or None) serves of a point,
+    under the selection recorded in `settings`. A provider-scoped point:
+    its provider's publish over the point, as of the point's day (D4); any
+    other: `files_for_settings`. Every reader gets this one slice."""
+    point = pool.points_of([point_id]).get(point_id)
+    if point is None or not point.held:
+        return {}
+    repo = pool.track_of_point(point_id).repo
+    if point.legacy or not provider_scoped(repo):
+        return files_for_settings(pool, point_id, settings)
+    return slice_of(provider_view(pool, repo, [point_id], settings=settings, network=network))
+
+
 def scoped_files(pool, point_id: int, network: str | None) -> dict[str, str]:
     """A scoped point's files: all of them to a network it is scoped to (or
     to no network in particular), nothing to any other. One with no scope
@@ -134,6 +334,8 @@ def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, comple
     from mmw.providers import get_provider
     from mmw.site.tracks import content_ident
 
+    if provider_scoped(repo):
+        return _record_provider_repository(pool, repo, units, stamp, refs=refs)
     if complete_suites is not None:
         units = [u for u in units if u.suite in complete_suites]
     view = refs or pool
@@ -212,6 +414,56 @@ def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, comple
     return recorded
 
 
+def _record_provider_repository(pool, repo, units, stamp, *, refs=None):
+    """One `""` point of a provider-scoped repository: per coordinate, the
+    unit's refs, its provider's private files (`.pypi-meta/`, …) included,
+    so a slice can be published from the point alone. The point's files are
+    what it can serve: no private path. Its bases are the hosts its
+    provider's publish lays them under, not `mirror_base`."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from mmw.core.points import split_repo
+    from mmw.core.publisher.links import _dedup_rows
+    from mmw.core.publisher.results import NetworkPublishResult
+    from mmw.providers import get_provider
+    from mmw.providers.base import PublishContext
+    from mmw.site.tracks import content_ident
+
+    provider = get_provider(repo)
+    view = refs or pool
+    by_coordinate = {}
+    for unit in units:
+        by_coordinate.setdefault(_raw(coordinates(unit)), []).append(unit)
+    memberships = []
+    for aliases in by_coordinate.values():
+        raw = {path: (cs, kind, False)
+               for path, _, _, kind, cs in _dedup_rows(view.mirror_files([u.name for u in aliases]))}
+        if raw:
+            memberships.append((coordinates(aliases[0]), raw))
+    if not memberships:
+        return []
+    private = provider.private_prefixes
+    files = _project((p, cs, k, h, False) for _, raw in memberships for p, (cs, k, h) in raw.items()
+                     if not (private and p.startswith(private)))
+    sink = _SliceSink(pool)
+    ctx = PublishContext(network=SimpleNamespace(name='', retention='forever'), cfg=None, mirror_dir=None,
+                         pool=view, sink=sink, result=NetworkPublishResult(network_name=''),
+                         units=list(units), as_of=_point_day(stamp), files_only=True)
+    _, bases = provider.publish(ctx, list(units))
+    if sink.errors:
+        raise ValueError(f'{repo}: ' + '; '.join(sink.errors[:5]))
+    settings = json.dumps({'repos': {repo: sorted(bases, key=len, reverse=True)}})
+    drafts = split_repo(pool, repo, files, settings, stamp)
+    if [d.track for d in drafts] != ['']:
+        raise ValueError(f'{repo}: expected one content track, found {sorted(d.track for d in drafts)}')
+    identity = content_ident({json.dumps([dims, p, k, bool(h)], sort_keys=True): cs
+                              for dims, raw in memberships for p, (cs, k, h) in raw.items()})
+    state = replace(drafts[0], ident='state:' + identity, files=files)
+    pid, new = pool.record_point(repo, state, stamp)
+    pool.record_unit_files(pid, repo, memberships)
+    return [(pid, new, state)]
+
+
 def wire_draft(pool, point_id, files, settings, stamp):
     """Upstream-shaped slice metadata; repository state identity stays local."""
     from mmw.core.points import split_repo
@@ -252,8 +504,13 @@ def set_current_repository_points(pool, repo, recorded, *, replace=True):
 
 def selected_point_files(pool, pid, units, network=None):
     """A point outside the selected suites contributes no track-wide files.
-    `network`: whose slice — a scoped point is its networks' only."""
+    `network` (a name or a NetworkConfig): whose slice — a scoped point is its
+    networks' only; a provider-scoped point is narrowed by its retention."""
     track = pool.track_of_point(pid)
+    point = pool.points_of([pid]).get(pid)
+    if point is not None and not point.legacy and provider_scoped(track.repo):
+        return slice_of(provider_view(pool, track.repo, [pid], units=units, network=network))
+    network = getattr(network, 'name', network)
     mine = [u for u in units if u.source == track.repo]
     if not mine:
         return {}
@@ -273,6 +530,8 @@ def files_for_settings(pool, point_id, settings):
     network = (data.get('network') or {}).get('name') or None    # older settings name none
     if point.legacy:
         return scoped_files(pool, point_id, network)
+    if provider_scoped(pool.track_of_point(point_id).repo):
+        return network_slice(pool, network, point_id, settings)
     from mmw.core.config import MirrorConfig
     units = [MirrorConfig.model_validate(u) for u in data.get('mirrors', [])]
     return selected_point_files(pool, point_id, units, network)
@@ -362,7 +621,7 @@ def accumulated_refs(pool, repo, units, successes):
             info = pool.blob_info(cs for _, cs, _ in records)
             if any(cs not in info for _, cs, _ in records):
                 raise ValueError(f'{unit.name}: last recorded files are missing — verify or sync this unit again')
-            prefix = unit.mirror_base + '/'
+            prefix = '' if provider_scoped(repo) else unit.mirror_base + '/'
             previous[unit.name] = [(path[len(prefix):], str(info[cs][0]), info[cs][1], kind, cs)
                                    for path, cs, kind in records if path.startswith(prefix)]
             kept.append(unit)

@@ -289,6 +289,8 @@ CREATE TABLE IF NOT EXISTS mirrors (
 -- arch/suite/component columns are still written so an older mmw can read
 -- this pool, but `dims` is what this version reads. (Kept out of the CREATE
 -- TABLE: SQLite cannot rewrite a column list with a comment in it.)
+-- mirrors.options (added the same way): the unit's whole `options` as JSON —
+-- what tells a PyPI target's two flows apart (`unit_coordinates`).
 -- Timeline points (every sync records each network's): a track is one
 -- Release stream of a repository (its dists/ dir), "" for files no Release
 -- claims; a point is one Release with one file set (`files`: their digest),
@@ -1005,6 +1007,8 @@ class Pool:
             mcols = {r[1] for r in self._conn.execute("PRAGMA table_info(mirrors)")}
             if "dims" not in mcols:
                 self._conn.execute("ALTER TABLE mirrors ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'")
+            if "options" not in mcols:
+                self._conn.execute("ALTER TABLE mirrors ADD COLUMN options TEXT NOT NULL DEFAULT '{}'")
             # Fill pre-dims rows, and repair rows an older mmw re-recorded
             # (it updates the legacy columns only, leaving dims stale).
             rows = self._conn.execute(
@@ -1065,8 +1069,10 @@ class Pool:
         self._kind_filter = "AND r.kind = 'pkg' " if "kind" in cols else ""
         self._has_source = "source" in cols
         self._has_mirrors_table = self._has_table("mirrors")
-        self._has_mirror_dims = self._has_mirrors_table and "dims" in {
-            r[1] for r in self._conn.execute("PRAGMA table_info(mirrors)")}
+        mirror_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(mirrors)")} \
+            if self._has_mirrors_table else set()
+        self._has_mirror_dims = "dims" in mirror_cols
+        self._has_mirror_options = "options" in mirror_cols
         # A read-only open of a pool from before snapshots has no such table;
         # checked once here, not per query on a connection a writer may hold.
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
@@ -1709,19 +1715,20 @@ class Pool:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO mirrors (name, source, provider, source_url, arch, suite, "
-                "component, label, include_sources, dist_upgrade, dims) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "component, label, include_sources, dist_upgrade, dims, options) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET "
                 "source=excluded.source, provider=excluded.provider, "
                 "source_url=excluded.source_url, arch=excluded.arch, "
                 "suite=excluded.suite, component=excluded.component, "
                 "label=excluded.label, include_sources=excluded.include_sources, "
-                "dist_upgrade=excluded.dist_upgrade, dims=excluded.dims",
+                "dist_upgrade=excluded.dist_upgrade, dims=excluded.dims, options=excluded.options",
                 (
                     mirror.name, mirror.source, mirror.provider, mirror.source_url,
                     mirror.arch, mirror.suite, mirror.component, mirror.label,
                     int(mirror.include_sources), int(mirror.dist_upgrade),
                     json.dumps(mirror.dims, sort_keys=True),
+                    json.dumps(mirror.options, sort_keys=True, default=str),
                 ),
             )
             self._conn.commit()
@@ -1741,7 +1748,8 @@ class Pool:
         sql = (
             "SELECT m.name, m.source, m.provider, m.source_url, m.arch, m.suite, "
             "m.component, m.label, m.include_sources, m.dist_upgrade"
-            + (", m.dims" if self._has_mirror_dims else "")
+            + (", m.dims" if self._has_mirror_dims else ", NULL")
+            + (", m.options" if self._has_mirror_options else ", NULL")
             + " FROM mirrors m "
             "WHERE EXISTS (SELECT 1 FROM refs r WHERE r.mirror_name = m.name)"
         )
@@ -1757,10 +1765,15 @@ class Pool:
         units = []
         for r in rows:
             dims = _current_dims(r[10] if self._has_mirror_dims else None, r[4], r[5], r[6], r[2])
+            try:
+                options = json.loads(r[11]) if r[11] else {}
+            except ValueError:
+                options = {}
             units.append(MirrorConfig(
                 name=r[0], source=r[1], provider=r[2], source_url=r[3], label=r[7],
                 dims=dims,
-                options={"include_sources": bool(r[8]), "dist_upgrade": bool(r[9])},
+                options={**(options if isinstance(options, dict) else {}),
+                         "include_sources": bool(r[8]), "dist_upgrade": bool(r[9])},
             ))
         return units
 

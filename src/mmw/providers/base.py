@@ -144,6 +144,16 @@ class PublishContext:
     keep_extra: frozenset = frozenset()
     mirror_start_callback: Any = None
     recheck: bool = False           # `--recheck`: recheck what a provider would reuse
+    # The day the files are laid out as of: a point's own day when `pool` is
+    # one point's view (`repository_points.PointRefs`), so its slice never
+    # drifts; None is today (live refs).
+    as_of: Any = None
+    # Only the repository's own files: a slice skips generated pages.
+    files_only: bool = False
+
+    def today(self):
+        from datetime import date
+        return self.as_of or date.today()
 
 
 @dataclass(frozen=True)
@@ -189,6 +199,9 @@ class BaseProvider(ABC):
     # retries them against the unit's saved `meta` refs (`mmw retry-failed`).
     retries_failures: bool = False
     fields: tuple[SourceField, ...] = ()
+    # Paths in a unit's refs that are the provider's own (records, history),
+    # never served: kept in a repository point's unit rows, out of its files.
+    private_prefixes: tuple[str, ...] = ()
 
     def progress_unit(self, mirror) -> ProgressUnit:
         return ProgressUnit()

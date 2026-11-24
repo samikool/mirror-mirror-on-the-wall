@@ -11,11 +11,153 @@ selects the repository can then send it, sliced to its own selection.
 from __future__ import annotations
 
 import json
+import threading
 
 UPGRADE = "legacy-points"
+SENT = "sent"
+ONE_MODEL = "one-model"
+# The one history upgrade chain, in order; each step marked in `history_upgrades`.
+CHAIN = ("manual-snapshots", UPGRADE, SENT, ONE_MODEL)
+_CHAIN_LOCK = threading.Lock()      # one run per process (the TUI's worker and a page's open)
 _APT = ("apt", "apt-flat", "apt-local")
 _SIGNATURES = ("Release", "InRelease", "Release.gpg")
 _INDEX_STEMS = ("Packages", "Sources", "Translation", "Contents")
+
+
+def upgrade(pool) -> list[str]:
+    """Every older history this pool holds, converted at once, every network:
+    snapshots become points and recordings, apt legacy points their
+    repository's, format-2 transfer records sent points, and what is left
+    one network's own (scoped) point. Each step runs once. What it said."""
+    pool.flush_writes()
+    if CHAIN_DONE <= done(pool):
+        return []
+    with _CHAIN_LOCK:
+        pool._retire_manual_snapshots()
+        notes = list(promote_legacy_points(pool))
+        _migrate_sent(pool)
+        notes += _one_model(pool)
+    return notes
+
+
+def done(pool) -> set[str]:
+    """The chain's steps this pool has run."""
+    import sqlite3
+    with pool._read() as c:
+        try:
+            return {r[0] for r in c.execute("SELECT name FROM history_upgrades")}
+        except sqlite3.OperationalError:            # a read-only open of a pool from before upgrades
+            return set()
+
+
+CHAIN_DONE = set(CHAIN)
+
+
+def _mark(pool, name: str) -> None:
+    with pool._lock:
+        pool._conn.execute("INSERT OR IGNORE INTO history_upgrades VALUES (?)", (name,))
+        pool._conn.commit()
+
+
+def _migrate_sent(pool) -> None:
+    if SENT in done(pool):
+        return
+    from mmw.core.points import migrate_sent
+    for network in sorted(pool.network_names()):
+        migrate_sent(pool, network)
+    _mark(pool, SENT)
+
+
+def _one_model(pool) -> list[str]:
+    """Every point still legacy becomes the point of the networks that had
+    it (`point_scopes`), in place: ids, idents and every row naming it stay.
+    One no network had, and nothing names, goes, and is said."""
+    if ONE_MODEL in done(pool):
+        return []
+    from mmw.core.points import AS_OF
+    from mmw.site.versionref import day
+    # As-of deployments from before exact publish records hold what their
+    # date's recordings name, exactly (retention read it so until now).
+    for network in sorted(pool.network_names()):
+        for deployment in pool.published(network):
+            if not deployment.target.startswith(AS_OF):
+                continue
+            ids = sorted({pid for ids in pool.points_at(network, deployment.target[len(AS_OF):]).values()
+                          for pid in ids})
+            with pool._lock:
+                pool._conn.executemany("INSERT OR IGNORE INTO published_points VALUES (?, ?)",
+                                       [(deployment.root, pid) for pid in ids])
+                pool._conn.commit()
+    notes: list[str] = []
+    with pool._lock:
+        c = pool._conn
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            if c.execute("SELECT 1 FROM history_upgrades WHERE name = ?", (ONE_MODEL,)).fetchone():
+                c.rollback()                         # another process converted it meanwhile
+                return []
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            legacy = c.execute("SELECT p.id, t.repo, t.name, t.suite, p.date, p.track, p.ident, p.files, p.held "
+                               "FROM points p JOIN tracks t ON t.id = p.track WHERE p.legacy = 1 ORDER BY p.id").fetchall()
+            scopes: dict[int, set[str]] = {}
+
+            def add(rows):
+                for pid, network in rows:
+                    scopes.setdefault(pid, set()).add(network)
+            add(c.execute("SELECT point, network FROM network_points"))
+            add(c.execute("SELECT sp.point, s.network FROM snapshot_points sp JOIN snapshots s ON s.id = sp.snapshot"))
+            add(c.execute("SELECT point, network FROM sent_points"))
+            add(c.execute("SELECT pp.point, d.network FROM published_points pp JOIN published d ON d.root = pp.root"))
+            named: set[int] = set()
+            for table in ("network_recordings", "network_repo_rows"):
+                if table in tables:
+                    for network, raw in c.execute(f"SELECT network, points FROM {table}").fetchall():
+                        add((pid, network) for pid in json.loads(raw))
+            if "repository_current" in tables:
+                named |= {pid for (raw,) in c.execute("SELECT points FROM repository_current") for pid in json.loads(raw)}
+            named |= {r[0] for r in c.execute("SELECT point FROM point_labels")}
+            for table in ("network_slices", "network_slice_dates", "sent_slices"):
+                if table in tables:
+                    named |= {r[0] for r in c.execute(f"SELECT point FROM {table}")}
+            for pid, repo, name, suite, date, track, ident, files, held in legacy:
+                mine = scopes.get(pid, set())
+                if repo.startswith("network:"):
+                    mine = mine | {repo.split(":", 1)[1]}
+                if not mine:
+                    if pid in named:
+                        continue                     # named, yet no network had it: left as it was
+                    for table in ("point_files", "point_units", "point_unit_files", "point_scopes"):
+                        c.execute(f"DELETE FROM {table} WHERE point = ?", (pid,))
+                    c.execute("DELETE FROM points WHERE id = ?", (pid,))
+                    if held:                         # a stub (one promoted, or pruned) held nothing
+                        what = suite or (name.rsplit("/", 1)[-1] if name else "files")
+                        notes.append((repo, f"{repo} {what} {day(date)}: no network had it — removed"))
+                    continue
+                same = c.execute("SELECT id FROM points p WHERE track = ? AND ident = ? AND files = ? AND legacy = 0 "
+                                 "AND EXISTS (SELECT 1 FROM point_scopes s WHERE s.point = p.id)",
+                                 (track, ident, files)).fetchone()
+                c.executemany("INSERT OR IGNORE INTO point_scopes VALUES (?, ?)",
+                              [(same[0] if same else pid, n) for n in sorted(mine)])
+                if same is not None:                 # already one network's: they are one point
+                    move_point_rows(c, pid, same[0])
+                    for table in ("point_files", "point_units", "point_unit_files", "point_scopes"):
+                        c.execute(f"DELETE FROM {table} WHERE point = ?", (pid,))
+                    c.execute("DELETE FROM points WHERE id = ?", (pid,))
+                    continue
+                if c.execute("SELECT 1 FROM points WHERE track = ? AND ident = ? AND files = ? AND legacy = 0",
+                             (track, ident, files)).fetchone():
+                    c.execute("DELETE FROM point_scopes WHERE point = ?", (pid,))
+                    continue                         # its repository's point has these very files: left as it was
+                c.execute("UPDATE points SET legacy = 0 WHERE id = ?", (pid,))
+            c.execute("CREATE TABLE IF NOT EXISTS legacy_notes (repo TEXT NOT NULL, note TEXT NOT NULL)")
+            c.executemany("INSERT INTO legacy_notes VALUES (?, ?)", notes)
+            c.execute("DROP TABLE IF EXISTS published_legacy_holds")
+            c.execute("INSERT OR IGNORE INTO history_upgrades VALUES (?)", (ONE_MODEL,))
+            c.commit()
+        except BaseException:
+            c.rollback()
+            raise
+    return [n for _, n in notes]
 
 
 def promote_legacy_points(pool) -> list[str]:
@@ -92,6 +234,21 @@ def _settings(pool, pid: int) -> str | None:
     return row[0] if row else None
 
 
+def _layered(settings: str | None, repo: str) -> bool:
+    """Whether the network these settings are of laid a layer over `repo`."""
+    from mmw.core.config import NetworkLayer, normalize_url
+    # Only the layers: a recorded network as a whole doesn't validate again
+    # (its `select` is dumped in a shape the config file refuses).
+    layers = (json.loads(settings or "{}").get("network") or {}).get("layers") or []
+    for layer in layers:
+        try:
+            if NetworkLayer.model_validate(layer).identity == normalize_url(repo):
+                return True
+        except Exception:  # noqa: BLE001 — a layer an older mmw wrote that this one can't read
+            continue
+    return False
+
+
 def _kind(path: str, track: str, base: str) -> str:
     from mmw.core.pool import KIND_META, KIND_PKG, KIND_RELEASE
     name = path.rsplit("/", 1)[-1]
@@ -117,6 +274,8 @@ def _promote(pool, old: int) -> str | None:
     if track is None or track.repo.startswith("network:"):
         return None
     settings = _settings(pool, old)
+    if _layered(settings, track.repo):
+        return None                                   # the network's layer is in it: that network's own
     units = [MirrorConfig.model_validate(u) for u in json.loads(settings or "{}").get("mirrors", [])]
     units = [u for u in units if repository_key(u) == track.repo]
     if not units:
@@ -202,6 +361,13 @@ def move_point_rows(c, old: int, new: int) -> None:
     """On connection `c`, uncommitted: every network, snapshot, publish and
     transfer row naming point `old` names `new` instead."""
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "point_scopes" in tables:
+        # Only one network's point takes another's networks: a repository
+        # point taking them would stop serving every other network.
+        if c.execute("SELECT 1 FROM point_scopes WHERE point = ?", (new,)).fetchone():
+            c.execute("INSERT OR IGNORE INTO point_scopes SELECT ?, network FROM point_scopes WHERE point = ?",
+                      (new, old))
+        c.execute("DELETE FROM point_scopes WHERE point = ?", (old,))
     for table in ("network_points", "snapshot_points", "published_points", "network_slices",
                   "network_slice_dates", "sent_slices", "sent_points"):
         if table not in tables:

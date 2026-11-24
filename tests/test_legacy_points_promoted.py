@@ -23,7 +23,7 @@ def _forget_points(md):
                       'network_points', 'network_recordings', 'network_settings', 'network_repo_rows',
                       'points_converted', 'recordings_seeded', 'snapshot_points'):
             conn.execute(f'DELETE FROM {table}')
-        for table in ('history_upgrades', 'published_points', 'published_legacy_holds'):
+        for table in ('history_upgrades', 'published_points', 'point_scopes'):
             conn.execute(f'DROP TABLE {table}')
 
 

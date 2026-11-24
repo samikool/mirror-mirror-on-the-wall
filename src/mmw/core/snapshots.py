@@ -165,7 +165,7 @@ def take_snapshot(network: NetworkConfig, cfg: Config, mirror_dir: Path, *,
                 ids.extend(selected)
             else:
                 for draft in split_repo(pool, repo, mine, settings, stamp):
-                    pid, _new = pool.record_point(repo, draft, stamp, legacy=True)
+                    pid, _new = pool.record_point(repo, draft, stamp, scope=network.name)
                     pool.link_network_point(network.name, pid, stamp)
                     ids.append(pid)
         pool.link_snapshot_points(sid, ids)

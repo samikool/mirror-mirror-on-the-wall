@@ -80,6 +80,10 @@ def convert_snapshots(pool: Pool, network: str, warnings: list[str] | None = Non
     How many were converted."""
     if pool.points_converted(network):
         return 0
+    from mmw.core import legacy_points
+    # Inside the upgrade chain: legacy, for the later steps to convert.
+    # After it (a snapshot nothing converted yet): the network's own point.
+    scope = network if legacy_points.ONE_MODEL in legacy_points.done(pool) else None
     done = 0
     for snap in reversed(pool.snapshots(network)):
         if not snap.complete:
@@ -94,7 +98,7 @@ def convert_snapshots(pool: Pool, network: str, warnings: list[str] | None = Non
             continue
         ids = []
         for repo, draft in drafts:
-            pid, _new = pool.record_point(repo, draft, snap.stamp, legacy=True)
+            pid, _new = pool.record_point(repo, draft, snap.stamp, legacy=scope is None, scope=scope)
             pool.link_network_point(network, pid, snap.stamp)
             ids.append(pid)
         pool.link_snapshot_points(snap.id, ids)
@@ -194,7 +198,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
             if not candidates or network.layer_for(repo) is not None:
                 continue
             projection = {path: cs for pid in candidates
-                          for path, cs in selected_point_files(pool, pid, selected).items()}
+                          for path, cs in selected_point_files(pool, pid, selected, network.name).items()}
             actual = current_ref_projection(pool, [u for u in selected if u.source == repo], shared_files(pool, candidates))
             if projection != actual:
                 note = partial_sync_note(pool, repo, candidates, projection, actual)
@@ -222,7 +226,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
             digest = content_ident(mine)
             candidates = current_repository_points(pool, repo)
             if candidates and network.layer_for(repo) is None:
-                slices = {pid: selected_point_files(pool, pid, selected) for pid in candidates}
+                slices = {pid: selected_point_files(pool, pid, selected, network.name) for pid in candidates}
                 projection = {path: cs for files in slices.values() for path, cs in files.items()}
                 if projection != mine:
                     note = partial_sync_note(pool, repo, candidates, projection, mine)
@@ -265,7 +269,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
                 continue
             ids = []
             for draft in split_repo(pool, repo, mine, settings, stamp):
-                pid, _new = pool.record_point(repo, draft, stamp, legacy=True)
+                pid, _new = pool.record_point(repo, draft, stamp, scope=network.name)
                 ids.append(pid)
                 pool.set_network_slice(network.name, pid, content_ident(draft.files))
                 if pool.link_network_point(network.name, pid, stamp) and not repo.startswith("network:"):
@@ -285,7 +289,7 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
     from mmw.core.resolve import network_mirrors
     from mmw.core.resolve import available_mirrors
     from mmw.core.repos import repository_key
-    from mmw.core.repository_points import record_repository, set_current_repository_points, accumulated_refs
+    from mmw.core.repository_points import record_repository, set_current_repository_points, accumulated_refs, coordinates
     from mmw.core.publisher.manifest import now_stamp
     units = list({u.name: u for u in [*cfg.mirrors, *available_mirrors(cfg, mirror_dir),
                                     *(attempted or [])]}.values())
@@ -299,7 +303,7 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
         with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
             requested_all = [u for u in (attempted or units)
                              if outcomes is not None and (attempted is not None or any(o.mirror == u.name for o in outcomes))]
-            pool.record_unit_outcomes((repository_key(u), u.dims, u.name in successes) for u in requested_all)
+            pool.record_unit_outcomes((repository_key(u), coordinates(u), u.name in successes) for u in requested_all)
             for repo, mine in by_repo_units.items():
                 try:
                     view, mine = accumulated_refs(pool, repo, mine, successes)
@@ -362,24 +366,26 @@ def resolve_when(text: str) -> str:
     return f"{day_part}T{time_part + '235959'[len(time_part):]}Z"     # the end of what it names
 
 
-def prepare_history(mirror_dir: Path) -> None:
-    """Finish retained-history upgrades before the first history/transfer read.
+CONVERTING = "Converting history from an older mmw…"
 
-    Schema creation alone isn't completion: an interrupted upgrade can leave
-    the table without its marker. Never create a pool or read live refs here;
-    the writable open only converts already-retained states, once.
-    """
+
+def prepare_history(mirror_dir: Path, say=None) -> bool:
+    """Convert every older history in the pool (the upgrade chain,
+    `legacy_points.upgrade`) before anything reads it: once, at startup.
+    `say` hears `CONVERTING` only when there is something to convert.
+    Whether it converted anything. Never creates a pool."""
+    from mmw.core.legacy_points import CHAIN_DONE, done
     from mmw.core.pool import database_path
     if not disk_io.ops.exists(database_path(mirror_dir)):
-        return
+        return False
     with Pool(mirror_dir, read_only=True) as pool:
-        if pool._has_table('history_upgrades'):
-            with pool._read() as conn:
-                done = {r[0] for r in conn.execute("SELECT name FROM history_upgrades")}
-                if {"manual-snapshots", "legacy-points"} <= done:
-                    return
+        if CHAIN_DONE <= done(pool):
+            return False
+    if say is not None:
+        say(CONVERTING)
     with shared_pool_lock(mirror_dir), Pool(mirror_dir):
-        pass  # The shared storage upgrade converts retained data, not a sync.
+        pass  # opening it writable runs the chain
+    return True
 
 
 def prepare_recordings(mirror_dir: Path, network: str) -> None:
@@ -560,12 +566,6 @@ def retention_plan(pool: Pool, networks: list[NetworkConfig], *, now: str | None
         for n in networks:
             kept |= unsent_points(pool, n, owned)
         kept |= pool.published_point_ids()
-        # Before publish destinations recorded exact point IDs, an as-of
-        # deployment was identified by its saved network recording instead.
-        kept |= {pid for n in networks for deployment in pool.published(n.name)
-                 if deployment.target.startswith(AS_OF)
-                 for ids in pool.points_at(n.name, deployment.target[len(AS_OF):]).values()
-                 for pid in ids if pid in owned}
         # Explicit old snapshots remain compatibility roots until migrated.
         kept |= {pid for n in networks for snap in pool.snapshots(n.name) if snap.complete
                  for pid in pool.snapshot_point_ids(snap.id) if pid in owned}

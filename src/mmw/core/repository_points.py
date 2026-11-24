@@ -75,13 +75,31 @@ def _blob_reader(pool):
     return read
 
 
-def slice_files(pool, point_id: int, units: list[tuple[str, dict[str, str]]]) -> dict[str, str]:
+def coordinates(unit) -> dict:
+    """A unit's identity within its repository (`units.dims`): its provider's
+    `unit_coordinates` — its dims, plus whatever else tells two units apart."""
+    from mmw.providers import get_provider
+    return get_provider(unit.provider).unit_coordinates(unit)
+
+
+def scoped_files(pool, point_id: int, network: str | None) -> dict[str, str]:
+    """A scoped point's files: all of them to a network it is scoped to (or
+    to no network in particular), nothing to any other. One with no scope
+    (unconverted, only ever read inside the upgrade chain) serves as it did."""
+    scopes = pool.point_scopes(point_id)
+    if network is None or not scopes or network in scopes:
+        return pool.point_files(point_id)
+    return {}
+
+
+def slice_files(pool, point_id: int, units: list[tuple[str, dict[str, str]]], *,
+                network: str | None = None) -> dict[str, str]:
     """Project immutable per-unit variants using the walk's conflict rules."""
     point = pool.points_of([point_id]).get(point_id)
     if point is None or not point.held:
         return {}
     if point.legacy:
-        return pool.point_files(point_id)
+        return scoped_files(pool, point_id, network)
     wanted = {(repo, json.dumps(dims, sort_keys=True, separators=(",", ":"))) for repo, dims in units}
     with pool._read() as c:
         variants = c.execute(
@@ -122,10 +140,10 @@ def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, comple
     groups = {u.mirror_base for u in units}
     settings = json.dumps({'repos': {repo: sorted(groups, key=len, reverse=True)}})
     members = []
-    coordinates = {}
+    by_coordinate = {}
     for unit in units:
-        coordinates.setdefault((unit.source, tuple(sorted(unit.dims.items()))), []).append(unit)
-    for aliases in coordinates.values():
+        by_coordinate.setdefault((unit.source, json.dumps(coordinates(unit), sort_keys=True)), []).append(unit)
+    for aliases in by_coordinate.values():
         unit = aliases[0]
         names = [u.name for u in aliases]
         one = RecordingSink(pool)
@@ -163,7 +181,7 @@ def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, comple
             paths.update(draft.files)
             mine = {p: row for p, row in raw.items() if p in paths}
             if mine:
-                memberships.append((unit.dims, mine))
+                memberships.append((coordinates(unit), mine))
         common = {p: row for p, row in shared.items() if p in draft.files}
         if common:
             memberships.append((None, common))
@@ -232,8 +250,9 @@ def set_current_repository_points(pool, repo, recorded, *, replace=True):
         pool._conn.commit()
 
 
-def selected_point_files(pool, pid, units):
-    """A point outside the selected suites contributes no track-wide files."""
+def selected_point_files(pool, pid, units, network=None):
+    """A point outside the selected suites contributes no track-wide files.
+    `network`: whose slice — a scoped point is its networks' only."""
     track = pool.track_of_point(pid)
     mine = [u for u in units if u.source == track.repo]
     if not mine:
@@ -242,7 +261,7 @@ def selected_point_files(pool, pid, units):
         # Flat repositories' Release sits at their base itself.
         if not any(track.name == u.mirror_base and not u.suite for u in mine):
             return {}
-    return slice_files(pool, pid, [(u.source, u.dims) for u in mine])
+    return slice_files(pool, pid, [(u.source, coordinates(u)) for u in mine], network=network)
 
 
 def files_for_settings(pool, point_id, settings):
@@ -250,11 +269,13 @@ def files_for_settings(pool, point_id, settings):
     point = pool.points_of([point_id]).get(point_id)
     if point is None:
         return {}
+    data = json.loads(settings or '{}')
+    network = (data.get('network') or {}).get('name') or None    # older settings name none
     if point.legacy:
-        return pool.point_files(point_id)
+        return scoped_files(pool, point_id, network)
     from mmw.core.config import MirrorConfig
-    units = [MirrorConfig.model_validate(u) for u in json.loads(settings or '{}').get('mirrors', [])]
-    return selected_point_files(pool, point_id, units)
+    units = [MirrorConfig.model_validate(u) for u in data.get('mirrors', [])]
+    return selected_point_files(pool, point_id, units, network)
 
 
 def current_ref_projection(pool, units, shared):
@@ -325,7 +346,7 @@ def accumulated_refs(pool, repo, units, successes):
     failed = pool.failed_units(repo)
     previous, kept = {}, []
     for unit in units:
-        raw = json.dumps(unit.dims, sort_keys=True, separators=(',', ':'))
+        raw = json.dumps(coordinates(unit), sort_keys=True, separators=(',', ':'))
         if (unit.name in successes or raw not in failed) and pool.has_refs(unit.name):
             kept.append(unit)
             continue

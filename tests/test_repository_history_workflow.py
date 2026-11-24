@@ -97,11 +97,9 @@ def test_older_publish_without_point_ids_protects_history_until_republished(sync
         conn.execute('DELETE FROM published_points')
     with Pool(md) as pool:
         assert not points.retention_plan(pool, [net], cfg=cfg)
-        assert pool.legacy_publish_notes()
-    assert 'no resync needed' in history.render(cfg)
+        assert not pool._has_table('published_legacy_holds')
     assert not publish_network(net, cfg, md).errors
     with Pool(md, read_only=True) as pool:
-        assert not pool.legacy_publish_notes()
         assert points.retention_plan(pool, [net], cfg=cfg)
 
 

@@ -92,6 +92,8 @@ class MmwApp(UpdateOffers, ThemedApp):
             await self.open_past_point(*self._start_past)
         for note in self._startup_notes:
             self.notify(note, severity="warning", timeout=10)
+        if self.cfg is not None:
+            self.run_worker(self._prepare_history(), group="history-upgrade")
         # Subscribed only now: the theme applied in __init__ — including a
         # fallback — is not a choice the user made, so it is never saved.
         self.theme_changed_signal.subscribe(self, self._theme_changed)
@@ -99,6 +101,22 @@ class MmwApp(UpdateOffers, ThemedApp):
         # A newer mmw on PyPI: offered now, in front of everything.
         from mmw.core import update as U
         self._start_update_offers(None if U.checks_disabled(self.cfg) else U.Checker().start())
+
+    async def _prepare_history(self) -> None:
+        """History from an older mmw, converted before anything reads it —
+        the CLI does the same before every command."""
+        from mmw.core.points import prepare_history
+        mirror_dir = self.cfg.settings.mirror_dir
+
+        def say(line: str) -> None:
+            self.call_from_thread(self.notify, line, timeout=10)
+        try:
+            converted = await asyncio.to_thread(prepare_history, mirror_dir, say)
+        except Exception as e:  # noqa: BLE001 — said; the app stays usable
+            self.notify(f"History could not be converted: {e}", severity="error", timeout=15)
+            return
+        if converted:
+            self.notify("History converted — every network's older history is now points.", timeout=10)
 
     def _update_mirror_dir(self):
         return self.cfg.settings.mirror_dir if self.cfg is not None else None

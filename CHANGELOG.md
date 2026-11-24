@@ -6,6 +6,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.8]
+
+### Added
+
+- **Verify pool in the TUI** (Sources → More… → Verify pool, `V`): check the pool's
+  refs, stat or re-hash every blob, repair what is damaged, then sync it back — the
+  same check as `mmw verify [--stat | --hash] [--repair] [-n NETWORK]`.
+
+### Changed
+
+- When a sync can't record repository points because the pool is missing files, its
+  warning now says how to repair it from the TUI or the CLI.
+
 ## [1.5.7]
 
 Every repository now keeps its history the same way. APT, PyPI and VS Code

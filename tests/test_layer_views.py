@@ -124,7 +124,44 @@ def test_layered_bundle_bytes_unchanged(lab):
     if os.environ.get("MMW_UPDATE_GOLDEN") == "1":
         GOLDEN.write_text(json.dumps(actual, indent=1, sort_keys=True) + "\n")
     expected = json.loads(GOLDEN.read_text())
-    assert json.loads(json.dumps(actual)) == expected
+    assert _layout(json.loads(json.dumps(actual))) == _layout(expected)
+
+
+_COMPRESSED = (".gz", ".xz", ".deb")
+
+
+def _layout(bundles: dict) -> dict:
+    """The bundles' layout, not their bytes: each checksum becomes a token by
+    first appearance in path order, and compressed files lose their sizes. A
+    Python's zlib and liblzma builds differ (3.11 and 3.12 make other bytes
+    than 3.10 and 3.13), so what a bundle carries is pinned, not how its
+    indexes compress."""
+    import re
+    hexes = re.compile(r"[0-9a-f]{64}")
+    tokens: dict[str, str] = {}
+
+    def tok(text: str) -> str:
+        return hexes.sub(lambda m: tokens.setdefault(m.group(0), f"#{len(tokens) + 1}"), text)
+    out = {}
+    for name in sorted(bundles):            # rows first: path order fixes every token
+        rows = bundles[name]["rows"]
+        named = {(p.rsplit("/", 1)[0], c): p.rsplit("/", 1)[1] for p, c, _s, _r in rows if "/by-hash/" not in p}
+
+        def path(p: str, c: str) -> str:
+            # A by-hash copy is named for the index it duplicates — its own
+            # name is a hash, and would order the rows by bytes.
+            if "/by-hash/SHA256/" not in p:
+                return p
+            parent = p.split("/by-hash/", 1)[0]
+            return f"{parent}/by-hash/SHA256/<{named.get((parent, c), 'older index')}>"
+        out[name] = {"rows": [[tok(p2), tok(c), None if p.endswith(_COMPRESSED) or "/by-hash/" in p else s, r]
+                              for p2, p, c, s, r in sorted((path(p, c), p, c, s, r) for p, c, s, r in rows)]}
+    for name in sorted(bundles):
+        b = bundles[name]
+        out[name]["points"] = {repo: [[tok(t), tok(i)] for t, i in pts] for repo, pts in b["points"].items()}
+        out[name]["full"] = b["full"]
+        out[name]["blobs"] = sorted(tok(m.rsplit("/", 1)[1]) for m in b["blobs"])
+    return out
 
 
 def test_sync_builds_the_view_of_each_layered_network(tmp_path, monkeypatch):

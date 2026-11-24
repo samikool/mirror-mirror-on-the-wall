@@ -28,13 +28,18 @@ class PreviewSink(RecordingSink):
         self.info[checksum] = (None, len(data))
 
 
-def repository_owned(pool, current, network=None):
-    ids = [pid for repo, ids in current.items() if not repo.startswith('network:') for pid in ids]
-    return bool(ids) and all(not p.legacy for p in pool.points_of(ids).values())
+def walked(pool, current) -> bool:
+    """Whether a network's points include one its walk recorded: a
+    repository no sync recorded a point of (its refs were all it had), or
+    one converted from an older mmw. Such a point is dated by when it was
+    recorded, not by its Release, so the sync-dated baselines
+    (`range_baseline`, `--since`'s points) don't read it."""
+    return any(pool.point_scopes(pid) for repo, ids in current.items()
+               if not repo.startswith('network:') for pid in ids)
 
 
 def repository_projection(pool, network, cfg, mirror_dir, *, point_ids=None, views=None):
-    """Current configured slices; legacy providers keep their existing walk.
+    """Current configured slices of each repository's points.
     `views` gets each provider-scoped repository's point view (`walk_network`'s
     `point_views`)."""
     from mmw.core.repository_points import provider_scoped, provider_view, selected_point_files
@@ -73,8 +78,16 @@ def selected_tree(pool, network, cfg, mirror_dir, settings, current, *, until=No
     projection = {repo: {path: cs for pid in ids
                          for path, cs in files_for_settings(pool, pid, settings, when=when).items()}
                   for repo, ids in targets.items() if not repo.startswith('network:')}
-    views = {repo: view for repo, ids in targets.items() if provider_scoped(repo)
-             and (view := provider_view(pool, repo, ids, settings=settings, network=network.name)) is not None}
+    views, unviewed = {}, set()
+    for repo, ids in targets.items():
+        if not provider_scoped(repo):
+            continue
+        view = (provider_view(pool, repo, ids, settings=settings, network=network.name)
+                or _equal_view(pool, repo, projection[repo], settings, network.name))
+        if view is not None:
+            views[repo] = view
+        elif projection[repo]:
+            unviewed.add(repo)
     from mmw.core.resolve import network_mirrors
     from mmw.core.repos import repository_key
     for unit in network_mirrors(network, cfg, mirror_dir):
@@ -83,9 +96,32 @@ def selected_tree(pool, network, cfg, mirror_dir, settings, current, *, until=No
     rows, settings, warnings = walk_tree(
         network, cfg, mirror_dir, pool, repository_files=projection, sink=sink, point_views=views,
         preview=preview, build_layers=False, progress=progress, stop_event=stop_event)
+    if unviewed:
+        # A network's walk of a provider (converted, no sync since): its
+        # files as recorded, its pages from the network's track then.
+        for repo in sorted(unviewed):
+            rows.update(projection[repo])
+        net_ids = pool.points_at(network.name, when or '99999999T999999Z').get(f'network:{network.name}', [])
+        for pid in net_ids:
+            for path, cs in pool.point_files(pid).items():
+                rows.setdefault(path, cs)
     repos = recorded_repos(settings)
     extras = {p: c for p, c in rows.items() if attribute(p, repos) is None}
     return rows, settings, extras, warnings, sink.info if preview else {}
+
+
+def _equal_view(pool, repo, files, settings, network):
+    """A converted (scoped) point of a provider-scoped repository is served
+    as the repository point whose slice it equals (the reuse rule that kept
+    it): that point's view, pages and all. None when none does."""
+    from mmw.core.repository_points import provider_view, slice_of
+    if not files:
+        return None
+    for point in sorted(pool.repository_points(repo), key=lambda p: (p.date, p.stamp), reverse=True):
+        view = provider_view(pool, repo, [point.id], settings=settings, network=network)
+        if view is not None and slice_of(view) == files:
+            return view
+    return None
 
 
 def repository_targets(pool, repo):
@@ -109,17 +145,11 @@ def recorded_selection(pool, network, mirror_dir, cfg=None, *, only=None):
     """
     import json
 
-    from mmw.core.points import current_points
     from mmw.core.resolve import network_mirrors
     from mmw.core.repos import repository_key
 
     settings = pool.settings_at(network.name, '99999999T999999Z')
-    # Snapshot conversion seeds recordings without rebuilding the sync cache.
-    # Use those recordings when no cached current state exists. If the cache
-    # does exist it records the actual last walk, even when an imported or
-    # explicitly dated recording has a later timestamp.
     current = pool.latest_recordings(network.name)
-    current.update(current_points(pool, network.name))
     if cfg is None:
         if not settings:
             raise ValueError('No recorded points for this network — sync its repositories first.')
@@ -138,7 +168,7 @@ def recorded_selection(pool, network, mirror_dir, cfg=None, *, only=None):
     missing = {repo: mine for repo, mine in repos.items()
                if not current.get(repo) or repository_targets(pool, repo)}
     if not missing and settings:
-        return settings, current
+        return settings, {repo: ids for repo, ids in current.items() if repo in repos}
     data = json.loads(settings) if settings else {}
     data.update(nginx_container=2, network=network.model_dump(mode='json'),
                 mirrors=[u.legacy_dict() for u in units])
@@ -164,9 +194,8 @@ def recorded_selection(pool, network, mirror_dir, cfg=None, *, only=None):
         current[repo] = [next((old.id for old in recorded.values() if old.held and old.track == point.track
                                and files_for_settings(pool, old.id, settings) == slices[point.id]), point.id)
                          for point in pool.points_of(list(slices)).values()]
-    current = {repo: ids for repo, ids in current.items() if repo in repos or repo.startswith('network:')}
-    if repository_owned(pool, current, network):
-        current = {repo: ids for repo, ids in current.items() if not repo.startswith('network:')}
+    # The network's own track is generated with the tree (`selected_tree`).
+    current = {repo: ids for repo, ids in current.items() if repo in repos}
     if not current:
         raise ValueError('No recorded points for this network — sync its repositories first.')
     return settings, current
@@ -391,13 +420,15 @@ def range_baseline(pool, network, settings, targets, *, since=None, full=False, 
     Subtracting only X loses a file removed at Y and reintroduced at Z.
     Intersect the selected slices throughout the interval instead. Missing
     history makes the safe baseline empty, so it never causes an omission.
+    Only repository files: the network's own are the caller's. None for
+    walked points (`walked`).
     `base_settings` (see `assumed_selection`) narrows what the far side is
     assumed to hold; what it needs is still projected with `settings`.
     """
     base = base_settings or settings
     from mmw.core.points import resolve_when
-    if not repository_owned(pool, targets, network):
-        return None                      # compatibility with legacy network states
+    if walked(pool, targets):
+        return None                      # the sent record says what a walked point's far side has
     if full:
         return set()
     known = pool.points_of(pid for ids in targets.values() for pid in ids)
@@ -598,7 +629,7 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
     with Pool(mirror_dir, read_only=True) as pool:
         settings, current = recorded_selection(pool, net, mirror_dir, cfg, only=repos)
         extras, external = {}, {}
-        if cfg is not None and repository_owned(pool, current, net):
+        if cfg is not None:
             _, settings, extras, notes, external = selected_tree(
                 pool, net, cfg, mirror_dir, settings, current, until=until, preview=True)
             warnings.extend(notes)
@@ -641,9 +672,13 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
             net, mirror_dir, settings, cfg=cfg, since=since_stamp, kept_dirs=kept_dirs, whole=whole)
         interval_base = range_baseline(pool, net, settings, targets, since=since, full=full, listing=listing,
                                        base_settings=None if base is settings else base)
+        # Both are what the far side is assumed to hold: trust only what both
+        # say. The network's own files (keys, generated nginx) are no
+        # repository's: what was sent of them is there.
         if interval_base is not None:
-            # Both are what the far side is assumed to hold: trust only what both say.
-            sent = interval_base if baseline is None else interval_base & baseline
+            repo_files = {cs for pid in (p for ids in listing.values() for p in ids) for cs in files[pid].values()}
+            sent = ((interval_base if baseline is None else interval_base & baseline)
+                    | (sent & (checksums | generated.keys()) - repo_files))
         sizes = {cs: data[1] for cs, data in info.items()}
         sizes.update(generated)
         payload = sizes.keys() - sent

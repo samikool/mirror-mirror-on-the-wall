@@ -6,6 +6,22 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.9]
+
+### Fixed
+
+- **History names suites by their directory.** Repository history (TUI and
+  `mmw history`) and the far side's history (TUI and `mmw site history`) head
+  each suite by its `dists/` directory, with the name its Release gives it now
+  in brackets: `bookworm (oldstable)`, not `oldstable`. That name moves at every
+  Debian release, and the directory never does. The far side's pin line names
+  the directory too, so it points at a suite the dated tree really has.
+- **History says what its dates are.** The date column is now **Released**: the
+  date upstream published each point, not when it was synced. The history page
+  and `mmw history` explain that a sync which finds a suite unchanged adds no
+  point. The Sources pane, the history page and `mmw history` say when the
+  repository was last synced (`last sync 24 Nov`).
+
 ## [1.5.8]
 
 ### Added

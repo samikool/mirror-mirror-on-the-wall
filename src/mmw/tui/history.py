@@ -73,14 +73,11 @@ class HistoryPage(Page):
             self.start_flow(self._load)
 
     async def _load(self):
-        from mmw.core.pool import Pool
         cfg = self.app.cfg
 
         def read():
             rows = command.prepare(cfg, network=self.network, repos=self.repos)
-            with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
-                notes = pool.legacy_publish_notes()
-            return rows, notes, command.carried_by(cfg)
+            return rows, [], command.carried_by(cfg)
         try:
             rows, notes, carried = await asyncio.to_thread(read)
         except (ValueError, LookupError, OSError) as exc:

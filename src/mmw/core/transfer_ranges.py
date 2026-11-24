@@ -48,7 +48,7 @@ def repository_projection(pool, network, cfg, mirror_dir, *, point_ids=None):
         ids = repository_targets(pool, repo)
         if not ids:
             continue
-        slices = {pid: selected_point_files(pool, pid, units) for pid in ids}
+        slices = {pid: selected_point_files(pool, pid, units, network.name) for pid in ids}
         files = {p: cs for mine in slices.values() for p, cs in mine.items()}
         if not files:
             raise ValueError(f'{repo}: selected repository point is no longer kept — verify or choose another point')

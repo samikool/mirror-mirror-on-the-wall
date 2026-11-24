@@ -160,6 +160,10 @@ class PypiProvider(BaseProvider):
     )
 
 
+    def unit_coordinates(self, unit) -> dict:
+        # A target's two flows share its dims; the flow tells them apart.
+        return {**unit.dims, "flow": unit.options.get("flow", "all")}
+
     def claims_base(self, base: str) -> bool:
         return base.split("/", 1)[0] in pypub.HOSTS
 

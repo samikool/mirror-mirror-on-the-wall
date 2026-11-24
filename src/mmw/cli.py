@@ -114,7 +114,27 @@ def _main(
     bug is often on the far side of an airgap, with no `git log`, no network
     and no way to tell which build produced the bundle it is holding.
     """
+    _prepare_history(ctx)
     _start_update_check(ctx)
+
+
+def _prepare_history(ctx: typer.Context) -> None:
+    """Convert history from an older mmw — every network, all at once —
+    before any command reads it. Not for the far side (`mmw site …`, which
+    has no pool of its own here), `mmw update`, help, or the TUI (it
+    converts on mount); and only where a config and a pool already are."""
+    import sys
+    if ctx.resilient_parsing or ctx.invoked_subcommand in (None, "site", "update"):
+        return
+    if {"--help", "-h"} & set(sys.argv[1:]):
+        return
+    try:
+        from mmw.core import config
+        cfg = config.load(_cfg_dir())
+    except Exception:  # noqa: BLE001 — no loadable mmw.toml: the command says so itself
+        return
+    from mmw.core.points import prepare_history
+    prepare_history(cfg.settings.mirror_dir, say=lambda line: typer.echo(line, err=True))
 
 
 def _start_update_check(ctx: typer.Context) -> None:

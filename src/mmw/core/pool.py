@@ -234,7 +234,6 @@ CREATE TABLE IF NOT EXISTS published_points (
 -- to far sides. NULL: cleared — kept so the clear travels too.
 CREATE TABLE IF NOT EXISTS point_labels (point INTEGER PRIMARY KEY, label TEXT);
 CREATE TABLE IF NOT EXISTS history_upgrades (name TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS published_legacy_holds (root TEXT PRIMARY KEY);
 
 -- A network whose far side may sit at a snapshot force-deleted here: the
 -- record of what it has is gone, so its next default transfer is full.
@@ -307,6 +306,13 @@ CREATE TABLE IF NOT EXISTS points (
     legacy INTEGER NOT NULL DEFAULT 0,
     UNIQUE (track, ident, files, legacy)
 );
+-- A point only these networks serve: one network's walk of a repository
+-- (history from before repository points, a layered view, a `network:`
+-- track). Kept with a stub, which drops its unit rows.
+CREATE TABLE IF NOT EXISTS point_scopes (
+    point INTEGER NOT NULL, network TEXT NOT NULL,
+    PRIMARY KEY (point, network)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS units (
     id INTEGER PRIMARY KEY, repo TEXT NOT NULL, dims TEXT NOT NULL,
     UNIQUE (repo, dims)
@@ -1067,8 +1073,14 @@ class Pool:
         self._has_layer_rows = self._has_table("layer_rows")
         self._has_point_files = self._has_table("point_files")
         self._has_point_unit_files = self._has_table("point_unit_files")
-        self._point_legacy_sql = "p.legacy" if "legacy" in {
-            r[1] for r in self._conn.execute("PRAGMA table_info(points)")} else "1"
+        # `PoolPoint.legacy`: the point is one network's (scoped), not its
+        # repository's. Read-only opens of older pools lack the table/column.
+        if "legacy" not in {r[1] for r in self._conn.execute("PRAGMA table_info(points)")}:
+            self._point_legacy_sql = "1"
+        elif self._has_table("point_scopes"):
+            self._point_legacy_sql = "(p.legacy OR EXISTS (SELECT 1 FROM point_scopes s WHERE s.point = p.id))"
+        else:
+            self._point_legacy_sql = "p.legacy"
         self._has_download_sources = self._has_table("download_sources")
         self._has_retry_state = self._has_table("retry_state")
         # SQLite's planner prefers the checksum primary key (one row, but a
@@ -1077,10 +1089,10 @@ class Pool:
         # has none until a writable open builds it.
         self._packages_by = (" INDEXED BY idx_packages_cover"
                              if self._has_index("idx_packages_cover") else "")
+        self.upgrade_notes: list[str] = []     # what the history upgrade chain said, if it ran here
         if not read_only:
-            self._retire_manual_snapshots()
-            from mmw.core.legacy_points import promote_legacy_points
-            promote_legacy_points(self)
+            from mmw.core import legacy_points
+            self.upgrade_notes = legacy_points.upgrade(self)
 
     def _retire_manual_snapshots(self) -> None:
         """One-time upgrade: snapshots become ordinary retained point history.
@@ -1110,8 +1122,6 @@ class Pool:
                     with self._lock:
                         self._conn.executemany('INSERT OR IGNORE INTO published_points VALUES (?, ?)',
                                                [(deployment.root, pid) for pid in ids])
-                        self._conn.execute('INSERT OR IGNORE INTO published_legacy_holds VALUES (?)',
-                                           (deployment.root,))
                         self._conn.commit()
             for snap in self.snapshots(network):
                 if not snap.complete:
@@ -1228,8 +1238,8 @@ class Pool:
             return []
         where, args = (" AND t.repo = ?", (repo,)) if repo is not None else ("", ())
         with self._read() as c:
-            rows = c.execute("SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, p.legacy "
-                             "FROM points p JOIN tracks t ON t.id = p.track WHERE p.legacy = 0" + where
+            rows = c.execute(f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_legacy_sql} "
+                             f"FROM points p JOIN tracks t ON t.id = p.track WHERE NOT {self._point_legacy_sql}" + where
                              + ("" if stubs else " AND p.held = 1")
                              + " ORDER BY p.date DESC, p.stamp DESC, p.id DESC", args).fetchall()
         return [PoolPoint(*r[:6], bool(r[6]), bool(r[7])) for r in rows]
@@ -1935,10 +1945,13 @@ class Pool:
 
     # ── timeline points ──────────────────────────────────────────────────────
 
-    def record_point(self, repo: str, draft, stamp: str, *, legacy: bool = False) -> tuple[int, bool]:
+    def record_point(self, repo: str, draft, stamp: str, *, legacy: bool = False,
+                     scope: str | None = None) -> tuple[int, bool]:
         """`draft` (a `mmw.site.tracks.PointDraft`) as a point of `repo`:
         (its id, whether it is new). The same Release with the same files
-        is the same point; with other files (another selection), another."""
+        is the same point; with other files (another selection), another.
+        `scope`: one network's point (its walk), served to that network only;
+        the same files another network walked are that point, now theirs too."""
         from mmw.site.tracks import content_ident
         files = content_ident(draft.files)
         self.flush_writes()
@@ -1951,8 +1964,16 @@ class Pool:
                           (repo, draft.track, draft.fields.get("Suite"), draft.fields.get("Codename")))
                 tid = c.execute("SELECT id FROM tracks WHERE repo = ? AND name = ?",
                                 (repo, draft.track)).fetchone()[0]
-                row = c.execute("SELECT id, held FROM points WHERE track = ? AND ident = ? AND files = ? AND legacy = ?",
-                                (tid, draft.ident, files, int(legacy))).fetchone()
+                if scope is not None:
+                    legacy = False
+                    row = c.execute("SELECT id, held FROM points p WHERE track = ? AND ident = ? AND files = ? "
+                                    "AND legacy = 0 AND EXISTS (SELECT 1 FROM point_scopes s WHERE s.point = p.id)",
+                                    (tid, draft.ident, files)).fetchone()
+                else:
+                    row = c.execute("SELECT id, held FROM points WHERE track = ? AND ident = ? AND files = ? AND legacy = ?",
+                                    (tid, draft.ident, files, int(legacy))).fetchone()
+                if row is not None and scope is not None:
+                    c.execute("INSERT OR IGNORE INTO point_scopes VALUES (?, ?)", (row[0], scope))
                 if row is not None and row[1]:
                     c.commit()
                     return row[0], False
@@ -1962,6 +1983,8 @@ class Pool:
                 else:
                     pid = c.execute("INSERT INTO points (track, ident, files, date, stamp, legacy) VALUES (?, ?, ?, ?, ?, ?)",
                                     (tid, draft.ident, files, draft.date, stamp, int(legacy))).lastrowid
+                    if scope is not None:
+                        c.execute("INSERT OR IGNORE INTO point_scopes VALUES (?, ?)", (pid, scope))
                 c.execute("CREATE TEMP TABLE IF NOT EXISTS _point_in (path TEXT PRIMARY KEY, checksum TEXT NOT NULL)")
                 c.execute("DELETE FROM _point_in")
                 c.executemany("INSERT OR REPLACE INTO _point_in VALUES (?, ?)", list(draft.files.items()))
@@ -2137,6 +2160,14 @@ class Pool:
             return dict(c.execute(
                 "SELECT p.path, b.checksum FROM point_files f JOIN snapshot_paths p ON p.id = f.path "
                 "JOIN snapshot_blobs b ON b.id = f.blob WHERE f.point = ?", (point_id,)).fetchall())
+
+    def point_scopes(self, point_id: int) -> set[str]:
+        """The networks a scoped point is served to (empty: its repository's)."""
+        with self._read() as c:
+            try:
+                return {r[0] for r in c.execute("SELECT network FROM point_scopes WHERE point = ?", (point_id,))}
+            except sqlite3.OperationalError:  # Read-only databases from before scopes.
+                return set()
 
     def stub_point(self, point_id: int) -> None:
         """Keep the point's record (ident, files digest, dates), not its file
@@ -2416,6 +2447,8 @@ class Pool:
                           "layer_rows", "layer_digests", *_POINT_NETWORK_TABLES):
                 self._conn.execute(f"UPDATE {table} SET network = ? WHERE network = ?",
                                    (new, old))
+            self._conn.execute("UPDATE OR IGNORE point_scopes SET network = ? WHERE network = ?", (new, old))
+            self._conn.execute("DELETE FROM point_scopes WHERE network = ?", (old,))
             self._conn.commit()
         return None
 
@@ -2696,7 +2729,6 @@ class Pool:
                 "INSERT OR REPLACE INTO published (root, network, target) VALUES (?, ?, ?)",
                 (root, network, target))
             self._conn.execute('DELETE FROM published_points WHERE root = ?', (root,))
-            self._conn.execute('DELETE FROM published_legacy_holds WHERE root = ?', (root,))
             self._conn.executemany('INSERT INTO published_points VALUES (?, ?)',
                                    [(root, pid) for pid in sorted(set(point_ids))])
             self._conn.commit()
@@ -2723,15 +2755,6 @@ class Pool:
             except sqlite3.OperationalError:  # Read-only databases from before labels.
                 return {}
         return {p: label for p, label in rows if cleared or label is not None}
-
-    def legacy_publish_notes(self) -> list[str]:
-        with self._read() as c:
-            try:
-                roots = [r[0] for r in c.execute('SELECT root FROM published_legacy_holds ORDER BY root')]
-            except sqlite3.OperationalError:
-                roots = []
-        return [f'{root}: older publish metadata lacks exact point IDs; prior history is kept '
-                'conservatively until this directory is republished (no resync needed).' for root in roots]
 
     def published(self, network: str) -> list[PublishedInfo]:
         """Every destination this network was published to, newest first."""

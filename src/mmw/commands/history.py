@@ -291,9 +291,7 @@ def run(cfg_dir, *, network=None, repos=None, since=None, as_json_output=False):
 
 def render(cfg, **selection):
     rows = prepare(cfg, **selection)
-    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
-        notes = pool.legacy_publish_notes()
-    return '\n'.join([describe(cfg, rows, network=selection.get('network')), *notes])
+    return describe(cfg, rows, network=selection.get('network'))
 
 
 # ── deleting points by hand ──────────────────────────────────────────────────

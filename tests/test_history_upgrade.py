@@ -25,7 +25,7 @@ def old_history(two_mirrors):  # noqa: F811
                       'network_points', 'network_recordings', 'network_settings', 'network_repo_rows',
                       'points_converted', 'recordings_seeded', 'snapshot_points'):
             conn.execute(f'DELETE FROM {table}')
-        for table in ('history_upgrades', 'published_points', 'published_legacy_holds'):
+        for table in ('history_upgrades', 'published_points', 'point_scopes'):
             conn.execute(f'DROP TABLE {table}')
     config.save(cfg, md.parent)
     return cfg, net, md, snap
@@ -91,7 +91,7 @@ def test_existing_repository_points_survive_151_schema_upgrade(tmp_path, monkeyp
     # These are the schema additions since 1.5.1. There is deliberately no
     # network cache: the network is created after the recorded sync.
     with sqlite3.connect(db) as conn:
-        for table in ('history_upgrades', 'published_points', 'published_legacy_holds'):
+        for table in ('history_upgrades', 'published_points', 'point_scopes'):
             conn.execute(f'DROP TABLE {table}')
     net = config.NetworkConfig(name='new', certs=False, nginx=False)
     cfg = cfg.model_copy(update={'networks': [net]})

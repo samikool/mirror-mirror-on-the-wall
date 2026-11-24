@@ -200,6 +200,11 @@ class BaseProvider(ABC):
         Only for providers with `retries_failures`."""
         raise NotImplementedError(f"{self.name} cannot retry failed downloads")
 
+    def unit_coordinates(self, unit) -> dict:
+        """The unit's identity within its repository's points: what tells it
+        apart from every other unit of the repository. Its dims, by default."""
+        return dict(unit.dims)
+
     def dimension(self, name: str) -> Dimension | None:
         return next((d for d in self.dimensions if d.name == name), None)
 

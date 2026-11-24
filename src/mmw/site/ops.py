@@ -31,6 +31,21 @@ def suite_of(track: TrackInfo) -> str:
     return track.suite or track.codename or (track.name.rsplit("/", 1)[-1] if track.name else "files")
 
 
+def dist_of(track: TrackInfo) -> str:
+    """The suite's dists/ directory — what a sources.list line names (its
+    Suite: is an alias that moves: `oldstable` for bookworm); else suite_of."""
+    from mmw.site.tracks import suite_names
+    return suite_names(track.name, track.suite, track.codename)[0] if "/dists/" in "/" + track.name \
+        else suite_of(track)
+
+
+def heading_of(track: TrackInfo) -> str:
+    """A history table's heading for the suite: 'bookworm (oldstable)'."""
+    from mmw.site.tracks import suite_heading, suite_names
+    return suite_heading(*suite_names(track.name, track.suite, track.codename)) if "/dists/" in "/" + track.name \
+        else suite_of(track)
+
+
 def _track_named(db: SiteDB, repo: str, name: str) -> TrackInfo:
     tracks = db.tracks(repo)
     want = name.strip().lower()

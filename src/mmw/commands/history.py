@@ -23,6 +23,12 @@ class HistoryRow:
     label: str | None = None
     point: int = 0
     scoped: bool = False     # one network's point, served to it only
+    alias: str | None = None     # what the Release calls `suite` now: oldstable for bookworm
+
+    @property
+    def heading(self) -> str:
+        from mmw.site.tracks import suite_heading
+        return suite_heading(self.suite, self.alias)
 
     @property
     def current(self) -> bool:
@@ -62,7 +68,7 @@ def carried_by(cfg) -> dict[str, set[str]]:
 def prepare(cfg, *, network=None, repos=None, since=None):
     from mmw.core.points import prepare_history, resolve_when, retention_plan, unsent_points
     from mmw.core.repository_points import current_repository_points, selected_point_files, wire_draft
-    from mmw.site.tracks import content_ident
+    from mmw.site.tracks import content_ident, suite_names
     from mmw.core.resolve import available_mirrors, network_mirrors
     from mmw.core.repos import repository_key, repository_label, resolve_repo_refs
     prepare_history(cfg.settings.mirror_dir)
@@ -135,10 +141,11 @@ def prepare(cfg, *, network=None, repos=None, since=None):
                     marks.append('drops')
                 if not _consistent(pool, point, track):
                     marks.append('inconsistent')
-                rows.append(HistoryRow(repo, track.suite or track.name or 'files', date, point.ident,
+                suite, alias = suite_names(track.name, track.suite, track.codename)
+                rows.append(HistoryRow(repo, suite, date, point.ident,
                                        point.held, sizes.get(point.id, 0),
                                        pool.points_frees([point.id]) if point.held else 0,
-                                       tuple(marks), labels.get(point.id), point.id, point.scoped))
+                                       tuple(marks), labels.get(point.id), point.id, point.scoped, alias))
     # Grouped by repository and suite; newest first within each.
     rows.sort(key=lambda r: (r.date, r.ident), reverse=True)
     rows.sort(key=lambda r: (repository_label(r.repo, cfg), r.repo, r.suite))
@@ -171,7 +178,7 @@ def describe(cfg, rows, *, network=None):
     from mmw.site.versionref import day_time
     if not rows:
         return 'No repository points recorded yet.'
-    width = max(len(r.suite) for r in rows)
+    width = max(len(r.heading) for r in rows)
     lines, last_repo, last_suite = [], None, None
     with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
         summaries = {repo: repo_summary(cfg, repo, rows, pool) for repo in {r.repo for r in rows}}
@@ -190,10 +197,22 @@ def describe(cfg, rows, *, network=None):
         if r.scoped:
             words.append('network-only')
         size = fmt_size(r.size) if r.held else '—'
-        suite = r.suite if r.suite != last_suite else ''
+        suite = r.heading if r.suite != last_suite else ''
         last_suite = r.suite
         lines.append(f'  {suite:<{width}}  {day_time(r.date)}  {size:>9}  {" · ".join(words)}'.rstrip())
+    lines += ['', DATES_NOTE]
     return '\n'.join(lines)
+
+
+DATES_NOTE = ("Dates are each point's Release date, as upstream published it — not when it was synced. "
+              "A sync that finds a suite unchanged adds no point: its newest point stays the latest sync.")
+
+
+def last_synced(cfg) -> dict[str, str]:
+    """Repository → the stamp a sync last read it at."""
+    from mmw.core.repository_points import repository_synced
+    with Pool(cfg.settings.mirror_dir, read_only=True) as pool:
+        return repository_synced(pool)
 
 
 # ── one-line summaries: the Sources and Networks panes, `mmw history`'s headings
@@ -221,13 +240,17 @@ def keep_text(cfg, repo) -> str:
 
 
 def repo_summary(cfg, repo, rows, pool) -> str:
-    """'jammy 20 Nov · 4 kept · 18.0 KB · keep all (default)': each suite's
-    newest kept point, how many are kept and what they take together."""
+    """'jammy 20 Nov · last sync 24 Nov · 4 kept · 18.0 KB · keep all
+    (default)': each suite's newest kept point, when a sync last read the
+    repository, how many points are kept and what they take together."""
     from mmw.core.format import fmt_size
+    from mmw.core.repository_points import repository_synced
+    from mmw.site.versionref import short_day
     kept = [r for r in rows if r.repo == repo and r.held]
     if not kept:
         return 'nothing recorded yet · ' + keep_text(cfg, repo)
-    return (f'{_suites(_newest(kept))} · {len(kept)} kept · '
+    synced = repository_synced(pool).get(repo)
+    return (f'{_suites(_newest(kept))}{f" · last sync {short_day(synced)}" if synced else ""} · {len(kept)} kept · '
             f'{fmt_size(pool.points_footprint([r.point for r in kept]))} · {keep_text(cfg, repo)}')
 
 

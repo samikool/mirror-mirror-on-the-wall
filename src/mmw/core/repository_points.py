@@ -559,6 +559,24 @@ def set_current_repository_points(pool, repo, recorded, *, replace=True):
         pool._conn.commit()
 
 
+def set_repository_synced(pool, repo, stamp):
+    """Record that a sync read `repo` at `stamp`, new points or none."""
+    with pool._lock:
+        pool._conn.execute('INSERT INTO repository_synced VALUES (?, ?) '
+                           'ON CONFLICT(repo) DO UPDATE SET stamp = excluded.stamp', (repo, stamp))
+        pool._conn.commit()
+
+
+def repository_synced(pool) -> dict[str, str]:
+    """Repository → the stamp a sync last read it at."""
+    import sqlite3
+    try:
+        with pool._read() as c:
+            return dict(c.execute('SELECT repo, stamp FROM repository_synced'))
+    except sqlite3.OperationalError:            # a pool from before the table, opened read-only
+        return {}
+
+
 def selected_point_files(pool, pid, units, network=None, *, when=None):
     """A point outside the selected suites contributes no track-wide files.
     `network` (a name or a NetworkConfig): whose slice — a scoped point is its

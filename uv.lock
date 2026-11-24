@@ -595,7 +595,7 @@ wheels = [
 
 [[package]]
 name = "mirror-mirror-on-the-wall"
-version = "1.5.6"
+version = "1.5.7"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

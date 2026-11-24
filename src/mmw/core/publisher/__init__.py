@@ -341,10 +341,10 @@ class PublishMoment:
 def read_publish_moment(network: NetworkConfig, cfg: Config, mirror_dir: Path, when: str):
     """Today's network selection at a repository point date: its points,
     as every transfer reads them."""
-    from mmw.core.points import moment_problem, prepare_recordings, resolve_when
+    from mmw.core.points import moment_problem, prepare_history, resolve_when
     from mmw.core.transfer_ranges import recorded_selection, selected_tree
     stamp = resolve_when(when)
-    prepare_recordings(mirror_dir, network.name)
+    prepare_history(mirror_dir)
     with Pool(mirror_dir) as pool:
         point_ids = set()
         try:

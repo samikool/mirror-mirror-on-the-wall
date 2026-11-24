@@ -78,16 +78,19 @@ name = "lab"
 retention = "90d"   # current | forever | <N>d   (default 90d)
 ```
 
-The pool keeps a file while any network that selects the source still wants
-it, so the widest window wins. Widening is not retroactive: what was already
-pruned does not come back.
+The window is counted back from the day of the point being published, not
+from today: publishing or transferring a point lays out what its own day's
+window held, the same tree every time. The pool keeps a file while a kept
+point holds it (history is kept in full unless `keep_points` says otherwise).
 
 ## The far side
 
 Publishing writes `pypi.org/…` (generated PEP 503/691 pages and
 `/pypi/<name>/json`) and `files.pythonhosted.org/…` (the files at their real
 paths, with PEP 658 metadata), plus the nginx sites and certificate names for
-both hosts. Each network gets a `PYPI.md` with:
+both hosts. The pages are the published point's: they travel with it in a
+bundle, so a far side serving an earlier date lists exactly the files it
+serves. Each network gets a `PYPI.md` with:
 
 - DNS or hosts entries for `pypi.org` and `files.pythonhosted.org`;
 - trusting the mmw CA:

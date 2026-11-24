@@ -22,7 +22,7 @@ def old_history(two_mirrors):  # noqa: F811
         db = pool.db_path
     with sqlite3.connect(db) as conn:
         for table in ('points', 'point_files', 'point_units', 'point_unit_files', 'repository_current',
-                      'network_points', 'network_recordings', 'network_settings', 'network_repo_rows',
+                      'network_points', 'network_recordings', 'network_settings',
                       'points_converted', 'recordings_seeded', 'snapshot_points'):
             conn.execute(f'DELETE FROM {table}')
         for table in ('history_upgrades', 'published_points', 'point_scopes'):

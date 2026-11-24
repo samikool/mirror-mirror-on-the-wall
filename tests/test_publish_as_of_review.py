@@ -18,6 +18,7 @@ def test_a_snapshot_before_any_recording_can_be_published_by_date(two_mirrors, t
     with Pool(md) as pool:                              # as a pool from before recordings
         for t in ("network_recordings", "network_settings", "recordings_seeded"):
             pool._conn.execute(f"DROP TABLE {t}")
+        pool._conn.execute("DELETE FROM history_upgrades")    # its upgrade still to run
         pool._conn.commit()
     root = tmp_path / "x"
     publish_as_of(net.model_copy(update={"root": root}), cfg, md, snap.stamp)

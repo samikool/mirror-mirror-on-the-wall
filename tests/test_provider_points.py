@@ -86,7 +86,7 @@ def test_pypi_sync_records_one_repository_point(tmp_path, up):
     with Pool(md, read_only=True) as pool:
         (pid,) = current_repository_points(pool, "pypi")
         point = pool.points_of([pid])[pid]
-        assert not point.legacy and point.ident.startswith("state:")
+        assert not point.scoped and point.ident.startswith("state:")
         assert pool.track_of_point(pid).name == ""
         assert pid in {p.id for p in pool.repository_points("pypi")}
         rows = pool._conn.execute(
@@ -136,7 +136,7 @@ def test_pypi_slice_equals_the_walk(tmp_path, up, monkeypatch):
     for net in (week, quarter):
         with Pool(md) as pool:
             # The oracle: today's live walk (no points), the point's day being today.
-            rows, _, _ = walk_tree(net, cfg, md, pool, build_layers=False)
+            rows, _, _ = walk_tree(net, cfg, md, pool)
             walk = {p: cs for p, cs in rows.items() if p.startswith("files.pythonhosted.org/")}
             assert walk
             assert network_slice(pool, net.name, pid, _settings(md, net.name)) == walk
@@ -299,7 +299,7 @@ def test_first_sync_after_conversion_reuses_the_converted_point(tmp_path, up):
     _record(cfg)                                         # the first sync after upgrading
     with Pool(md, read_only=True) as pool:
         new = _pypi_point(md)
-        assert new != old and not pool.points_of([new])[new].legacy
+        assert new != old and not pool.points_of([new])[new].scoped
         linked = {p.id for p in pool.network_points("lab") if pool.track_of_point(p.id).repo == "pypi"}
         assert linked == {old}
     from mmw.core.transfer_ranges import preview_transfer

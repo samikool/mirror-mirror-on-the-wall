@@ -211,7 +211,7 @@ def merge_repositories(pool, cfg, older: str, newer: str, *, config_dir: Path | 
                                   (newer, target, older, tid))
                         c.execute(f"DELETE FROM {table} WHERE repo = ? AND track = ?", (older, tid))
                 c.execute("DELETE FROM tracks WHERE id = ?", (tid,))
-            for table, keys in (("network_recordings", ("network", "stamp")), ("network_repo_rows", ("network",))):
+            for table, keys in (("network_recordings", ("network", "stamp")),):
                 for *key, raw in c.execute(f"SELECT {', '.join(keys)}, points FROM {table} WHERE repo = ?",
                                            (older,)).fetchall():
                     where = " AND ".join(f"{k} = ?" for k in keys)

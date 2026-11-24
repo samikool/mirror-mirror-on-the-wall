@@ -382,7 +382,7 @@ hostnames. Manual network snapshots and the old snapshot flags are removed.
 Existing snapshot-derived history is converted automatically, without a resync;
 its old metadata remains for older bundle compatibility. A snapshot whose
 files cannot be converted remains protected. PyPI, VS Code and network layers
-continue through their existing history adapters.
+keep their history the same way: every sync records a point.
 
 ### Your own packages
 

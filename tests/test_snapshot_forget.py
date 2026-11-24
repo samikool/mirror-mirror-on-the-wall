@@ -62,6 +62,11 @@ def test_forgetting_a_format2_snapshot_keeps_what_it_sent(two_mirrors, tmp_path)
         versions = p.snapshot_repo_versions(snap.id)
         p.record_bundle(net.name, None, snap.stamp, "old.tar", 0, 0, 0,
                         repos={repo: (None, v.id) for repo, v in versions.items()})
+        # As an older mmw left it: its format-2 records not yet sent points.
+        p._conn.execute("DELETE FROM sent_migrated")
+        p._conn.execute("DELETE FROM history_upgrades WHERE name = 'sent'")
+        p._conn.commit()
+    with Pool(md) as p:                                  # the upgrade at startup
         assert not S.forget_snapshot(p, md, S.find_snapshot(p, net.name, snap.stamp))
         assert p.full_next(net.name) is None
     _change_a(md)

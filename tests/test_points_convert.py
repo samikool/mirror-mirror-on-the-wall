@@ -1,5 +1,6 @@
 """Existing snapshots become points once: each one's files split like a
 sync's, linked to its network at its own stamp, and listed for the snapshot."""
+from mmw.core import legacy_points
 from mmw.core import points
 from mmw.core.pool import Pool
 from mmw.core.snapshots import take_snapshot
@@ -15,8 +16,8 @@ def test_snapshots_become_points_once(two_mirrors):  # noqa: F811
     set_a(md, 2)
     s2 = take_snapshot(net, cfg, md)
     with Pool(md) as pool:
-        assert points.convert_snapshots(pool, net.name) == 2
-        assert points.convert_snapshots(pool, net.name) == 0
+        assert legacy_points.convert_snapshots(pool, net.name) == 2
+        assert legacy_points.convert_snapshots(pool, net.name) == 0
         a_track = next(t for t in pool.network_tracks(net.name) if t.name == "example.com/a")
         dated = pool.network_points(net.name, a_track.id)
         assert [p.date[:8] for p in dated] == ["20261102", "20261101"]
@@ -28,7 +29,7 @@ def test_history_only_snapshots_are_skipped(two_mirrors):  # noqa: F811
     cfg, net, md = two_mirrors
     with Pool(md) as pool:
         pool.create_snapshot(net.name, "20260101T000000Z", kind="imported", complete=False, rows=[("x", "c")])
-        assert points.convert_snapshots(pool, net.name) == 0
+        assert legacy_points.convert_snapshots(pool, net.name) == 0
         assert pool.network_points(net.name) == []
 
 
@@ -55,7 +56,7 @@ def test_conversion_leaves_bundles_alone(two_mirrors, tmp_path):  # noqa: F811
             return sorted(t.getnames())
     before = names(tmp_path / "1.tar")
     with Pool(md) as pool:
-        points.convert_snapshots(pool, net.name)
+        legacy_points.convert_snapshots(pool, net.name)
     assert names(tmp_path / "2.tar") == before
 
 
@@ -75,6 +76,6 @@ def test_one_snapshot_that_fails_to_split_is_said_and_skipped(two_mirrors, monke
     monkeypatch.setattr(points, "split_rows", split)
     said = []
     with Pool(md) as pool:
-        assert points.convert_snapshots(pool, net.name, warnings=said) == 1
+        assert legacy_points.convert_snapshots(pool, net.name, warnings=said) == 1
         assert pool.points_converted(net.name)
     assert len(said) == 1 and bad.stamp in said[0] and "a damaged Release" in said[0]

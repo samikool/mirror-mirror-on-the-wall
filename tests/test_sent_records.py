@@ -1,5 +1,6 @@
 """What each network was sent: the points listed as its own and the files
 carried — migrated once from the per-repository versions of format 2."""
+from mmw.core import legacy_points
 from mmw.core import points
 from mmw.core.pool import Pool
 
@@ -26,7 +27,7 @@ def test_migrated_records_from_format2_history(two_mirrors, tmp_path):  # noqa: 
         pool.record_bundle(net.name, None, snap.stamp, "old.tar", 0, 0, 0,
                            repos={repo: (None, v.id) for repo, v in versions.items()})
     with Pool(md) as pool:
-        assert points.migrate_sent(pool, net.name)
+        assert legacy_points.migrate_sent(pool, net.name)
         sent = pool.sent_point_ids(net.name)
         snap = pool.snapshots(net.name)[0]
         assert sent and sent <= set(pool.snapshot_point_ids(snap.id))
@@ -37,8 +38,8 @@ def test_migrated_records_from_format2_history(two_mirrors, tmp_path):  # noqa: 
 def test_migration_runs_once(two_mirrors, tmp_path):  # noqa: F811
     cfg, net, md = _mmw(two_mirrors)
     with Pool(md) as pool:
-        assert points.migrate_sent(pool, net.name)                 # nothing sent yet: still marked
-        assert not points.migrate_sent(pool, net.name)
+        assert legacy_points.migrate_sent(pool, net.name)                 # nothing sent yet: still marked
+        assert not legacy_points.migrate_sent(pool, net.name)
 
 
 def test_current_points(two_mirrors):  # noqa: F811
@@ -46,7 +47,7 @@ def test_current_points(two_mirrors):  # noqa: F811
     set_a(md, 1)
     points.record_network_points(net, cfg, md)
     with Pool(md, read_only=True) as pool:
-        cur = points.current_points(pool, net.name)
+        cur = pool.points_at(net.name, "99999999T999999Z")
         assert set(cur) >= {"https://example.com/a", "https://example.com/b"}   # (no network files here)
         assert all(len(ids) == 1 for ids in cur.values())
 
@@ -64,5 +65,5 @@ def test_a_pending_full_bundle_from_before_the_upgrade_is_honoured(two_mirrors):
                            repos={repo: (None, v.id) for repo, v in versions.items()})
         pool._conn.execute("INSERT INTO full_next (network, stamp) VALUES (?, ?)", (net.name, snap.stamp))
         pool._conn.commit()
-        assert points.migrate_sent(pool, net.name)
+        assert legacy_points.migrate_sent(pool, net.name)
         assert pool.sent_point_ids(net.name) == set() and pool.full_next(net.name) is None

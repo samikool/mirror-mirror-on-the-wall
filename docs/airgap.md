@@ -205,15 +205,15 @@ without replacing the live repository's files or sync references.
 - snapshot.ubuntu.com starts on 2023-03-01, and its ports archive (arm64 and
   the other non-x86 architectures) is not public.
 - Third-party repositories have no archive.
-- A network with its own debs layered over the repository is skipped and
-  named; layered repositories aren't supported yet.
+- A network with its own debs layered over the repository gets the past
+  point through its layer, as it gets every other point.
 - A past Release whose `Valid-Until` has passed is flagged: clients need
   `Check-Valid-Until=false` (see [§7](#7-valid-until)).
 
 ### Repository history and new networks
 
-Every successful APT sync records the repository's accumulated state per
-suite, even without a network. Architectures may sync separately: a point
+Every successful sync records the repository's accumulated state per
+suite (PyPI and VS Code as one track each), even without a network. Architectures may sync separately: a point
 retains each unit's last successfully synced files and its own Release metadata. Networks
 select their slice; an update to an unselected unit does not create another
 network point or transfer unchanged files. Publish and transfer use the
@@ -230,8 +230,9 @@ mmw history --repo Debian
 
 In Sources or Networks, choose **More… → History**. There is no Add step:
 the transfer's From and To menus select retained dates directly. `--history`
-carries intermediate retained points. A network layer keeps its own rewritten
-history; upstream history cannot stand in for that layer's generated files.
+carries intermediate retained points. A network layer is a view of each point:
+built when the point syncs and again when its packages change, so a date
+serves the layer as it was then.
 
 Repository history is kept in full by default (`[settings] keep_points =
 "all"`); pruning it is manual. Set a count or an age there, or override

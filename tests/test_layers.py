@@ -30,26 +30,28 @@ def test_layer_dir_is_per_network_and_repository(tmp_path):
     assert layer_dir(tmp_path, "lab", "ubuntu-archive") == tmp_path / "layers/lab/ubuntu-archive"
 
 
-def test_pool_layer_overlay_round_trip_rename_and_forget(tmp_path):
+def test_pool_layer_view_round_trip_rename_and_forget(tmp_path):
+    from mmw.site.tracks import PointDraft
     with Pool(tmp_path) as pool:
-        assert pool.layer_overlay("lab", "archive.ubuntu.com/ubuntu") == {}
-        assert pool.layer_digest("lab", "archive.ubuntu.com/ubuntu") is None
-        blob = pool.add(b"Packages body", "a" * 64, "sha256", "Packages", 13)
-        pool.replace_layer("lab", "archive.ubuntu.com/ubuntu", [
-            ("dists/jammy/main/binary-amd64/Packages", "a" * 64, 13, KIND_META, "Packages"),
-            ("dists/jammy/InRelease", "", 0, "", ""),
-        ], "digest-1")
-        overlay = pool.layer_overlay("lab", "archive.ubuntu.com/ubuntu")
-        assert overlay["dists/jammy/InRelease"] is None
-        row = overlay["dists/jammy/main/binary-amd64/Packages"]
-        assert row == ("dists/jammy/main/binary-amd64/Packages", str(blob), 13, KIND_META, "a" * 64)
-        assert pool.layer_digest("lab", "archive.ubuntu.com/ubuntu") == "digest-1"
+        pid, _ = pool.record_point(UBUNTU, PointDraft("archive.ubuntu.com/ubuntu/dists/jammy", "release:1",
+                                                      "20261101T000000Z", {"Suite": "jammy"},
+                                                      {"archive.ubuntu.com/ubuntu/dists/jammy/InRelease": "b" * 64}),
+                                   "20261101T000000Z")
+        assert pool.layer_views("lab", pid) == []
+        pool.add(b"Packages body", "a" * 64, "sha256", "Packages", 13)
+        vid = pool.record_layer_view("lab", pid, "archive.ubuntu.com/ubuntu", "digest-1", "20261101T000000Z", [
+            ("dists/jammy/main/binary-amd64/Packages", "a" * 64, KIND_META),
+            ("dists/jammy/InRelease", "", ""),
+        ])
+        rows = pool.layer_view_rows(vid)
+        assert rows["dists/jammy/InRelease"] is None
+        row = rows["dists/jammy/main/binary-amd64/Packages"]
+        assert row[0] == "dists/jammy/main/binary-amd64/Packages" and row[3:] == (KIND_META, "a" * 64)
         assert pool.rename_network("lab", "lab2") is None
-        assert pool.layer_overlay("lab2", "archive.ubuntu.com/ubuntu")
-        assert pool.layer_overlay("lab", "archive.ubuntu.com/ubuntu") == {}
+        assert [v[0] for v in pool.layer_views("lab2", pid)] == [vid]
+        assert pool.layer_views("lab", pid) == []
         pool.forget_network("lab2")
-        assert pool.layer_overlay("lab2", "archive.ubuntu.com/ubuntu") == {}
-        assert pool.layer_digest("lab2", "archive.ubuntu.com/ubuntu") is None
+        assert pool.layer_views("lab2", pid) == []
 
 
 def test_renaming_a_network_moves_its_layer_folder(tmp_path):

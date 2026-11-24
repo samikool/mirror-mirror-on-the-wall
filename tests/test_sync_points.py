@@ -158,7 +158,7 @@ def test_recording_points_beside_an_open_busy_pool(oak):
             with Pool(md, read_only=True) as pool:
                 while not stop.is_set():
                     pool.network_tracks(net.name)
-                    pool.recorded_repos(net.name)
+                    pool.points_at(net.name, "99999999T999999Z")
         except Exception as e:  # noqa: BLE001
             errors.append(e)
     with Pool(md) as held:                               # the TUI's own, open throughout

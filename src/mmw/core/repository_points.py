@@ -160,9 +160,6 @@ class PointRefs:
     def has_refs(self, mirror_name):
         return bool(self._unit_rows(mirror_name))
 
-    def layer_overlay(self, *_):
-        return None
-
     def __getattr__(self, name):
         return getattr(self.pool, name)
 
@@ -186,7 +183,7 @@ def provider_view(pool, repo, point_ids, *, settings=None, units=None, network=N
     coordinate: recorded settings keep no dims, and a point is what synced."""
     from mmw.core.config import MirrorConfig
     from mmw.core.repos import repository_key
-    ids = [pid for pid, p in pool.points_of(point_ids).items() if p.held and not p.legacy]
+    ids = [pid for pid, p in pool.points_of(point_ids).items() if p.held and not p.scoped]
     if not ids:
         return None
     name = getattr(network, 'name', network)
@@ -318,7 +315,7 @@ def network_slice(pool, network, point_id: int, settings, *, when=None) -> dict[
     data = json.loads(settings or '{}')
     recorded = data.get('network') or {}
     name = getattr(network, 'name', network) or recorded.get('name') or None
-    if point.legacy:
+    if point.scoped:
         return scoped_files(pool, point_id, name)
     repo = pool.track_of_point(point_id).repo
     if provider_scoped(repo):
@@ -357,7 +354,7 @@ def slice_files(pool, point_id: int, units: list[tuple[str, dict[str, str]]], *,
     point = pool.points_of([point_id]).get(point_id)
     if point is None or not point.held:
         return {}
-    if point.legacy:
+    if point.scoped:
         return scoped_files(pool, point_id, network)
     wanted = {(repo, json.dumps(dims, sort_keys=True, separators=(",", ":"))) for repo, dims in units}
     with pool._read() as c:
@@ -529,7 +526,7 @@ def wire_draft(pool, point_id, files, settings, stamp):
     from mmw.site.tracks import PointDraft
     p = pool.points_of([point_id])[point_id]
     track = pool.track_of_point(point_id)
-    if p.legacy:
+    if p.scoped:
         return PointDraft(track.name, p.ident, p.date,
                           {k: v for k, v in [('Suite', track.suite), ('Codename', track.codename)] if v}, files)
     if not track.name:
@@ -569,9 +566,9 @@ def selected_point_files(pool, pid, units, network=None, *, when=None):
     or before `when` (a name: the plain slice, what a view is built over)."""
     track = pool.track_of_point(pid)
     point = pool.points_of([pid]).get(pid)
-    if point is not None and not point.legacy and provider_scoped(track.repo):
+    if point is not None and not point.scoped and provider_scoped(track.repo):
         return slice_of(provider_view(pool, track.repo, [pid], units=units, network=network))
-    if point is not None and not point.legacy and hasattr(network, 'layer_for') \
+    if point is not None and not point.scoped and hasattr(network, 'layer_for') \
             and network.layer_for(track.repo) is not None:
         plain = selected_point_files(pool, pid, units, network.name)
         from mmw.core.layers import view_for

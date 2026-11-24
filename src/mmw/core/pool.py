@@ -237,28 +237,6 @@ CREATE TABLE IF NOT EXISTS history_upgrades (name TEXT PRIMARY KEY);
 
 -- A network whose far side may sit at a snapshot force-deleted here: the
 -- record of what it has is gone, so its next default transfer is full.
--- What a network serves instead of the pure upstream rows of one base: its
--- layer's debs and rebuilt indexes (`core/layers.py`). checksum '' = the
--- path is not served (a signature an unsigned layer drops).
-CREATE TABLE IF NOT EXISTS layer_rows (
-    network   TEXT NOT NULL,
-    base      TEXT NOT NULL,
-    repo_path TEXT NOT NULL,
-    checksum  TEXT NOT NULL,
-    size      INTEGER NOT NULL,
-    kind      TEXT NOT NULL,
-    filename  TEXT NOT NULL,
-    PRIMARY KEY (network, base, repo_path)
-) WITHOUT ROWID;
-
--- The inputs a base's layer rows were built from; equal means skip.
-CREATE TABLE IF NOT EXISTS layer_digests (
-    network TEXT NOT NULL,
-    base    TEXT NOT NULL,
-    digest  TEXT NOT NULL,
-    PRIMARY KEY (network, base)
-);
-
 -- A network's layer as a view of one repository point (`core/layers.py`):
 -- built at sync, on a package edit, or on demand, keyed by the inputs'
 -- digest. Its rows replace the point's slice at the same path (relative to
@@ -389,12 +367,6 @@ CREATE TABLE IF NOT EXISTS network_points (
     last_seen TEXT NOT NULL DEFAULT '',          -- the latest recording that found it
     PRIMARY KEY (network, point)
 ) WITHOUT ROWID;
--- What each network's repository looked like at its last recording (a
--- digest of its rows) and the points it found: unchanged, nothing is split.
-CREATE TABLE IF NOT EXISTS network_repo_rows (
-    network TEXT NOT NULL, repo TEXT NOT NULL, digest TEXT NOT NULL, points TEXT NOT NULL,
-    PRIMARY KEY (network, repo)
-) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS snapshot_points (
     snapshot INTEGER NOT NULL, point INTEGER NOT NULL,
     PRIMARY KEY (snapshot, point)
@@ -451,7 +423,7 @@ _RELEASED = "p.id NOT IN (SELECT value FROM json_each(?))"
 
 # A network's points, what it was sent and its recordings: renamed and
 # forgotten with it (the points themselves are shared and stay).
-_POINT_NETWORK_TABLES = ("network_points", "network_repo_rows", "points_converted", "sent_points",
+_POINT_NETWORK_TABLES = ("network_points", "points_converted", "sent_points",
                          "sent_blobs", "sent_migrated", "network_recordings", "network_settings",
                          "recordings_seeded", "recordings_seeded_at", "listed_tracks", "network_slices", "sent_slices", "network_slice_dates", "transfer_targets")
 
@@ -880,7 +852,7 @@ class PoolPoint:
     date: str
     stamp: str          # when it was first recorded
     held: bool
-    legacy: bool = False
+    scoped: bool = False    # one network's point (its walk, or converted), not its repository's
 
 
 @dataclass(frozen=True)
@@ -1112,18 +1084,18 @@ class Pool:
         # A read-only open of a pool from before snapshots has no such table;
         # checked once here, not per query on a connection a writer may hold.
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
-        self._has_layer_rows = self._has_table("layer_rows")
         self._has_layer_views = self._has_table("layer_view_files")
         self._has_point_files = self._has_table("point_files")
         self._has_point_unit_files = self._has_table("point_unit_files")
-        # `PoolPoint.legacy`: the point is one network's (scoped), not its
-        # repository's. Read-only opens of older pools lack the table/column.
+        # `PoolPoint.scoped`: the point is one network's, not its repository's
+        # (the `legacy` column: one the chain still converts). Read-only
+        # opens of older pools lack the table/column.
         if "legacy" not in {r[1] for r in self._conn.execute("PRAGMA table_info(points)")}:
-            self._point_legacy_sql = "1"
+            self._point_scoped_sql = "1"
         elif self._has_table("point_scopes"):
-            self._point_legacy_sql = "(p.legacy OR EXISTS (SELECT 1 FROM point_scopes s WHERE s.point = p.id))"
+            self._point_scoped_sql = "(p.legacy OR EXISTS (SELECT 1 FROM point_scopes s WHERE s.point = p.id))"
         else:
-            self._point_legacy_sql = "p.legacy"
+            self._point_scoped_sql = "p.legacy"
         self._has_download_sources = self._has_table("download_sources")
         self._has_retry_state = self._has_table("retry_state")
         # SQLite's planner prefers the checksum primary key (one row, but a
@@ -1136,57 +1108,6 @@ class Pool:
         if not read_only:
             from mmw.core import legacy_points
             self.upgrade_notes = legacy_points.upgrade(self)
-
-    def _retire_manual_snapshots(self) -> None:
-        """One-time upgrade: snapshots become ordinary retained point history.
-
-        Leave the old lists/settings for transfer migration. Only release a
-        snapshot's independent GC hold after all its files are in held points;
-        an unreadable/incomplete conversion keeps its old protection.
-        """
-        if self._conn.execute("SELECT 1 FROM history_upgrades WHERE name = 'manual-snapshots'").fetchone():
-            return
-        from mmw.core.points import convert_snapshots, seed_recordings
-        from mmw.core.repository_points import files_for_settings
-        for network in sorted(self.network_names()):
-            convert_snapshots(self, network)
-            seed_recordings(self, network)
-            deployments = self.published(network)
-            # Older live/as-of publish records contain no exact point IDs.
-            # Preserve pre-existing history conservatively until that root is
-            # republished, when the normal path records its exact projection.
-            existing = self.points_of(self.linked_held_points())
-            existing.update({p.id: p for p in self.repository_points()})
-            for deployment in deployments:
-                if deployment.target != 'live' and not deployment.target.startswith('as-of:'):
-                    continue
-                ids = [p.id for p in existing.values() if p.held and p.stamp <= deployment.made]
-                if ids:
-                    with self._lock:
-                        self._conn.executemany('INSERT OR IGNORE INTO published_points VALUES (?, ?)',
-                                               [(deployment.root, pid) for pid in ids])
-                        self._conn.commit()
-            for snap in self.snapshots(network):
-                if not snap.complete:
-                    continue
-                ids = self.snapshot_point_ids(snap.id)
-                try:
-                    recorded = {p: cs for pid in ids
-                                for p, cs in files_for_settings(self, pid, snap.settings).items()}
-                except (ValueError, LookupError):
-                    continue  # Preserve an old state whose selection cannot be read.
-                if not ids or recorded != dict(self.snapshot_files(snap.id)):
-                    continue
-                for deployment in deployments:
-                    if deployment.target == snap.stamp:
-                        with self._lock:
-                            self._conn.executemany('INSERT OR IGNORE INTO published_points VALUES (?, ?)',
-                                                   [(deployment.root, pid) for pid in ids])
-                            self._conn.commit()
-                self.demote_snapshot(snap.id)
-        with self._lock:
-            self._conn.execute("INSERT OR IGNORE INTO history_upgrades VALUES ('manual-snapshots')")
-            self._conn.commit()
 
     def _migrate_repository_points(self) -> None:
         with self._lock:
@@ -1277,12 +1198,12 @@ class Pool:
                 raise
 
     def repository_points(self, repo: str | None = None, *, stubs: bool = False) -> list[PoolPoint]:
-        if self._point_legacy_sql == "1":
+        if self._point_scoped_sql == "1":
             return []
         where, args = (" AND t.repo = ?", (repo,)) if repo is not None else ("", ())
         with self._read() as c:
-            rows = c.execute(f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_legacy_sql} "
-                             f"FROM points p JOIN tracks t ON t.id = p.track WHERE NOT {self._point_legacy_sql}" + where
+            rows = c.execute(f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_scoped_sql} "
+                             f"FROM points p JOIN tracks t ON t.id = p.track WHERE NOT {self._point_scoped_sql}" + where
                              + ("" if stubs else " AND p.held = 1")
                              + " ORDER BY p.date DESC, p.stamp DESC, p.id DESC", args).fetchall()
         return [PoolPoint(*r[:6], bool(r[6]), bool(r[7])) for r in rows]
@@ -1995,13 +1916,15 @@ class Pool:
 
     # ── timeline points ──────────────────────────────────────────────────────
 
-    def record_point(self, repo: str, draft, stamp: str, *, legacy: bool = False,
+    def record_point(self, repo: str, draft, stamp: str, *, unconverted: bool = False,
                      scope: str | None = None) -> tuple[int, bool]:
         """`draft` (a `mmw.site.tracks.PointDraft`) as a point of `repo`:
         (its id, whether it is new). The same Release with the same files
         is the same point; with other files (another selection), another.
         `scope`: one network's point (its walk), served to that network only;
-        the same files another network walked are that point, now theirs too."""
+        the same files another network walked are that point, now theirs too.
+        `unconverted`: a snapshot's point inside the upgrade chain (`legacy`
+        column), which the chain's later steps convert."""
         from mmw.site.tracks import content_ident
         files = content_ident(draft.files)
         self.flush_writes()
@@ -2015,13 +1938,13 @@ class Pool:
                 tid = c.execute("SELECT id FROM tracks WHERE repo = ? AND name = ?",
                                 (repo, draft.track)).fetchone()[0]
                 if scope is not None:
-                    legacy = False
+                    unconverted = False
                     row = c.execute("SELECT id, held FROM points p WHERE track = ? AND ident = ? AND files = ? "
                                     "AND legacy = 0 AND EXISTS (SELECT 1 FROM point_scopes s WHERE s.point = p.id)",
                                     (tid, draft.ident, files)).fetchone()
                 else:
                     row = c.execute("SELECT id, held FROM points WHERE track = ? AND ident = ? AND files = ? AND legacy = ?",
-                                    (tid, draft.ident, files, int(legacy))).fetchone()
+                                    (tid, draft.ident, files, int(unconverted))).fetchone()
                 if row is not None and scope is not None:
                     c.execute("INSERT OR IGNORE INTO point_scopes VALUES (?, ?)", (row[0], scope))
                 if row is not None and row[1]:
@@ -2032,7 +1955,7 @@ class Pool:
                     c.execute("UPDATE points SET held = 1 WHERE id = ?", (pid,))
                 else:
                     pid = c.execute("INSERT INTO points (track, ident, files, date, stamp, legacy) VALUES (?, ?, ?, ?, ?, ?)",
-                                    (tid, draft.ident, files, draft.date, stamp, int(legacy))).lastrowid
+                                    (tid, draft.ident, files, draft.date, stamp, int(unconverted))).lastrowid
                     if scope is not None:
                         c.execute("INSERT OR IGNORE INTO point_scopes VALUES (?, ?)", (pid, scope))
                 c.execute("CREATE TEMP TABLE IF NOT EXISTS _point_in (path TEXT PRIMARY KEY, checksum TEXT NOT NULL)")
@@ -2075,33 +1998,6 @@ class Pool:
             row = c.execute("SELECT coalesce(nullif(last_seen, ''), stamp) FROM network_points "
                             "WHERE network = ? AND point = ?", (network, point_id)).fetchone()
         return row[0] if row else None
-
-    def repo_rows(self, network: str, repo: str) -> tuple[str, list[int]] | None:
-        """(digest, point ids) of `repo` at `network`'s last recording."""
-        import json
-        with self._read() as c:
-            row = c.execute("SELECT digest, points FROM network_repo_rows WHERE network = ? AND repo = ?",
-                            (network, repo)).fetchone()
-        return (row[0], json.loads(row[1])) if row else None
-
-    def recorded_repos(self, network: str) -> dict[str, list[int]]:
-        """Repository → the point ids at `network`'s last recording."""
-        import json
-        with self._read() as c:
-            return {r: json.loads(ids) for r, ids in c.execute(
-                "SELECT repo, points FROM network_repo_rows WHERE network = ?", (network,))}
-
-    def set_repo_rows(self, network: str, repo: str, digest: str, point_ids: list[int]) -> None:
-        import json
-        with self._lock:
-            self._conn.execute("INSERT OR REPLACE INTO network_repo_rows VALUES (?, ?, ?, ?)",
-                               (network, repo, digest, json.dumps(sorted(point_ids))))
-            self._conn.commit()
-
-    def drop_repo_rows(self, network: str, repo: str) -> None:
-        with self._lock:
-            self._conn.execute("DELETE FROM network_repo_rows WHERE network = ? AND repo = ?", (network, repo))
-            self._conn.commit()
 
     def record_recording(self, network: str, repo: str, stamp: str, point_ids) -> None:
         """`repo`'s points in `network` from `stamp` on ([]: it left)."""
@@ -2193,7 +2089,7 @@ class Pool:
         args = (network, track_id) if track_id is not None else (network,)
         with self._read() as c:
             rows = c.execute(
-                f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_legacy_sql} FROM points p "
+                f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_scoped_sql} FROM points p "
                 "JOIN network_points n ON n.point = p.id WHERE n.network = ?" + where
                 + ("" if stubs else " AND p.held = 1")
                 + " ORDER BY p.date DESC, p.stamp DESC, p.ident DESC", args).fetchall()
@@ -2345,7 +2241,7 @@ class Pool:
         with self._read() as c:
             for i in range(0, len(wanted), 500):
                 chunk = wanted[i:i + 500]
-                for r in c.execute(f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_legacy_sql} FROM points p "
+                for r in c.execute(f"SELECT p.id, p.track, p.ident, p.files, p.date, p.stamp, p.held, {self._point_scoped_sql} FROM points p "
                                    f"WHERE p.id IN ({','.join('?' * len(chunk))})", chunk):
                     out[r[0]] = PoolPoint(*r[:6], bool(r[6]), bool(r[7]))
         return out
@@ -2497,7 +2393,7 @@ class Pool:
             for table in _POINT_NETWORK_TABLES:
                 self._conn.execute(f"DELETE FROM {table} WHERE network = ?", (new,))
             for table in ("snapshots", "bundles", "published", "repo_versions", "full_next",
-                          "layer_rows", "layer_digests", "layer_views", *_POINT_NETWORK_TABLES):
+                          "layer_views", *_POINT_NETWORK_TABLES):
                 self._conn.execute(f"UPDATE {table} SET network = ? WHERE network = ?",
                                    (new, old))
             self._conn.execute("UPDATE OR IGNORE point_scopes SET network = ? WHERE network = ?", (new, old))
@@ -2522,8 +2418,6 @@ class Pool:
             self._conn.execute("DELETE FROM bundles WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM published WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM full_next WHERE network = ?", (network,))
-            self._conn.execute("DELETE FROM layer_rows WHERE network = ?", (network,))
-            self._conn.execute("DELETE FROM layer_digests WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM layer_view_files WHERE view IN "
                                "(SELECT id FROM layer_views WHERE network = ?)", (network,))
             self._conn.execute("DELETE FROM layer_views WHERE network = ?", (network,))
@@ -2531,61 +2425,6 @@ class Pool:
                 self._conn.execute(f"DELETE FROM {table} WHERE network = ?", (network,))
             self._conn.commit()
         return len(ids)
-
-    # ── per-network layers ──────────────────────────────────────────────────
-
-    def replace_layer(self, network: str, base: str, rows, digest: str) -> None:
-        """`rows`: (repo_path, checksum, size, kind, filename); checksum '' =
-        not served. Replaces the base's rows and digest in one transaction."""
-        with self._lock:
-            self._conn.execute("DELETE FROM layer_rows WHERE network = ? AND base = ?", (network, base))
-            self._conn.executemany(
-                "INSERT INTO layer_rows VALUES (?, ?, ?, ?, ?, ?, ?)",
-                [(network, base, *row) for row in rows])
-            self._conn.execute("INSERT OR REPLACE INTO layer_digests VALUES (?, ?, ?)",
-                               (network, base, digest))
-            self._conn.commit()
-
-    def clear_layer(self, network: str, base: str) -> None:
-        with self._lock:
-            self._conn.execute("DELETE FROM layer_rows WHERE network = ? AND base = ?", (network, base))
-            self._conn.execute("DELETE FROM layer_digests WHERE network = ? AND base = ?", (network, base))
-            self._conn.commit()
-
-    def layer_overlay(self, network: str, base: str) -> dict:
-        """repo_path → a `mirror_files`-shaped row, or None (not served)."""
-        try:
-            with self._read() as c:
-                rows = c.execute("SELECT repo_path, checksum, size, kind, filename FROM layer_rows "
-                                 "WHERE network = ? AND base = ?", (network, base)).fetchall()
-        except sqlite3.OperationalError as e:
-            if "no such table" in str(e):
-                return {}
-            raise
-        blob = self._blob_strs()
-        return {rel: ((rel, blob(cs, fn), size, kind, cs) if cs else None)
-                for rel, cs, size, kind, fn in rows}
-
-    def layer_bases(self, network: str) -> set[str]:
-        try:
-            with self._read() as c:
-                return {b for (b,) in c.execute(
-                    "SELECT base FROM layer_digests WHERE network = ?", (network,))}
-        except sqlite3.OperationalError as e:
-            if "no such table" in str(e):
-                return set()
-            raise
-
-    def layer_digest(self, network: str, base: str) -> str | None:
-        try:
-            with self._read() as c:
-                row = c.execute("SELECT digest FROM layer_digests WHERE network = ? AND base = ?",
-                                (network, base)).fetchone()
-        except sqlite3.OperationalError as e:
-            if "no such table" in str(e):
-                return None
-            raise
-        return row[0] if row else None
 
     # ── layer views (a layer is a view of a point) ──────────────────────────
 
@@ -2974,11 +2813,9 @@ class Pool:
                 "JOIN snapshot_files f ON f.blob = b.id JOIN snapshots s ON s.id = f.snapshot "
                 "WHERE b.checksum = packages.checksum AND s.complete = 1)"
                 if self._has_snapshot_blobs else "")
-        # A network's layer (debs, rebuilt indexes, signatures) is referenced
-        # only by layer_rows: without this a prune deleted every live one.
-        layered = ("AND NOT EXISTS (SELECT 1 FROM layer_rows l WHERE l.checksum = packages.checksum)"
-                   if self._has_layer_rows else "")
-        # A held point's layer views keep their debs, indexes and signatures.
+        # A held point's layer views keep their debs, indexes and signatures
+        # (nothing else references a layer's files).
+        layered = ""
         if self._has_layer_views and self._has_snapshot_blobs:
             layered += (" AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b JOIN layer_view_files f ON f.blob = b.id "
                         "JOIN layer_views v ON v.id = f.view JOIN points p ON p.id = v.point "

@@ -649,6 +649,14 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
         from mmw.core.legacy_points import notes as legacy_notes
         warnings.extend(legacy_notes(pool, current))
         files = {p: files_for_settings(pool, p, settings) for ids in listing.values() for p in ids}
+        slices = dict(files)
+        if cfg is not None:
+            # A provider's pages travel with its points, as the bundle lists them.
+            from mmw.core.publisher.bundle import _pages_of
+            page_sink = PreviewSink(pool)
+            pages = _pages_of(pool, settings, net, cfg, mirror_dir, page_sink)
+            files = {p: {**mine, **pages(p)} if mine else mine for p, mine in files.items()}
+            external.update(page_sink.info)
         for p in targets.get(f'network:{net.name}', []):
             files[p] = pool.point_files(p)
         from mmw.core.point_check import check_suite
@@ -676,7 +684,7 @@ def preview_transfer(net, mirror_dir, *, cfg=None, since=None, until=None, full=
         # say. The network's own files (keys, generated nginx) are no
         # repository's: what was sent of them is there.
         if interval_base is not None:
-            repo_files = {cs for pid in (p for ids in listing.values() for p in ids) for cs in files[pid].values()}
+            repo_files = {cs for pid in (p for ids in listing.values() for p in ids) for cs in slices[pid].values()}
             sent = ((interval_base if baseline is None else interval_base & baseline)
                     | (sent & (checksums | generated.keys()) - repo_files))
         sizes = {cs: data[1] for cs, data in info.items()}

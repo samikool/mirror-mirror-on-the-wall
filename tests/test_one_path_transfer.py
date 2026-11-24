@@ -113,18 +113,19 @@ def mixed(tmp_path, monkeypatch, up, vs):
 
 
 def test_network_track_still_travels(mixed, tmp_path):
-    """The network's own files — the upstream key, PyPI's pages and PYPI.md,
-    the VS Code gallery — go in every bundle, live or dated, as a publish
-    lays them out."""
+    """The network's own files — the upstream key, PYPI.md — go in every
+    bundle, live or dated, as a publish lays them out. PyPI's pages and the
+    VS Code gallery go too, with the point they come from (Task 22)."""
     for name, kw in (("live", {}), ("dated", {"until": "2026-11-02"})):
         header, rows, net_rows, blobs = _read(bundle_network(mixed.net, mixed.cfg, mixed.md,
                                                              out_path=tmp_path / f"{name}.tar", full=True,
                                                              **kw).out_path)
         assert any(p.startswith("keys/") for p in net_rows), (name, sorted(net_rows))
         assert "PYPI.md" in net_rows, name
-        assert any(p.startswith("pypi-data/") for p in net_rows), name
-        assert any(p.startswith("vscode-gallery/") for p in net_rows), name
-        assert set(net_rows.values()) <= blobs, name                 # full: every one of them carried
+        for top in ("pypi-data/", "vscode-gallery/"):
+            assert any(p.startswith(top) for p in rows), (name, top)
+            assert not any(p.startswith(top) for p in net_rows), (name, top)
+        assert set(net_rows.values()) | set(rows.values()) <= blobs, name   # full: every one of them carried
         assert {"pypi", "vscode", mixed.src.identity} <= set(header["points"]), name
     published = publish_as_of(mixed.net, mixed.cfg, mixed.md, "2026-11-02", root=tmp_path / "as-of")
     assert not published.errors
@@ -203,4 +204,5 @@ def test_converted_pool_after_a_first_sync_still_transfers(tmp_path, up):
             bundle_network(net, cfg, md, out_path=tmp_path / f"{net.name}-since.tar", since=today)
     assert any(p.startswith("pypi-data/") for p in (p.relative_to(tmp_path / "as-of-a").as_posix()
                                                     for p in (tmp_path / "as-of-a").rglob("*")))
-    assert any(p.startswith("pypi-data/") for p in _read(tmp_path / "a-dated.tar")[2])
+    _h, rows, net_rows, _b = _read(tmp_path / "a-dated.tar")
+    assert any(p.startswith("pypi-data/") for p in {**rows, **net_rows})

@@ -392,3 +392,10 @@ class BaseProvider(ABC):
         """Publish-time additions through `ctx.sink` (called for every
         registered provider on every network walk; decide from `ctx`)."""
         return None
+
+    def pages(self, ctx: PublishContext, units: list) -> dict[str, bytes]:
+        """The pages a provider-scoped repository derives from what it
+        publishes (`ctx.pool` one point's view): {path: bytes}, laid out by
+        `publish` / `contribute` and carried with that point in a bundle, so
+        a far side serving the point serves its pages. Default: none."""
+        return {}

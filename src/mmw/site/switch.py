@@ -72,7 +72,16 @@ def _run(db, store, root: Path, repo: str, from_id: int | None, to_id: int, prog
                         raise
                     warnings.append(f'{rel}: target point installed; obsolete file could not be removed ({exc})')
     db.switch_phase(repo, "delete")
+    # A path the network still holds goes back to the network's copy, never
+    # away: a provider's pages travel with its points, but a point that came
+    # before they did (a far side upgraded from pages as network files) has
+    # none, and serving it keeps the network's.
+    network = db.network_files()
     for rel in sorted(gone - set(release_gone)):
+        if rel in network:
+            store.place(network[rel], root / rel)
+            placed += 1
+            continue
         try:
             if disk_io.ops.remove(root / rel) is not None:
                 removed += 1

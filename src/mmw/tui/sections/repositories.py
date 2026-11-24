@@ -123,14 +123,24 @@ class RepositoriesPage(Page):
         Binding("t", "past_point", "Add a past point…", show=False),
         Binding("h", "history", "History", show=False),
         Binding("v", "check_points", "Check points", show=False),
+        Binding("V", "verify_pool", "Verify pool…", show=False),
         Binding("m", "merge_into", "Merge into…", show=False),
     ]
-    MORE = ("add_packages", "sources_file", "past_point", "history", "keep_costs", "merge_into", "check_points")
+    MORE = ("add_packages", "sources_file", "past_point", "history", "keep_costs", "merge_into", "check_points",
+            "verify_pool")
 
     def action_check_points(self):
         from mmw.commands.verify import check_points
         from mmw.tui.check_points import CheckPointsPage
         self.app.push_screen(CheckPointsPage(lambda: check_points(self.app.cfg)))
+
+    def action_verify_pool(self):
+        from mmw.tui.verify_pool import VerifyPoolPage
+
+        def done(result) -> None:
+            if result == "sync":            # what a repair dropped: everything is re-checked
+                self._start(lambda: self.app.start_sync(([], [])))
+        self.app.push_screen(VerifyPoolPage(self.app.cfg), done)
 
     def _repo_of(self, row) -> str | None:
         """The repository a Sources row's history belongs to."""

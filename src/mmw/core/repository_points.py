@@ -417,7 +417,8 @@ def record_repository(pool, repo, units, mirror_dir, stamp, *, refs=None, comple
         if unreadable:
             raise ValueError(f"{unit.name}: cannot record a complete repository point: "
                              f"unreadable required indexes or Release metadata ({', '.join(unreadable[:3])}); "
-                             "check the configured pool with `mmw verify --stat` and restore missing files")
+                             "the pool is missing files — repair it (Sources → More… → Verify pool, "
+                             "or `mmw verify --repair`), then sync again")
         members.append((unit, raw, drafts))
     extra_sink = RecordingSink(pool)
     if refs is None or getattr(refs, "live", False):

@@ -33,7 +33,8 @@ from mmw.core.verify import VerifyResult, verify_mirror
 
 
 def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
-                stat_blobs: bool = False, hash_blobs: bool = False) -> list[VerifyResult]:
+                stat_blobs: bool = False, hash_blobs: bool = False,
+                say=None, stop_event=None) -> list[VerifyResult]:
     """Verify every mirror the pool holds, or one network's slice of them.
 
     Split out from `run()` so tests can stub this one seam instead of
@@ -48,16 +49,49 @@ def _verify_all(cfg, mirror_dir: Path, network: str | None, *,
         mirrors = resolve.available_mirrors(cfg, mirror_dir)
 
     from mmw.core.db_warm import warm_for_job
-    warm_for_job(mirror_dir, say=lambda message: print(f"  {message}"))
+    if say is None:
+        warm_say = lambda message: print(f"  {message}")          # noqa: E731
+        # A blob scan is minutes on a big pool: name its steps and progress.
+        step_say = (lambda text: print(f"    {text}", flush=True)) if stat_blobs or hash_blobs else None
+    else:
+        warm_say = step_say = say
+    warm_for_job(mirror_dir, say=warm_say, stop_event=stop_event)
     pool = Pool(mirror_dir, read_only=True)
     try:
-        # A blob scan is minutes on a big pool: name its steps and progress.
-        say = (lambda text: print(f"    {text}", flush=True)) if stat_blobs or hash_blobs else None
-        return [verify_mirror(m, mirror_dir, pool, stat_blobs=stat_blobs, hash_blobs=hash_blobs,
-                              say=say)
-                for m in mirrors]
+        results = []
+        for m in mirrors:
+            if stop_event is not None and stop_event.is_set():
+                break
+            if say is not None:
+                say(f"{m.name}…")
+            results.append(verify_mirror(m, mirror_dir, pool, stat_blobs=stat_blobs,
+                                         hash_blobs=hash_blobs, say=step_say, stop_event=stop_event))
+        return results
     finally:
         pool.close()
+
+
+def verify_pool(cfg, network: str | None = None, *, stat_blobs: bool = False, hash_blobs: bool = False,
+                say=None, stop_event=None) -> list[VerifyResult]:
+    """The pool check `mmw verify` and the TUI's Verify pool page both run:
+    every mirror the pool holds (or one network's), read-only. `say(text)`
+    names each step; a set `stop_event` ends it early."""
+    if network and not any(n.name == network for n in cfg.networks):
+        raise LookupError(f"Network '{network}' not found.")
+    return _verify_all(cfg, cfg.settings.mirror_dir, network, stat_blobs=stat_blobs or hash_blobs,
+                       hash_blobs=hash_blobs, say=say, stop_event=stop_event)
+
+
+def damaged_blobs(results: list[VerifyResult]) -> set[str]:
+    """The checksums a repair drops: blobs gone, the wrong size, or mis-hashed."""
+    return {c for r in results for c in r.corrupt_checksums}
+
+
+def repair_pool(cfg, results: list[VerifyResult]) -> tuple[int, int]:
+    """Drop the damaged blobs `results` found, so the next sync downloads
+    them again: (count, bytes). Raises PoolBusy while a sync holds the pool."""
+    with Pool(cfg.settings.mirror_dir) as pool:
+        return pool.forget_blobs(damaged_blobs(results))
 
 
 @interruptible
@@ -86,7 +120,7 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, stat_blobs: bool 
 
     stat_blobs = stat_blobs or hash_blobs or repair
     try:
-        results = _verify_all(cfg, cfg.settings.mirror_dir, network, stat_blobs=stat_blobs, hash_blobs=hash_blobs)
+        results = verify_pool(cfg, network, stat_blobs=stat_blobs, hash_blobs=hash_blobs)
     except OSError as e:
         eprint(f"Cannot read the pool in {cfg.settings.mirror_dir}: {e.strerror or e}")
         return 1
@@ -116,11 +150,10 @@ def run(cfg_dir: Path = Path("."), network: str | None = None, stat_blobs: bool 
     complete_count = sum(1 for r in results if r.complete)
     print(f"\n{complete_count}/{len(results)} mirror(s) complete.")
 
-    damaged = {c for r in results for c in r.corrupt_checksums}
+    damaged = damaged_blobs(results)
     if damaged and repair:
         try:
-            with Pool(cfg.settings.mirror_dir) as pool:
-                count, size = pool.forget_blobs(damaged)
+            count, size = repair_pool(cfg, results)
         except PoolBusy as e:
             eprint(str(e))
             return 1

@@ -6,6 +6,86 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.7]
+
+Every repository now keeps its history the same way. APT, PyPI and VS Code
+repositories and package layers all record a point on every sync, and
+history is kept in full by default. Points can be compared, searched,
+labelled, deleted by hand and checked for consistency, on both sides.
+
+### Added
+
+- `mmw verify --points` and `mmw site verify --points` (TUI: Check points)
+  check that apt can read every kept point. Transfer previews and the far
+  side's apply review flag any point that fails.
+- `mmw history diff` and `mmw site diff` (TUI: Changes) list the packages
+  added, removed and upgraded between two points. Transfer previews and the
+  far side's apply review say how many.
+- `mmw history --package NAME` (and `mmw site history REPO --package NAME`)
+  shows when each version of a package arrived. The TUI's history tables
+  have a Find box that narrows them to those points.
+- `mmw history label` and `mmw site label` (TUI: Label…) name a point. A
+  labelled point is never pruned, and its name travels to the far side,
+  where `mmw site serve REPO NAME` serves it.
+- `mmw history delete` (TUI: Delete points…) drops chosen points and frees
+  their files.
+- A far side can serve with a lag (`mmw site settings --lag 7d`, or per suite
+  with `mmw site lag`; TUI: Settings and Suite settings). Each suite then
+  serves its newest point that is at least that old, so a test network can
+  take the newest while production runs a week behind.
+
+### Changed
+
+- History is kept in full unless you set `keep_points`. A pool saved with the
+  old default of 3 now keeps everything. The far side also keeps every point
+  unless `mmw site settings --keep` says otherwise. Networks no longer have
+  their own retention: `keep_points` / `keep_suites` on a network are ignored
+  with a warning.
+- PyPI and VS Code keep their history the same way APT repositories do. Every
+  sync is a point, and publishing or transferring one lays out exactly what
+  synced then. A network's PyPI retention counts from the day of the point,
+  so a point always serves the same files.
+- A network's own packages are kept with each point they were added to.
+  Publishing or transferring an earlier date serves the layer as it was then,
+  and past points work for layered repositories.
+- History from older versions (snapshots, network points, transfer records)
+  is converted all at once the first time mmw starts, before anything reads
+  it.
+- `mmw history` shows each point's size and whether it is published, sent,
+  waiting to be sent or due to be pruned, grouped by repository and suite.
+  `mmw history -n NETWORK` starts with what that network's far side has, and
+  `--json` prints the same rows for scripts.
+- Repository history in the TUI is a table. Each row says what the point is
+  and offers Publish as of this, Transfer to this and Delete. Delete points…
+  (by date) is under More… (`D`).
+- Sources show each repository's history at a glance: each suite's newest
+  point, how many are kept, their size and the keep rule. Networks show what
+  the far side was last sent and what is newer here.
+- The far side's history shows what each point changed (`+3 ~37 −1`) and,
+  when suites differ, what each one covers. Dated URLs come with a ready
+  sources.list line (`mmw site history`, and under the TUI's history table).
+
+### Fixed
+
+- A sync reads each suite's Release once, so all components of a suite
+  share one upstream snapshot. Stale upstream indexes trigger at most one
+  shared refresh.
+- A suite whose components synced either side of an upstream update keeps
+  its previous point instead of recording one apt cannot read. The sync
+  names the component to sync again.
+- A transfer always carries recorded points, never files a sync left
+  half-done.
+- An age rule (`keep_points = "30d"`) counts from when a point stopped being
+  current, not from when it was synced. Prune names any repository whose
+  whole history it drops.
+- A repository taken out of a network stops being served on the far side
+  once no network brings it. A far side whose apply was interrupted no longer
+  builds dated trees from files that never arrived.
+- Points screens show dates instead of raw stamps. The far side's As of a
+  bundle lists bundles and counts repositories correctly. A sync that left a
+  suite half done says which architecture didn't sync and the date the suite
+  stays at.
+
 ## [1.5.6]
 
 History now belongs to the repository, not to the network that synced it. Any

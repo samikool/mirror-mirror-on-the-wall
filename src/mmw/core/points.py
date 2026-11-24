@@ -179,8 +179,11 @@ def partial_sync_note(pool, repo, current, recorded, now) -> str:
 
 
 def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, *, stamp: str | None = None,
-                          progress=None, stop_event=None, after_sync: bool = False) -> PointsReport:
-    """Walk `network` and record its points; the ones new to it are said."""
+                          progress=None, stop_event=None, after_sync: bool = False,
+                          fresh=frozenset()) -> PointsReport:
+    """Walk `network` and record its points; the ones new to it are said.
+    `fresh`: repository points the sync just recorded (their layer views
+    serve from the point's date)."""
     from mmw.core.publisher.manifest import now_stamp
     stamp = stamp or now_stamp()
     report = PointsReport(network.name)
@@ -193,11 +196,20 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
         )
         from mmw.core.repos import repository_key
         from mmw.core.resolve import network_mirrors
+        from mmw.core.layers import build_network_layers
+        # A layer is a view of each current point: built (or found unchanged)
+        # before the points are linked, so the network links what it serves.
+        layered = build_network_layers(network, cfg, mirror_dir, pool, stamp=stamp, fresh=fresh)
+        report.warnings += layered.warnings
+        if layered.errors:
+            if not after_sync:
+                raise ValueError(f"points of {network.name} not recorded: " + "; ".join(layered.errors[:5]))
+            report.warnings += layered.errors
         selected = network_mirrors(network, cfg, mirror_dir)
         repository_files, point_views = {}, {}
         for repo in {repository_key(u) for u in selected}:
             candidates = current_repository_points(pool, repo)
-            if not candidates or network.layer_for(repo) is not None:
+            if not candidates:
                 continue
             if provider_scoped(repo):
                 # Published from the point itself (pages too), never live refs.
@@ -205,18 +217,24 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
                 if view is not None:
                     repository_files[repo], point_views[repo] = slice_of(view), view
                 continue
+            # The plain slice is what the sync left; a layer's view is what is served.
+            plain = {path: cs for pid in candidates
+                     for path, cs in selected_point_files(pool, pid, selected, network.name).items()}
             projection = {path: cs for pid in candidates
-                          for path, cs in selected_point_files(pool, pid, selected, network.name).items()}
+                          for path, cs in selected_point_files(pool, pid, selected, network).items()}
             actual = current_ref_projection(pool, [u for u in selected if u.source == repo], shared_files(pool, candidates))
-            if projection != actual:
-                note = partial_sync_note(pool, repo, candidates, projection, actual)
+            if plain != actual:
+                note = partial_sync_note(pool, repo, candidates, plain, actual)
                 if not after_sync:
                     raise ValueError(note)
                 report.warnings.append(note)
             repository_files[repo] = projection
+        from mmw.core.layers import served_files
+        for repo, files in served_files(pool, network, cfg, mirror_dir).items():
+            repository_files.setdefault(repo, files)     # points none is current of yet: as their views
         walk_options = {"repository_files": repository_files, "point_views": point_views} if repository_files else {}
         rows, settings, warnings = walk_tree(network, cfg, mirror_dir, pool, progress=progress,
-                                             stop_event=stop_event, **walk_options)
+                                             stop_event=stop_event, build_layers=False, **walk_options)
         report.warnings += warnings
         report.settings = settings
         from mmw.site.tracks import content_ident
@@ -233,7 +251,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
         for repo, mine in sorted(repos_now.items()):
             digest = content_ident(mine)
             candidates = current_repository_points(pool, repo)
-            if candidates and network.layer_for(repo) is None:
+            if candidates:
                 slices = {pid: selected_point_files(pool, pid, selected, network) for pid in candidates}
                 projection = {path: cs for files in slices.values() for path, cs in files.items()}
                 if projection != mine:
@@ -265,7 +283,7 @@ def record_network_points(network: NetworkConfig, cfg: Config, mirror_dir: Path,
                 if sorted(recorded.get(repo) or []) != sorted(ids):
                     pool.record_recording(network.name, repo, stamp, ids)
                 continue
-            if after_sync and not repo.startswith("network:") and any(u.source == repo for u in selected) and network.layer_for(repo) is None:
+            if after_sync and not repo.startswith("network:") and any(u.source == repo for u in selected):
                 continue                       # this track has never completed a sync
             last = pool.repo_rows(network.name, repo)
             if last is not None and last[0] == digest:
@@ -309,6 +327,7 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
             by_repo_units.setdefault(repository_key(unit), []).append(unit)
     successes = {o.mirror for o in outcomes if o.ok} if outcomes is not None else None
     stamp = now_stamp()
+    fresh = set()                       # this sync's points: a layer's first view serves from their date
     try:
         with shared_pool_lock(mirror_dir), Pool(mirror_dir) as pool:
             requested_all = [u for u in (attempted or units)
@@ -335,6 +354,7 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
                 try:
                     recorded = record_repository(pool, repo, mine, mirror_dir, stamp, refs=None if view is pool else view, complete_suites=complete, say=say)
                     set_current_repository_points(pool, repo, recorded, replace=False)
+                    fresh.update(pid for pid, _, _ in recorded)
                     new = [_say(repo, d, cfg) for _, created, d in recorded if created]
                     if new:
                         say("New repository point(s) — " + ", ".join(new))
@@ -347,7 +367,7 @@ def record_points_after_sync(cfg: Config, mirror_dir: Path, synced_sources: set[
         try:
             if not any(m.source in synced_sources for m in network_mirrors(network, cfg, mirror_dir)):
                 continue
-            report = record_network_points(network, cfg, mirror_dir, after_sync=True)
+            report = record_network_points(network, cfg, mirror_dir, after_sync=True, fresh=frozenset(fresh))
         except Exception as e:  # noqa: BLE001 — said, and the sync goes on
             report = PointsReport(network.name, warnings=[f"points not recorded: {e}"])
         for w in report.warnings:
@@ -470,7 +490,7 @@ def moment_rows(pool: Pool, network: str, stamp: str):
     settings = pool.settings_at(network, stamp) or "{}"
     files: dict[str, str] = {}
     for pid in ids:
-        files.update(files_for_settings(pool, pid, settings))
+        files.update(files_for_settings(pool, pid, settings, when=stamp))
     info = pool.blob_info(files.values())
     missing = sorted({c for c in files.values() if c not in info})
     if missing:

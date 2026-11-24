@@ -431,7 +431,8 @@ def _bundle_points(network: NetworkConfig, cfg: Config, mirror_dir: Path, out_pa
             since=since, since_by_repo=since_by_repo if not full else {},
             explicit_since=since_date is not None or from_ref not in (_LAST, None),
             sent_points=sent_points if not full else (), repos=chosen, warnings=result.warnings, full=full)
-        files = {pid: files_for_settings(pool, pid, settings) for ids in listing.values() for pid in ids}
+        when = pts.resolve_when(until) if until else None       # a layer as it was then
+        files = {pid: files_for_settings(pool, pid, settings, when=when) for ids in listing.values() for pid in ids}
         net_files: dict[str, str] = {}
         for pid in current.get(net_repo, []):
             net_files.update(pool.point_files(pid))

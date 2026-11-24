@@ -380,28 +380,39 @@ def _as_source(unit):
                           suite=o.get("suite", "stable"), component=o.get("component", "main"))
 
 
-def _signatures(work: Path, key: str, mirror_dir: Path, release: bytes) -> tuple[bytes, bytes]:
+def _signatures(work: Path, key: str, mirror_dir: Path, release: bytes, *,
+                pool=None) -> tuple[bytes, bytes]:
     """InRelease and Release.gpg for `release` — the kept ones when this exact
     Release was already signed by this exact key, so an unchanged folder
-    gives byte-identical files and no new repository version."""
+    gives byte-identical files and no new repository version. With `pool`
+    (a layer), every (Release, key) ever signed is kept (`layer_signatures`):
+    a view rebuilt for an older point signs as its first build did."""
     from mmw.core.signing import Keyring, SigningError
     keyring = Keyring(mirror_dir)
     fingerprint = next((k.fingerprint for k in keyring.list() if k.name == key), None)
     if fingerprint is None:
         raise SigningError(f"no signing key named {key!r}")
     digest = hashlib.sha256(release).hexdigest()
+    if pool is not None and (kept := pool.layer_signature(digest, fingerprint)) is not None:
+        return kept
     kept_path = work / "signatures.json"
-    if disk_io.ops.exists(kept_path):
+    if disk_io.ops.exists(kept_path):           # a layer's from before views: its last one
         try:
             kept = json.loads(disk_io.ops.read_bytes(kept_path))
             if kept.get("release") == digest and kept.get("fingerprint") == fingerprint:
-                return kept["inrelease"].encode(), kept["release_gpg"].encode()
+                signed = kept["inrelease"].encode(), kept["release_gpg"].encode()
+                if pool is not None:
+                    pool.keep_layer_signature(digest, fingerprint, *signed)
+                return signed
         except (ValueError, KeyError):
             pass
     try:
         inrelease, release_gpg = keyring.clearsign(key, release), keyring.detach_sign(key, release)
     finally:
         keyring.stop_agent()        # a cron sync must not leave a daemon behind
+    if pool is not None:
+        pool.keep_layer_signature(digest, fingerprint, inrelease, release_gpg)
+        return inrelease, release_gpg
     disk_io.ops.mkdir(work, parents=True, exist_ok=True)
     tmp = kept_path.with_name("signatures.json.tmp")
     disk_io.ops.write_bytes(tmp, json.dumps({

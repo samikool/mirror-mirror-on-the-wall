@@ -254,7 +254,8 @@ class PastPointsReport:
 
 @dataclass
 class PastPlan:
-    """All configured units of `repo` to fetch, and networks to link without layers."""
+    """All configured units of `repo` to fetch, and the networks to link (a
+    layered one gets its layer's view of each point)."""
     repo: str
     label: str
     networks: list[tuple[object, list[MirrorConfig]]]
@@ -318,10 +319,6 @@ def plan_past_points(cfg, mirror_dir, repo_key: str) -> PastPlan:
         units = [m for m in network_mirrors(network, cfg, mirror_dir)
                  if repository_key(m) == repo_key and m.provider == "apt"]
         if not units:
-            continue
-        if network.layer_for(repo_key) is not None:
-            skipped.append(f"{network.name} adds its own debs to {label} — past points don't "
-                           "support layered repositories yet")
             continue
         networks.append((network, units))
     from mmw.core.resolve import available_mirrors
@@ -412,6 +409,14 @@ def record_past_points(cfg, pool, plan: PastPlan, entries: dict[str, list[tuple[
             files = selected_point_files(pool, pid, units)
             if not files:
                 continue
+            if network.layer_for(plan.repo) is not None:
+                # The layer as it is now, over the past point, served from its date.
+                from mmw.core.layers import LayerReport, build_view
+                layered = LayerReport()
+                _view, view = build_view(pool, network, cfg, cfg.settings.mirror_dir, pid,
+                                         stamp=pool.points_of([pid])[pid].date, report=layered)
+                report.warnings += [w for w in [*layered.errors, *layered.warnings] if w not in report.warnings]
+                files = view if view is not None else files
             if pool.network_point_last_seen(network.name, pid) is None:
                 pool.link_network_point(network.name, pid, now)
             cache_slice(pool, network.name, pid, files, units)

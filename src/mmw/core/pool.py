@@ -259,6 +259,39 @@ CREATE TABLE IF NOT EXISTS layer_digests (
     PRIMARY KEY (network, base)
 );
 
+-- A network's layer as a view of one repository point (`core/layers.py`):
+-- built at sync, on a package edit, or on demand, keyed by the inputs'
+-- digest. Its rows replace the point's slice at the same path (relative to
+-- the repository's base); blob NULL = not served (a dropped signature). A
+-- held point's views are GC roots. The newest view stamped at or before a
+-- moment is what the network served then.
+CREATE TABLE IF NOT EXISTS layer_views (
+    id      INTEGER PRIMARY KEY,
+    network TEXT NOT NULL,
+    point   INTEGER NOT NULL,
+    base    TEXT NOT NULL,
+    digest  TEXT NOT NULL,
+    stamp   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_layer_views_point ON layer_views (network, point, stamp);
+CREATE TABLE IF NOT EXISTS layer_view_files (
+    view INTEGER NOT NULL,
+    path INTEGER NOT NULL,
+    blob INTEGER,
+    kind TEXT NOT NULL,
+    PRIMARY KEY (view, path)
+) WITHOUT ROWID;
+-- Signatures of a re-signed Release, per (its digest, the key): one Release
+-- signed again gives the same bytes, so a view rebuilt later never
+-- conflicts with one a far side already holds.
+CREATE TABLE IF NOT EXISTS layer_signatures (
+    release     TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    inrelease   TEXT NOT NULL,
+    release_gpg TEXT NOT NULL,
+    PRIMARY KEY (release, fingerprint)
+) WITHOUT ROWID;
+
 -- A forced delete pending from before bundles carried points: read once, when
 -- that network's history becomes sent records (`points.migrate_sent`).
 CREATE TABLE IF NOT EXISTS full_next (
@@ -412,6 +445,9 @@ CREATE TABLE IF NOT EXISTS recordings_seeded_at (network TEXT PRIMARY KEY, stamp
 """
 
 _CHUNK = 900
+# The orphan query's "but these points are released" clause, one per kind of
+# point-held row: its callers pass the released ids once for each.
+_RELEASED = "p.id NOT IN (SELECT value FROM json_each(?))"
 
 # A network's points, what it was sent and its recordings: renamed and
 # forgotten with it (the points themselves are shared and stay).
@@ -1077,6 +1113,7 @@ class Pool:
         # checked once here, not per query on a connection a writer may hold.
         self._has_snapshot_blobs = self._has_table("snapshot_blobs")
         self._has_layer_rows = self._has_table("layer_rows")
+        self._has_layer_views = self._has_table("layer_view_files")
         self._has_point_files = self._has_table("point_files")
         self._has_point_unit_files = self._has_table("point_unit_files")
         # `PoolPoint.legacy`: the point is one network's (scoped), not its
@@ -2190,6 +2227,9 @@ class Pool:
             self._conn.execute("DELETE FROM point_files WHERE point = ?", (point_id,))
             self._conn.execute("DELETE FROM point_units WHERE point = ?", (point_id,))
             self._conn.execute("DELETE FROM point_unit_files WHERE point = ?", (point_id,))
+            self._conn.execute("DELETE FROM layer_view_files WHERE view IN "
+                               "(SELECT id FROM layer_views WHERE point = ?)", (point_id,))
+            self._conn.execute("DELETE FROM layer_views WHERE point = ?", (point_id,))
             self._conn.commit()
 
     def link_snapshot_points(self, snapshot_id: int, point_ids: list[int]) -> None:
@@ -2457,7 +2497,7 @@ class Pool:
             for table in _POINT_NETWORK_TABLES:
                 self._conn.execute(f"DELETE FROM {table} WHERE network = ?", (new,))
             for table in ("snapshots", "bundles", "published", "repo_versions", "full_next",
-                          "layer_rows", "layer_digests", *_POINT_NETWORK_TABLES):
+                          "layer_rows", "layer_digests", "layer_views", *_POINT_NETWORK_TABLES):
                 self._conn.execute(f"UPDATE {table} SET network = ? WHERE network = ?",
                                    (new, old))
             self._conn.execute("UPDATE OR IGNORE point_scopes SET network = ? WHERE network = ?", (new, old))
@@ -2484,6 +2524,9 @@ class Pool:
             self._conn.execute("DELETE FROM full_next WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM layer_rows WHERE network = ?", (network,))
             self._conn.execute("DELETE FROM layer_digests WHERE network = ?", (network,))
+            self._conn.execute("DELETE FROM layer_view_files WHERE view IN "
+                               "(SELECT id FROM layer_views WHERE network = ?)", (network,))
+            self._conn.execute("DELETE FROM layer_views WHERE network = ?", (network,))
             for table in _POINT_NETWORK_TABLES:
                 self._conn.execute(f"DELETE FROM {table} WHERE network = ?", (network,))
             self._conn.commit()
@@ -2543,6 +2586,85 @@ class Pool:
                 return None
             raise
         return row[0] if row else None
+
+    # ── layer views (a layer is a view of a point) ──────────────────────────
+
+    def layer_view(self, network: str, point_id: int, digest: str) -> int | None:
+        """The newest view of (network, point) built from these inputs, if any."""
+        with self._read() as c:
+            try:
+                row = c.execute("SELECT id FROM layer_views WHERE network = ? AND point = ? AND digest = ? "
+                                "ORDER BY stamp DESC, id DESC LIMIT 1", (network, point_id, digest)).fetchone()
+            except sqlite3.OperationalError:  # read-only, from before views
+                return None
+        return row[0] if row else None
+
+    def record_layer_view(self, network: str, point_id: int, base: str, digest: str, stamp: str,
+                          rows) -> int:
+        """A view's rows (repo_path relative to `base`, checksum ('' = not
+        served), kind). The newest view of the point with the same inputs is
+        that view (its rows replaced: a rebuild of lost blobs); any other is
+        a new view from `stamp` on — an older one keeps its own moment."""
+        rows = list(rows)
+        with self._lock:
+            c = self._conn
+            try:
+                newest = c.execute("SELECT id, digest FROM layer_views WHERE network = ? AND point = ? "
+                                   "ORDER BY stamp DESC, id DESC LIMIT 1", (network, point_id)).fetchone()
+                if newest is not None and newest[1] == digest:
+                    vid = newest[0]
+                    c.execute("DELETE FROM layer_view_files WHERE view = ?", (vid,))
+                else:
+                    vid = c.execute("INSERT INTO layer_views (network, point, base, digest, stamp) "
+                                    "VALUES (?, ?, ?, ?, ?)", (network, point_id, base, digest, stamp)).lastrowid
+                c.executemany("INSERT OR IGNORE INTO snapshot_paths (path) VALUES (?)", [(r[0],) for r in rows])
+                c.executemany("INSERT OR IGNORE INTO snapshot_blobs (checksum) VALUES (?)",
+                              [(r[1],) for r in rows if r[1]])
+                c.executemany(
+                    "INSERT OR REPLACE INTO layer_view_files (view, path, blob, kind) SELECT ?, p.id, "
+                    "(SELECT b.id FROM snapshot_blobs b WHERE b.checksum = ?), ? "
+                    "FROM snapshot_paths p WHERE p.path = ?",
+                    [(vid, cs or None, kind, rel) for rel, cs, kind in rows])
+                c.commit()
+            except BaseException:
+                c.rollback()
+                raise
+        return vid
+
+    def layer_views(self, network: str, point_id: int) -> list[tuple[int, str, str, str]]:
+        """(id, base, digest, stamp) of every view of (network, point), oldest first."""
+        with self._read() as c:
+            try:
+                return c.execute("SELECT id, base, digest, stamp FROM layer_views WHERE network = ? AND point = ? "
+                                 "ORDER BY stamp, id", (network, point_id)).fetchall()
+            except sqlite3.OperationalError:
+                return []
+
+    def layer_view_rows(self, view_id: int) -> dict:
+        """repo_path → a `mirror_files`-shaped row, or None (not served)."""
+        with self._read() as c:
+            rows = c.execute(
+                "SELECT p.path, b.checksum, f.kind, k.filename, k.size FROM layer_view_files f "
+                "JOIN snapshot_paths p ON p.id = f.path LEFT JOIN snapshot_blobs b ON b.id = f.blob "
+                "LEFT JOIN packages k ON k.checksum = b.checksum WHERE f.view = ?", (view_id,)).fetchall()
+        blob = self._blob_strs()
+        return {rel: ((rel, blob(cs, fn or ""), size or 0, kind, cs) if cs else None)
+                for rel, cs, kind, fn, size in rows}
+
+    def layer_signature(self, release: str, fingerprint: str) -> tuple[bytes, bytes] | None:
+        with self._read() as c:
+            try:
+                row = c.execute("SELECT inrelease, release_gpg FROM layer_signatures "
+                                "WHERE release = ? AND fingerprint = ?", (release, fingerprint)).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return (row[0].encode(), row[1].encode()) if row else None
+
+    def keep_layer_signature(self, release: str, fingerprint: str, inrelease: bytes, release_gpg: bytes) -> None:
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO layer_signatures VALUES (?, ?, ?, ?)",
+                               (release, fingerprint, inrelease.decode(), release_gpg.decode()))
+            self._conn.commit()
 
     def snapshot_blob_rows(self, snapshot_id: int):
         """(path, checksum, pool_path, size) for every file of a snapshot, in
@@ -2856,6 +2978,12 @@ class Pool:
         # only by layer_rows: without this a prune deleted every live one.
         layered = ("AND NOT EXISTS (SELECT 1 FROM layer_rows l WHERE l.checksum = packages.checksum)"
                    if self._has_layer_rows else "")
+        # A held point's layer views keep their debs, indexes and signatures.
+        if self._has_layer_views and self._has_snapshot_blobs:
+            layered += (" AND NOT EXISTS (SELECT 1 FROM snapshot_blobs b JOIN layer_view_files f ON f.blob = b.id "
+                        "JOIN layer_views v ON v.id = f.view JOIN points p ON p.id = v.point "
+                        "WHERE b.checksum = packages.checksum AND p.held = 1"
+                        + (" AND " + _RELEASED if released else "") + ")")
         # A held timeline point keeps its files (superseded packages included).
         point_rows = ("(SELECT point, blob FROM point_files UNION ALL SELECT point, blob FROM point_unit_files)"
                       if self._has_point_unit_files else "point_files")
@@ -2905,10 +3033,9 @@ class Pool:
             keep, params = "1", []
         released = (json.dumps(sorted(released_points)) if released_points
                     and self._has_point_files and self._has_snapshot_blobs else None)
+        sql = self._orphans_sql(keep, "COUNT(*), COALESCE(SUM(size), 0)", released=released is not None)
         with self._read() as c:
-            row = c.execute(self._orphans_sql(keep, "COUNT(*), COALESCE(SUM(size), 0)",
-                                              released=released is not None),
-                            [*params, *([released] if released is not None else [])]).fetchone()
+            row = c.execute(sql, [*params, *([released] * sql.count(_RELEASED))]).fetchone()
         return (int(row[0]), int(row[1])) if row else (0, 0)
 
     def points_footprint(self, point_ids, *, unsent_to: str | None = None) -> int:
@@ -2958,7 +3085,7 @@ class Pool:
                + f" AND checksum IN (SELECT b.checksum FROM snapshot_blobs b JOIN {rows} f ON f.blob = b.id "
                "WHERE f.point IN (SELECT value FROM json_each(?)))")
         with self._read() as c:
-            row = c.execute(sql, (wanted, wanted)).fetchone()
+            row = c.execute(sql, (wanted,) * (sql.count(_RELEASED) + 1)).fetchone()
         return int(row[0]) if row else 0
 
     def ref_sources(self) -> list[str]:

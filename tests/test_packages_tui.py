@@ -92,3 +92,25 @@ def test_quick_add_into_a_folder_repository(lab, tmp_path):  # noqa: F811
             page.query_one("#btn-quick-add").press()
             await until(pilot, lambda: (tmp_path / "debs" / deb.name).is_file())
     asyncio.run(scenario())
+
+
+def test_adding_a_deb_rebuilds_the_current_points_view(lab):  # noqa: F811
+    """The page's add makes a new view of the current point, as
+    `mmw packages add` does (one function: `layers.rebuild_current_views`)."""
+    from mmw.core.pool import Pool
+    from mmw.core.repository_points import current_repository_points
+    cfg = lab.cfg(config.NetworkLayer(source=lab.src.url, signing="unsigned"))
+    deb = make_deb(lab.tmp / "new", "tools-ours", "1.0")
+
+    async def scenario():
+        app = _App(_page(lab, cfg), cfg)
+        async with app.run_test(size=(120, 40)) as pilot:
+            page = app.screen
+            await until(pilot, lambda: page.query("#pkg-debs"))
+            page.start_flow(lambda: page.add_debs([deb], "jammy", "main"))
+            await until(pilot, lambda: "Added 1" in str(page.query_one("#page-status").render()))
+    asyncio.run(scenario())
+    with Pool(lab.mirror_dir, read_only=True) as pool:
+        pid, = current_repository_points(pool, lab.src.identity)
+        (vid, *_), = pool.layer_views("lab", pid)
+        assert "pool/mmw/main/tools-ours_1.0_amd64.deb" in pool.layer_view_rows(vid)

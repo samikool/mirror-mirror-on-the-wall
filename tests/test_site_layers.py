@@ -159,7 +159,6 @@ def test_an_unchanged_overlay_is_reused(site, monkeypatch):
 
 # ── switching serves version + overlay (Task 4) ──────────────────────────────
 
-from apt_upstream import sync_upstream  # noqa: E402
 
 
 def _served(site, rel):
@@ -174,7 +173,7 @@ def _delta(site):
     lab.up.republish({("jammy", "main"): [make_deb(lab.tmp / "u2", "hello", "2.10-3")],
                       ("jammy", "universe"): [make_deb(lab.tmp / "u", "cowsay", "3.03")]},
                      date="Fri, 22 Apr 2022 10:00:00 UTC")
-    sync_upstream(site.cfg, lab.src)
+    lab.sync()                    # a sync records its points
     out = bundle_network(site.net, site.cfg, lab.mirror_dir, out_path=lab.tmp / "b2").out_path
     return apply_bundle(site.home, str(out), say=lambda *a: None)
 

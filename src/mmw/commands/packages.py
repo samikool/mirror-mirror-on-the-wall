@@ -25,6 +25,17 @@ def _run(cfg_dir: Path, act) -> int:
         return 1
 
 
+def _rebuild(cfg, network: str | None) -> None:
+    """The edit, as the network's current points' layer views: the next
+    publish or transfer serves it, and a date before it still serves the old."""
+    from mmw.core.layers import rebuild_current_views
+    if not network:
+        return
+    report = rebuild_current_views(cfg, cfg.settings.mirror_dir, network)
+    for line in [*report.errors, *report.warnings]:
+        eprint(line)
+
+
 def _ask(clash) -> str:
     what = ("the same version as upstream's, with different contents" if clash.kind == "same-version"
             else f"older than upstream's {clash.upstream_version}, so clients would not pick it")
@@ -49,6 +60,7 @@ def add(cfg_dir: Path, paths, *, into, network, suite, component, resign, unsign
                            on_clash=on_clash, ask=ask, config_dir=cfg_dir)
         if out.cfg is not cfg:
             config.save(out.cfg, cfg_dir)
+        _rebuild(out.cfg, network)
         for p in out.copied:
             typer.echo(f"added {p}")
         for p in out.skipped:
@@ -77,6 +89,7 @@ def remove(cfg_dir: Path, filename, *, into, network) -> int:
         for p in remove_package(cfg, cfg.settings.mirror_dir, filename, into=into, network=network,
                                 config_dir=cfg_dir):
             typer.echo(f"removed {p}")
+        _rebuild(cfg, network)
     return _run(cfg_dir, act)
 
 
@@ -91,6 +104,7 @@ def signing(cfg_dir: Path, into, *, network, resign, unsigned, upstream, content
         new = set_signing(cfg, network, into, signing=mode, key=resign, contents=contents,
                           drop_valid_until=drop_valid_until)
         config.save(new, cfg_dir)
+        _rebuild(new, network)
         layer = next(n for n in new.networks if n.name == network).layer_for(
             next(s for s in new.sources if s.name == into).url)
         typer.echo(f"{into} on {network}: {layer.signing}"

@@ -29,9 +29,7 @@ class PreviewSink(RecordingSink):
 
 
 def repository_owned(pool, current, network=None):
-    ids = [pid for repo, ids in current.items()
-           if not repo.startswith('network:') and (network is None or network.layer_for(repo) is None)
-           for pid in ids]
+    ids = [pid for repo, ids in current.items() if not repo.startswith('network:') for pid in ids]
     return bool(ids) and all(not p.legacy for p in pool.points_of(ids).values())
 
 
@@ -45,8 +43,6 @@ def repository_projection(pool, network, cfg, mirror_dir, *, point_ids=None, vie
     units = network_mirrors(network, cfg, mirror_dir)
     projection = {}
     for repo in {repository_key(u) for u in units}:
-        if network.layer_for(repo) is not None:
-            continue
         ids = repository_targets(pool, repo)
         if not ids:
             continue
@@ -68,11 +64,14 @@ def selected_tree(pool, network, cfg, mirror_dir, settings, current, *, until=No
     """Generate a network view from immutable points, never from live refs."""
     from mmw.core.snapshots import walk_tree, recorded_repos
     from mmw.core.repos import attribute
+    from mmw.core.points import resolve_when
     targets, _, _ = select_range(pool, network.name, settings, current, until=until)
     if point_ids is not None:
         point_ids.update(pid for ids in targets.values() for pid in ids)
     from mmw.core.repository_points import provider_scoped, provider_view
-    projection = {repo: {path: cs for pid in ids for path, cs in files_for_settings(pool, pid, settings).items()}
+    when = resolve_when(until) if until else None          # a layer as it was then
+    projection = {repo: {path: cs for pid in ids
+                         for path, cs in files_for_settings(pool, pid, settings, when=when).items()}
                   for repo, ids in targets.items() if not repo.startswith('network:')}
     views = {repo: view for repo, ids in targets.items() if provider_scoped(repo)
              and (view := provider_view(pool, repo, ids, settings=settings, network=network.name)) is not None}
@@ -137,7 +136,7 @@ def recorded_selection(pool, network, mirror_dir, cfg=None, *, only=None):
     # A network's cached view must not hide states synced before it existed,
     # nor keep a changed selection tied to that old view.
     missing = {repo: mine for repo, mine in repos.items()
-               if not current.get(repo) or (network.layer_for(repo) is None and repository_targets(pool, repo))}
+               if not current.get(repo) or repository_targets(pool, repo)}
     if not missing and settings:
         return settings, current
     data = json.loads(settings) if settings else {}
@@ -154,8 +153,6 @@ def recorded_selection(pool, network, mirror_dir, cfg=None, *, only=None):
     data['extra_hosts'] = extra_hosts(network, units)
     settings = json.dumps(data, sort_keys=True)
     for repo in missing:
-        if network.layer_for(repo) is not None:
-            raise ValueError(f'{repo}: no recorded state for this network\'s layer — sync it first.')
         ids = repository_targets(pool, repo)
         slices = {pid: files for pid in ids if (files := files_for_settings(pool, pid, settings))}
         if not slices:
@@ -261,15 +258,18 @@ def transferred_slice(pool, network, point, settings):
             except (OSError, ValueError):
                 continue
 
+    # A layer edit gives the point a newer view: what was sent may be an older one.
+    moments = [None, *sorted({v[3] for v in pool.layer_views(network, point)}, reverse=True)]
     for candidate in choices():
         if not isinstance(candidate, str) or not candidate:
             continue
-        try:
-            files = files_for_settings(pool, point, candidate)
-        except (ValueError, TypeError):
-            continue
-        if content_ident(files) == expected:
-            return set(files.values())
+        for when in moments:
+            try:
+                files = files_for_settings(pool, point, candidate, when=when)
+            except (ValueError, TypeError):
+                break
+            if content_ident(files) == expected:
+                return set(files.values())
     return None
 
 
@@ -410,7 +410,7 @@ def range_baseline(pool, network, settings, targets, *, since=None, full=False, 
         target = next(p for p in known.values() if p.track == tid)
         # A layer edit can keep the upstream Release date. A historical
         # baseline cannot assume a layer built after From was already carried.
-        layered = explicit is not None and network.layer_for(pool.track_of_point(target.id).repo) is not None
+        layered = explicit is not None and bool(pool.layer_views(network.name, target.id))
 
         def baseline_date(point):
             date = point_date(pool, point, settings)

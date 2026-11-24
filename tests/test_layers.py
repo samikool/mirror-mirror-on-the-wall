@@ -93,7 +93,15 @@ def lab(tmp_path):
         return config.Config(settings=config.Settings(mirror_dir=lab.mirror_dir), sources=[src],
                              networks=[net, *extra_networks])
     lab.cfg = cfg
-    lab.units = sync_upstream(cfg(), src)
+
+    def sync():
+        """Sync, and record the repository's points (a layer is a view of one)."""
+        from mmw.core import points
+        units = sync_upstream(cfg(), src)
+        points.record_points_after_sync(cfg(), lab.mirror_dir, {src.identity}, say=lambda *_: None)
+        return units
+    lab.sync = sync
+    lab.units = sync()
     lab.base = lab.units[0].mirror_base
     lab.folder = layer_dir(lab.mirror_dir, "lab", src.name)
 
@@ -101,11 +109,32 @@ def lab(tmp_path):
         c = cfg(layer)
         with Pool(lab.mirror_dir) as pool:
             report = layers.build_network_layers(c.networks[0], c, lab.mirror_dir, pool, **kw)
-            overlay = pool.layer_overlay("lab", lab.base)
+            overlay = _overlay(pool)
         return report, overlay
     lab.build = build
     yield lab
     up.close()
+
+
+def _overlay(pool, network="lab") -> dict:
+    """The rows the newest view of the network's current point lays over it."""
+    from mmw.core.repository_points import current_repository_points
+    for pid in current_repository_points(pool, next(iter(_repos(pool)))):
+        views = pool.layer_views(network, pid)
+        if views:
+            return pool.layer_view_rows(views[-1][0])
+    return {}
+
+
+def _repos(pool):
+    with pool._read() as c:
+        return [r[0] for r in c.execute("SELECT repo FROM repository_current")]
+
+
+def _digest(pool, network="lab"):
+    from mmw.core.repository_points import current_repository_points
+    pid, = current_repository_points(pool, next(iter(_repos(pool))))
+    return pool.layer_views(network, pid)[-1][2]
 
 
 def _body(row) -> bytes:
@@ -154,7 +183,7 @@ def test_an_unchanged_rebuild_is_skipped_and_a_republish_rebuilds(lab, monkeypat
     make_deb(lab.folder / "jammy/main", "tools-ours", "1.0")
     _, first = lab.build(_layer(lab))
     with Pool(lab.mirror_dir) as pool:
-        digest = pool.layer_digest("lab", lab.base)
+        digest = _digest(pool)
     monkeypatch.setattr(layers, "_rebuild", lambda *a, **k: pytest.fail("rebuilt unchanged inputs"))
     _, again = lab.build(_layer(lab))
     assert again == first
@@ -162,10 +191,10 @@ def test_an_unchanged_rebuild_is_skipped_and_a_republish_rebuilds(lab, monkeypat
     lab.up.republish({("jammy", "main"): [make_deb(lab.tmp / "u2", "hello", "2.10-3")],
                       ("jammy", "universe"): [make_deb(lab.tmp / "u", "cowsay", "3.03")]},
                      date="Fri, 22 Apr 2022 10:00:00 UTC")
-    sync_upstream(lab.cfg(), lab.src)
+    lab.sync()
     _, after = lab.build(_layer(lab))
     with Pool(lab.mirror_dir) as pool:
-        assert pool.layer_digest("lab", lab.base) != digest
+        assert _digest(pool) != digest
     assert b"2.10-3" in _body(after["dists/jammy/main/binary-amd64/Packages"])
 
 
@@ -296,7 +325,7 @@ def test_prune_keeps_live_layer_blobs(lab):
     lab.build(_layer(lab))
     with Pool(lab.mirror_dir) as pool:
         pool.prune_orphans([lab.src.identity])
-        overlay = pool.layer_overlay("lab", lab.base)
+        overlay = _overlay(pool)
     from pathlib import Path
     assert all(Path(row[1]).is_file() for row in overlay.values() if row is not None)
 
@@ -321,7 +350,7 @@ def test_changing_the_selection_rebuilds(lab):
         source=lab.src.url, arches=["amd64"])]})
     with Pool(lab.mirror_dir) as pool:
         layers.build_network_layers(net, narrowed, lab.mirror_dir, pool)
-        overlay = pool.layer_overlay("lab", lab.base)
+        overlay = _overlay(pool)
     assert "dists/jammy/main/binary-arm64/Packages" not in overlay
 
 

@@ -88,6 +88,8 @@ def walk_tree(network: NetworkConfig, cfg: Config, mirror_dir: Path, pool: Pool,
     from mmw.core.layers import apply_build
     if build_layers:
         apply_build(network, cfg, mirror_dir, pool, result)     # what the network serves, layer and all
+        from mmw.core.layers import served_files
+        repository_files = {**served_files(pool, network, cfg, mirror_dir), **(repository_files or {})}
     from mmw.core.publisher import walk_network
     mirrors = walk_network(network, cfg, mirror_dir, sink, pool, result,
                            nginx_root=None, prune=False,
